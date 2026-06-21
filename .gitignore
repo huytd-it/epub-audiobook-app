@@ -1,0 +1,9 @@
+.venv/
+data/uploads/*
+data/books/*
+data/app.db
+!data/uploads/.gitkeep
+!data/books/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/

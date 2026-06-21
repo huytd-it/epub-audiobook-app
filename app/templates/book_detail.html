@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ book.title }}{% endblock %}
+{% block content %}
+<meta http-equiv="refresh" content="5">
+<h2>{{ book.title }}</h2>
+<p>Status: <strong>{{ book.status }}</strong></p>
+
+{% if book.final_audio_path %}
+    <p><a href="/books/{{ book.id }}/download/audio">Download final audio (.wav)</a></p>
+    {% if book.final_video_path %}
+        <p><a href="/books/{{ book.id }}/download/video">Download final video (.mp4)</a></p>
+    {% else %}
+        <form action="/books/{{ book.id }}/video" method="post">
+            <button type="submit">Generate video</button>
+        </form>
+    {% endif %}
+{% else %}
+    <p>Audio not finalized yet - waiting for all patches to complete.</p>
+{% endif %}
+
+<table>
+    <thead><tr><th>Patch</th><th>Chapters</th><th>Status</th><th>Error</th><th></th></tr></thead>
+    <tbody>
+    {% for patch in patches %}
+        <tr>
+            <td>{{ patch.patch_index }}</td>
+            <td>{{ patch.chapter_start }}–{{ patch.chapter_end }}</td>
+            <td>{{ patch.status }}</td>
+            <td>{{ patch.error_message or "" }}</td>
+            <td>
+                {% if patch.status != "processing" %}
+                <form action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
+                    <button type="submit">Regenerate</button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

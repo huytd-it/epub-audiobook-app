@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Upload epub{% endblock %}
+{% block content %}
+<h2>Upload an EPUB</h2>
+<form action="/books/upload" method="post" enctype="multipart/form-data">
+    <label>EPUB file: <input type="file" name="epub_file" accept=".epub" required></label><br><br>
+    <label>Chapters per patch: <input type="number" name="patch_size" value="10" min="1"></label><br><br>
+    <label>Background image (optional, jpg/png): <input type="file" name="background_image" accept="image/*"></label><br><br>
+    <button type="submit">Upload &amp; Parse</button>
+</form>
+{% endblock %}

@@ -1,0 +1,4 @@
+body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; }
+header h1 a { text-decoration: none; color: inherit; }

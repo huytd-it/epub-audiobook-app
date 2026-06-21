@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Books{% endblock %}
+{% block content %}
+<p><a href="/books/upload">+ Upload new epub</a></p>
+<table>
+    <thead><tr><th>Title</th><th>Status</th><th>Progress</th><th></th></tr></thead>
+    <tbody>
+    {% for book in books %}
+        <tr>
+            <td><a href="/books/{{ book.id }}">{{ book.title }}</a></td>
+            <td>{{ book.status }}</td>
+            <td>{{ patch_counts[book.id].done }} / {{ patch_counts[book.id].total }} patches</td>
+            <td>
+                <form action="/books/{{ book.id }}/delete" method="post" style="display:inline">
+                    <button type="submit" onclick="return confirm('Delete this book and all its files?')">Delete</button>
+                </form>
+            </td>
+        </tr>
+    {% else %}
+        <tr><td colspan="4">No books yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
