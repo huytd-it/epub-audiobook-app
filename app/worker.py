@@ -21,7 +21,10 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+import soundfile as sf
+
 from app import audio_merge, repository, video_gen
+from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.models import BookJob, Patch
 from app.tts_engine import VoxCPMEngine
@@ -203,17 +206,51 @@ class PatchWorker:
             patch_text = repository.build_patch_text(self.conn, patch)
             book = repository.get_book(self.conn, patch.book_id)
 
-        wavs = self.engine.synthesize_patch(
-            patch_text,
-            reference_wav_path=book.voice_clip_path if book else None,
-            prompt_text=book.voice_transcript if book else None,
-        )
+        ref_wav = book.voice_clip_path if book else None
+        ref_text = book.voice_transcript if book else None
 
         book_dir = self.data_root / "books" / str(patch.book_id) / "patches"
         book_dir.mkdir(parents=True, exist_ok=True)
         audio_path = str(book_dir / f"{patch.id}.wav")
-        audio_merge.concat_chunks_to_wav(wavs, self.engine.sample_rate, audio_path)
-        return audio_path
+
+        if not settings.tts_write_chunk_files:
+            wavs = self.engine.synthesize_patch(
+                patch_text,
+                reference_wav_path=ref_wav,
+                prompt_text=ref_text,
+            )
+            audio_merge.concat_chunks_to_wav(wavs, self.engine.sample_rate, audio_path)
+            return audio_path
+
+        chunk_dir = book_dir / f"{patch.id}_chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        chunk_paths: list[str] = []
+        try:
+            chunks = split_into_tts_chunks(patch_text, max_chars=settings.tts_max_chars)
+            for i, chunk_text in enumerate(chunks):
+                arr = self.engine.synthesize_chunk(
+                    chunk_text,
+                    reference_wav_path=ref_wav,
+                    prompt_text=ref_text,
+                )
+                chunk_path = str(chunk_dir / f"chunk_{i:03d}.wav")
+                sf.write(chunk_path, arr, self.engine.sample_rate)
+                chunk_paths.append(chunk_path)
+                self._log_event(
+                    "chunk.written",
+                    patch_id=patch.id,
+                    chunk_index=i,
+                    path=chunk_path,
+                )
+
+            audio_merge.merge_chunk_files_to_patch(chunk_paths, audio_path)
+            self._log_event("chunk.merged", patch_id=patch.id)
+            audio_merge.cleanup_chunk_dir(str(chunk_dir))
+            self._log_event("chunk.cleaned", patch_id=patch.id)
+            return audio_path
+        except Exception:
+            audio_merge.cleanup_chunk_dir(str(chunk_dir))
+            raise
 
     async def _maybe_finalize_book(self, book_id: int) -> None:
         with self.db_lock:
