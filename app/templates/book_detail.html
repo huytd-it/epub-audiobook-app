@@ -6,6 +6,8 @@
 <p>Status: <strong>{{ book.status }}</strong></p>
 <p>Voice clone: {% if book.voice_clip_path %}custom sample uploaded{% else %}default (no reference voice){% endif %}</p>
 
+<p><a href="/books/{{ book.id }}/chapters/preview-ui">Preview chapters</a></p>
+
 {% if book.final_audio_path %}
     <p><a href="/books/{{ book.id }}/download/audio">Download final audio (.wav)</a></p>
     {% if book.final_video_path %}

@@ -3,8 +3,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app import repository
@@ -140,3 +140,112 @@ def delete_book(request: Request, book_id: int):
     with locked_conn(request) as conn:
         repository.delete_book(conn, book_id, settings.data_root)
     return RedirectResponse(url="/books", status_code=303)
+
+
+def _parse_ids(raw: str | None) -> list[int]:
+    """Parse a comma-separated list of integer ids, ignoring empty / non-integer tokens."""
+    if not raw:
+        return []
+    out: list[int] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            out.append(int(token))
+        except ValueError:
+            continue
+    return out
+
+
+@router.get("/books/{book_id}/chapters/preview")
+def preview_chapters(
+    request: Request,
+    book_id: int,
+    ids: str | None = Query(default=None, description="Comma-separated chapter_index values"),
+    preview_chars: int = Query(default=500, ge=1, le=100_000),
+):
+    """Return a JSON list of {chapter_index, title, char_count, text_excerpt} for the
+    requested chapters. Unknown indices are silently skipped."""
+    if ids is None or ids.strip() == "":
+        raise HTTPException(status_code=400, detail="'ids' query parameter is required")
+
+    indices = _parse_ids(ids)
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        chapters = repository.get_chapters_by_indices(conn, book_id, indices)
+
+    return JSONResponse([
+        {
+            "chapter_index": ch.chapter_index,
+            "title": ch.title,
+            "char_count": ch.char_count,
+            "text_excerpt": ch.text[:preview_chars],
+        }
+        for ch in chapters
+    ])
+
+
+@router.get("/books/{book_id}/chapters/{chapter_index}/text", response_class=PlainTextResponse)
+def get_chapter_text(request: Request, book_id: int, chapter_index: int):
+    """Return the full text of a single chapter as text/plain."""
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        text = repository.get_chapter_text(conn, book_id, chapter_index)
+    if text is None:
+        raise HTTPException(status_code=404, detail=f"chapter {chapter_index} not found")
+    return PlainTextResponse(text)
+
+
+@router.get("/books/{book_id}/chapters/preview-ui", response_class=HTMLResponse)
+def preview_chapters_ui(
+    request: Request,
+    book_id: int,
+    ids: str | None = Query(default=None),
+    range_start: int | None = Query(default=None),
+    range_end: int | None = Query(default=None),
+):
+    """Server-rendered preview page. Selection sources, in priority order:
+    1. `ids` (comma-separated chapter_index values, possibly with a range to expand)
+    2. `range_start` + `range_end` (inclusive indices)
+    3. Individual checkboxes submitted as repeated `ids` values
+    """
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        all_chapters = repository.list_chapters(conn, book_id)
+
+    requested: list[int] = []
+    if ids:
+        requested.extend(_parse_ids(ids))
+    if range_start is not None and range_end is not None and range_end >= range_start:
+        requested.extend(range(range_start, range_end + 1))
+
+    seen: set[int] = set()
+    selected_indices: list[int] = []
+    for idx in requested:
+        if idx not in seen:
+            seen.add(idx)
+            selected_indices.append(idx)
+    selected_indices.sort()
+
+    previewed: list = []
+    if selected_indices:
+        with locked_conn(request) as conn:
+            previewed = repository.get_chapters_by_indices(conn, book_id, selected_indices)
+
+    return templates.TemplateResponse(
+        request,
+        "chapter_preview.html",
+        {
+            "book": book,
+            "all_chapters": all_chapters,
+            "previewed": previewed,
+            "selected_indices": selected_indices,
+            "range_start": range_start,
+            "range_end": range_end,
+        },
+    )

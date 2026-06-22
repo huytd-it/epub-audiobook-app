@@ -105,6 +105,33 @@ def get_chapters_in_range(
     return [_chapter_from_row(r) for r in rows]
 
 
+def get_chapters_by_indices(
+    conn: sqlite3.Connection, book_id: int, indices: list[int]
+) -> list[Chapter]:
+    """Return chapters matching any of the given chapter_index values, in ascending
+    chapter_index order. Unknown indices are silently skipped."""
+    if not indices:
+        return []
+    placeholders = ",".join("?" for _ in indices)
+    rows = conn.execute(
+        f"""SELECT * FROM chapter WHERE book_id = ? AND chapter_index IN ({placeholders})
+            ORDER BY chapter_index""",
+        (book_id, *indices),
+    ).fetchall()
+    return [_chapter_from_row(r) for r in rows]
+
+
+def get_chapter_text(
+    conn: sqlite3.Connection, book_id: int, chapter_index: int
+) -> str | None:
+    """Return the full text of a single chapter, or None if it doesn't exist."""
+    row = conn.execute(
+        "SELECT text FROM chapter WHERE book_id = ? AND chapter_index = ?",
+        (book_id, chapter_index),
+    ).fetchone()
+    return row["text"] if row else None
+
+
 def list_patches(conn: sqlite3.Connection, book_id: int) -> list[Patch]:
     rows = conn.execute(
         "SELECT * FROM patch WHERE book_id = ? ORDER BY patch_index", (book_id,)
