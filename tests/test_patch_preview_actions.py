@@ -129,3 +129,36 @@ def test_book_detail_shows_preview_link(client, tmp_path):
     assert "Preview text" in resp.text
     assert "Patch builder" in resp.text
     assert "Text replace rules" in resp.text
+    assert "Auto-build" in resp.text
+
+
+def test_auto_build_success_redirect(client, tmp_path):
+    book_id = _upload_book(client, tmp_path)
+    resp = client.post(
+        f"/books/{book_id}/patches/auto-build",
+        data={"start_chapter": "0", "patch_size": "2"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert f"/books/{book_id}" in resp.headers["location"]
+
+
+def test_auto_build_start_missing_returns_400(client, tmp_path):
+    book_id = _upload_book(client, tmp_path)
+    resp = client.post(
+        f"/books/{book_id}/patches/auto-build",
+        data={"patch_size": "5"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+
+
+def test_auto_build_start_out_of_bounds_returns_400(client, tmp_path):
+    book_id = _upload_book(client, tmp_path)
+    resp = client.post(
+        f"/books/{book_id}/patches/auto-build",
+        data={"start_chapter": "999", "patch_size": "5"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "out of bounds" in resp.json()["detail"]

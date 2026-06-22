@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block content %}
+<h2>Application Logs</h2>
+<p style="color:#666;font-size:0.9rem">
+    File: <code>{{ log_path }}</code> &mdash; Last {{ max_lines }} lines
+    <span style="margin-left:1rem">
+        <button onclick="copyLogs()" style="cursor:pointer">Copy all</button>
+    </span>
+    <span style="margin-left:0.5rem">
+        <a href="/logs/raw?lines={{ max_lines }}" target="_blank" download="app.log">Download</a>
+    </span>
+</p>
+<pre id="log-content" style="
+    background:#1e1e1e; color:#d4d4d4; padding:1rem; border-radius:4px;
+    font-family:Consolas,monospace; font-size:0.85rem; line-height:1.35;
+    white-space:pre-wrap; word-wrap:break-word;
+    max-height:70vh; overflow-y:auto;
+">{{ log_content }}</pre>
+<script>
+function copyLogs() {
+    const el = document.getElementById('log-content');
+    const text = el.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = document.querySelector('button[onclick="copyLogs()"]');
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = orig, 1500);
+    }).catch(() => alert('Failed to copy'));
+}
+</script>
+{% endblock %}

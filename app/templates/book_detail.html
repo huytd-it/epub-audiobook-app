@@ -14,8 +14,31 @@
 
 {% if book.final_audio_path %}
     <p><a href="/books/{{ book.id }}/download/audio">Download final audio (.wav)</a></p>
-    {% if book.final_video_path %}
-        <p><a href="/books/{{ book.id }}/download/video">Download final video (.mp4)</a></p>
+
+    <h3>Video</h3>
+    {% if not book.background_image_path %}
+        <p>Video: <em>no background image, video skipped</em></p>
+    {% elif video_job %}
+        {% if video_job.status == "pending" %}
+            <p>Video: <strong>pending (queued)</strong>
+                <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline">
+                    <button type="submit">Regenerate video</button>
+                </form>
+            </p>
+        {% elif video_job.status == "processing" %}
+            <p>Video: <strong>processing</strong></p>
+        {% elif video_job.status == "done" %}
+            <p>Video: <strong>done</strong> (output: <code>{{ video_job.output_path }}</code>)</p>
+            <p><a href="/books/{{ book.id }}/download/video">Download final video (.mp4)</a></p>
+            <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline">
+                <button type="submit">Regenerate video</button>
+            </form>
+        {% elif video_job.status == "failed" %}
+            <p>Video: <strong class="error">failed</strong> ({{ video_job.error_message }})</p>
+            <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline">
+                <button type="submit">Regenerate video</button>
+            </form>
+        {% endif %}
     {% else %}
         <form action="/books/{{ book.id }}/video" method="post">
             <button type="submit">Generate video</button>
@@ -23,6 +46,15 @@
     {% endif %}
 {% else %}
     <p>Audio not finalized yet - waiting for all patches to complete.</p>
+{% endif %}
+
+{% if last_error %}
+    <div class="error-block">
+        <p><strong>Last error:</strong> {{ last_error }}</p>
+        <form action="/books/{{ book.id }}/patches/retry-failed" method="post" style="display:inline">
+            <button type="submit">Retry all failed patches</button>
+        </form>
+    </div>
 {% endif %}
 
 <h3>Text replace rules</h3>
@@ -50,6 +82,14 @@
     <label><input type="checkbox" name="is_regex" value="true">regex</label>
     <input type="number" name="position" value="0" style="width:4rem">
     <button type="submit">Add rule</button>
+</form>
+
+<h3>Auto-build patches</h3>
+<form action="/books/{{ book.id }}/patches/auto-build" method="post" class="auto-build-form">
+    <label>Start chapter <input type="number" name="start_chapter" min="0" required></label>
+    <label>End chapter <input type="number" name="end_chapter" min="0" placeholder="to last chapter"></label>
+    <label>Patch size <input type="number" name="patch_size" min="1" value="{{ book.patch_size }}" size="3"></label>
+    <button type="submit">Auto-build</button>
 </form>
 
 <table>

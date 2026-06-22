@@ -48,6 +48,19 @@ class Patch:
 
 
 @dataclass
+class BookJob:
+    id: int
+    book_id: int
+    job_type: str  # 'video' for now
+    status: str  # pending | processing | done | failed
+    attempt_count: int
+    error_message: str | None
+    output_path: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class TextReplaceRule:
     id: int
     book_id: int

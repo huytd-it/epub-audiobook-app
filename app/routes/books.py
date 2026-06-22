@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -11,10 +12,10 @@ from app import repository
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
-from app.video_gen import generate_video
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+logger = logging.getLogger(__name__)
 
 
 @router.get("/books", response_class=HTMLResponse)
@@ -25,6 +26,7 @@ def list_books(request: Request):
             b.id: {
                 "total": len(repository.list_patches(conn, b.id)),
                 "done": sum(1 for p in repository.list_patches(conn, b.id) if p.status == "done"),
+                "pending": sum(1 for p in repository.list_patches(conn, b.id) if p.status == "pending"),
             }
             for b in books
         }
@@ -115,26 +117,35 @@ def book_detail(request: Request, book_id: int):
         patch_list = repository.list_patches(conn, book_id)
         rules = repository.list_replace_rules(conn, book_id)
         chapters = repository.list_chapters(conn, book_id)
+        last_error = repository.get_last_error_for_book(conn, book_id)
+        video_job = repository.get_book_job(conn, book_id, "video")
     return templates.TemplateResponse(
         request, "book_detail.html", {
-            "book": book, "patches": patch_list, "rules": rules, "chapters": chapters,
+            "book": book,
+            "patches": patch_list,
+            "rules": rules,
+            "chapters": chapters,
+            "last_error": last_error,
+            "video_job": video_job,
         }
     )
 
 
 @router.post("/books/{book_id}/video")
 def trigger_video(request: Request, book_id: int):
+    """Enqueue a video book_job. Video generation is now handled by the worker
+    (background, non-blocking). If the book has no final audio yet, or a video
+    book_job already exists in any status, this is a no-op that just redirects."""
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
         if book is None or not book.final_audio_path:
             return RedirectResponse(url=f"/books/{book_id}", status_code=303)
-        bg_image = book.background_image_path or settings.default_background_image
-        out_path = str(Path(book.final_audio_path).parent / "final.mp4")
-
-    generate_video(book.final_audio_path, bg_image, out_path, use_nvenc=settings.use_nvenc)
-
-    with locked_conn(request) as conn:
-        repository.set_book_final_video(conn, book_id, out_path)
+        if not book.background_image_path:
+            return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        existing = repository.get_book_job(conn, book_id, "video")
+        if existing is not None:
+            return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        repository.enqueue_book_job(conn, book_id, "video")
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
@@ -142,7 +153,9 @@ def trigger_video(request: Request, book_id: int):
 @router.post("/books/{book_id}/delete")
 def delete_book(request: Request, book_id: int):
     with locked_conn(request) as conn:
-        repository.delete_book(conn, book_id, settings.data_root)
+        ok = repository.delete_book(conn, book_id, settings.data_root)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"book {book_id} not found")
     return RedirectResponse(url="/books", status_code=303)
 
 
@@ -374,6 +387,46 @@ async def rebuild_patches(request: Request, book_id: int):
          "chapter_end": p.chapter_end, "status": p.status}
         for p in patches
     ])
+
+
+@router.post("/books/{book_id}/patches/auto-build")
+async def auto_build_patches(
+    request: Request,
+    book_id: int,
+):
+    body = await request.form()
+    start_chapter_str = body.get("start_chapter")
+    end_chapter_str = body.get("end_chapter")
+    patch_size_str = body.get("patch_size")
+
+    try:
+        start_chapter = int(start_chapter_str) if start_chapter_str else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="start_chapter is required and must be an integer")
+    if start_chapter is None:
+        raise HTTPException(status_code=400, detail="start_chapter is required")
+    end_chapter = None
+    if end_chapter_str is not None and end_chapter_str.strip() != "":
+        try:
+            end_chapter = int(end_chapter_str)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="end_chapter must be an integer")
+    patch_size = None
+    if patch_size_str is not None and patch_size_str.strip() != "":
+        try:
+            patch_size = int(patch_size_str)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="patch_size must be an integer")
+
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        try:
+            repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
 @router.get("/books/{book_id}/patches/{patch_id}/text", response_class=PlainTextResponse)

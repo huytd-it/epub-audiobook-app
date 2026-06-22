@@ -69,3 +69,20 @@ header h1 a { text-decoration: none; color: inherit; }
 /* Patch builder */
 .range-row { display: flex; gap: 0.5rem; margin-bottom: 0.3rem; align-items: center; }
 .range-row input { width: 5rem; }
+
+/* Auto-build form */
+.auto-build-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0 1.5rem; }
+.auto-build-form label { font-size: 0.9rem; }
+.auto-build-form input[type=number] { width: 6rem; text-align: center; }
+
+/* Queue observability (book_detail / book_list) */
+.error-block {
+    margin: 1rem 0;
+    padding: 0.75rem 1rem;
+    border: 1px solid #c33;
+    border-radius: 4px;
+    background: #fbeeee;
+}
+.error-block p { margin: 0 0 0.5rem 0; }
+.error { color: #b00; }
+.queue-pending { font-size: 0.85rem; color: #666; }
