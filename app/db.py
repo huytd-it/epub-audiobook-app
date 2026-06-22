@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS book (
     final_audio_path TEXT,
     final_video_path TEXT,
     background_image_path TEXT,
+    voice_clip_path TEXT,
+    voice_transcript TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -59,4 +61,14 @@ def connect(db_path: str) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a book table already existed on disk."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(book)")}
+    if "voice_clip_path" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN voice_clip_path TEXT")
+    if "voice_transcript" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN voice_transcript TEXT")

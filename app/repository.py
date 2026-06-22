@@ -37,13 +37,19 @@ def create_book(
     patch_size: int,
     chapters: list[ParsedChapter],
     background_image_path: str | None,
+    voice_clip_path: str | None = None,
+    voice_transcript: str | None = None,
 ) -> Book:
     now = _now()
     cur = conn.execute(
         """INSERT INTO book (title, original_filename, epub_path, patch_size, status,
-                              background_image_path, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'ready', ?, ?, ?)""",
-        (title, original_filename, epub_path, patch_size, background_image_path, now, now),
+                              background_image_path, voice_clip_path, voice_transcript,
+                              created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?)""",
+        (
+            title, original_filename, epub_path, patch_size, background_image_path,
+            voice_clip_path, voice_transcript, now, now,
+        ),
     )
     book_id = cur.lastrowid
 

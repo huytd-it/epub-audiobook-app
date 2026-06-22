@@ -21,7 +21,7 @@ class StubEngine:
     def __init__(self):
         self.calls = []
 
-    def synthesize_patch(self, text, max_chars=400):
+    def synthesize_patch(self, text, max_chars=400, reference_wav_path=None, prompt_text=None):
         self.calls.append(text[:20])
         return [np.zeros(800, dtype=np.float32)]  # 0.1s of silence per patch
 

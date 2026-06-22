@@ -15,6 +15,8 @@ class Book:
     final_audio_path: str | None
     final_video_path: str | None
     background_image_path: str | None
+    voice_clip_path: str | None
+    voice_transcript: str | None
     created_at: str
     updated_at: str
 

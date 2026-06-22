@@ -6,6 +6,8 @@
     <label>EPUB file: <input type="file" name="epub_file" accept=".epub" required></label><br><br>
     <label>Chapters per patch: <input type="number" name="patch_size" value="10" min="1"></label><br><br>
     <label>Background image (optional, jpg/png): <input type="file" name="background_image" accept="image/*"></label><br><br>
+    <label>Voice clone sample (optional, wav/mp3, 3-15s of clean speech): <input type="file" name="voice_clip" accept=".wav,.mp3,.ogg,.flac"></label><br><br>
+    <label>Voice sample transcript (optional, improves cloning accuracy): <input type="text" name="voice_transcript" size="60" placeholder="Exact words spoken in the voice sample"></label><br><br>
     <button type="submit">Upload &amp; Parse</button>
 </form>
 {% endblock %}

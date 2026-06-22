@@ -68,9 +68,14 @@ class PatchWorker:
             chapters = repository.get_chapters_in_range(
                 self.conn, patch.book_id, patch.chapter_start, patch.chapter_end
             )
+            book = repository.get_book(self.conn, patch.book_id)
         patch_text = "\n\n".join(c.text for c in chapters)
 
-        wavs = self.engine.synthesize_patch(patch_text)
+        wavs = self.engine.synthesize_patch(
+            patch_text,
+            reference_wav_path=book.voice_clip_path if book else None,
+            prompt_text=book.voice_transcript if book else None,
+        )
 
         book_dir = self.data_root / "books" / str(patch.book_id) / "patches"
         book_dir.mkdir(parents=True, exist_ok=True)

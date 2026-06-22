@@ -44,6 +44,8 @@ async def upload_book(
     epub_file: UploadFile = File(...),
     patch_size: int = Form(default=10),
     background_image: UploadFile | None = File(default=None),
+    voice_clip: UploadFile | None = File(default=None),
+    voice_transcript: str | None = Form(default=None),
 ):
     uploads_dir = Path(settings.data_root) / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -58,6 +60,12 @@ async def upload_book(
         with open(tmp_bg_path, "wb") as f:
             shutil.copyfileobj(background_image.file, f)
 
+    tmp_voice_path = None
+    if voice_clip is not None and voice_clip.filename:
+        tmp_voice_path = uploads_dir / f"_tmp_voice_{voice_clip.filename}"
+        with open(tmp_voice_path, "wb") as f:
+            shutil.copyfileobj(voice_clip.file, f)
+
     chapters = parse_epub(str(tmp_epub_path))
     title = Path(epub_file.filename).stem
 
@@ -70,6 +78,7 @@ async def upload_book(
             patch_size=patch_size,
             chapters=chapters,
             background_image_path=None,
+            voice_transcript=voice_transcript or None,
         )
 
         final_epub_path = uploads_dir / f"{book.id}.epub"
@@ -80,9 +89,19 @@ async def upload_book(
             final_bg_path = uploads_dir / f"{book.id}_bg{Path(tmp_bg_path).suffix}"
             tmp_bg_path.rename(final_bg_path)
 
+        final_voice_path = None
+        if tmp_voice_path is not None:
+            final_voice_path = uploads_dir / f"{book.id}_voice{Path(tmp_voice_path).suffix}"
+            tmp_voice_path.rename(final_voice_path)
+
         conn.execute(
-            "UPDATE book SET epub_path = ?, background_image_path = ? WHERE id = ?",
-            (str(final_epub_path), str(final_bg_path) if final_bg_path else None, book.id),
+            "UPDATE book SET epub_path = ?, background_image_path = ?, voice_clip_path = ? WHERE id = ?",
+            (
+                str(final_epub_path),
+                str(final_bg_path) if final_bg_path else None,
+                str(final_voice_path) if final_voice_path else None,
+                book.id,
+            ),
         )
         conn.commit()
 
