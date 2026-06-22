@@ -119,6 +119,7 @@ def book_detail(request: Request, book_id: int):
         chapters = repository.list_chapters(conn, book_id)
         last_error = repository.get_last_error_for_book(conn, book_id)
         video_job = repository.get_book_job(conn, book_id, "video")
+    has_active_patches = any(p.status in ("pending", "processing") for p in patch_list)
     return templates.TemplateResponse(
         request, "book_detail.html", {
             "book": book,
@@ -127,6 +128,7 @@ def book_detail(request: Request, book_id: int):
             "chapters": chapters,
             "last_error": last_error,
             "video_job": video_job,
+            "has_active_patches": has_active_patches,
         }
     )
 
