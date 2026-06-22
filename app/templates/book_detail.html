@@ -6,12 +6,39 @@
 <p>Status: <strong>{{ book.status }}</strong></p>
 <p>Voice clone: {% if book.voice_clip_path %}custom sample uploaded{% else %}default (no reference voice){% endif %}</p>
 
-<p><a href="/books/{{ book.id }}/chapters/preview-ui">Preview chapters</a></p>
+<p>
+    <a href="/books/{{ book.id }}/chapters/preview-ui">Preview chapters</a>
+    &nbsp;|&nbsp;
+    <a href="/books/{{ book.id }}/patches/build">Patch builder</a>
+</p>
 
 {% if book.final_audio_path %}
     <p><a href="/books/{{ book.id }}/download/audio">Download final audio (.wav)</a></p>
-    {% if book.final_video_path %}
-        <p><a href="/books/{{ book.id }}/download/video">Download final video (.mp4)</a></p>
+
+    <h3>Video</h3>
+    {% if not book.background_image_path %}
+        <p>Video: <em>no background image, video skipped</em></p>
+    {% elif video_job %}
+        {% if video_job.status == "pending" %}
+            <p>Video: <strong>pending (queued)</strong>
+                <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline">
+                    <button type="submit">Regenerate video</button>
+                </form>
+            </p>
+        {% elif video_job.status == "processing" %}
+            <p>Video: <strong>processing</strong></p>
+        {% elif video_job.status == "done" %}
+            <p>Video: <strong>done</strong> (output: <code>{{ video_job.output_path }}</code>)</p>
+            <p><a href="/books/{{ book.id }}/download/video">Download final video (.mp4)</a></p>
+            <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline">
+                <button type="submit">Regenerate video</button>
+            </form>
+        {% elif video_job.status == "failed" %}
+            <p>Video: <strong class="error">failed</strong> ({{ video_job.error_message }})</p>
+            <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline">
+                <button type="submit">Regenerate video</button>
+            </form>
+        {% endif %}
     {% else %}
         <form action="/books/{{ book.id }}/video" method="post">
             <button type="submit">Generate video</button>
@@ -21,20 +48,68 @@
     <p>Audio not finalized yet - waiting for all patches to complete.</p>
 {% endif %}
 
+{% if last_error %}
+    <div class="error-block">
+        <p><strong>Last error:</strong> {{ last_error }}</p>
+        <form action="/books/{{ book.id }}/patches/retry-failed" method="post" style="display:inline">
+            <button type="submit">Retry all failed patches</button>
+        </form>
+    </div>
+{% endif %}
+
+<h3>Text replace rules</h3>
+<table class="replace-rule-table">
+    <thead><tr><th>Find</th><th>Replace</th><th>Regex</th><th>Pos</th><th></th></tr></thead>
+    <tbody>
+    {% for rule in rules %}
+        <tr>
+            <td><code>{{ rule.find }}</code></td>
+            <td><code>{{ rule.replace }}</code></td>
+            <td>{{ "yes" if rule.is_regex else "no" }}</td>
+            <td>{{ rule.position }}</td>
+            <td>
+                <form action="/books/{{ book.id }}/replace-rules/{{ rule.id }}/delete" method="post" style="display:inline">
+                    <button type="submit">Delete</button>
+                </form>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+<form action="/books/{{ book.id }}/replace-rules" method="post" class="replace-rule-form">
+    <input type="text" name="find" placeholder="find" required>
+    <input type="text" name="replace" placeholder="replace">
+    <label><input type="checkbox" name="is_regex" value="true">regex</label>
+    <input type="number" name="position" value="0" style="width:4rem">
+    <button type="submit">Add rule</button>
+</form>
+
+<h3>Auto-build patches</h3>
+<form action="/books/{{ book.id }}/patches/auto-build" method="post" class="auto-build-form">
+    <label>Start chapter <input type="number" name="start_chapter" min="0" required></label>
+    <label>End chapter <input type="number" name="end_chapter" min="0" placeholder="to last chapter"></label>
+    <label>Patch size <input type="number" name="patch_size" min="1" value="{{ book.patch_size }}" size="3"></label>
+    <button type="submit">Auto-build</button>
+</form>
+
 <table>
-    <thead><tr><th>Patch</th><th>Chapters</th><th>Status</th><th>Error</th><th></th></tr></thead>
+    <thead><tr><th>Patch</th><th>Chapters</th><th>Status</th><th>Error</th><th>Actions</th></tr></thead>
     <tbody>
     {% for patch in patches %}
         <tr>
             <td>{{ patch.patch_index }}</td>
-            <td>{{ patch.chapter_start }}–{{ patch.chapter_end }}</td>
+            <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
             <td>{{ patch.status }}</td>
             <td>{{ patch.error_message or "" }}</td>
-            <td>
+            <td class="patch-actions">
+                <a href="/books/{{ book.id }}/patches/{{ patch.id }}/text" target="_blank">Preview text</a>
                 {% if patch.status != "processing" %}
                 <form action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
                     <button type="submit">Regenerate</button>
                 </form>
+                {% endif %}
+                {% if patch.status == "done" and patch.audio_path %}
+                    <audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ patch.id }}/audio"></audio>
                 {% endif %}
             </td>
         </tr>

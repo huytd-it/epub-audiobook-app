@@ -1,20 +1,21 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from app import repository
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
-from app.video_gen import generate_video
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+logger = logging.getLogger(__name__)
 
 
 @router.get("/books", response_class=HTMLResponse)
@@ -25,6 +26,7 @@ def list_books(request: Request):
             b.id: {
                 "total": len(repository.list_patches(conn, b.id)),
                 "done": sum(1 for p in repository.list_patches(conn, b.id) if p.status == "done"),
+                "pending": sum(1 for p in repository.list_patches(conn, b.id) if p.status == "pending"),
             }
             for b in books
         }
@@ -113,24 +115,37 @@ def book_detail(request: Request, book_id: int):
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
         patch_list = repository.list_patches(conn, book_id)
+        rules = repository.list_replace_rules(conn, book_id)
+        chapters = repository.list_chapters(conn, book_id)
+        last_error = repository.get_last_error_for_book(conn, book_id)
+        video_job = repository.get_book_job(conn, book_id, "video")
     return templates.TemplateResponse(
-        request, "book_detail.html", {"book": book, "patches": patch_list}
+        request, "book_detail.html", {
+            "book": book,
+            "patches": patch_list,
+            "rules": rules,
+            "chapters": chapters,
+            "last_error": last_error,
+            "video_job": video_job,
+        }
     )
 
 
 @router.post("/books/{book_id}/video")
 def trigger_video(request: Request, book_id: int):
+    """Enqueue a video book_job. Video generation is now handled by the worker
+    (background, non-blocking). If the book has no final audio yet, or a video
+    book_job already exists in any status, this is a no-op that just redirects."""
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
         if book is None or not book.final_audio_path:
             return RedirectResponse(url=f"/books/{book_id}", status_code=303)
-        bg_image = book.background_image_path or settings.default_background_image
-        out_path = str(Path(book.final_audio_path).parent / "final.mp4")
-
-    generate_video(book.final_audio_path, bg_image, out_path, use_nvenc=settings.use_nvenc)
-
-    with locked_conn(request) as conn:
-        repository.set_book_final_video(conn, book_id, out_path)
+        if not book.background_image_path:
+            return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        existing = repository.get_book_job(conn, book_id, "video")
+        if existing is not None:
+            return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        repository.enqueue_book_job(conn, book_id, "video")
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
@@ -138,7 +153,9 @@ def trigger_video(request: Request, book_id: int):
 @router.post("/books/{book_id}/delete")
 def delete_book(request: Request, book_id: int):
     with locked_conn(request) as conn:
-        repository.delete_book(conn, book_id, settings.data_root)
+        ok = repository.delete_book(conn, book_id, settings.data_root)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"book {book_id} not found")
     return RedirectResponse(url="/books", status_code=303)
 
 
@@ -249,3 +266,234 @@ def preview_chapters_ui(
             "range_end": range_end,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Chapter exclude
+# ---------------------------------------------------------------------------
+
+
+@router.post("/books/{book_id}/chapters/{chapter_index}/exclude")
+def toggle_chapter_exclude(
+    request: Request,
+    book_id: int,
+    chapter_index: int,
+    excluded: str = Form(default="true"),
+):
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        repository.set_chapter_excluded(
+            conn, book_id, chapter_index, excluded.lower() != "false"
+        )
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Replace rules
+# ---------------------------------------------------------------------------
+
+
+@router.get("/books/{book_id}/replace-rules")
+def list_rules(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        rules = repository.list_replace_rules(conn, book_id)
+    return JSONResponse([
+        {"id": r.id, "book_id": r.book_id, "find": r.find, "replace": r.replace,
+         "is_regex": r.is_regex, "position": r.position}
+        for r in rules
+    ])
+
+
+@router.post("/books/{book_id}/replace-rules")
+def create_rule(
+    request: Request,
+    book_id: int,
+    find: str = Form(...),
+    replace: str = Form(default=""),
+    is_regex: str = Form(default="false"),
+    position: int = Form(default=0),
+):
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        try:
+            rule = repository.create_replace_rule(
+                conn, book_id, find, replace, is_regex.lower() == "true", position
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        repository.reset_done_patches_for_book(conn, book_id)
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+@router.post("/books/{book_id}/replace-rules/{rule_id}/edit")
+def edit_rule(
+    request: Request,
+    book_id: int,
+    rule_id: int,
+    find: str = Form(...),
+    replace: str = Form(default=""),
+    is_regex: str = Form(default="false"),
+    position: int = Form(default=0),
+):
+    with locked_conn(request) as conn:
+        try:
+            updated = repository.update_replace_rule(
+                conn, rule_id, find=find, replace=replace,
+                is_regex=is_regex.lower() == "true", position=position,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail=f"rule {rule_id} not found")
+        repository.reset_done_patches_for_book(conn, book_id)
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+@router.post("/books/{book_id}/replace-rules/{rule_id}/delete")
+def delete_rule(request: Request, book_id: int, rule_id: int):
+    with locked_conn(request) as conn:
+        if repository.delete_replace_rule(conn, rule_id):
+            repository.reset_done_patches_for_book(conn, book_id)
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Patch rebuild + preview actions
+# ---------------------------------------------------------------------------
+
+
+@router.post("/books/{book_id}/patches/rebuild")
+async def rebuild_patches(request: Request, book_id: int):
+    body = await request.json()
+    ranges_raw = body.get("ranges", [])
+    reset_done = body.get("reset_done", True)
+    ranges: list[tuple[int, int]] = []
+    for item in ranges_raw:
+        if isinstance(item, list) and len(item) == 2:
+            ranges.append((item[0], item[1]))
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        try:
+            patches = repository.rebuild_patches(conn, book_id, ranges, reset_done)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse([
+        {"patch_index": p.patch_index, "chapter_start": p.chapter_start,
+         "chapter_end": p.chapter_end, "status": p.status}
+        for p in patches
+    ])
+
+
+@router.post("/books/{book_id}/patches/auto-build")
+async def auto_build_patches(
+    request: Request,
+    book_id: int,
+):
+    body = await request.form()
+    start_chapter_str = body.get("start_chapter")
+    end_chapter_str = body.get("end_chapter")
+    patch_size_str = body.get("patch_size")
+
+    try:
+        start_chapter = int(start_chapter_str) if start_chapter_str else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="start_chapter is required and must be an integer")
+    if start_chapter is None:
+        raise HTTPException(status_code=400, detail="start_chapter is required")
+    end_chapter = None
+    if end_chapter_str is not None and end_chapter_str.strip() != "":
+        try:
+            end_chapter = int(end_chapter_str)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="end_chapter must be an integer")
+    patch_size = None
+    if patch_size_str is not None and patch_size_str.strip() != "":
+        try:
+            patch_size = int(patch_size_str)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="patch_size must be an integer")
+
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        try:
+            repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+@router.get("/books/{book_id}/patches/{patch_id}/text", response_class=PlainTextResponse)
+def get_patch_text(request: Request, book_id: int, patch_id: int):
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        text = repository.build_patch_text(conn, patch)
+    return PlainTextResponse(text)
+
+
+@router.get("/books/{book_id}/patches/{patch_id}/audio")
+def get_patch_audio(request: Request, book_id: int, patch_id: int):
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        if patch.status != "done" or not patch.audio_path:
+            raise HTTPException(status_code=404, detail="audio not available")
+        path = patch.audio_path
+    return FileResponse(path, media_type="audio/wav")
+
+
+@router.get("/books/{book_id}/patches/build", response_class=HTMLResponse)
+def patch_builder_page(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        chapters = repository.list_chapters(conn, book_id)
+        patches = repository.list_patches(conn, book_id)
+    return templates.TemplateResponse(
+        request, "patch_builder.html",
+        {"book": book, "chapters": chapters, "patches": patches},
+    )
+
+
+@router.post("/books/{book_id}/patches/build")
+async def patch_builder_submit(request: Request, book_id: int):
+    body = await request.form()
+    excluded_list = body.getlist("excluded")
+    excluded_set = {int(x) for x in excluded_list if x.isdigit()}
+    range_starts = body.getlist("range_start")
+    range_ends = body.getlist("range_end")
+    ranges: list[tuple[int, int]] = []
+    for rs, re_ in zip(range_starts, range_ends):
+        try:
+            s, e = int(rs), int(re_)
+            if s <= e:
+                ranges.append((s, e))
+        except ValueError:
+            continue
+
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        for ch in repository.list_chapters(conn, book_id):
+            new_excluded = ch.chapter_index in excluded_set
+            if new_excluded != ch.is_excluded:
+                repository.set_chapter_excluded(
+                    conn, book_id, ch.chapter_index, new_excluded
+                )
+        if ranges:
+            try:
+                repository.rebuild_patches(conn, book_id, ranges, reset_done=True)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)

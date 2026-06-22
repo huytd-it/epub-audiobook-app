@@ -9,7 +9,12 @@
         <tr>
             <td><a href="/books/{{ book.id }}">{{ book.title }}</a></td>
             <td>{{ book.status }}</td>
-            <td>{{ patch_counts[book.id].done }} / {{ patch_counts[book.id].total }} patches</td>
+            <td>
+                {{ patch_counts[book.id].done }} / {{ patch_counts[book.id].total }} patches
+                {% if patch_counts[book.id].pending %}
+                <br><span class="queue-pending">Queue: {{ patch_counts[book.id].pending }} pending</span>
+                {% endif %}
+            </td>
             <td>
                 <form action="/books/{{ book.id }}/delete" method="post" style="display:inline">
                     <button type="submit" onclick="return confirm('Delete this book and all its files?')">Delete</button>

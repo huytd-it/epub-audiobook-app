@@ -29,6 +29,7 @@ class Chapter:
     title: str
     text: str
     char_count: int
+    is_excluded: bool = False
 
 
 @dataclass
@@ -44,3 +45,26 @@ class Patch:
     attempt_count: int
     created_at: str
     updated_at: str
+
+
+@dataclass
+class BookJob:
+    id: int
+    book_id: int
+    job_type: str  # 'video' for now
+    status: str  # pending | processing | done | failed
+    attempt_count: int
+    error_message: str | None
+    output_path: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class TextReplaceRule:
+    id: int
+    book_id: int
+    find: str
+    replace: str
+    is_regex: bool
+    position: int

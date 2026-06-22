@@ -48,6 +48,37 @@ CREATE TABLE IF NOT EXISTS patch (
 
 CREATE INDEX IF NOT EXISTS idx_patch_status ON patch(status);
 CREATE INDEX IF NOT EXISTS idx_patch_book_order ON patch(book_id, patch_index);
+CREATE INDEX IF NOT EXISTS idx_patch_status_updated ON patch(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS book_job (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id         INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+    job_type        TEXT NOT NULL DEFAULT 'video',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    error_message   TEXT,
+    output_path     TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE(book_id, job_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_book_job_status ON book_job(status, book_id, id);
+CREATE INDEX IF NOT EXISTS idx_book_job_book_type ON book_job(book_id, job_type);
+
+CREATE TABLE IF NOT EXISTS app_state (
+    key             TEXT PRIMARY KEY,
+    value           TEXT
+);
+
+CREATE TABLE IF NOT EXISTS text_replace_rule (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id         INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+    find            TEXT NOT NULL,
+    replace         TEXT NOT NULL DEFAULT '',
+    is_regex        INTEGER NOT NULL DEFAULT 0,
+    position        INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -72,3 +103,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN voice_clip_path TEXT")
     if "voice_transcript" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN voice_transcript TEXT")
+    # book_job and app_state are CREATE TABLE IF NOT EXISTS, so they're picked up by
+    # init_schema on a fresh DB and are a no-op on an existing DB; no per-column migration
+    # is needed for them.
+    chapter_existing = {row["name"] for row in conn.execute("PRAGMA table_info(chapter)")}
+    if "is_excluded" not in chapter_existing:
+        conn.execute("ALTER TABLE chapter ADD COLUMN is_excluded INTEGER NOT NULL DEFAULT 0")
