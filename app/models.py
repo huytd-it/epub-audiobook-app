@@ -29,6 +29,7 @@ class Chapter:
     title: str
     text: str
     char_count: int
+    is_excluded: bool = False
 
 
 @dataclass
@@ -44,3 +45,13 @@ class Patch:
     attempt_count: int
     created_at: str
     updated_at: str
+
+
+@dataclass
+class TextReplaceRule:
+    id: int
+    book_id: int
+    find: str
+    replace: str
+    is_regex: bool
+    position: int

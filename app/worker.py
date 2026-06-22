@@ -65,11 +65,8 @@ class PatchWorker:
         """Blocking: runs in a thread via asyncio.to_thread so the event loop (and thus the
         web UI) isn't frozen during synthesis."""
         with self.db_lock:
-            chapters = repository.get_chapters_in_range(
-                self.conn, patch.book_id, patch.chapter_start, patch.chapter_end
-            )
+            patch_text = repository.build_patch_text(self.conn, patch)
             book = repository.get_book(self.conn, patch.book_id)
-        patch_text = "\n\n".join(c.text for c in chapters)
 
         wavs = self.engine.synthesize_patch(
             patch_text,

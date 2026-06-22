@@ -53,3 +53,19 @@ header h1 a { text-decoration: none; color: inherit; }
     font-size: 0.95rem;
     line-height: 1.4;
 }
+
+/* Replace rules */
+.replace-rule-table { margin-bottom: 0.75rem; }
+.replace-rule-table code { background: #eee; padding: 0.1rem 0.3rem; border-radius: 3px; }
+.replace-rule-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1.5rem; }
+.replace-rule-form input[type=text] { width: 10rem; }
+.replace-rule-form input[type=number] { text-align: center; }
+
+/* Patch actions */
+.patch-actions { white-space: nowrap; }
+.patch-actions a, .patch-actions button { margin-right: 0.5rem; }
+.patch-audio-player { width: 160px; height: 28px; vertical-align: middle; }
+
+/* Patch builder */
+.range-row { display: flex; gap: 0.5rem; margin-bottom: 0.3rem; align-items: center; }
+.range-row input { width: 5rem; }

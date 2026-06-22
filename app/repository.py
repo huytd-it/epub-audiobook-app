@@ -1,13 +1,14 @@
 """CRUD operations for book/chapter/patch, plus combined DB+filesystem operations."""
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.chunker import group_into_patches
 from app.epub_parser import ParsedChapter
-from app.models import Book, Chapter, Patch
+from app.models import Book, Chapter, Patch, TextReplaceRule
 
 ACTIVE_PATCH_STATUSES = {"pending", "done", "failed"}  # never 'processing' - that's worker-owned
 
@@ -21,11 +22,19 @@ def _book_from_row(row: sqlite3.Row) -> Book:
 
 
 def _chapter_from_row(row: sqlite3.Row) -> Chapter:
-    return Chapter(**{k: row[k] for k in row.keys()})
+    d = {k: row[k] for k in row.keys()}
+    d["is_excluded"] = bool(d.get("is_excluded", False))
+    return Chapter(**d)
 
 
 def _patch_from_row(row: sqlite3.Row) -> Patch:
     return Patch(**{k: row[k] for k in row.keys()})
+
+
+def _rule_from_row(row: sqlite3.Row) -> TextReplaceRule:
+    d = {k: row[k] for k in row.keys()}
+    d["is_regex"] = bool(d["is_regex"])
+    return TextReplaceRule(**d)
 
 
 def create_book(
@@ -277,3 +286,232 @@ def delete_book(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
 
         shutil.rmtree(book_dir, ignore_errors=True)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Chapter exclude
+# ---------------------------------------------------------------------------
+
+
+def set_chapter_excluded(
+    conn: sqlite3.Connection, book_id: int, chapter_index: int, excluded: bool
+) -> bool:
+    cur = conn.execute(
+        "UPDATE chapter SET is_excluded = ? WHERE book_id = ? AND chapter_index = ?",
+        (1 if excluded else 0, book_id, chapter_index),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def list_included_chapters(
+    conn: sqlite3.Connection, book_id: int
+) -> list[Chapter]:
+    rows = conn.execute(
+        "SELECT * FROM chapter WHERE book_id = ? AND is_excluded = 0 ORDER BY chapter_index",
+        (book_id,),
+    ).fetchall()
+    return [_chapter_from_row(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Replace rules repository
+# ---------------------------------------------------------------------------
+
+
+def list_replace_rules(
+    conn: sqlite3.Connection, book_id: int
+) -> list[TextReplaceRule]:
+    rows = conn.execute(
+        "SELECT * FROM text_replace_rule WHERE book_id = ? ORDER BY position, id",
+        (book_id,),
+    ).fetchall()
+    return [_rule_from_row(r) for r in rows]
+
+
+def create_replace_rule(
+    conn: sqlite3.Connection,
+    book_id: int,
+    find: str,
+    replace: str,
+    is_regex: bool,
+    position: int,
+) -> TextReplaceRule:
+    if not find:
+        raise ValueError("find must not be empty")
+    if is_regex:
+        try:
+            re.compile(find)
+        except re.error as exc:
+            raise ValueError(f"invalid regex: {exc}") from exc
+    cur = conn.execute(
+        """INSERT INTO text_replace_rule (book_id, find, replace, is_regex, position)
+           VALUES (?, ?, ?, ?, ?)""",
+        (book_id, find, replace, 1 if is_regex else 0, position),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM text_replace_rule WHERE id = ?", (cur.lastrowid,)
+    ).fetchone()
+    return _rule_from_row(row)
+
+
+def update_replace_rule(
+    conn: sqlite3.Connection,
+    rule_id: int,
+    find: str | None = None,
+    replace: str | None = None,
+    is_regex: bool | None = None,
+    position: int | None = None,
+) -> TextReplaceRule | None:
+    existing = conn.execute(
+        "SELECT * FROM text_replace_rule WHERE id = ?", (rule_id,)
+    ).fetchone()
+    if existing is None:
+        return None
+    new_find = find if find is not None else existing["find"]
+    new_replace = replace if replace is not None else existing["replace"]
+    new_is_regex = is_regex if is_regex is not None else bool(existing["is_regex"])
+    new_position = position if position is not None else existing["position"]
+    if not new_find:
+        raise ValueError("find must not be empty")
+    if new_is_regex:
+        try:
+            re.compile(new_find)
+        except re.error as exc:
+            raise ValueError(f"invalid regex: {exc}") from exc
+    conn.execute(
+        """UPDATE text_replace_rule
+           SET find = ?, replace = ?, is_regex = ?, position = ?
+           WHERE id = ?""",
+        (new_find, new_replace, 1 if new_is_regex else 0, new_position, rule_id),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM text_replace_rule WHERE id = ?", (rule_id,)
+    ).fetchone()
+    return _rule_from_row(row)
+
+
+def delete_replace_rule(conn: sqlite3.Connection, rule_id: int) -> bool:
+    cur = conn.execute("DELETE FROM text_replace_rule WHERE id = ?", (rule_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def apply_replace_rules(text: str, rules: list[TextReplaceRule]) -> str:
+    """Pure function: apply rules in position order, then insertion order for ties."""
+    result = text
+    for rule in rules:
+        if rule.is_regex:
+            result = re.sub(rule.find, rule.replace, result)
+        else:
+            result = result.replace(rule.find, rule.replace)
+    return result
+
+
+def reset_done_patches_for_book(conn: sqlite3.Connection, book_id: int) -> int:
+    now = _now()
+    cur = conn.execute(
+        """UPDATE patch SET status = 'pending', audio_path = NULL, error_message = NULL,
+           updated_at = ? WHERE book_id = ? AND status = 'done'""",
+        (now, book_id),
+    )
+    conn.execute(
+        """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,
+           status = 'ready', updated_at = ? WHERE id = ?""",
+        (now, book_id),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Custom patch rebuild
+# ---------------------------------------------------------------------------
+
+
+def rebuild_patches(
+    conn: sqlite3.Connection,
+    book_id: int,
+    ranges: list[tuple[int, int]],
+    reset_done: bool = False,
+) -> list[Patch]:
+    """Replace all patches for this book. Validates ranges, deletes old patches,
+    inserts new ones. Resets book state."""
+    ranges = list(ranges)
+    if not ranges:
+        raise ValueError("ranges must not be empty")
+
+    for i, (a_start, a_end) in enumerate(ranges):
+        if a_start > a_end:
+            raise ValueError(f"range {i} [{a_start},{a_end}]: start must be <= end")
+        for j, (b_start, b_end) in enumerate(ranges):
+            if j <= i:
+                continue
+            if a_end >= b_start and b_end >= a_start:
+                raise ValueError(
+                    f"overlapping ranges: [{a_start},{a_end}] and [{b_start},{b_end}]"
+                )
+
+    excluded_indices = {
+        r["chapter_index"]
+        for r in conn.execute(
+            "SELECT chapter_index FROM chapter WHERE book_id = ? AND is_excluded = 1",
+            (book_id,),
+        )
+    }
+    for i, (start, end) in enumerate(ranges):
+        for ci in range(start, end + 1):
+            if ci in excluded_indices:
+                raise ValueError(
+                    f"range {i} [{start},{end}] includes excluded chapter {ci}"
+                )
+
+    existing = conn.execute(
+        "SELECT chapter_index FROM chapter WHERE book_id = ?", (book_id,)
+    ).fetchall()
+    max_index = max(r["chapter_index"] for r in existing) if existing else -1
+    for i, (start, end) in enumerate(ranges):
+        if start < 0 or end > max_index:
+            raise ValueError(
+                f"range {i} [{start},{end}] out of bounds (0-{max_index})"
+            )
+
+    if reset_done:
+        patterns = list_patches(conn, book_id)
+        for p in patterns:
+            if p.status == "done" and p.audio_path:
+                Path(p.audio_path).unlink(missing_ok=True)
+    conn.execute("DELETE FROM patch WHERE book_id = ?", (book_id,))
+    now = _now()
+    conn.executemany(
+        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status,
+                               created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+        [(book_id, idx, start, end, now, now) for idx, (start, end) in enumerate(ranges)],
+    )
+    conn.execute(
+        """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,
+           status = 'ready', updated_at = ? WHERE id = ?""",
+        (now, book_id),
+    )
+    conn.commit()
+    return list_patches(conn, book_id)
+
+
+# ---------------------------------------------------------------------------
+# Patch text builder
+# ---------------------------------------------------------------------------
+
+
+def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
+    """Return the full text for a patch: included chapter texts joined, with
+    the book's replace rules applied."""
+    chapters = get_chapters_in_range(
+        conn, patch.book_id, patch.chapter_start, patch.chapter_end
+    )
+    included = [ch for ch in chapters if not ch.is_excluded]
+    raw = "\n\n".join(ch.text for ch in included)
+    rules = list_replace_rules(conn, patch.book_id)
+    return apply_replace_rules(raw, rules)

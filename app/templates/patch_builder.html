@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Patch builder - {{ book.title }}{% endblock %}
+{% block content %}
+<h2>Patch builder: {{ book.title }}</h2>
+<p><a href="/books/{{ book.id }}">&larr; Back to book</a></p>
+
+<section class="preview-controls">
+    <h3>Chapter exclude</h3>
+    <form method="post" action="/books/{{ book.id }}/patches/build">
+        <div class="chapter-checkbox-grid">
+            {% for ch in chapters %}
+                <label class="chapter-checkbox-item">
+                    <input type="checkbox" name="excluded" value="{{ ch.chapter_index }}"
+                           {% if ch.is_excluded %}checked{% endif %}>
+                    <span>{{ ch.chapter_index }}: {{ ch.title }} ({{ ch.char_count }} chars)</span>
+                </label>
+            {% endfor %}
+        </div>
+
+        <h3>Patch ranges</h3>
+        <p class="preview-help">Define chapter ranges. Current patches (read-only):</p>
+        <table>
+            <thead><tr><th>Patch #</th><th>ch_start</th><th>ch_end</th><th>Status</th></tr></thead>
+            <tbody>
+            {% for p in patches %}
+                <tr>
+                    <td>{{ p.patch_index }}</td>
+                    <td>{{ p.chapter_start }}</td>
+                    <td>{{ p.chapter_end }}</td>
+                    <td>{{ p.status }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+
+        <h3>New ranges</h3>
+        <div id="range-list">
+            <div class="range-row">
+                <label>start <input type="number" name="range_start" min="0"></label>
+                <label>end <input type="number" name="range_end" min="0"></label>
+            </div>
+        </div>
+        <p class="preview-help">Duplicate rows = multiple patches. Leave empty to keep current patches.</p>
+        <button type="button" onclick="addRange()">+ Add range</button>
+        <br><br>
+        <button type="submit">Save changes</button>
+    </form>
+</section>
+
+<script>
+function addRange() {
+    var row = document.createElement('div');
+    row.className = 'range-row';
+    row.innerHTML = '<label>start <input type="number" name="range_start" min="0"></label> '
+                  + '<label>end <input type="number" name="range_end" min="0"></label>';
+    document.getElementById('range-list').appendChild(row);
+}
+</script>
+{% endblock %}
