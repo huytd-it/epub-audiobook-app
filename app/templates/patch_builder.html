@@ -19,16 +19,73 @@
 
         <h3>Patch ranges</h3>
         <p class="preview-help">Define chapter ranges. Current patches (read-only):</p>
+
         <table>
-            <thead><tr><th>Patch #</th><th>ch_start</th><th>ch_end</th><th>Status</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>Patch #</th>
+                    <th>Chapters</th>
+                    <th>Status</th>
+                    <th>Image</th>
+                    <th>Image Type</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
             <tbody>
             {% for p in patches %}
                 <tr>
                     <td>{{ p.patch_index }}</td>
-                    <td>{{ p.chapter_start }}</td>
-                    <td>{{ p.chapter_end }}</td>
+                    <td>{{ p.chapter_start }}&ndash;{{ p.chapter_end }}</td>
                     <td>{{ p.status }}</td>
+                    <td>
+                        {% if p.image_path %}
+                            <img src="/books/{{ book.id }}/patches/{{ p.id }}/image" class="patch-thumb" alt="patch {{ p.patch_index }} image">
+                        {% else %}
+                            <div class="patch-thumb-placeholder">default</div>
+                        {% endif %}
+                        <form method="post" action="/books/{{ book.id }}/patches/{{ p.id }}/image" enctype="multipart/form-data" class="patch-img-form">
+                            <input type="file" name="image" accept=".jpg,.jpeg,.png,.webp">
+                            <button type="submit">Upload</button>
+                        </form>
+                        {% if p.image_path %}
+                        <form method="post" action="/books/{{ book.id }}/patches/{{ p.id }}/image/delete" style="display:inline">
+                            <button type="submit" style="font-size:0.75rem;padding:0.15rem 0.4rem;color:#c33;">Xóa hình</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form method="post" action="/books/{{ book.id }}/patches/{{ p.id }}/image-type" style="display:inline">
+                            <select name="image_type" class="image-type-select" onchange="this.form.submit()">
+                                <option value="static" {% if p.image_type == 'static' or not p.image_type %}selected{% endif %}>Static</option>
+                                <option value="zoom-in" {% if p.image_type == 'zoom-in' %}selected{% endif %}>Zoom In</option>
+                                <option value="zoom-out" {% if p.image_type == 'zoom-out' %}selected{% endif %}>Zoom Out</option>
+                                <option value="pan-left" {% if p.image_type == 'pan-left' %}selected{% endif %}>Pan Left</option>
+                                <option value="pan-right" {% if p.image_type == 'pan-right' %}selected{% endif %}>Pan Right</option>
+                            </select>
+                        </form>
+                    </td>
+                    <td class="patch-actions">
+                        <a href="/books/{{ book.id }}/patches/{{ p.id }}/text" target="_blank">Preview text</a>
+                        {% if p.status != "processing" %}
+                        <form action="/books/{{ book.id }}/patches/{{ p.id }}/regenerate" method="post" style="display:inline">
+                            <button type="submit">Regenerate</button>
+                        </form>
+                        {% endif %}
+                        {% if p.status == "done" and p.audio_path %}
+                            <audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ p.id }}/audio"></audio>
+                            <form action="/books/{{ book.id }}/patches/{{ p.id }}/generate-video" method="post" style="display:inline">
+                                <button type="submit">Generate Video</button>
+                            </form>
+                        {% endif %}
+                    </td>
                 </tr>
+                {% if p.status == "done" and p.audio_path %}
+                <tr>
+                    <td colspan="6" style="border-top:none;padding-top:0;">
+                        <video controls preload="none" class="patch-video-preview" src="/books/{{ book.id }}/patches/{{ p.id }}/video"></video>
+                    </td>
+                </tr>
+                {% endif %}
             {% endfor %}
             </tbody>
         </table>

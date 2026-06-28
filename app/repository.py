@@ -219,6 +219,11 @@ def reset_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
     if patch.audio_path:
         Path(patch.audio_path).unlink(missing_ok=True)
 
+    video_dir = Path("data") / "books" / str(patch.book_id) / "patch_videos"
+    video_file = video_dir / f"{patch_id}.mp4"
+    if video_file.exists():
+        video_file.unlink(missing_ok=True)
+
     conn.execute(
         """UPDATE patch SET status = 'pending', audio_path = NULL, error_message = NULL, updated_at = ?
            WHERE id = ?""",
@@ -305,8 +310,11 @@ def delete_book(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
     book_dir = Path(data_root) / "books" / str(book_id)
     if book_dir.exists():
         import shutil
-
         shutil.rmtree(book_dir, ignore_errors=True)
+    uploads_patch_dir = Path(data_root) / "uploads" / str(book_id)
+    if uploads_patch_dir.exists():
+        import shutil
+        shutil.rmtree(uploads_patch_dir, ignore_errors=True)
     logger.info("delete_book succeeded for book_id=%s", book_id)
     return True
 
@@ -433,6 +441,73 @@ def apply_replace_rules(text: str, rules: list[TextReplaceRule]) -> str:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Patch image CRUD
+# ---------------------------------------------------------------------------
+
+
+def save_patch_image(conn: sqlite3.Connection, patch_id: int, file_path: str) -> str:
+    """Set image_path for a patch. Old image file is NOT deleted here (caller handles cleanup)."""
+    now = _now()
+    conn.execute(
+        "UPDATE patch SET image_path = ?, updated_at = ? WHERE id = ?",
+        (file_path, now, patch_id),
+    )
+    conn.commit()
+    return file_path
+
+
+def clear_patch_image(conn: sqlite3.Connection, patch_id: int) -> bool:
+    """Set image_path = NULL for a patch. Returns True if a row was updated."""
+    now = _now()
+    cur = conn.execute(
+        "UPDATE patch SET image_path = NULL, updated_at = ? WHERE id = ?",
+        (now, patch_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def update_patch_image_type(conn: sqlite3.Connection, patch_id: int, image_type: str) -> bool:
+    """Update image_type for a patch (static | zoom-in | zoom-out | pan-left | pan-right)."""
+    now = _now()
+    cur = conn.execute(
+        "UPDATE patch SET image_type = ?, updated_at = ? WHERE id = ?",
+        (image_type, now, patch_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def update_book_video_settings(
+    conn: sqlite3.Connection,
+    book_id: int,
+    *,
+    video_resolution: str | None = None,
+    video_fps: int | None = None,
+    default_image_animation: str | None = None,
+) -> None:
+    """Update video settings for a book."""
+    parts = []
+    params = []
+    if video_resolution is not None:
+        parts.append("video_resolution = ?")
+        params.append(video_resolution)
+    if video_fps is not None:
+        parts.append("video_fps = ?")
+        params.append(video_fps)
+    if default_image_animation is not None:
+        parts.append("default_image_animation = ?")
+        params.append(default_image_animation)
+    if not parts:
+        return
+    parts.append("updated_at = ?")
+    params.append(_now())
+    params.append(book_id)
+    conn.execute(f"UPDATE book SET {', '.join(parts)} WHERE id = ?", params)
+    conn.commit()
+
+
 def reset_done_patches_for_book(conn: sqlite3.Connection, book_id: int) -> int:
     now = _now()
     cur = conn.execute(
@@ -506,6 +581,8 @@ def rebuild_patches(
         for p in patterns:
             if p.status == "done" and p.audio_path:
                 Path(p.audio_path).unlink(missing_ok=True)
+            if p.image_path:
+                Path(p.image_path).unlink(missing_ok=True)
     conn.execute("DELETE FROM patch WHERE book_id = ?", (book_id,))
     now = _now()
     conn.executemany(
@@ -847,14 +924,20 @@ def requeue_stuck_book_jobs(conn: sqlite3.Connection) -> int:
 
 
 def backfill_video_book_jobs(conn: sqlite3.Connection) -> int:
-    """One-shot at startup: for each book with status='done', non-NULL final_audio_path
-    and background_image_path, and no existing book_job of type='video', insert a
-    'pending' book_job. Returns the count inserted."""
+    """One-shot at startup: for each book with status='done', non-NULL final_audio_path,
+    and (background_image_path OR at least one patch with image_path), and no existing
+    book_job of type='video', insert a 'pending' book_job. Returns the count inserted."""
     rows = conn.execute(
         """SELECT b.id FROM book b
             WHERE b.status = 'done'
               AND b.final_audio_path IS NOT NULL
-              AND b.background_image_path IS NOT NULL
+              AND (
+                  b.background_image_path IS NOT NULL
+                  OR EXISTS (
+                      SELECT 1 FROM patch p
+                       WHERE p.book_id = b.id AND p.image_path IS NOT NULL
+                  )
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM book_job bj
                    WHERE bj.book_id = b.id AND bj.job_type = 'video'
@@ -872,7 +955,6 @@ def backfill_video_book_jobs(conn: sqlite3.Connection) -> int:
             )
             n += 1
         except sqlite3.IntegrityError:
-            # A concurrent process (or a duplicate backfill) already inserted. Skip.
             continue
     conn.commit()
     return n

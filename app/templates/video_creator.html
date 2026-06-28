@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Video Creator{% endblock %}
+{% block content %}
+<h2>Video Creator</h2>
+<p>Tạo video từ file âm thanh + hình ảnh với cài đặt ffmpeg tuỳ chỉnh.</p>
+
+{% if error %}
+<div class="error-block"><p><strong>Error:</strong> {{ error }}</p></div>
+{% endif %}
+
+<form method="post" action="/video/generate" enctype="multipart/form-data" class="video-creator-form">
+    <div class="form-group">
+        <label>Audio file (wav, mp3, m4a, ogg) <span class="required">*</span></label>
+        <input type="file" name="audio" accept=".wav,.mp3,.m4a,.ogg" required>
+    </div>
+
+    <div class="form-group">
+        <label>Image file (jpg, png, webp)</label>
+        <input type="file" name="image" accept=".jpg,.jpeg,.png,.webp">
+        <small>Nếu không upload, sẽ dùng hình default.</small>
+    </div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Resolution</label>
+            <select name="resolution">
+                <option value="1920x1080" selected>1920x1080 (Full HD)</option>
+                <option value="1280x720">1280x720 (HD)</option>
+                <option value="854x480">854x480 (SD)</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>FPS</label>
+            <select name="fps">
+                <option value="24">24</option>
+                <option value="30" selected>30</option>
+                <option value="60">60</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Codec</label>
+            <select name="codec">
+                <option value="libx264" selected>libx264</option>
+                <option value="h264_nvenc">h264_nvenc (NVIDIA)</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Audio bitrate</label>
+            <select name="audio_bitrate">
+                <option value="128k">128k</option>
+                <option value="192k" selected>192k</option>
+                <option value="256k">256k</option>
+                <option value="320k">320k</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Image type</label>
+            <select name="image_type">
+                <option value="none" selected>Static</option>
+                <option value="zoom-in">Zoom In (Ken Burns)</option>
+                <option value="zoom-out">Zoom Out (Ken Burns)</option>
+                <option value="pan-left">Pan Left</option>
+                <option value="pan-right">Pan Right</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>CRF (quality: 18=high, 28=low)</label>
+            <input type="range" name="crf" min="18" max="28" value="23" id="crf-slider"
+                   oninput="document.getElementById('crf-val').textContent=this.value">
+            <span id="crf-val">23</span>
+        </div>
+    </div>
+
+    <button type="submit" class="btn-generate">Generate Video</button>
+</form>
+
+{% if video_url %}
+<div class="video-preview-section">
+    <h3>Preview</h3>
+    <video controls width="640" src="{{ video_url }}"></video>
+    <p><a href="{{ video_url }}" download class="btn-download">Download .mp4</a></p>
+    <form method="get" action="/video">
+        <button type="submit">Tạo video khác</button>
+    </form>
+</div>
+{% endif %}
+{% endblock %}

@@ -109,3 +109,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     chapter_existing = {row["name"] for row in conn.execute("PRAGMA table_info(chapter)")}
     if "is_excluded" not in chapter_existing:
         conn.execute("ALTER TABLE chapter ADD COLUMN is_excluded INTEGER NOT NULL DEFAULT 0")
+    patch_existing = {row["name"] for row in conn.execute("PRAGMA table_info(patch)")}
+    if "image_path" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN image_path TEXT")
+    if "image_type" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN image_type TEXT NOT NULL DEFAULT 'static'")
+    if "video_resolution" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN video_resolution TEXT NOT NULL DEFAULT '1920x1080'")
+    if "video_fps" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN video_fps INTEGER NOT NULL DEFAULT 30")
+    if "default_image_animation" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN default_image_animation TEXT NOT NULL DEFAULT 'none'")

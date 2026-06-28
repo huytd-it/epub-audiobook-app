@@ -275,15 +275,18 @@ class PatchWorker:
             repository.set_book_final_audio(self.conn, book_id, final_path)
         self._log_event("book.finalized", book_id=book_id, final_audio_path=final_path)
 
-        # Auto-enqueue a video book_job if the book has a background image.
-        if book is not None and book.background_image_path:
-            with self.db_lock:
-                repository.enqueue_book_job(self.conn, book_id, "video")
-            self._log_event(
-                "book_job.auto_enqueued",
-                book_id=book_id,
-                job_type="video",
-            )
+        # Auto-enqueue a video book_job if the book has any usable image.
+        if book is not None:
+            has_bg = bool(book.background_image_path)
+            has_patch_img = any(p.image_path for p in patches)
+            if has_bg or has_patch_img:
+                with self.db_lock:
+                    repository.enqueue_book_job(self.conn, book_id, "video")
+                self._log_event(
+                    "book_job.auto_enqueued",
+                    book_id=book_id,
+                    job_type="video",
+                )
 
     # ------------------------------------------------------------------ book jobs
 
@@ -330,15 +333,19 @@ class PatchWorker:
         """Blocking: runs in a thread via asyncio.to_thread."""
         with self.db_lock:
             book = repository.get_book(self.conn, job.book_id)
+            patches = repository.list_patches(self.conn, job.book_id)
         if book is None or not book.final_audio_path:
             raise ValueError(f"book {job.book_id} has no final_audio_path")
 
-        bg_image = book.background_image_path or settings.default_background_image
+        done_patches = [p for p in patches if p.status == "done" and p.audio_path]
         book_dir = self.data_root / "books" / str(job.book_id)
         book_dir.mkdir(parents=True, exist_ok=True)
         out_path = str(book_dir / f"video_{job.id}.mp4")
-        video_gen.generate_video(
-            book.final_audio_path, bg_image, out_path, use_nvenc=settings.use_nvenc
+
+        video_gen.generate_full_video(
+            done_patches, book, out_path,
+            default_image=settings.default_background_image,
+            use_nvenc=settings.use_nvenc,
         )
         return out_path
 

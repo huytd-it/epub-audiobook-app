@@ -19,6 +19,9 @@ class Book:
     voice_transcript: str | None
     created_at: str
     updated_at: str
+    video_resolution: str = "1920x1080"
+    video_fps: int = 30
+    default_image_animation: str = "none"
 
 
 @dataclass
@@ -45,6 +48,8 @@ class Patch:
     attempt_count: int
     created_at: str
     updated_at: str
+    image_path: str | None = None
+    image_type: str = "static"
 
 
 @dataclass
