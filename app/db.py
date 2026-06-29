@@ -79,6 +79,31 @@ CREATE TABLE IF NOT EXISTS text_replace_rule (
     is_regex        INTEGER NOT NULL DEFAULT 0,
     position        INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS youtube_credentials (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    access_token    TEXT NOT NULL,
+    refresh_token   TEXT NOT NULL,
+    token_expiry    TEXT NOT NULL,
+    channel_id      TEXT,
+    channel_name    TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS youtube_uploads (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_path      TEXT NOT NULL,
+    youtube_video_id TEXT,
+    title           TEXT,
+    description     TEXT,
+    tags            TEXT,
+    privacy_status  TEXT NOT NULL DEFAULT 'private',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    error_message   TEXT,
+    uploaded_at     TEXT,
+    created_at      TEXT NOT NULL
+);
 """
 
 

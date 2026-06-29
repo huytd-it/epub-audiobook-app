@@ -17,6 +17,9 @@ dependencies = [
     "soundfile>=0.12",
     "numpy>=1.26",
     "pydantic-settings>=2.0",
+    "google-api-python-client>=2.100.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth-httplib2>=0.2.0",
 ]
 
 [project.optional-dependencies]

@@ -169,6 +169,8 @@
 .status-err { color: #c33; font-weight: 600; }
 .result-item { padding: 0.5rem 0; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 0.75rem; }
 .result-item a { color: #2563eb; font-weight: 600; }
+.btn-yt-mini { padding: 0.2rem 0.6rem; font-size: 0.78rem; background: #ff0000; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; }
+.btn-yt-mini:hover { background: #cc0000; }
 </style>
 
 <script>
@@ -373,7 +375,7 @@
                 const div = document.createElement('div');
                 div.className = 'result-item';
                 if (r.status === 'done') {
-                    div.innerHTML = `<span class="status-ok">✓</span> <span>${escHtml(r.name)}</span> <a href="${r.video_url}" download>Download (${r.size_mb} MB)</a>`;
+                    div.innerHTML = `<span class="status-ok">✓</span> <span>${escHtml(r.name)}</span> <a href="${r.video_url}" download>Download (${r.size_mb} MB)</a> <button class="btn-yt-mini" onclick="uploadToYouTube('${r.video_url}', '${escHtml(r.name)}')">YouTube</button>`;
                     const statusEl = document.querySelector(`[data-status="${r.index}"]`);
                     if (statusEl) { statusEl.textContent = 'Done'; statusEl.className = 'status-ok'; }
                 } else {
@@ -393,6 +395,35 @@
 
     loadBackgrounds();
 })();
+
+async function uploadToYouTube(videoUrl, videoName) {
+    const title = prompt('YouTube title:', videoName.replace(/\.[^.]+$/, ''));
+    if (!title) return;
+    const tags = prompt('Tags (comma separated):', 'audiobook,epub,video') || '';
+    const privacy = prompt('Privacy (private/unlisted/public):', 'private') || 'private';
+
+    const fd = new FormData();
+    // Fetch the video file via the URL
+    try {
+        const resp = await fetch(videoUrl);
+        const blob = await resp.blob();
+        fd.append('file', blob, videoName);
+        fd.append('title', title);
+        fd.append('description', '');
+        fd.append('tags', tags);
+        fd.append('privacy_status', privacy);
+
+        const res = await fetch('/youtube/upload-file', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.status === 'done') {
+            alert('Upload thành công! Video ID: ' + data.youtube_video_id);
+        } else {
+            alert('Upload failed: ' + (data.error || 'Unknown error'));
+        }
+    } catch(err) {
+        alert('Upload failed: ' + err.message);
+    }
+}
 </script>
 
 <!-- Parameter Reference -->

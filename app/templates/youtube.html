@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}YouTube Upload{% endblock %}
+{% block content %}
+<h2>YouTube Upload</h2>
+<p>Quản lý kết nối YouTube và lịch sử upload video.</p>
+
+{% if not configured %}
+<div class="yt-notice">
+    <p><strong>YouTube chưa được cấu hình.</strong></p>
+    <p>Thêm <code>YOUTUBE_CLIENT_ID</code> và <code>YOUTUBE_CLIENT_SECRET</code> vào file <code>.env</code> để kích hoạt tính năng này.</p>
+    <p>Tạo OAuth2 credentials tại <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a>.</p>
+</div>
+{% else %}
+
+<div class="yt-status-section">
+    {% if connected %}
+    <div class="yt-connected">
+        <span class="yt-status-dot yt-connected-dot"></span>
+        <strong>Đã kết nối</strong> — Kênh: {{ channel_name }}
+        <form method="post" action="/youtube/disconnect" style="display:inline" onsubmit="return disconnectYouTube()">
+            <button type="submit" class="btn-sm btn-danger">Ngắt kết nối</button>
+        </form>
+    </div>
+    {% if auto_upload %}
+    <div class="yt-auto-badge">Auto-upload: ON</div>
+    {% endif %}
+    {% else %}
+    <div class="yt-disconnected">
+        <span class="yt-status-dot yt-disconnected-dot"></span>
+        <strong>Chưa kết nối</strong>
+        <a href="/youtube/connect" class="btn-youtube">Kết nối YouTube</a>
+    </div>
+    {% endif %}
+</div>
+
+{% if connected %}
+<h3>Upload Video</h3>
+<div class="yt-upload-form-wrapper">
+    <form id="yt-upload-form" enctype="multipart/form-data">
+        <div class="form-group">
+            <label>Video file</label>
+            <input type="file" name="file" accept=".mp4,.mkv,.avi,.mov" required id="yt-file">
+        </div>
+        <div class="form-group">
+            <label>Title <span class="required">*</span></label>
+            <input type="text" name="title" id="yt-title" maxlength="100" required placeholder="Video title">
+        </div>
+        <div class="form-group">
+            <label>Description</label>
+            <textarea name="description" id="yt-desc" rows="3" maxlength="5000" placeholder="Video description"></textarea>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Tags (comma separated)</label>
+                <input type="text" name="tags" id="yt-tags" placeholder="audiobook, epub, video">
+            </div>
+            <div class="form-group">
+                <label>Privacy</label>
+                <select name="privacy_status" id="yt-privacy">
+                    <option value="private" selected>Private</option>
+                    <option value="unlisted">Unlisted</option>
+                    <option value="public">Public</option>
+                </select>
+            </div>
+        </div>
+        <button type="submit" class="btn-youtube" id="btn-yt-upload">Upload to YouTube</button>
+    </form>
+    <div id="yt-upload-status" style="display:none;"></div>
+</div>
+{% endif %}
+
+<h3>Lịch sử Upload</h3>
+{% if uploads %}
+<table class="yt-uploads-table">
+    <thead>
+        <tr>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Privacy</th>
+            <th>YouTube ID</th>
+            <th>Uploaded</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for u in uploads %}
+        <tr>
+            <td>{{ u.title or '(no title)' }}</td>
+            <td>
+                {% if u.status == 'done' %}
+                    <span class="yt-status-done">Done</span>
+                {% elif u.status == 'uploading' %}
+                    <span class="yt-status-uploading">Uploading</span>
+                {% elif u.status == 'pending' %}
+                    <span class="yt-status-pending">Pending</span>
+                {% else %}
+                    <span class="yt-status-failed">Failed</span>
+                {% endif %}
+            </td>
+            <td>{{ u.privacy_status }}</td>
+            <td>
+                {% if u.youtube_video_id %}
+                    <a href="https://youtube.com/watch?v={{ u.youtube_video_id }}" target="_blank">{{ u.youtube_video_id }}</a>
+                {% else %}
+                    —
+                {% endif %}
+            </td>
+            <td>{{ u.uploaded_at or '—' }}</td>
+        </tr>
+        {% if u.error_message %}
+        <tr class="yt-error-row"><td colspan="5" class="yt-error-msg">{{ u.error_message }}</td></tr>
+        {% endif %}
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="yt-empty">Chưa có video nào được upload.</p>
+{% endif %}
+
+{% endif %}
+
+<style>
+.yt-notice { padding: 1rem; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; margin: 1rem 0; }
+.yt-notice p { margin: 0.3rem 0; }
+.yt-status-section { margin: 1rem 0; padding: 1rem; background: #f0f9ff; border-radius: 6px; border: 1px solid #bae6fd; }
+.yt-connected, .yt-disconnected { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.yt-status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.yt-connected-dot { background: #22c55e; }
+.yt-disconnected-dot { background: #ef4444; }
+.yt-auto-badge { margin-top: 0.5rem; font-size: 0.8rem; background: #dbeafe; color: #1d4ed8; padding: 0.2rem 0.6rem; border-radius: 10px; display: inline-block; }
+.btn-youtube {
+    display: inline-block; padding: 0.5rem 1.5rem; font-size: 0.95rem; font-weight: 600;
+    background: #ff0000; color: #fff; border: none; border-radius: 4px; cursor: pointer; text-decoration: none;
+}
+.btn-youtube:hover { background: #cc0000; }
+.btn-sm { padding: 0.25rem 0.75rem; font-size: 0.8rem; border: none; border-radius: 3px; cursor: pointer; }
+.btn-danger { background: #dc2626; color: #fff; }
+.btn-danger:hover { background: #b91c1c; }
+.yt-upload-form-wrapper { max-width: 600px; }
+.yt-uploads-table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+.yt-uploads-table th, .yt-uploads-table td { border: 1px solid #ddd; padding: 0.4rem 0.6rem; font-size: 0.88rem; text-align: left; }
+.yt-uploads-table th { background: #f5f5f5; }
+.yt-status-done { color: #16a34a; font-weight: 600; }
+.yt-status-uploading { color: #2563eb; font-weight: 600; }
+.yt-status-pending { color: #888; }
+.yt-status-failed { color: #dc2626; font-weight: 600; }
+.yt-error-row td { background: #fef2f2; }
+.yt-error-msg { color: #dc2626; font-size: 0.82rem; }
+.yt-empty { color: #888; font-style: italic; }
+#yt-upload-status { margin-top: 0.75rem; padding: 0.75rem; border-radius: 4px; font-size: 0.9rem; }
+#yt-upload-status.yt-ok { background: #f0fdf4; border: 1px solid #86efac; color: #166534; }
+#yt-upload-status.yt-err { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
+#yt-upload-status.yt-info { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af; }
+</style>
+
+<script>
+function disconnectYouTube() {
+    return confirm('Ngắt kết nối YouTube?');
+}
+
+{% if connected %}
+document.getElementById('yt-upload-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fileInput = document.getElementById('yt-file');
+    const title = document.getElementById('yt-title').value.trim();
+    const desc = document.getElementById('yt-desc').value;
+    const tags = document.getElementById('yt-tags').value;
+    const privacy = document.getElementById('yt-privacy').value;
+    const statusEl = document.getElementById('yt-upload-status');
+
+    if (!fileInput.files.length || !title) { alert('File và title là bắt buộc'); return; }
+
+    const fd = new FormData();
+    fd.append('file', fileInput.files[0]);
+    fd.append('title', title);
+    fd.append('description', desc);
+    fd.append('tags', tags);
+    fd.append('privacy_status', privacy);
+
+    const btn = document.getElementById('btn-yt-upload');
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+    statusEl.style.display = '';
+    statusEl.className = 'yt-info';
+    statusEl.textContent = 'Đang upload lên YouTube...';
+
+    try {
+        const res = await fetch('/youtube/upload-file', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.status === 'done') {
+            statusEl.className = 'yt-ok';
+            statusEl.innerHTML = 'Upload thành công! <a href="https://youtube.com/watch?v=' + data.youtube_video_id + '" target="_blank">Xem trên YouTube</a>';
+        } else {
+            statusEl.className = 'yt-err';
+            statusEl.textContent = 'Upload failed: ' + (data.error || 'Unknown error');
+        }
+    } catch(err) {
+        statusEl.className = 'yt-err';
+        statusEl.textContent = 'Upload failed: ' + err.message;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Upload to YouTube';
+    }
+});
+{% endif %}
+</script>
+{% endblock %}

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import soundfile as sf
 
-from app import audio_merge, repository, video_gen
+from app import audio_merge, repository, video_gen, youtube
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.models import BookJob, Patch
@@ -315,6 +315,44 @@ class PatchWorker:
                 job_type=job.job_type,
                 output_path=output_path,
             )
+
+            # Auto-upload to YouTube if configured
+            if settings.youtube_auto_upload and youtube.is_configured():
+                try:
+                    with self.db_lock:
+                        book = repository.get_book(self.conn, job.book_id)
+                    if book:
+                        tags = [t.strip() for t in settings.youtube_default_tags.split(",") if t.strip()]
+                        with self.db_lock:
+                            upload_id = youtube.enqueue_upload(
+                                self.conn,
+                                video_path=output_path,
+                                title=book.title,
+                                description=f"{book.title} - EPUB Audiobook",
+                                tags=tags,
+                                privacy_status=settings.youtube_default_privacy,
+                            )
+                            result = youtube.upload_video(
+                                self.conn,
+                                video_path=output_path,
+                                title=book.title,
+                                description=f"{book.title} - EPUB Audiobook",
+                                tags=tags,
+                                privacy_status=settings.youtube_default_privacy,
+                            )
+                        self._log_event(
+                            "youtube.upload_done",
+                            upload_id=upload_id,
+                            youtube_video_id=result.get("youtube_video_id", ""),
+                            book_id=job.book_id,
+                        )
+                except Exception as yt_exc:
+                    self._log_event(
+                        "youtube.upload_failed",
+                        book_id=job.book_id,
+                        error=str(yt_exc),
+                        level=logging.WARNING,
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.exception("book_job %s failed", job.id)
             with self.db_lock:

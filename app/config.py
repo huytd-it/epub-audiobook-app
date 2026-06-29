@@ -22,5 +22,12 @@ class Settings(BaseSettings):
     ffmpeg_path: str = str(_APP_ROOT / "assets" / "bin" / "ffmpeg.exe")
     reset_all_jobs_on_startup: bool = False  # dev-only: reset every patch + book_job → pending on boot
 
+    # YouTube upload
+    youtube_client_id: str = ""
+    youtube_client_secret: str = ""
+    youtube_default_tags: str = "audiobook,epub,video"
+    youtube_default_privacy: str = "private"  # private | unlisted | public
+    youtube_auto_upload: bool = True  # auto-upload after video generation
+
 
 settings = Settings()
