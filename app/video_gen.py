@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from app.ffmpeg import get_ffmpeg_path, get_ffprobe_path
 from app.models import Book, Patch
 
 
@@ -72,7 +73,7 @@ def generate_segment(
 
     if image_type == "none":
         cmd = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-loop", "1", "-i", image_path,
             "-i", audio_path,
             "-c:v", video_codec,
@@ -87,7 +88,7 @@ def generate_segment(
         ]
     else:
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [get_ffprobe_path(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
             capture_output=True, text=True,
         )
@@ -97,7 +98,7 @@ def generate_segment(
         vf = f"{zp_filter},format=yuv420p"
 
         cmd = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-loop", "1", "-i", image_path,
             "-i", audio_path,
             "-vf", vf,
@@ -129,7 +130,7 @@ def concat_segments(segment_paths: list[str], out_path: str) -> None:
         list_file.close()
 
         cmd = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-f", "concat", "-safe", "0",
             "-i", list_file.name,
             "-c", "copy",

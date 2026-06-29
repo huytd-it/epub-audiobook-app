@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     worker_shutdown_timeout_seconds: float = 300.0
     enable_worker: bool = True  # set ENABLE_WORKER=false in dev to suppress the background loop
     tts_write_chunk_files: bool = True  # set TTS_WRITE_CHUNK_FILES=false to skip per-chunk WAV files
+    ffmpeg_path: str = str(_APP_ROOT / "assets" / "bin" / "ffmpeg.exe")
     reset_all_jobs_on_startup: bool = False  # dev-only: reset every patch + book_job → pending on boot
 
 
