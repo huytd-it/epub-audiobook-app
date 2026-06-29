@@ -1,12 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Patch builder - {{ book.title }}{% endblock %}
 {% block content %}
-<h2>Patch builder: {{ book.title }}</h2>
-<p><a href="/books/{{ book.id }}">&larr; Back to book</a></p>
+<h2>Patch Builder</h2>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">
+    <a href="/books/{{ book.id }}">&larr; Back to {{ book.title }}</a>
+</p>
 
-<section class="preview-controls">
-    <h3>Chapter exclude</h3>
-    <form method="post" action="/books/{{ book.id }}/patches/build">
+<form method="post" action="/books/{{ book.id }}/patches/build">
+    <div class="card">
+        <div class="card-header">
+            <h3 style="margin:0">Chapter Exclude</h3>
+        </div>
         <div class="chapter-checkbox-grid">
             {% for ch in chapters %}
                 <label class="chapter-checkbox-item">
@@ -16,10 +20,15 @@
                 </label>
             {% endfor %}
         </div>
+    </div>
 
-        <h3>Patch ranges</h3>
-        <p class="preview-help">Define chapter ranges. Current patches (read-only):</p>
+    <div class="card">
+        <div class="card-header">
+            <h3 style="margin:0">Current Patches</h3>
+        </div>
+        <p class="preview-help" style="margin-top:0">Read-only view of existing patches.</p>
 
+        <div class="table-wrap">
         <table>
             <thead>
                 <tr>
@@ -35,25 +44,42 @@
             <tbody>
             {% for p in patches %}
                 <tr>
-                    <td>{{ p.name or p.patch_index }}</td>
+                    <td><strong>{{ p.name or p.patch_index }}</strong></td>
                     <td>{{ p.chapter_start }}&ndash;{{ p.chapter_end }}</td>
                     <td>{{ p.chunk_count }}</td>
-                    <td>{{ p.status }}</td>
                     <td>
-                        {% if p.image_path %}
-                            <img src="/books/{{ book.id }}/patches/{{ p.id }}/image" class="patch-thumb" alt="patch {{ p.name or p.patch_index }} image">
+                        {% if p.status == 'done' %}
+                            <span class="badge badge-done">Done</span>
+                        {% elif p.status == 'processing' %}
+                            <span class="badge badge-processing">Processing</span>
+                        {% elif p.status == 'failed' %}
+                            <span class="badge badge-failed">Failed</span>
                         {% else %}
-                            <div class="patch-thumb-placeholder">default</div>
+                            <span class="badge badge-pending">{{ p.status }}</span>
                         {% endif %}
-                        <form method="post" action="/books/{{ book.id }}/patches/{{ p.id }}/image" enctype="multipart/form-data" class="patch-img-form">
-                            <input type="file" name="image" accept=".jpg,.jpeg,.png,.webp">
-                            <button type="submit">Upload</button>
-                        </form>
-                        {% if p.image_path %}
-                        <form method="post" action="/books/{{ book.id }}/patches/{{ p.id }}/image/delete" style="display:inline">
-                            <button type="submit" style="font-size:0.75rem;padding:0.15rem 0.4rem;color:#c33;">Xóa hình</button>
-                        </form>
-                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="patch-row">
+                            {% if p.image_path %}
+                                <img src="/books/{{ book.id }}/patches/{{ p.id }}/image" class="patch-thumb" alt="patch {{ p.name or p.patch_index }} image">
+                            {% else %}
+                                <div class="patch-thumb-placeholder">default</div>
+                            {% endif %}
+                            <div>
+                                <form method="post" action="/books/{{ book.id }}/patches/{{ p.id }}/image" enctype="multipart/form-data" class="patch-img-form">
+                                    <input type="file" name="image" accept=".jpg,.jpeg,.png,.webp" onchange="previewPatchImage(this, '{{ p.id }}')">
+                                    <button type="submit" class="btn-outline btn-sm">Upload</button>
+                                </form>
+                                <div id="patch-img-preview-{{ p.id }}" class="patch-img-preview-wrap" style="display:none;margin-top:4px">
+                                    <img class="patch-img-preview" src="" alt="Preview">
+                                </div>
+                                {% if p.image_path %}
+                                <form method="post" action="/books/{{ book.id }}/patches/{{ p.id }}/image/delete" style="display:inline">
+                                    <button type="submit" class="btn-danger btn-sm" style="margin-top:2px">Remove</button>
+                                </form>
+                                {% endif %}
+                            </div>
+                        </div>
                     </td>
                     <td>
                         <form method="post" action="/books/{{ book.id }}/patches/{{ p.id }}/image-type" style="display:inline">
@@ -67,23 +93,23 @@
                         </form>
                     </td>
                     <td class="patch-actions">
-                        <a href="/books/{{ book.id }}/patches/{{ p.id }}/text" target="_blank">Preview text</a>
+                        <a href="/books/{{ book.id }}/patches/{{ p.id }}/text" target="_blank" class="btn-outline btn-sm">Preview</a>
                         {% if p.status != "processing" %}
                         <form action="/books/{{ book.id }}/patches/{{ p.id }}/regenerate" method="post" style="display:inline">
-                            <button type="submit">Regenerate</button>
+                            <button type="submit" class="btn-outline btn-sm">Regenerate</button>
                         </form>
                         {% endif %}
                         {% if p.status == "done" and p.audio_path %}
                             <audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ p.id }}/audio"></audio>
                             <form action="/books/{{ book.id }}/patches/{{ p.id }}/generate-video" method="post" style="display:inline">
-                                <button type="submit">Generate Video</button>
+                                <button type="submit" class="btn-sm btn-primary">Gen Video</button>
                             </form>
                         {% endif %}
                     </td>
                 </tr>
                 {% if p.status == "done" and p.audio_path %}
                 <tr>
-                    <td colspan="7" style="border-top:none;padding-top:0;">
+                    <td colspan="7" style="border-top:none;padding-top:0">
                         <video controls preload="none" class="patch-video-preview" src="/books/{{ book.id }}/patches/{{ p.id }}/video"></video>
                     </td>
                 </tr>
@@ -91,8 +117,13 @@
             {% endfor %}
             </tbody>
         </table>
+        </div>
+    </div>
 
-        <h3>New ranges</h3>
+    <div class="card">
+        <div class="card-header">
+            <h3 style="margin:0">New Ranges</h3>
+        </div>
         <div id="range-list">
             <div class="range-row">
                 <label>start <input type="number" name="range_start" min="0"></label>
@@ -100,11 +131,12 @@
             </div>
         </div>
         <p class="preview-help">Duplicate rows = multiple patches. Leave empty to keep current patches.</p>
-        <button type="button" onclick="addRange()">+ Add range</button>
-        <br><br>
-        <button type="submit">Save changes</button>
-    </form>
-</section>
+        <div class="btn-group" style="margin-top:var(--space-md)">
+            <button type="button" onclick="addRange()" class="btn-outline">+ Add range</button>
+            <button type="submit" class="btn-primary">Save changes</button>
+        </div>
+    </div>
+</form>
 
 <script>
 function addRange() {
@@ -113,6 +145,17 @@ function addRange() {
     row.innerHTML = '<label>start <input type="number" name="range_start" min="0"></label> '
                   + '<label>end <input type="number" name="range_end" min="0"></label>';
     document.getElementById('range-list').appendChild(row);
+}
+
+function previewPatchImage(input, patchId) {
+    const wrap = document.getElementById('patch-img-preview-' + patchId);
+    if (!wrap || !input.files.length) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+        wrap.querySelector('img').src = e.target.result;
+        wrap.style.display = 'block';
+    };
+    reader.readAsDataURL(input.files[0]);
 }
 </script>
 {% endblock %}

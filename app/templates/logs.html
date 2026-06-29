@@ -2,24 +2,19 @@
 {% block title %}Logs{% endblock %}
 {% block content %}
 <h2>Application Logs</h2>
-<p style="color:#666;font-size:0.9rem">
-    File: <code>{{ log_path }}</code> &mdash; Last {{ max_lines }} lines
-    <span style="margin-left:1rem">
-        <button onclick="copyLogs()" style="cursor:pointer">Copy all</button>
-    </span>
-    <span style="margin-left:0.5rem">
-        <a href="/logs/raw?lines={{ max_lines }}" target="_blank" download="app.log">Download</a>
-    </span>
-    <span style="margin-left:0.5rem">
-        <button onclick="clearLogs()" style="cursor:pointer;color:#c00">Clear Logs</button>
-    </span>
-</p>
-<pre id="log-content" style="
-    background:#1e1e1e; color:#d4d4d4; padding:1rem; border-radius:4px;
-    font-family:Consolas,monospace; font-size:0.85rem; line-height:1.35;
-    white-space:pre-wrap; word-wrap:break-word;
-    max-height:70vh; overflow-y:auto;
-">{{ log_content }}</pre>
+
+<div class="card">
+    <div class="log-toolbar">
+        <span style="color:var(--text-muted);font-size:var(--font-size-sm)">
+            File: <code>{{ log_path }}</code> &mdash; Last {{ max_lines }} lines
+        </span>
+        <button onclick="copyLogs()" class="btn-outline btn-sm">Copy all</button>
+        <a href="/logs/raw?lines={{ max_lines }}" target="_blank" download="app.log" class="btn-outline btn-sm">Download</a>
+        <button onclick="clearLogs()" class="btn-danger btn-sm">Clear Logs</button>
+    </div>
+    <pre id="log-content" class="log-content">{{ log_content }}</pre>
+</div>
+
 <script>
 function clearLogs() {
     if (!confirm('Are you sure you want to clear all logs?')) return;

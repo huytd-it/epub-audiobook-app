@@ -1,10 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Preview chapters - {{ book.title }}{% endblock %}
 {% block content %}
-<h2>Preview chapters: {{ book.title }}</h2>
-<p><a href="/books/{{ book.id }}">&larr; Back to book</a></p>
+<h2>Preview Chapters</h2>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">
+    <a href="/books/{{ book.id }}">&larr; Back to {{ book.title }}</a>
+</p>
 
-<section class="preview-controls">
+<div class="preview-controls">
     <h3>Select chapters</h3>
     <form method="get" action="/books/{{ book.id }}/chapters/preview-ui">
         <div class="preview-control-row">
@@ -16,12 +18,12 @@
                 <input type="number" name="range_end" min="0"
                        value="{{ range_end if range_end is not none else '' }}">
             </label>
-            <button type="submit">Preview range</button>
+            <button type="submit" class="btn-primary">Preview range</button>
         </div>
     </form>
 
     <form method="get" action="/books/{{ book.id }}/chapters/preview-ui">
-        <p class="preview-help">Or pick individual chapters ({{ all_chapters|length }} total):</p>
+        <p class="preview-help" style="margin-top:var(--space-md)">Or pick individual chapters ({{ all_chapters|length }} total):</p>
         <div class="chapter-checkbox-grid">
             {% for ch in all_chapters %}
                 <label class="chapter-checkbox-item">
@@ -31,9 +33,9 @@
                 </label>
             {% endfor %}
         </div>
-        <button type="submit">Preview selected</button>
+        <button type="submit" class="btn-primary" style="margin-top:var(--space-md)">Preview selected</button>
     </form>
-</section>
+</div>
 
 <section class="preview-results">
     <h3>Previewed chapters</h3>

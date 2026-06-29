@@ -80,20 +80,6 @@ def create_book(
         ],
     )
 
-    patch_ranges = group_into_patches(len(chapters), patch_size)
-    patch_rows = []
-    for idx, (start, end) in enumerate(patch_ranges):
-        name = chapters[start].title if chapters else ""
-        total_chars = sum(chapters[i].char_count for i in range(start, end + 1) if i < len(chapters))
-        chunk_count = max(1, math.ceil(total_chars / _TTS_MAX_CHARS))
-        patch_rows.append((book_id, idx, start, end, name, chunk_count, now, now))
-    conn.executemany(
-        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, name,
-                               chunk_count, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-        patch_rows,
-    )
-
     conn.commit()
     return get_book(conn, book_id)
 

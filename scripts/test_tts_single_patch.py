@@ -45,6 +45,7 @@ def main(epub_path: str, use_real: bool) -> None:
         conn, title="t", original_filename="t.epub", epub_path=epub_path,
         patch_size=10, chapters=chapters, background_image_path=None,
     )
+    repository.auto_build_patches(conn, book.id, start_chapter=0)
     patches = repository.list_patches(conn, book.id)
     first = patches[0]
     chs = repository.get_chapters_in_range(conn, book.id, first.chapter_start, first.chapter_end)

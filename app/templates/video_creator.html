@@ -2,43 +2,51 @@
 {% block title %}Video Creator{% endblock %}
 {% block content %}
 <h2>Video Creator</h2>
-<p>Tạo video từ file âm thanh + hình ảnh với cài đặt ffmpeg tuỳ chỉnh.</p>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Tạo video từ file âm thanh + hình ảnh với cài đặt ffmpeg tuỳ chỉnh.</p>
 
 {% if error %}
-<div class="error-block"><p><strong>Error:</strong> {{ error }}</p></div>
+<div class="error-block"><p style="margin:0"><strong>Error:</strong> {{ error }}</p></div>
 {% endif %}
 
 {% if video_url %}
 <div class="video-preview-section">
-    <h3>Video created successfully!</h3>
+    <h3 style="margin-top:0">Video created successfully!</h3>
     <video controls width="640" src="{{ video_url }}"></video>
-    <p><a href="{{ video_url }}" download class="btn-download">Download .mp4</a></p>
-    <form method="get" action="/video">
-        <button type="submit">Tạo video khác</button>
-    </form>
+    <div class="btn-group" style="margin-top:var(--space-md)">
+        <a href="{{ video_url }}" download class="btn-download">Download .mp4</a>
+        <form method="get" action="/video" style="margin:0">
+            <button type="submit" class="btn-outline">Tạo video khác</button>
+        </form>
+    </div>
 </div>
 {% endif %}
 
 <!-- Step 1: Upload -->
 <div class="batch-section" id="step-upload">
-    <h3>1. Upload Audio Files</h3>
+    <h3 style="margin-top:0">1. Upload Audio Files</h3>
     <form id="upload-form" enctype="multipart/form-data">
         <div class="form-group">
-            <label>Audio files (wav, mp3, m4a, ogg) <span class="required">*</span></label>
-            <input type="file" id="audio-files" name="files" accept=".wav,.mp3,.m4a,.ogg" multiple required>
-            <small>Chọn nhiều file cùng lúc (giữ Ctrl/Cmd để chọn nhiều).</small>
+            <label for="audio-files">Audio files (wav, mp3, m4a, ogg) <span class="required">*</span></label>
+            <div class="dropzone" id="dropzone-audio">
+                <div class="dropzone-icon">&#127925;</div>
+                <div class="dropzone-text">Kéo thả file âm thanh vào đây hoặc bấm để chọn</div>
+                <div class="dropzone-hint">Chọn nhiều file cùng lúc (giữ Ctrl/Cmd). WAV, MP3, M4A, OGG.</div>
+                <input type="file" id="audio-files" name="files" accept=".wav,.mp3,.m4a,.ogg" multiple required>
+            </div>
+            <div id="audio-preview" class="img-preview" style="display:none"></div>
         </div>
-        <button type="submit" class="btn-generate" id="btn-upload">Upload</button>
+        <button type="submit" class="btn-primary" id="btn-upload">Upload</button>
     </form>
 </div>
 
 <!-- Step 2: File Table + Background Selection -->
-<div class="batch-section" id="step-table" style="display:none;">
-    <h3>2. Configure Each File</h3>
+<div class="batch-section" id="step-table" style="display:none">
+    <h3 style="margin-top:0">2. Configure Each File</h3>
     <div class="batch-toolbar">
         <label><input type="checkbox" id="select-all" checked> Select All</label>
         <span id="selected-count">0 selected</span>
     </div>
+    <div class="table-wrap">
     <table class="batch-table">
         <thead>
             <tr>
@@ -53,12 +61,13 @@
         <tbody id="file-table-body">
         </tbody>
     </table>
+    </div>
 
     <!-- Upload new background -->
     <div class="bg-upload-row">
         <label>Upload background mới:</label>
         <input type="file" id="new-bg-file" accept=".jpg,.jpeg,.png,.webp">
-        <button type="button" class="btn-sm" id="btn-upload-bg">Upload</button>
+        <button type="button" class="btn-sm btn-outline" id="btn-upload-bg">Upload</button>
     </div>
 
     <!-- Step 3: Config -->
@@ -66,7 +75,7 @@
     <div class="video-creator-form">
         <div class="form-row">
             <div class="form-group">
-                <label>Resolution</label>
+                <label for="cfg-resolution">Resolution</label>
                 <select name="resolution" id="cfg-resolution">
                     <option value="1920x1080" selected>1920x1080 (Full HD)</option>
                     <option value="1280x720">1280x720 (HD)</option>
@@ -74,7 +83,7 @@
                 </select>
             </div>
             <div class="form-group">
-                <label>FPS</label>
+                <label for="cfg-fps">FPS</label>
                 <select name="fps" id="cfg-fps">
                     <option value="24">24</option>
                     <option value="30" selected>30</option>
@@ -82,7 +91,7 @@
                 </select>
             </div>
             <div class="form-group">
-                <label>Codec</label>
+                <label for="cfg-codec">Codec</label>
                 <select name="codec" id="cfg-codec">
                     <option value="libx264" selected>libx264</option>
                     <option value="h264_nvenc">h264_nvenc (NVIDIA)</option>
@@ -91,7 +100,7 @@
         </div>
         <div class="form-row">
             <div class="form-group">
-                <label>Audio bitrate</label>
+                <label for="cfg-audio-bitrate">Audio bitrate</label>
                 <select name="audio_bitrate" id="cfg-audio-bitrate">
                     <option value="128k">128k</option>
                     <option value="192k" selected>192k</option>
@@ -100,7 +109,7 @@
                 </select>
             </div>
             <div class="form-group">
-                <label>Image type</label>
+                <label for="cfg-image-type">Image type</label>
                 <select name="image_type" id="cfg-image-type">
                     <option value="none" selected>Static</option>
                     <option value="zoom-in">Zoom In (Ken Burns)</option>
@@ -110,7 +119,7 @@
                 </select>
             </div>
             <div class="form-group">
-                <label>CRF (quality: 18=high, 28=low)</label>
+                <label for="cfg-crf">CRF (quality: 18=high, 28=low)</label>
                 <input type="range" name="crf" min="18" max="28" value="23" id="cfg-crf"
                        oninput="document.getElementById('crf-val').textContent=this.value">
                 <span id="crf-val">23</span>
@@ -118,60 +127,37 @@
         </div>
     </div>
 
-    <button type="button" class="btn-generate" id="btn-generate">Generate Selected Videos</button>
+    <button type="button" class="btn-primary" id="btn-generate" style="font-size:1rem;padding:0.6rem 2rem">Generate Selected Videos</button>
 </div>
 
 <!-- Step 4: Results -->
-<div class="batch-section" id="step-results" style="display:none;">
-    <h3>Results</h3>
+<div class="batch-section" id="step-results" style="display:none">
+    <h3 style="margin-top:0">Results</h3>
     <div id="results-list"></div>
 </div>
 
 <!-- Recent Videos -->
 {% if recent_videos %}
-<h3>Recent Videos</h3>
-<table>
-    <thead><tr><th>File</th><th>Size</th><th>Actions</th></tr></thead>
-    <tbody>
-    {% for v in recent_videos %}
-        <tr>
-            <td>{{ v.name }}</td>
-            <td>{{ v.size_mb }} MB</td>
-            <td><a href="{{ v.url }}" download>Download</a></td>
-        </tr>
-    {% endfor %}
-    </tbody>
-</table>
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Recent Videos</h3>
+    </div>
+    <div class="table-wrap">
+    <table>
+        <thead><tr><th>File</th><th>Size</th><th>Actions</th></tr></thead>
+        <tbody>
+        {% for v in recent_videos %}
+            <tr>
+                <td>{{ v.name }}</td>
+                <td>{{ v.size_mb }} MB</td>
+                <td><a href="{{ v.url }}" download class="btn-outline btn-sm">Download</a></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
 {% endif %}
-
-<style>
-.batch-section { margin: 1.5rem 0; padding: 1rem; background: #fafafa; border-radius: 6px; border: 1px solid #eee; }
-.batch-toolbar { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; font-size: 0.9rem; }
-.batch-toolbar #selected-count { color: #666; }
-.batch-table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
-.batch-table th, .batch-table td { border: 1px solid #ddd; padding: 0.5rem 0.6rem; text-align: left; font-size: 0.9rem; }
-.batch-table th { background: #f0f0f0; font-weight: 600; }
-.batch-table tr.selected { background: #f0f7ff; }
-.col-check { width: 40px; text-align: center; }
-.col-num { width: 40px; }
-.col-size { width: 80px; }
-.col-status { width: 120px; }
-.col-bg { min-width: 280px; }
-.bg-controls { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
-.bg-controls select { max-width: 140px; font-size: 0.8rem; }
-.bg-controls input[type=file] { font-size: 0.8rem; width: 130px; }
-.bg-upload-row { display: flex; gap: 0.5rem; align-items: center; margin: 1rem 0; font-size: 0.9rem; }
-.bg-upload-row input[type=file] { font-size: 0.85rem; }
-.btn-sm { padding: 0.25rem 0.75rem; font-size: 0.8rem; background: #555; color: #fff; border: none; border-radius: 3px; cursor: pointer; }
-.btn-sm:hover { background: #333; }
-.status-pending { color: #888; }
-.status-ok { color: #16a34a; font-weight: 600; }
-.status-err { color: #c33; font-weight: 600; }
-.result-item { padding: 0.5rem 0; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 0.75rem; }
-.result-item a { color: #2563eb; font-weight: 600; }
-.btn-yt-mini { padding: 0.2rem 0.6rem; font-size: 0.78rem; background: #ff0000; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; }
-.btn-yt-mini:hover { background: #cc0000; }
-</style>
 
 <script>
 (function() {
@@ -186,7 +172,26 @@
     let batchFiles = [];
     let backgrounds = [];
 
-    // Load existing backgrounds
+    // Dropzone for audio files
+    (function() {
+        const dz = document.getElementById('dropzone-audio');
+        const input = document.getElementById('audio-files');
+        const preview = document.getElementById('audio-preview');
+        if (!dz || !input) return;
+        ['dragenter','dragover'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.add('dragover'); }));
+        ['dragleave','drop'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.remove('dragover'); }));
+        dz.addEventListener('drop', ev => {
+            const files = ev.dataTransfer.files;
+            if (files.length) { input.files = files; input.dispatchEvent(new Event('change')); }
+        });
+        input.addEventListener('change', function() {
+            if (!this.files.length) return;
+            const names = Array.from(this.files).map(f => f.name).join(', ');
+            preview.innerHTML = '<span style="font-size:var(--font-size-sm);color:var(--text-secondary)">&#127925; ' + names + '</span>';
+            preview.style.display = 'inline-block';
+        });
+    })();
+
     async function loadBackgrounds() {
         try {
             const res = await fetch(API.backgrounds);
@@ -283,7 +288,6 @@
         return d.innerHTML;
     }
 
-    // Upload form
     document.getElementById('upload-form').addEventListener('submit', async function(e) {
         e.preventDefault();
         const input = document.getElementById('audio-files');
@@ -314,7 +318,6 @@
         }
     });
 
-    // Upload new background
     document.getElementById('btn-upload-bg').addEventListener('click', async function() {
         const input = document.getElementById('new-bg-file');
         if (!input.files.length) return;
@@ -334,7 +337,6 @@
         }
     });
 
-    // Generate
     document.getElementById('btn-generate').addEventListener('click', async function() {
         if (!batchId) return;
         const checks = document.querySelectorAll('.row-check');
@@ -375,18 +377,18 @@
                 const div = document.createElement('div');
                 div.className = 'result-item';
                 if (r.status === 'done') {
-                    div.innerHTML = `<span class="status-ok">✓</span> <span>${escHtml(r.name)}</span> <a href="${r.video_url}" download>Download (${r.size_mb} MB)</a> <button class="btn-yt-mini" onclick="uploadToYouTube('${r.video_url}', '${escHtml(r.name)}')">YouTube</button>`;
+                    div.innerHTML = `<span class="status-ok">Done</span> <span>${escHtml(r.name)}</span> <a href="${r.video_url}" download>Download (${r.size_mb} MB)</a> <button class="btn-yt-mini" onclick="uploadToYouTube('${r.video_url}', '${escHtml(r.name)}')">YouTube</button>`;
                     const statusEl = document.querySelector(`[data-status="${r.index}"]`);
                     if (statusEl) { statusEl.textContent = 'Done'; statusEl.className = 'status-ok'; }
                 } else {
-                    div.innerHTML = `<span class="status-err">✗</span> <span>#${r.index}</span> <span class="status-err">${escHtml(r.message)}</span>`;
+                    div.innerHTML = `<span class="status-err">Failed</span> <span>#${r.index}</span> <span class="status-err">${escHtml(r.message)}</span>`;
                     const statusEl = document.querySelector(`[data-status="${r.index}"]`);
                     if (statusEl) { statusEl.textContent = 'Error'; statusEl.className = 'status-err'; }
                 }
                 resultsList.appendChild(div);
             });
         } catch(err) {
-            resultsList.innerHTML = `<div class="error-block"><p>${escHtml(err.message)}</p></div>`;
+            resultsList.innerHTML = `<div class="error-block"><p style="margin:0">${escHtml(err.message)}</p></div>`;
         } finally {
             btn.disabled = false;
             btn.textContent = 'Generate Selected Videos';
@@ -403,7 +405,6 @@ async function uploadToYouTube(videoUrl, videoName) {
     const privacy = prompt('Privacy (private/unlisted/public):', 'private') || 'private';
 
     const fd = new FormData();
-    // Fetch the video file via the URL
     try {
         const resp = await fetch(videoUrl);
         const blob = await resp.blob();
@@ -428,124 +429,138 @@ async function uploadToYouTube(videoUrl, videoName) {
 
 <!-- Parameter Reference -->
 <details class="param-reference">
-<summary><h3 style="display:inline">Tham số FFmpeg — Chi tiết</h3></summary>
+<summary>Thamso FFmpeg — Chi tiet</summary>
 
 <div class="param-section">
 <h4>Audio Bitrate (<code>-b:a</code>)</h4>
-<p>Độ bitrate quyết định chất lượng và kích thước file audio trong video.</p>
+<p>Do bitrate quyet dinh chat luong va kich thuoc file audio trong video.</p>
+<div class="table-wrap">
 <table>
-<thead><tr><th>Giá trị</th><th>Chất lượng</th><th>Kích thước (1 phút)</th><th>Nên dùng khi</th></tr></thead>
+<thead><tr><th>Gia tri</th><th>Chat luong</th><th>Kich thuoc (1 phut)</th><th>Nen dung khi</th></tr></thead>
 <tbody>
-<tr><td><code>128k</code></td><td>Trung bình</td><td>~1 MB</td><td>Podcast nói chuyện, audiobook giọng đọc đơn giản. Đủ nghe rõ nhưng dải tần cao (treble) bị cắt bớt.</td></tr>
-<tr><td><code>192k</code></td><td>Tốt (mặc định)</td><td>~1.4 MB</td><td>Phù hợp hầu hết trường hợp. Cân bằng giữa chất lượng và kích thước.</td></tr>
-<tr><td><code>256k</code></td><td>Rất tốt</td><td>~1.9 MB</td><td>Music podcast, audio có nhiều dải tần. Giữ lại chi tiết tốt hơn.</td></tr>
-<tr><td><code>320k</code></td><td>Cao nhất (MP3 max)</td><td>~2.4 MB</td><td>Chất lượng studio, music. File lớn nhất nhưng gần như không nghe khác biệt với 256k trên loa thường.</td></tr>
+<tr><td><code>128k</code></td><td>Trung binh</td><td>~1 MB</td><td>Podcast noi chuyen, audiobook giong doc don gian. Du nghe ro nhung dai tan cao (treb) bi cat bot.</td></tr>
+<tr><td><code>192k</code></td><td>Tot (mac dinh)</td><td>~1.4 MB</td><td>Phu hop hau het truong hop. Can bang giua chat luong va kich thuoc.</td></tr>
+<tr><td><code>256k</code></td><td>Rat tot</td><td>~1.9 MB</td><td>Music podcast, audio co nhieu dai tan. Giu lai chi tiet tot hon.</td></tr>
+<tr><td><code>320k</code></td><td>Cao nhat (MP3 max)</td><td>~2.4 MB</td><td>Chat luong studio, music. File lon nhat nhung gan nhu nghe khac biet voi 256k tren loa thuong.</td></tr>
 </tbody>
 </table>
+</div>
 <div class="param-note">
-<strong>Lưu ý:</strong> FFmpeg encode audio sang <strong>AAC</strong> (<code>-c:a aac</code>) bất kể input. AAC hiệu quả hơn MP3 ở cùng bitrate.
-Bitrate 192k AAC tương đương ~256k MP3 về chất lượng nghe. Nếu file gốc đã là lossy (MP3, M4A), bitrate output không nên cao hơn bitrate gốc — sẽ chỉ làm file lớn hơn mà không thêm chất lượng.
+<strong>Luu y:</strong> FFmpeg encode audio sang <strong>AAC</strong> (<code>-c:a aac</code>) bat ke input. AAC hieu qua hon MP3 o cung bitrate.
+Bitrate 192k AAC tuong duong ~256k MP3 ve chat luong nghe. Neu file goc da la lossy (MP3, M4A), bitrate output khong nen cao hon bitrate goc — chi lam file lon hon khong them chat luong.
 </div>
 </div>
 
 <div class="param-section">
 <h4>CRF — Constant Rate Factor (<code>-crf</code>)</h4>
-<p>Điều chỉnh chất lượng video (không phải audio). CRF thấp = chất lượng cao = file lớn.</p>
+<p>Dieu chinh chat luong video (khong phai audio). CRF thap = chat luong cao = file lon.</p>
+<div class="table-wrap">
 <table>
-<thead><tr><th>CRF</th><th>Chất lượng</th><th>File size</th><th>Ứng dụng</th></tr></thead>
+<thead><tr><th>CRF</th><th>Chat luong</th><th>File size</th><th>Ung dung</th></tr></thead>
 <tbody>
-<tr><td>18</td><td>Tốt nhất (lossless-like)</td><td>Rất lớn</td><td>Archive, master file</td></tr>
-<tr><td>20</td><td>Rất tốt</td><td>Lớn</td><td>Chất lượng cao, YouTube</td></tr>
-<tr><td><strong>23</strong></td><td><strong>Tốt (mặc định)</strong></td><td><strong>Vừa phải</strong></td><td><strong>Phù hợp nhất cho hầu hết use case</strong></td></tr>
-<tr><td>25</td><td>Trung bình</td><td>Nhỏ hơn</td><td>Giới hạn bandwidth</td></tr>
-<tr><td>28</td><td>Thấp</td><td>Nhỏ nhất</td><td>Preview, draft</td></tr>
+<tr><td>18</td><td>Tot nhat (lossless-like)</td><td>Rat lon</td><td>Archive, master file</td></tr>
+<tr><td>20</td><td>Rat tot</td><td>Lon</td><td>Chat luong cao, YouTube</td></tr>
+<tr><td><strong>23</strong></td><td><strong>Tot (mac dinh)</strong></td><td><strong>Vua phai</strong></td><td><strong>Phu hop nhat cho hau het use case</strong></td></tr>
+<tr><td>25</td><td>Trung binh</td><td>Nho hon</td><td>Gioi han bandwidth</td></tr>
+<tr><td>28</td><td>Thap</td><td>Nho nhat</td><td>Preview, draft</td></tr>
 </tbody>
 </table>
+</div>
 <div class="param-note">
-<strong>Cách hoạt động:</strong> CRF là logarithmic — mỗi +6 CRF giảm bitrate khoảng 50%.
-Với nội dung tĩnh (hình ảnh + audio, không phải video thực), CRF 23 cho chất lượng rất tốt vì hình ảnh không thay đổi nhiều.
+<strong>Cach hoat dong:</strong> CRF la logarithmic — moi +6 CRF giam bitrate khoang 50%.
+Voi noi dung tinh (hinh anh + audio, khong phai video thuc), CRF 23 cho chat luong rat tot vi hinh anh khong thay doi nhieu.
 </div>
 </div>
 
 <div class="param-section">
 <h4>Video Codec</h4>
+<div class="table-wrap">
 <table>
-<thead><tr><th>Codec</th><th>Engine</th><th>Ưu điểm</th><th>Nhược điểm</th></tr></thead>
+<thead><tr><th>Codec</th><th>Engine</th><th>Uu diem</th><th>Nhuoc diem</th></tr></thead>
 <tbody>
-<tr><td><code>libx264</code></td><td>CPU</td><td>Luôn có sẵn, chất lượng ổn định, CRF control chính xác</td><td>Chậm hơn trên CPU yếu</td></tr>
-<tr><td><code>h264_nvenc</code></td><td>NVIDIA GPU</td><td>Rất nhanh (5-10x), giảm tải CPU</td><td>Cần GPU NVIDIA, chất lượng slightly thấp hơn ở cùng CRF</td></tr>
+<tr><td><code>libx264</code></td><td>CPU</td><td>Luon co san, chat luong on dinh, CRF control chinh xac</td><td>Cham hon tren CPU yeu</td></tr>
+<tr><td><code>h264_nvenc</code></td><td>NVIDIA GPU</td><td>Rat nhanh (5-10x), giam tai CPU</td><td>Can GPU NVIDIA, chat luong slightly thap hon o cung CRF</td></tr>
 </tbody>
 </table>
+</div>
 <div class="param-note">
-<strong>Tune stillimage:</strong> Khi dùng <code>libx264</code>, FFmpeg tự thêm <code>-tune stillimage</code> — tối ưu encoder cho nội dung ảnh tĩnh + audio (giảm bitrate không cần thiết cho motion estimation).
+<strong>Tune stillimage:</strong> Khi dung <code>libx264</code>, FFmpeg tu them <code>-tune stillimage</code> — toi uu encoder cho noi dung anh tinh + audio (giam bitrate khong can thiet cho motion estimation).
 </div>
 </div>
 
 <div class="param-section">
-<h4>Image Type — Hiệu ứng hình ảnh</h4>
-<p>Khi chọn hiệu ứng (Ken Burns), FFmpeg dùng <code>zoompan</code> filter để tạo chuyển động từ ảnh tĩnh:</p>
+<h4>Image Type — Hieu ung hinh anh</h4>
+<p>Khi chon hieu ung (Ken Burns), FFmpeg dung <code>zoompan</code> filter de tao chuyen dong tu anh tinh:</p>
+<div class="table-wrap">
 <table>
-<thead><tr><th>Type</th><th>Hiệu ứng</th><th>Chi tiết kỹ thuật</th></tr></thead>
+<thead><tr><th>Type</th><th>Hieu ung</th><th>Chi tiet ky thuat</th></tr></thead>
 <tbody>
-<tr><td><code>none</code></td><td>Ảnh tĩnh</td><td>Ảnh được <code>scale</code> + <code>pad</code> giữ nguyên aspect ratio, lặp lại suốt audio.</td></tr>
-<tr><td><code>zoom-in</code></td><td>Phóng to dần</td><td>Zoom từ 1.0x lên 1.5x, giữ trung tâm. Tạo cảm giác tập trung vào chi tiết.</td></tr>
-<tr><td><code>zoom-out</code></td><td>Thu nhỏ dần</td><td>Zoom từ 1.5x xuống 1.0x. Mở ra từ chi tiết ra toàn cảnh.</td></tr>
-<tr><td><code>pan-left</code></td><td>Trượt sang trái</td><td>Ảnh zoom 1.2x, trượt từ phải sang trái. Tạo cảm giác di chuyển.</td></tr>
-<tr><td><code>pan-right</code></td><td>Trượt sang phải</td><td>Ảnh zoom 1.2x, trượt từ trái sang phải.</td></tr>
+<tr><td><code>none</code></td><td>Anh tinh</td><td>Anh duoc <code>scale</code> + <code>pad</code> giu nguyen aspect ratio, lap lai suot audio.</td></tr>
+<tr><td><code>zoom-in</code></td><td>Phong to dan</td><td>Zoom tu 1.0x len 1.5x, giu trung tam. Tao cam quyet tap trung vao chi tiet.</td></tr>
+<tr><td><code>zoom-out</code></td><td>Thu nho dan</td><td>Zoom tu 1.5x xuong 1.0x. Mo ra tu chi tiet ra toan canh.</td></tr>
+<tr><td><code>pan-left</code></td><td>Truot sang trai</td><td>Anh zoom 1.2x, tuot tu phai sang trai. Tao cam quyet di chuyen.</td></tr>
+<tr><td><code>pan-right</code></td><td>Truot sang phai</td><td>Anh zoom 1.2x, tuot tu trai sang phai.</td></tr>
 </tbody>
 </table>
+</div>
 <div class="param-note">
-<strong>Kỹ thuật:</strong> <code>zoompan</code> filter tính toán số frame dựa trên <code>duration x fps</code>.
-Ví dụ: audio 60s @ 30fps = 1800 frames, mỗi frame zoom thêm 0.0015x — tổng zoom ~2.7x (bị clip ở 1.5x).
-Ảnh input phải lớn hơn resolution output để có chỗ zoom/pan mà không bị vỡ hình.
+<strong>Ky thuat:</strong> <code>zoompan</code> filter tinh toan so frame dua tren <code>duration x fps</code>.
+Vi du: audio 60s @ 30fps = 1800 frames, moi frame zoom them 0.0015x — tong zoom ~2.7x (bi clip o 1.5x).
+Anh input phai lon hon resolution output de co cho zoom/pan ma khong bi vo hinh.
 </div>
 </div>
 
 <div class="param-section">
 <h4>Resolution &amp; FPS</h4>
+<div class="table-wrap">
 <table>
-<thead><tr><th>Resolution</th><th>Pixel count</th><th>File size impact</th><th>Nên dùng khi</th></tr></thead>
+<thead><tr><th>Resolution</th><th>Pixel count</th><th>File size impact</th><th>Nen dung khi</th></tr></thead>
 <tbody>
-<tr><td>1920x1080</td><td>2.07 MP</td><td>Baseline (tham chiếu)</td><td>Full HD, YouTube, xem trên TV/màn hình lớn</td></tr>
-<tr><td>1280x720</td><td>0.92 MP</td><td>~50% của 1080p</td><td>HD, xem trên điện thoại, tiết kiệm dung lượng</td></tr>
-<tr><td>854x480</td><td>0.41 MP</td><td>~25% của 1080p</td><td>SD, preview, bandwidth thấp</td></tr>
+<tr><td>1920x1080</td><td>2.07 MP</td><td>Baseline (tham chieu)</td><td>Full HD, YouTube, xem tren TV/man hinh lon</td></tr>
+<tr><td>1280x720</td><td>0.92 MP</td><td>~50% cua 1080p</td><td>HD, xem tren dien thoai, tiet kiem dung luong</td></tr>
+<tr><td>854x480</td><td>0.41 MP</td><td>~25% cua 1080p</td><td>SD, preview, bandwidth thap</td></tr>
 </tbody>
 </table>
+</div>
+<div class="table-wrap">
 <table>
 <thead><tr><th>FPS</th><th>Ung dung</th><th>File size</th></tr></thead>
 <tbody>
-<tr><td>24</td><td>Cinematic, phim ảnh</td><td>Nhỏ nhất (ít frame nhất)</td></tr>
-<tr><td><strong>30</strong></td><td><strong>Standard (mặc định)</strong></td><td><strong>Baseline</strong></td></tr>
-<tr><td>60</td><td>Smooth motion, gaming</td><td>Lớn nhất (nhiều frame nhất)</td></tr>
+<tr><td>24</td><td>Cinematic, phim anh</td><td>Nho nhat (it frame nhat)</td></tr>
+<tr><td><strong>30</strong></td><td><strong>Standard (mac dinh)</strong></td><td><strong>Baseline</strong></td></tr>
+<tr><td>60</td><td>Smooth motion, gaming</td><td>Lon nhat (nhieu frame nhat)</td></tr>
 </tbody>
 </table>
+</div>
 <div class="param-note">
-<strong>Với nội dung audiobook/podcast:</strong> 30fps là đủ vì hình ảnh gần như tĩnh. 60fps chỉ có ý nghĩa khi dùng Ken Burns effect để chuyển động mượt hơn — nhưng cũng đồng nghĩa file lớn hơn 2x.
-Hình ảnh được scale bằng <code>force_original_aspect_ratio=decrease</code> + <code>pad</code> để vừa resolution mà không bị méo.
+<strong>Voi noi dung audiobook/podcast:</strong> 30fps la du vi hinh anh gan nhu tinh. 60fps chi co y nghia khi dung Ken Burns effect de chuyen dong muon hon — nhung cung dong nghia file lon hon 2x.
+Hinh anh duoc scale bang <code>force_original_aspect_ratio=decrease</code> + <code>pad</code> de vua resolution ma khong bi meo.
 </div>
 </div>
 
 <div class="param-section">
-<h4>Định dạng audio được hỗ trợ</h4>
+<h4>Dinh dang audio duoc ho tro</h4>
+<div class="table-wrap">
 <table>
-<thead><tr><th>Format</th><th>Codec</th><th>Đặc điểm</th><th>Lưu ý</th></tr></thead>
+<thead><tr><th>Format</th><th>Codec</th><th>Dac diem</th><th>Luu y</th></tr></thead>
 <tbody>
-<tr><td><code>.wav</code></td><td>PCM (uncompressed)</td><td>Chất lượng gốc, không mất dữ liệu</td><td>File rất lớn (~10MB/phút). Nên dùng làm input.</td></tr>
-<tr><td><code>.mp3</code></td><td>MP3 (lossy)</td><td>Phổ biến nhất, tương thích mọi nơi</td><td>Bitrate gốc quyết định chất lượng tối đa. Encode lại sang AAC có thể mất thêm chất lượng.</td></tr>
-<tr><td><code>.m4a</code></td><td>AAC (lossy)</td><td>Hiệu quả hơn MP3, chất lượng tốt hơn ở cùng bitrate</td><td>Format khuyến nghị cho audio lossy. Apple ecosystem dùng format này.</td></tr>
-<tr><td><code>.ogg</code></td><td>Vorbis (lossy)</td><td>Mã nguồn mở, chất lượng tốt</td><td>Ít tương thích hơn MP3/M4A trên một số thiết bị.</td></tr>
+<tr><td><code>.wav</code></td><td>PCM (uncompressed)</td><td>Chat luong goc, khong mat du lieu</td><td>File rat lon (~10MB/phut). Nen dung lam input.</td></tr>
+<tr><td><code>.mp3</code></td><td>MP3 (lossy)</td><td>Pho bien nhat, tuong thuc moi noi</td><td>Bitrate goc quyet dinh chat luong toi da. Encode lai sang AAC co the mat them chat luong.</td></tr>
+<tr><td><code>.m4a</code></td><td>AAC (lossy)</td><td>Hieu qua hon MP3, chat luong tot hon o cung bitrate</td><td>Format khuyen nghi cho audio lossy. Apple ecosystem dung format nay.</td></tr>
+<tr><td><code>.ogg</code></td><td>Vorbis (lossy)</td><td>Ma nguon mo, chat luong tot</td><td>It tuong thuc hon MP3/M4A tren mot so thiet bi.</td></tr>
 </tbody>
 </table>
+</div>
 <div class="param-note">
-<strong>Luồng xử lý:</strong> Bất kể định dạng input, FFmpeg luôn encode output sang <strong>AAC</strong> (<code>-c:a aac</code>).
-Quy trình: <code>input codec decode → PCM → AAC encode → mux vào MP4</code>.
-Vì vậy, WAV (lossless) cho chất lượng tốt nhất làm input. Nếu dùng MP3/M4A, chọn bitrate gốc >= bitrate output để tránh generation loss.
+<strong>Luong xu ly:</strong> Bat ke dinh dang input, FFmpeg luon encode output sang <strong>AAC</strong> (<code>-c:a aac</code>).
+Quy trinh: <code>input codec decode → PCM → AAC encode → mux vao MP4</code>.
+Vi vay, WAV (lossless) cho chat luong tot nhat lam input. Neu dung MP3/M4A, chon bitrate goc >= bitrate output de tranh generation loss.
 </div>
 </div>
 
 <div class="param-section">
-<h4>FFmpeg command tương đương</h4>
-<p>Mỗi video được tạo tương đương lệnh:</p>
+<h4>FFmpeg command tuong duong</h4>
+<p>Moi video duoc tao tuong duong lenh:</p>
 <pre class="ffmpeg-cmd">ffmpeg -y -loop 1 -i image.jpg -i audio.mp3 \
   -c:v libx264 -tune stillimage \
   -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" \
@@ -553,17 +568,4 @@ Vì vậy, WAV (lossless) cho chất lượng tốt nhất làm input. Nếu dù
   -pix_fmt yuv420p -crf 23 -shortest output.mp4</pre>
 </div>
 </details>
-
-<style>
-.param-reference { margin-top: 2rem; }
-.param-reference summary { cursor: pointer; padding: 0.75rem 1rem; background: #f0f4ff; border-radius: 6px; border: 1px solid #d0daf0; }
-.param-reference summary:hover { background: #e5ecff; }
-.param-reference[open] summary { border-radius: 6px 6px 0 0; border-bottom: none; }
-.param-section { padding: 1rem 1.25rem; border: 1px solid #eee; border-top: none; background: #fff; }
-.param-section:last-child { border-radius: 0 0 6px 6px; }
-.param-section h4 { margin: 0 0 0.5rem; color: #1e40af; }
-.param-section table { font-size: 0.88rem; margin: 0.5rem 0; }
-.param-note { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: #fefce8; border-left: 3px solid #eab308; border-radius: 3px; font-size: 0.88rem; }
-.ffmpeg-cmd { background: #1e293b; color: #e2e8f0; padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.82rem; overflow-x: auto; white-space: pre; }
-</style>
 {% endblock %}

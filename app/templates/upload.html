@@ -2,12 +2,105 @@
 {% block title %}Upload epub{% endblock %}
 {% block content %}
 <h2>Upload an EPUB</h2>
-<form action="/books/upload" method="post" enctype="multipart/form-data">
-    <label>EPUB file: <input type="file" name="epub_file" accept=".epub" required></label><br><br>
-    <label>Chapters per patch: <input type="number" name="patch_size" value="10" min="1"></label><br><br>
-    <label>Background image (optional, jpg/png): <input type="file" name="background_image" accept="image/*"></label><br><br>
-    <label>Voice clone sample (optional, wav/mp3, 3-15s of clean speech): <input type="file" name="voice_clip" accept=".wav,.mp3,.ogg,.flac"></label><br><br>
-    <label>Voice sample transcript (optional, improves cloning accuracy): <input type="text" name="voice_transcript" size="60" placeholder="Exact words spoken in the voice sample"></label><br><br>
-    <button type="submit">Upload &amp; Parse</button>
-</form>
+
+<div class="card">
+    <form action="/books/upload" method="post" enctype="multipart/form-data">
+        <div class="form-group">
+            <label for="epub_file">EPUB file <span class="required">*</span></label>
+            <div class="dropzone" id="dropzone-epub">
+                <div class="dropzone-icon">&#128214;</div>
+                <div class="dropzone-text">Kéo thả file .epub vào đây hoặc bấm để chọn</div>
+                <div class="dropzone-hint">Chỉ chấp nhận file .epub</div>
+                <input type="file" id="epub_file" name="epub_file" accept=".epub" required>
+            </div>
+            <div id="epub-preview" class="img-preview" style="display:none"></div>
+        </div>
+
+        <div class="form-group">
+            <label for="patch_size">Chapters per patch</label>
+            <input type="number" id="patch_size" name="patch_size" value="10" min="1" style="max-width:120px">
+            <small>Number of chapters grouped into each processing patch.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="background_image">Background image (optional)</label>
+            <div class="dropzone" id="dropzone-bg">
+                <div class="dropzone-icon">&#128247;</div>
+                <div class="dropzone-text">Kéo thả hình ảnh vào đây hoặc bấm để chọn</div>
+                <div class="dropzone-hint">JPG, PNG, WebP — Dùng làm nền cho video</div>
+                <input type="file" id="background_image" name="background_image" accept="image/*">
+            </div>
+            <div id="bg-preview" class="img-preview" style="display:none">
+                <img id="bg-preview-img" src="" alt="Background preview">
+                <button type="button" class="img-preview-remove" onclick="removePreview('bg')">&times;</button>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="voice_clip">Voice clone sample (optional)</label>
+            <div class="dropzone" id="dropzone-voice">
+                <div class="dropzone-icon">&#127908;</div>
+                <div class="dropzone-text">Kéo thả file âm thanh vào đây hoặc bấm để chọn</div>
+                <div class="dropzone-hint">WAV, MP3, OGG, FLAC — 3-15 giây giọng nói sạch</div>
+                <input type="file" id="voice_clip" name="voice_clip" accept=".wav,.mp3,.ogg,.flac">
+            </div>
+            <div id="voice-preview" class="img-preview" style="display:none"></div>
+        </div>
+
+        <div class="form-group">
+            <label for="voice_transcript">Voice sample transcript (optional)</label>
+            <input type="text" id="voice_transcript" name="voice_transcript" placeholder="Exact words spoken in the voice sample">
+            <small>Improves cloning accuracy. Type the exact words from the voice sample.</small>
+        </div>
+
+        <button type="submit" class="btn-primary" style="margin-top:var(--space-md)">Upload &amp; Parse</button>
+    </form>
+</div>
+
+<script>
+function setupDropzone(dropzoneId, inputId, previewId, type) {
+    const dz = document.getElementById(dropzoneId);
+    const input = document.getElementById(inputId);
+    if (!dz || !input) return;
+
+    ['dragenter','dragover'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.add('dragover'); }));
+    ['dragleave','drop'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.remove('dragover'); }));
+
+    dz.addEventListener('drop', ev => {
+        const files = ev.dataTransfer.files;
+        if (files.length) { input.files = files; input.dispatchEvent(new Event('change')); }
+    });
+
+    input.addEventListener('change', function() {
+        if (!this.files.length) return;
+        const file = this.files[0];
+        const preview = document.getElementById(previewId);
+        if (type === 'image') {
+            const reader = new FileReader();
+            reader.onload = e => {
+                preview.innerHTML = '<img src="' + e.target.result + '" alt="Preview">';
+                preview.style.display = 'inline-block';
+            };
+            reader.readAsDataURL(file);
+        } else if (type === 'audio') {
+            preview.innerHTML = '<audio controls src="' + URL.createObjectURL(file) + '" style="max-width:250px;height:32px"></audio>';
+            preview.style.display = 'inline-block';
+        } else if (type === 'epub') {
+            preview.innerHTML = '<span style="font-size:var(--font-size-sm);color:var(--text-secondary)">&#128214; ' + file.name + '</span>';
+            preview.style.display = 'inline-block';
+        }
+    });
+}
+
+function removePreview(type) {
+    const preview = document.getElementById(type + '-preview');
+    const input = document.getElementById(type === 'bg' ? 'background_image' : type + '_clip');
+    if (preview) { preview.style.display = 'none'; preview.innerHTML = ''; }
+    if (input) { input.value = ''; }
+}
+
+setupDropzone('dropzone-epub', 'epub_file', 'epub-preview', 'epub');
+setupDropzone('dropzone-bg', 'background_image', 'bg-preview', 'image');
+setupDropzone('dropzone-voice', 'voice_clip', 'voice-preview', 'audio');
+</script>
 {% endblock %}

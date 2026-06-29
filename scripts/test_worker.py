@@ -40,6 +40,7 @@ async def main() -> None:
         conn, title="Worker Test Book", original_filename="t.epub", epub_path="t.epub",
         patch_size=10, chapters=chapters, background_image_path=None,
     )
+    repository.auto_build_patches(conn, book.id, start_chapter=0)
     patches = repository.list_patches(conn, book.id)
     print(f"Book has {len(patches)} patches (expect 3 for 25 chapters / size 10)")
 

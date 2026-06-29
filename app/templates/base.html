@@ -2,21 +2,47 @@
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}EPUB Audiobook{% endblock %}</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <header>
-        <h1><a href="/books">EPUB → Audiobook → Video</a></h1>
-        <nav style="margin-top:0.5rem;font-size:0.9rem">
-            <a href="/books">Books</a> |
-            <a href="/video">Video Creator</a> |
-            <a href="/youtube">YouTube</a> |
-            <a href="/logs">Logs</a>
-        </nav>
+        <div class="nav-bar">
+            <a href="/books" class="nav-logo" title="EPUB Audiobook">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><circle cx="12" cy="10" r="3"/><path d="M15 13l2 2"/></svg>
+                <span class="nav-logo-text">Audiobook</span>
+            </a>
+            <nav>
+                <a href="/books" {% if request.url.path.startswith('/books') %}class="active"{% endif %}>Books</a>
+                <a href="/video" {% if request.url.path == '/video' %}class="active"{% endif %}>Video</a>
+                <a href="/youtube" {% if request.url.path == '/youtube' %}class="active"{% endif %}>YouTube</a>
+                <a href="/logs" {% if request.url.path == '/logs' %}class="active"{% endif %}>Logs</a>
+            </nav>
+            <button class="dark-toggle" onclick="toggleTheme()" title="Toggle dark mode" aria-label="Toggle dark mode">&#9681;</button>
+            <button class="nav-toggle" onclick="document.querySelector('nav').classList.toggle('open')" aria-label="Menu">&#9776;</button>
+        </div>
     </header>
     <main>
         {% block content %}{% endblock %}
     </main>
+    <script>
+    function toggleTheme() {
+        const html = document.documentElement;
+        const current = html.getAttribute('data-theme');
+        const next = current === 'dark' ? 'light' : (current === 'light' ? null : 'dark');
+        if (next) {
+            html.setAttribute('data-theme', next);
+            localStorage.setItem('theme', next);
+        } else {
+            html.removeAttribute('data-theme');
+            localStorage.removeItem('theme');
+        }
+    }
+    (function() {
+        const saved = localStorage.getItem('theme');
+        if (saved) document.documentElement.setAttribute('data-theme', saved);
+    })();
+    </script>
 </body>
 </html>

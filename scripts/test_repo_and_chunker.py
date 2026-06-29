@@ -31,6 +31,7 @@ def main(epub_path: str) -> None:
     )
     print(f"Book id={book.id} status={book.status}")
 
+    repository.auto_build_patches(conn, book.id, start_chapter=0)
     patches = repository.list_patches(conn, book.id)
     print(f"Generated {len(patches)} patches")
     for p in patches[:3]:
