@@ -386,7 +386,8 @@ async def rebuild_patches(request: Request, book_id: int):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     return JSONResponse([
         {"patch_index": p.patch_index, "chapter_start": p.chapter_start,
-         "chapter_end": p.chapter_end, "status": p.status}
+         "chapter_end": p.chapter_end, "name": p.name, "chunk_count": p.chunk_count,
+         "status": p.status}
         for p in patches
     ])
 

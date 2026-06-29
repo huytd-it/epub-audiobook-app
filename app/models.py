@@ -50,6 +50,8 @@ class Patch:
     updated_at: str
     image_path: str | None = None
     image_type: str = "static"
+    name: str = ""
+    chunk_count: int = 0
 
 
 @dataclass

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from app.models import Book, BookJob, Chapter, Patch, TextReplaceRule
 logger = logging.getLogger(__name__)
 
 ACTIVE_PATCH_STATUSES = {"pending", "done", "failed"}  # never 'processing' - that's worker-owned
+_TTS_MAX_CHARS = 400  # default matches config.settings.tts_max_chars
 
 
 def _now() -> str:
@@ -79,14 +81,17 @@ def create_book(
     )
 
     patch_ranges = group_into_patches(len(chapters), patch_size)
+    patch_rows = []
+    for idx, (start, end) in enumerate(patch_ranges):
+        name = chapters[start].title if chapters else ""
+        total_chars = sum(chapters[i].char_count for i in range(start, end + 1) if i < len(chapters))
+        chunk_count = max(1, math.ceil(total_chars / _TTS_MAX_CHARS))
+        patch_rows.append((book_id, idx, start, end, name, chunk_count, now, now))
     conn.executemany(
-        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status,
-                               created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
-        [
-            (book_id, idx, start, end, now, now)
-            for idx, (start, end) in enumerate(patch_ranges)
-        ],
+        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, name,
+                               chunk_count, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+        patch_rows,
     )
 
     conn.commit()
@@ -185,6 +190,14 @@ def mark_patch_done(conn: sqlite3.Connection, patch_id: int, audio_path: str) ->
         """UPDATE patch SET status = 'done', audio_path = ?, error_message = NULL, updated_at = ?
            WHERE id = ?""",
         (audio_path, _now(), patch_id),
+    )
+    conn.commit()
+
+
+def update_patch_chunk_count(conn: sqlite3.Connection, patch_id: int, chunk_count: int) -> None:
+    conn.execute(
+        "UPDATE patch SET chunk_count = ?, updated_at = ? WHERE id = ?",
+        (chunk_count, _now(), patch_id),
     )
     conn.commit()
 
@@ -585,11 +598,24 @@ def rebuild_patches(
                 Path(p.image_path).unlink(missing_ok=True)
     conn.execute("DELETE FROM patch WHERE book_id = ?", (book_id,))
     now = _now()
+    patch_rows = []
+    for idx, (start, end) in enumerate(ranges):
+        row = conn.execute(
+            "SELECT title FROM chapter WHERE book_id = ? AND chapter_index = ?",
+            (book_id, start),
+        ).fetchone()
+        name = row["title"] if row else ""
+        total_chars = conn.execute(
+            "SELECT COALESCE(SUM(char_count), 0) AS c FROM chapter WHERE book_id = ? AND chapter_index BETWEEN ? AND ?",
+            (book_id, start, end),
+        ).fetchone()["c"]
+        chunk_count = max(1, math.ceil(total_chars / _TTS_MAX_CHARS))
+        patch_rows.append((book_id, idx, start, end, name, chunk_count, now, now))
     conn.executemany(
-        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status,
-                               created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
-        [(book_id, idx, start, end, now, now) for idx, (start, end) in enumerate(ranges)],
+        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, name,
+                               chunk_count, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+        patch_rows,
     )
     conn.execute(
         """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,

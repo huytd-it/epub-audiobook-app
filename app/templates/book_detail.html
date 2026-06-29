@@ -97,12 +97,13 @@
 </form>
 
 <table>
-    <thead><tr><th>Patch</th><th>Chapters</th><th>Status</th><th>Error</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Patch</th><th>Chapters</th><th>Chunks</th><th>Status</th><th>Error</th><th>Actions</th></tr></thead>
     <tbody>
     {% for patch in patches %}
         <tr>
-            <td>{{ patch.patch_index }}</td>
+            <td>{{ patch.name or patch.patch_index }}</td>
             <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
+            <td>{{ patch.chunk_count }}</td>
             <td>{{ patch.status }}</td>
             <td>{{ patch.error_message or "" }}</td>
             <td class="patch-actions">

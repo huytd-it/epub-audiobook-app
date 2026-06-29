@@ -23,8 +23,9 @@
         <table>
             <thead>
                 <tr>
-                    <th>Patch #</th>
+                    <th>Patch</th>
                     <th>Chapters</th>
+                    <th>Chunks</th>
                     <th>Status</th>
                     <th>Image</th>
                     <th>Image Type</th>
@@ -34,12 +35,13 @@
             <tbody>
             {% for p in patches %}
                 <tr>
-                    <td>{{ p.patch_index }}</td>
+                    <td>{{ p.name or p.patch_index }}</td>
                     <td>{{ p.chapter_start }}&ndash;{{ p.chapter_end }}</td>
+                    <td>{{ p.chunk_count }}</td>
                     <td>{{ p.status }}</td>
                     <td>
                         {% if p.image_path %}
-                            <img src="/books/{{ book.id }}/patches/{{ p.id }}/image" class="patch-thumb" alt="patch {{ p.patch_index }} image">
+                            <img src="/books/{{ book.id }}/patches/{{ p.id }}/image" class="patch-thumb" alt="patch {{ p.name or p.patch_index }} image">
                         {% else %}
                             <div class="patch-thumb-placeholder">default</div>
                         {% endif %}
@@ -81,7 +83,7 @@
                 </tr>
                 {% if p.status == "done" and p.audio_path %}
                 <tr>
-                    <td colspan="6" style="border-top:none;padding-top:0;">
+                    <td colspan="7" style="border-top:none;padding-top:0;">
                         <video controls preload="none" class="patch-video-preview" src="/books/{{ book.id }}/patches/{{ p.id }}/video"></video>
                     </td>
                 </tr>

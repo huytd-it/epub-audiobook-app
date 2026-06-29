@@ -227,6 +227,8 @@ class PatchWorker:
         chunk_paths: list[str] = []
         try:
             chunks = split_into_tts_chunks(patch_text, max_chars=settings.tts_max_chars)
+            with self.db_lock:
+                repository.update_patch_chunk_count(self.conn, patch.id, len(chunks))
             for i, chunk_text in enumerate(chunks):
                 arr = self.engine.synthesize_chunk(
                     chunk_text,
