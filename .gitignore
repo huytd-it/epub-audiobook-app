@@ -14,3 +14,5 @@ data/*.log
 # tokens, or per-developer paths). Use .env.example as the template.
 .env
 .env.local
+data/tmp/*
+data/videos

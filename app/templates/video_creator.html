@@ -8,6 +8,17 @@
 <div class="error-block"><p><strong>Error:</strong> {{ error }}</p></div>
 {% endif %}
 
+{% if video_url %}
+<div class="video-preview-section">
+    <h3>Video created successfully!</h3>
+    <video controls width="640" src="{{ video_url }}"></video>
+    <p><a href="{{ video_url }}" download class="btn-download">Download .mp4</a></p>
+    <form method="get" action="/video">
+        <button type="submit">Tạo video khác</button>
+    </form>
+</div>
+{% endif %}
+
 <form method="post" action="/video/generate" enctype="multipart/form-data" class="video-creator-form">
     <div class="form-group">
         <label>Audio file (wav, mp3, m4a, ogg) <span class="required">*</span></label>
@@ -77,14 +88,21 @@
     <button type="submit" class="btn-generate">Generate Video</button>
 </form>
 
-{% if video_url %}
-<div class="video-preview-section">
-    <h3>Preview</h3>
-    <video controls width="640" src="{{ video_url }}"></video>
-    <p><a href="{{ video_url }}" download class="btn-download">Download .mp4</a></p>
-    <form method="get" action="/video">
-        <button type="submit">Tạo video khác</button>
-    </form>
-</div>
+{% if recent_videos %}
+<h3>Recent Videos</h3>
+<table>
+    <thead><tr><th>File</th><th>Size</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for v in recent_videos %}
+        <tr>
+            <td>{{ v.name }}</td>
+            <td>{{ v.size_mb }} MB</td>
+            <td>
+                <a href="{{ v.url }}" download>Download</a>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
 {% endif %}
 {% endblock %}

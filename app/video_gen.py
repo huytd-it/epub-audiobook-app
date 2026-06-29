@@ -63,18 +63,25 @@ def generate_segment(
     video_codec = "h264_nvenc" if use_nvenc else "libx264"
     width, height = resolution
 
+    if use_nvenc:
+        quality_args = ["-cq", str(crf)]
+        tune_args = []
+    else:
+        quality_args = ["-crf", str(crf)]
+        tune_args = ["-tune", "stillimage"]
+
     if image_type == "none":
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1", "-i", image_path,
             "-i", audio_path,
             "-c:v", video_codec,
-            "-tune", "stillimage",
+            *tune_args,
             "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
             "-r", str(fps),
             "-c:a", "aac", "-b:a", audio_bitrate,
             "-pix_fmt", "yuv420p",
-            "-crf", str(crf),
+            *quality_args,
             "-shortest",
             out_path,
         ]
@@ -95,9 +102,10 @@ def generate_segment(
             "-i", audio_path,
             "-vf", vf,
             "-c:v", video_codec,
+            *tune_args,
             "-c:a", "aac", "-b:a", audio_bitrate,
             "-pix_fmt", "yuv420p",
-            "-crf", str(crf),
+            *quality_args,
             "-shortest",
             out_path,
         ]
