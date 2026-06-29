@@ -55,6 +55,7 @@
                 <th class="col-name">File Name</th>
                 <th class="col-size">Size</th>
                 <th class="col-bg">Background Image</th>
+                <th class="col-preview">Preview</th>
                 <th class="col-status">Status</th>
             </tr>
         </thead>
@@ -166,6 +167,7 @@
         generateBatch: '/video/generate-batch',
         backgrounds: '/video/backgrounds',
         uploadBg: '/video/upload-background',
+        previewBg: '/video/backgrounds/preview',
     };
 
     let batchId = null;
@@ -198,6 +200,7 @@
             const data = await res.json();
             backgrounds = data.backgrounds || [];
             refreshBgSelects();
+            refreshAllPreviews();
         } catch(e) { console.error('Failed to load backgrounds', e); }
     }
 
@@ -240,11 +243,17 @@
                         <input type="file" class="bg-upload-inline" data-index="${f.index}" accept=".jpg,.jpeg,.png,.webp">
                     </div>
                 </td>
+                <td class="col-preview">
+                    <img class="bg-preview-img empty" data-index="${f.index}"
+                         alt="background preview" loading="lazy">
+                    <div class="bg-preview-name" data-index="${f.index}">Default</div>
+                </td>
                 <td class="status-pending" data-status="${f.index}">Ready</td>
             `;
             tbody.appendChild(tr);
         });
         refreshBgSelects();
+        refreshAllPreviews();
         updateSelectedCount();
 
         tbody.querySelectorAll('.row-check').forEach(cb => {
@@ -254,6 +263,12 @@
         document.getElementById('select-all').addEventListener('change', function() {
             tbody.querySelectorAll('.row-check').forEach(c => { c.checked = this.checked; });
             updateSelectedCount();
+        });
+
+        tbody.querySelectorAll('.bg-select').forEach(sel => {
+            sel.addEventListener('change', function() {
+                updatePreview(this.dataset.index);
+            });
         });
 
         tbody.querySelectorAll('.bg-upload-inline').forEach(input => {
@@ -273,6 +288,7 @@
                     refreshBgSelects();
                     const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
                     sel.value = data.path;
+                    updatePreview(idx);
                     statusEl.textContent = 'Ready';
                 } catch(e) {
                     statusEl.textContent = 'BG upload failed';
@@ -280,6 +296,47 @@
                 }
             });
         });
+    }
+
+    function defaultBackgroundPath() {
+        const def = backgrounds.find(b => b.is_default);
+        return def ? def.path : '';
+    }
+
+    function bgNameForPath(p) {
+        if (!p) return 'Default';
+        const found = backgrounds.find(b => b.path === p);
+        if (found) return found.is_default ? 'Default' : found.name;
+        try {
+            return p.split(/[\\/]/).pop() || p;
+        } catch (_) { return p; }
+    }
+
+    function previewUrlFor(p) {
+        if (!p) return '';
+        return API.previewBg + '?path=' + encodeURIComponent(p);
+    }
+
+    function updatePreview(idx) {
+        const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
+        const img = document.querySelector(`.bg-preview-img[data-index="${idx}"]`);
+        const name = document.querySelector(`.bg-preview-name[data-index="${idx}"]`);
+        if (!sel || !img || !name) return;
+        const p = sel.value || defaultBackgroundPath();
+        const url = previewUrlFor(p);
+        if (url) {
+            img.src = url;
+            img.classList.remove('empty');
+        } else {
+            img.removeAttribute('src');
+            img.classList.add('empty');
+        }
+        img.alt = 'Background: ' + bgNameForPath(p);
+        name.textContent = bgNameForPath(p);
+    }
+
+    function refreshAllPreviews() {
+        document.querySelectorAll('.bg-select').forEach(sel => updatePreview(sel.dataset.index));
     }
 
     function escHtml(s) {

@@ -39,9 +39,20 @@ logging.getLogger("watchfiles").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     conn = db.connect(settings.db_path)
     db.init_schema(conn)
-    requeued = repository.requeue_stuck_processing(conn)
-    if requeued:
-        logging.info("requeued %s patch(es) left 'processing' from a previous crashed run", requeued)
+    requeued_patches = repository.requeue_stuck_processing_returning(conn)
+    if requeued_patches:
+        logging.info(
+            "requeued %s patch(es) left 'processing' from a previous crashed run; "
+            "next_chunk_index preserved for chunk-level resume",
+            len(requeued_patches),
+        )
+        for r in requeued_patches:
+            if r["next_chunk_index"] > 0 and r["chunk_count"] > 0:
+                logging.info(
+                    "  resume patch_id=%s book_id=%s chunk %s/%s",
+                    r["patch_id"], r["book_id"],
+                    r["next_chunk_index"], r["chunk_count"],
+                )
     requeued_bj = repository.requeue_stuck_book_jobs(conn)
     if requeued_bj:
         logging.info("requeued %s book_job(s) left 'processing' from a previous crashed run", requeued_bj)

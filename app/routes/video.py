@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import time
 import uuid
@@ -17,6 +18,17 @@ from app.config import settings
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+logger = logging.getLogger(__name__)
+
+
+def _make_progress_logger(prefix: str, **base_fields) -> video_gen.ProgressCallback:
+    def _on_progress(event: str, fields: dict) -> None:
+        parts = [f"event={prefix}.{event}"]
+        merged = {**base_fields, **fields}
+        for k, v in merged.items():
+            parts.append(f"{k}={v}")
+        logger.info(" ".join(parts))
+    return _on_progress
 
 _TMP_DIR = Path(settings.data_root) / "tmp" / "video_creator"
 _VIDEOS_DIR = Path(settings.data_root) / "videos"
@@ -162,10 +174,14 @@ async def generate_video(
     cfg = _validate_config(resolution, fps, codec, audio_bitrate, image_type, crf)
     tmp_out = _TMP_DIR / f"{job_id}.mp4"
 
+    progress_cb = _make_progress_logger(
+        "video_creator.single", job_id=job_id, mode="single",
+    )
     try:
         await asyncio.to_thread(
             video_gen.generate_standalone_video,
             str(audio_path), str(image_path), str(tmp_out),
+            on_progress=progress_cb,
             **cfg,
         )
     except Exception as exc:
@@ -313,10 +329,14 @@ async def generate_batch(request: Request):
 
         out_name = f"{batch_id}_{idx}.mp4"
         tmp_out = _TMP_DIR / out_name
+        progress_cb = _make_progress_logger(
+            "video_creator.batch", batch_id=batch_id, index=idx, mode="batch",
+        )
         try:
             await asyncio.to_thread(
                 video_gen.generate_standalone_video,
                 str(audio_path), str(image_path), str(tmp_out),
+                on_progress=progress_cb,
                 **cfg,
             )
             final_path = _VIDEOS_DIR / out_name
@@ -354,6 +374,38 @@ def list_backgrounds():
             items.append({"name": f.name, "path": str(f), "is_default": False})
 
     return JSONResponse({"backgrounds": items})
+
+
+@router.get("/video/backgrounds/preview")
+def preview_background(path: str = ""):
+    """Serve a background image file for the Configure Each File preview thumbnail.
+    Only paths inside the backgrounds dir or matching the configured default are
+    allowed; everything else returns 404 to avoid serving arbitrary disk files."""
+    if not path:
+        raise HTTPException(status_code=400, detail="path query parameter required")
+    p = Path(path)
+    if not p.is_absolute():
+        p = (Path(settings.data_root) / path).resolve()
+
+    default = Path(settings.default_background_image).resolve()
+    allowed_roots = [default, _BACKGROUNDS_DIR.resolve()]
+    try:
+        p_resolved = p.resolve()
+    except OSError:
+        raise HTTPException(status_code=400, detail="invalid path")
+    if not any(p_resolved == root or root in p_resolved.parents for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="path not allowed")
+
+    if not p_resolved.exists() or not p_resolved.is_file():
+        raise HTTPException(status_code=404, detail="background not found")
+
+    media = "image/jpeg"
+    ext = p_resolved.suffix.lower()
+    if ext == ".png":
+        media = "image/png"
+    elif ext == ".webp":
+        media = "image/webp"
+    return FileResponse(str(p_resolved), media_type=media)
 
 
 @router.post("/video/upload-background")

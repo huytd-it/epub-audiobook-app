@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS patch (
     chapter_end     INTEGER NOT NULL,
     name            TEXT,
     chunk_count     INTEGER NOT NULL DEFAULT 0,
+    next_chunk_index INTEGER NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'pending',
     audio_path      TEXT,
     error_message   TEXT,
@@ -145,6 +146,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE patch ADD COLUMN name TEXT")
     if "chunk_count" not in patch_existing:
         conn.execute("ALTER TABLE patch ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0")
+    if "next_chunk_index" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN next_chunk_index INTEGER NOT NULL DEFAULT 0")
     if "video_resolution" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN video_resolution TEXT NOT NULL DEFAULT '1920x1080'")
     if "video_fps" not in existing:

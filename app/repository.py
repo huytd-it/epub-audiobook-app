@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.audio_merge import cleanup_chunk_dir
 from app.chunker import group_into_patches
 from app.epub_parser import ParsedChapter
 from app.models import Book, BookJob, Chapter, Patch, TextReplaceRule
@@ -20,6 +21,14 @@ _TTS_MAX_CHARS = 400  # default matches config.settings.tts_max_chars
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _chunk_dir_for(book_id: int, patch_id: int) -> Path:
+    return Path("data") / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
+
+
+def _delete_chunk_dir(book_id: int, patch_id: int) -> None:
+    cleanup_chunk_dir(str(_chunk_dir_for(book_id, patch_id)))
 
 
 def _book_from_row(row: sqlite3.Row) -> Book:
@@ -188,6 +197,19 @@ def update_patch_chunk_count(conn: sqlite3.Connection, patch_id: int, chunk_coun
     conn.commit()
 
 
+def update_patch_chunk_progress(
+    conn: sqlite3.Connection, patch_id: int, next_chunk_index: int
+) -> None:
+    """Persist how many chunks of a patch have been written to disk so a worker
+    restart can resume from this index instead of redoing the patch from scratch.
+    next_chunk_index is 1-based: the count of completed chunks."""
+    conn.execute(
+        "UPDATE patch SET next_chunk_index = ?, updated_at = ? WHERE id = ?",
+        (next_chunk_index, _now(), patch_id),
+    )
+    conn.commit()
+
+
 def mark_patch_failed(conn: sqlite3.Connection, patch_id: int, error_message: str) -> None:
     conn.execute(
         "UPDATE patch SET status = 'failed', error_message = ?, updated_at = ? WHERE id = ?",
@@ -197,7 +219,9 @@ def mark_patch_failed(conn: sqlite3.Connection, patch_id: int, error_message: st
 
 
 def requeue_stuck_processing(conn: sqlite3.Connection) -> int:
-    """Call once at startup: any patch left 'processing' means the previous run crashed mid-job."""
+    """Call once at startup: any patch left 'processing' means the previous run crashed mid-job.
+    next_chunk_index is preserved so the worker resumes the patch at the chunk level instead of
+    redoing every chunk from scratch."""
     cur = conn.execute(
         """UPDATE patch SET status = 'pending', error_message = 'requeued after restart', updated_at = ?
            WHERE status = 'processing'""",
@@ -205,6 +229,32 @@ def requeue_stuck_processing(conn: sqlite3.Connection) -> int:
     )
     conn.commit()
     return cur.rowcount
+
+
+def requeue_stuck_processing_returning(conn: sqlite3.Connection) -> list[dict]:
+    """Same as requeue_stuck_processing, but returns the rows it touched so callers can report
+    what was preserved (in particular next_chunk_index) to the operator / UI."""
+    rows = conn.execute(
+        """SELECT id, book_id, chunk_count, next_chunk_index FROM patch
+            WHERE status = 'processing'"""
+    ).fetchall()
+    if not rows:
+        return []
+    conn.execute(
+        """UPDATE patch SET status = 'pending', error_message = 'requeued after restart',
+           updated_at = ? WHERE status = 'processing'""",
+        (_now(),),
+    )
+    conn.commit()
+    return [
+        {
+            "patch_id": r["id"],
+            "book_id": r["book_id"],
+            "chunk_count": r["chunk_count"],
+            "next_chunk_index": r["next_chunk_index"],
+        }
+        for r in rows
+    ]
 
 
 def reset_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
@@ -223,9 +273,11 @@ def reset_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
     if video_file.exists():
         video_file.unlink(missing_ok=True)
 
+    _delete_chunk_dir(patch.book_id, patch_id)
+
     conn.execute(
-        """UPDATE patch SET status = 'pending', audio_path = NULL, error_message = NULL, updated_at = ?
-           WHERE id = ?""",
+        """UPDATE patch SET status = 'pending', audio_path = NULL, error_message = NULL,
+           next_chunk_index = 0, updated_at = ? WHERE id = ?""",
         (_now(), patch_id),
     )
     conn.execute(
@@ -254,6 +306,8 @@ def delete_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
     video_file = video_dir / f"{patch_id}.mp4"
     if video_file.exists():
         video_file.unlink(missing_ok=True)
+
+    _delete_chunk_dir(book_id, patch_id)
 
     conn.execute("DELETE FROM patch WHERE id = ?", (patch_id,))
 
@@ -332,6 +386,11 @@ def delete_book(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
             "delete_book: requeued %s processing patch(es) for book_id=%s before delete",
             cur.rowcount, book_id,
         )
+
+    for row in conn.execute(
+        "SELECT id FROM patch WHERE book_id = ?", (book_id,)
+    ).fetchall():
+        _delete_chunk_dir(book_id, row["id"])
 
     book = get_book(conn, book_id)
     if book is None:
@@ -547,12 +606,20 @@ def update_book_video_settings(
 
 
 def reset_done_patches_for_book(conn: sqlite3.Connection, book_id: int) -> int:
+    done_ids = [
+        r["id"] for r in conn.execute(
+            "SELECT id FROM patch WHERE book_id = ? AND status = 'done'",
+            (book_id,),
+        ).fetchall()
+    ]
     now = _now()
     cur = conn.execute(
         """UPDATE patch SET status = 'pending', audio_path = NULL, error_message = NULL,
-           updated_at = ? WHERE book_id = ? AND status = 'done'""",
+           next_chunk_index = 0, updated_at = ? WHERE book_id = ? AND status = 'done'""",
         (now, book_id),
     )
+    for pid in done_ids:
+        _delete_chunk_dir(book_id, pid)
     conn.execute(
         """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,
            status = 'ready', updated_at = ? WHERE id = ?""",
@@ -621,6 +688,7 @@ def rebuild_patches(
                 Path(p.audio_path).unlink(missing_ok=True)
             if p.image_path:
                 Path(p.image_path).unlink(missing_ok=True)
+            _delete_chunk_dir(book_id, p.id)
     conn.execute("DELETE FROM patch WHERE book_id = ?", (book_id,))
     now = _now()
     patch_rows = []
@@ -943,6 +1011,25 @@ def get_queue_stats(conn: sqlite3.Connection) -> dict:
         if row["status"] in patch_counts:
             patch_counts[row["status"]] = row["c"]
 
+    resume_rows = conn.execute(
+        """SELECT id, book_id, chunk_count, next_chunk_index
+             FROM patch
+            WHERE status IN ('pending', 'processing')
+              AND next_chunk_index > 0 AND chunk_count > 0
+            ORDER BY (next_chunk_index * 1.0 / NULLIF(chunk_count, 0)) DESC, id
+            LIMIT 10"""
+    ).fetchall()
+    resume_candidates = [
+        {
+            "patch_id": r["id"],
+            "book_id": r["book_id"],
+            "chunk_count": r["chunk_count"],
+            "next_chunk_index": r["next_chunk_index"],
+            "remaining": max(0, r["chunk_count"] - r["next_chunk_index"]),
+        }
+        for r in resume_rows
+    ]
+
     bj_counts = {s: 0 for s in ("pending", "processing", "done", "failed")}
     for row in conn.execute("SELECT status, COUNT(*) AS c FROM book_job GROUP BY status"):
         if row["status"] in bj_counts:
@@ -989,6 +1076,7 @@ def get_queue_stats(conn: sqlite3.Connection) -> dict:
         "book_job": bj_counts,
         "oldest_pending_patch_age_seconds": oldest_age_seconds,
         "last_errors": last_errors,
+        "resume_candidates": resume_candidates,
     }
 
 
@@ -1013,11 +1101,19 @@ def retry_all_failed_patches_for_book(conn: sqlite3.Connection, book_id: int) ->
     """Reset every failed patch of a book to pending. Skips patches currently 'processing'.
     Also clears the book's stale final outputs (consistent with reset_patch)."""
     now = _now()
+    failed_ids = [
+        r["id"] for r in conn.execute(
+            "SELECT id FROM patch WHERE book_id = ? AND status = 'failed'",
+            (book_id,),
+        ).fetchall()
+    ]
     cur = conn.execute(
         """UPDATE patch SET status = 'pending', audio_path = NULL, error_message = NULL,
-           updated_at = ? WHERE book_id = ? AND status = 'failed'""",
+           next_chunk_index = 0, updated_at = ? WHERE book_id = ? AND status = 'failed'""",
         (now, book_id),
     )
+    for pid in failed_ids:
+        _delete_chunk_dir(book_id, pid)
     if cur.rowcount > 0:
         conn.execute(
             """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,
@@ -1118,13 +1214,14 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
     video_rows = conn.execute(
         "SELECT output_path FROM book_job WHERE output_path IS NOT NULL"
     ).fetchall()
+    chunk_rows = conn.execute("SELECT book_id, id FROM patch").fetchall()
     paths_to_delete = [r["audio_path"] for r in audio_rows] + [
         r["output_path"] for r in video_rows
     ]
 
     cur_p = conn.execute(
         """UPDATE patch SET status = 'pending', audio_path = NULL, error_message = NULL,
-           updated_at = ? WHERE status != 'processing'""",
+           next_chunk_index = 0, updated_at = ? WHERE status != 'processing'""",
         (now,),
     )
     cur_bj = conn.execute(
@@ -1145,6 +1242,9 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
             Path(path).unlink(missing_ok=True)
         except OSError:
             pass
+
+    for row in chunk_rows:
+        _delete_chunk_dir(row["book_id"], row["id"])
 
     return {
         "patches_reset": cur_p.rowcount,

@@ -901,10 +901,31 @@ section {
 .col-size { width: 80px; }
 .col-status { width: 120px; }
 .col-bg { min-width: 280px; }
+.col-preview { width: 140px; }
 
 .bg-controls { display: flex; gap: var(--space-xs); align-items: center; flex-wrap: wrap; }
 .bg-controls select { max-width: 140px; font-size: var(--font-size-xs); }
 .bg-controls input[type=file] { font-size: var(--font-size-xs); width: 130px; }
+
+.bg-preview-img {
+    display: block;
+    width: 120px;
+    height: 68px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+}
+.bg-preview-img.empty { display: none; }
+.bg-preview-name {
+    margin-top: 2px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 .bg-upload-row {
   display: flex;
@@ -1167,6 +1188,8 @@ section {
   .patch-video-preview { width: 120px; }
 
   .col-bg { min-width: 200px; }
+  .col-preview { width: 110px; }
+  .bg-preview-img { width: 96px; height: 54px; }
 }
 
 @media (max-width: 480px) {

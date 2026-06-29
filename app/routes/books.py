@@ -181,12 +181,30 @@ def book_status(request: Request, book_id: int):
             raise HTTPException(status_code=404, detail="book not found")
         patch_list = repository.list_patches(conn, book_id)
         video_job = repository.get_book_job(conn, book_id, "video")
+    worker = request.app.state.worker
+    live_chunk_index = (
+        worker.current_chunk_index
+        if getattr(worker, "current_patch_id", None) is not None
+        else 0
+    )
+    live_chunk_count = getattr(worker, "current_chunk_count", 0)
     return JSONResponse({
         "book_status": book.status,
         "has_final_audio": bool(book.final_audio_path),
         "has_active_patches": any(p.status in ("pending", "processing") for p in patch_list),
         "patches": [
-            {"id": p.id, "status": p.status, "error_message": p.error_message}
+            {
+                "id": p.id,
+                "status": p.status,
+                "error_message": p.error_message,
+                "chunk_count": p.chunk_count,
+                "next_chunk_index": (
+                    live_chunk_index
+                    if (p.status == "processing"
+                        and getattr(worker, "current_patch_id", None) == p.id)
+                    else p.next_chunk_index
+                ),
+            }
             for p in patch_list
         ],
         "video_job": {
@@ -194,6 +212,7 @@ def book_status(request: Request, book_id: int):
             "error_message": video_job.error_message,
             "output_path": video_job.output_path,
         } if video_job else None,
+        "current_chunk_count": live_chunk_count,
     })
 
 

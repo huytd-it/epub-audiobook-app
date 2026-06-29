@@ -52,6 +52,7 @@ class Patch:
     image_type: str = "static"
     name: str = ""
     chunk_count: int = 0
+    next_chunk_index: int = 0
 
 
 @dataclass

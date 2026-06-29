@@ -185,6 +185,7 @@
                 <th>Patch</th>
                 <th>Chapters</th>
                 <th>Chunks</th>
+                <th>Progress</th>
                 <th>Status</th>
                 <th>Error</th>
                 <th>Actions</th>
@@ -196,6 +197,18 @@
                 <td><strong>{{ patch.name or patch.patch_index }}</strong></td>
                 <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
                 <td>{{ patch.chunk_count }}</td>
+                <td id="patch-progress-{{ patch.id }}">
+                    {% if patch.chunk_count > 0 %}
+                        <span class="chunk-progress">
+                            <span class="chunk-progress-text">{{ patch.next_chunk_index }}/{{ patch.chunk_count }}</span>
+                            {% if patch.status == 'processing' and patch.next_chunk_index > 0 %}
+                                <span class="badge badge-info" title="Worker is resuming this patch from the last persisted chunk after a restart">Resuming</span>
+                            {% endif %}
+                        </span>
+                    {% else %}
+                        <span style="color:var(--text-muted)">&mdash;</span>
+                    {% endif %}
+                </td>
                 <td id="patch-status-{{ patch.id }}">
                     {% if patch.status == 'done' %}
                         <span class="badge badge-done">Done</span>
@@ -268,6 +281,20 @@
             for (const p of data.patches) {
                 const el = document.getElementById(`patch-status-${p.id}`);
                 if (el) el.innerHTML = badgeFor(p.status);
+
+                const progEl = document.getElementById(`patch-progress-${p.id}`);
+                if (progEl) {
+                    if (p.chunk_count && p.chunk_count > 0) {
+                        const done = p.next_chunk_index ?? 0;
+                        const isResuming = p.status === 'processing' && done > 0 && done < p.chunk_count;
+                        const resumingBadge = isResuming
+                            ? '<span class="badge badge-info" title="Worker is resuming this patch from the last persisted chunk after a restart">Resuming</span>'
+                            : '';
+                        progEl.innerHTML = `<span class="chunk-progress"><span class="chunk-progress-text">${done}/${p.chunk_count}</span>${resumingBadge}</span>`;
+                    } else {
+                        progEl.innerHTML = '<span style="color:var(--text-muted)">&mdash;</span>';
+                    }
+                }
             }
 
             const videoEl = document.getElementById('video-job-status');

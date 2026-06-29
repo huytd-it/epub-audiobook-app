@@ -54,6 +54,8 @@ class DisabledWorker:
     last_heartbeat_at: str = ""
     current_patch_id: int | None = None
     current_book_job_id: int | None = None
+    current_chunk_index: int = 0
+    current_chunk_count: int = 0
 
     def stop(self) -> None:
         pass
@@ -86,6 +88,8 @@ class PatchWorker:
         self.state: str = "idle"  # 'idle' | 'busy' | 'paused'
         self.current_patch_id: int | None = None
         self.current_book_job_id: int | None = None
+        self.current_chunk_index: int = 0
+        self.current_chunk_count: int = 0
         self.last_heartbeat_at: str = _now_iso()
 
     # ------------------------------------------------------------------ public
@@ -103,6 +107,11 @@ class PatchWorker:
         )
 
     async def run_forever(self) -> None:
+        # Track book_job tasks running in parallel with the main patch loop.
+        # TTS synthesis stays sequential (GPU-bound), but video generation is
+        # CPU-bound and can run concurrently with patches + with each other.
+        self._bg_tasks: set[asyncio.Task] = set()
+
         while not self._should_exit():
             # Update heartbeat at the top of every iteration, regardless of work found.
             self.last_heartbeat_at = _now_iso()
@@ -128,44 +137,72 @@ class PatchWorker:
                     patch_id=patch.id,
                     book_id=patch.book_id,
                     attempt=patch.attempt_count,
+                    resume_from_chunk=patch.next_chunk_index,
+                    total_chunks=patch.chunk_count,
                 )
                 self._in_flight = patch
                 self.current_patch_id = patch.id
+                self.current_chunk_index = patch.next_chunk_index
+                self.current_chunk_count = patch.chunk_count
                 self.state = "busy"
                 try:
                     await self._process(patch)
                 finally:
                     self._in_flight = None
                     self.current_patch_id = None
+                    self.current_chunk_index = 0
+                    self.current_chunk_count = 0
                     self.state = "idle"
+                # After each patch, opportunistically start a book_job in the
+                # background so video generation runs in parallel with TTS.
+                self._spawn_book_job()
                 continue
 
-            with self.db_lock:
-                job = repository.claim_next_pending_book_job(self.conn)
-            if job is not None:
-                self._log_event(
-                    "book_job.claimed",
-                    book_job_id=job.id,
-                    book_id=job.book_id,
-                    job_type=job.job_type,
-                    attempt=job.attempt_count,
-                )
-                self._in_flight = job
-                self.current_book_job_id = job.id
-                self.state = "busy"
-                try:
-                    await self._process_book_job(job)
-                finally:
-                    self._in_flight = None
-                    self.current_book_job_id = None
-                    self.state = "idle"
+            # No pending patch — try to spawn a book_job.
+            if self._spawn_book_job():
                 continue
 
             self.state = "idle"
             await asyncio.sleep(self.poll_interval)
 
-        # Loop exited cleanly. The lifespan will see the task finish.
+        # Loop exited cleanly. Wait for in-flight book_job tasks to finish.
+        if self._bg_tasks:
+            self._log_event("worker.draining_bg_tasks", count=len(self._bg_tasks))
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
         self._log_event("worker.exit")
+
+    def _spawn_book_job(self) -> bool:
+        """Try to claim and dispatch a book_job as a background task. Returns
+        True if a task was spawned, False if nothing was claimed."""
+        with self.db_lock:
+            job = repository.claim_next_pending_book_job(self.conn)
+        if job is None:
+            return False
+        self._log_event(
+            "book_job.claimed",
+            book_job_id=job.id,
+            book_id=job.book_id,
+            job_type=job.job_type,
+            attempt=job.attempt_count,
+            mode="background",
+        )
+        task = asyncio.create_task(self._run_book_job_wrapper(job))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return True
+
+    async def _run_book_job_wrapper(self, job: BookJob) -> None:
+        """Run a book_job in the background, tracking in_flight for graceful shutdown."""
+        self._in_flight = job
+        self.current_book_job_id = job.id
+        self.state = "busy"
+        try:
+            await self._process_book_job(job)
+        finally:
+            self._in_flight = None
+            self.current_book_job_id = None
+            if not self._bg_tasks and self.current_patch_id is None:
+                self.state = "idle"
 
     # ------------------------------------------------------------------ patches
 
@@ -175,6 +212,8 @@ class PatchWorker:
             patch_id=patch.id,
             book_id=patch.book_id,
             attempt=patch.attempt_count,
+            resume_from_chunk=patch.next_chunk_index,
+            total_chunks=patch.chunk_count,
         )
         try:
             audio_path = await asyncio.to_thread(self._synthesize, patch)
@@ -240,12 +279,21 @@ class PatchWorker:
 
         chunk_dir = book_dir / f"{patch.id}_chunks"
         chunk_dir.mkdir(parents=True, exist_ok=True)
-        chunk_paths: list[str] = []
         try:
             chunks = split_into_tts_chunks(patch_text, max_chars=settings.tts_max_chars)
             with self.db_lock:
                 repository.update_patch_chunk_count(self.conn, patch.id, len(chunks))
-            for i, chunk_text in enumerate(chunks):
+            start_index = max(0, min(patch.next_chunk_index, len(chunks)))
+            if start_index > 0:
+                self._log_event(
+                    "chunk.resume",
+                    patch_id=patch.id,
+                    from_chunk=start_index,
+                    total_chunks=len(chunks),
+                )
+            for i in range(start_index, len(chunks)):
+                chunk_text = chunks[i]
+                self.current_chunk_index = i
                 arr = self.engine.synthesize_chunk(
                     chunk_text,
                     reference_wav_path=ref_wav,
@@ -253,21 +301,22 @@ class PatchWorker:
                 )
                 chunk_path = str(chunk_dir / f"chunk_{i:03d}.wav")
                 sf.write(chunk_path, arr, self.engine.sample_rate)
-                chunk_paths.append(chunk_path)
                 self._log_event(
                     "chunk.written",
                     patch_id=patch.id,
                     chunk_index=i,
                     path=chunk_path,
                 )
+                with self.db_lock:
+                    repository.update_patch_chunk_progress(self.conn, patch.id, i + 1)
 
+            chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(len(chunks))]
             audio_merge.merge_chunk_files_to_patch(chunk_paths, audio_path)
             self._log_event("chunk.merged", patch_id=patch.id)
             audio_merge.cleanup_chunk_dir(str(chunk_dir))
             self._log_event("chunk.cleaned", patch_id=patch.id)
             return audio_path
         except Exception:
-            audio_merge.cleanup_chunk_dir(str(chunk_dir))
             raise
 
     async def _maybe_finalize_book(self, book_id: int) -> None:
@@ -400,10 +449,20 @@ class PatchWorker:
         book_dir.mkdir(parents=True, exist_ok=True)
         out_path = str(book_dir / f"video_{job.id}.mp4")
 
+        def _on_progress(event: str, fields: dict) -> None:
+            # Re-prefix with video_job context so log lines are easy to grep.
+            self._log_event(
+                f"video_job.{event}",
+                book_job_id=job.id,
+                book_id=job.book_id,
+                **fields,
+            )
+
         video_gen.generate_full_video(
             done_patches, book, out_path,
             default_image=settings.default_background_image,
             use_nvenc=settings.use_nvenc,
+            on_progress=_on_progress,
         )
         return out_path
 
@@ -413,7 +472,13 @@ class PatchWorker:
         if not self._stop:
             return False
         # If we are mid-flight, finish the current job first; otherwise exit.
-        return self._in_flight is None
+        if self._in_flight is not None:
+            return False
+        # Wait for background book_job tasks to drain before exiting.
+        bg = getattr(self, "_bg_tasks", None)
+        if bg:
+            return False
+        return True
 
     def _log_event(
         self, event: str, *, level: int | None = None, **fields

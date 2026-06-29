@@ -19,6 +19,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _worker_snapshot(worker) -> dict:
+    """Fields safe to expose on /health regardless of worker kind."""
+    if isinstance(worker, DisabledWorker):
+        return {
+            "current_patch_id": None,
+            "current_chunk_index": 0,
+            "current_chunk_count": 0,
+        }
+    return {
+        "current_patch_id": worker.current_patch_id,
+        "current_chunk_index": getattr(worker, "current_chunk_index", 0),
+        "current_chunk_count": getattr(worker, "current_chunk_count", 0),
+    }
+
+
 def _parse_iso(ts: str | None) -> datetime | None:
     if not ts:
         return None
@@ -40,6 +55,8 @@ def health(request: Request):
             "status": "ok",
             "worker_state": "disabled",
             "current_patch_id": None,
+            "current_chunk_index": 0,
+            "current_chunk_count": 0,
             "queue_depth": 0,
             "last_heartbeat_at": None,
         }
@@ -57,6 +74,8 @@ def health(request: Request):
                 "reason": reason,
                 "worker_state": worker.state,
                 "current_patch_id": worker.current_patch_id,
+                "current_chunk_index": getattr(worker, "current_chunk_index", 0),
+                "current_chunk_count": getattr(worker, "current_chunk_count", 0),
                 "last_heartbeat_at": worker.last_heartbeat_at,
             },
             status_code=503,
@@ -67,7 +86,7 @@ def health(request: Request):
     return {
         "status": "ok",
         "worker_state": worker.state,
-        "current_patch_id": worker.current_patch_id,
+        **_worker_snapshot(worker),
         "queue_depth": stats["patch"]["pending"],
         "last_heartbeat_at": worker.last_heartbeat_at,
     }
@@ -77,6 +96,21 @@ def health(request: Request):
 def queue_stats(request: Request):
     with locked_conn(request) as conn:
         return repository.get_queue_stats(conn)
+
+
+@router.post("/queue/requeue-stuck")
+def requeue_stuck(request: Request):
+    """Operator escape hatch: flip every 'processing' patch back to 'pending' without
+    discarding next_chunk_index. The worker will pick each one up and resume from the
+    last persisted chunk instead of redoing the whole patch. Mirrors the recovery that
+    runs at startup in main.lifespan."""
+    with locked_conn(request) as conn:
+        resumed = repository.requeue_stuck_processing_returning(conn)
+    logger.info(
+        "event=queue.requeue_stuck count=%s",
+        len(resumed),
+    )
+    return {"requeued": len(resumed), "patches": resumed}
 
 
 @router.post("/queue/pause")
