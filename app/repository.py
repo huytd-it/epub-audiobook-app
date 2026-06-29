@@ -631,6 +631,9 @@ def rebuild_patches(
 # ---------------------------------------------------------------------------
 
 
+_TITLE_END_PUNCTUATION = frozenset(".!?…:;,)]\"'»")
+
+
 def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
     """Return the full text for a patch: included chapter texts joined, with
     the book's replace rules applied."""
@@ -638,7 +641,15 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
         conn, patch.book_id, patch.chapter_start, patch.chapter_end
     )
     included = [ch for ch in chapters if not ch.is_excluded]
-    raw = "\n\n".join(ch.text for ch in included)
+    texts: list[str] = []
+    for ch in included:
+        t = ch.text
+        if ch.title and t.startswith(ch.title) and ch.title[-1] not in _TITLE_END_PUNCTUATION:
+            suffix = t[len(ch.title):].lstrip()
+            if suffix:
+                t = ch.title + ".\n\n" + suffix
+        texts.append(t)
+    raw = "\n\n".join(texts)
     rules = list_replace_rules(conn, patch.book_id)
     return apply_replace_rules(raw, rules)
 

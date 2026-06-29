@@ -23,7 +23,7 @@ from pathlib import Path
 
 import soundfile as sf
 
-from app import audio_merge, repository, video_gen, youtube
+from app import audio_merge, repository, video_gen
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.models import BookJob, Patch
@@ -293,6 +293,8 @@ class PatchWorker:
     # ------------------------------------------------------------------ book jobs
 
     async def _process_book_job(self, job: BookJob) -> None:
+        from app import youtube  # lazy import (google.auth is optional)
+
         self._log_event(
             "book_job.started",
             book_job_id=job.id,

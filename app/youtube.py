@@ -7,11 +7,15 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import Flow
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+    _GOOGLE_IMPORTS_OK = True
+except ModuleNotFoundError:
+    _GOOGLE_IMPORTS_OK = False
 
 from app.config import settings
 
@@ -21,6 +25,13 @@ _SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 _API_SERVICE_NAME = "youtube"
 _API_VERSION = "v3"
 _UPLOAD_CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+def _require_google_imports() -> None:
+    if not _GOOGLE_IMPORTS_OK:
+        raise ModuleNotFoundError(
+            "Missing Google API packages. Install: pip install google-auth google-auth-oauthlib google-api-python-client"
+        )
 
 
 def _now_iso() -> str:
@@ -78,6 +89,7 @@ def delete_credentials(conn: sqlite3.Connection) -> None:
 
 
 def _build_credentials(row: dict) -> Credentials:
+    _require_google_imports()
     return Credentials(
         token=row["access_token"],
         refresh_token=row["refresh_token"],
@@ -90,6 +102,7 @@ def _build_credentials(row: dict) -> Credentials:
 
 def _refresh_if_needed(conn: sqlite3.Connection, creds_row: dict) -> Credentials:
     """Build Credentials, refresh if expired, and persist new tokens."""
+    _require_google_imports()
     creds = _build_credentials(creds_row)
     if creds.expired or not creds.valid:
         try:
@@ -111,6 +124,7 @@ def _refresh_if_needed(conn: sqlite3.Connection, creds_row: dict) -> Credentials
 
 def get_youtube_service(conn: sqlite3.Connection):
     """Return an authorized YouTube API service object."""
+    _require_google_imports()
     creds_row = get_creds_from_db(conn)
     if creds_row is None:
         raise ValueError("YouTube not connected. Please connect first.")
@@ -120,6 +134,7 @@ def get_youtube_service(conn: sqlite3.Connection):
 
 def get_authorization_url(redirect_uri: str) -> str:
     """Generate the Google OAuth2 consent screen URL."""
+    _require_google_imports()
     flow = Flow.from_client_config(
         {
             "web": {
@@ -142,6 +157,7 @@ def get_authorization_url(redirect_uri: str) -> str:
 
 def exchange_code(code: str, redirect_uri: str) -> dict:
     """Exchange authorization code for tokens. Returns channel info."""
+    _require_google_imports()
     flow = Flow.from_client_config(
         {
             "web": {
@@ -189,6 +205,7 @@ def upload_video(
 
     Creates a youtube_uploads record and updates it as the upload progresses.
     """
+    _require_google_imports()
     video_file = Path(video_path)
     if not video_file.exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
