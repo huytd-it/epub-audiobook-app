@@ -16,3 +16,4 @@ data/*.log
 .env.local
 data/tmp/*
 data/videos
+data/backgrounds

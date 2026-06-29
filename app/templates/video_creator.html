@@ -19,75 +19,115 @@
 </div>
 {% endif %}
 
-<form method="post" action="/video/generate" enctype="multipart/form-data" class="video-creator-form">
-    <div class="form-group">
-        <label>Audio file (wav, mp3, m4a, ogg) <span class="required">*</span></label>
-        <input type="file" name="audio" accept=".wav,.mp3,.m4a,.ogg" required>
+<!-- Step 1: Upload -->
+<div class="batch-section" id="step-upload">
+    <h3>1. Upload Audio Files</h3>
+    <form id="upload-form" enctype="multipart/form-data">
+        <div class="form-group">
+            <label>Audio files (wav, mp3, m4a, ogg) <span class="required">*</span></label>
+            <input type="file" id="audio-files" name="files" accept=".wav,.mp3,.m4a,.ogg" multiple required>
+            <small>Chọn nhiều file cùng lúc (giữ Ctrl/Cmd để chọn nhiều).</small>
+        </div>
+        <button type="submit" class="btn-generate" id="btn-upload">Upload</button>
+    </form>
+</div>
+
+<!-- Step 2: File Table + Background Selection -->
+<div class="batch-section" id="step-table" style="display:none;">
+    <h3>2. Configure Each File</h3>
+    <div class="batch-toolbar">
+        <label><input type="checkbox" id="select-all" checked> Select All</label>
+        <span id="selected-count">0 selected</span>
+    </div>
+    <table class="batch-table">
+        <thead>
+            <tr>
+                <th class="col-check"></th>
+                <th class="col-num">#</th>
+                <th class="col-name">File Name</th>
+                <th class="col-size">Size</th>
+                <th class="col-bg">Background Image</th>
+                <th class="col-status">Status</th>
+            </tr>
+        </thead>
+        <tbody id="file-table-body">
+        </tbody>
+    </table>
+
+    <!-- Upload new background -->
+    <div class="bg-upload-row">
+        <label>Upload background mới:</label>
+        <input type="file" id="new-bg-file" accept=".jpg,.jpeg,.png,.webp">
+        <button type="button" class="btn-sm" id="btn-upload-bg">Upload</button>
     </div>
 
-    <div class="form-group">
-        <label>Image file (jpg, png, webp)</label>
-        <input type="file" name="image" accept=".jpg,.jpeg,.png,.webp">
-        <small>Nếu không upload, sẽ dùng hình default.</small>
-    </div>
-
-    <div class="form-row">
-        <div class="form-group">
-            <label>Resolution</label>
-            <select name="resolution">
-                <option value="1920x1080" selected>1920x1080 (Full HD)</option>
-                <option value="1280x720">1280x720 (HD)</option>
-                <option value="854x480">854x480 (SD)</option>
-            </select>
+    <!-- Step 3: Config -->
+    <h3>3. Video Config (applied to all selected)</h3>
+    <div class="video-creator-form">
+        <div class="form-row">
+            <div class="form-group">
+                <label>Resolution</label>
+                <select name="resolution" id="cfg-resolution">
+                    <option value="1920x1080" selected>1920x1080 (Full HD)</option>
+                    <option value="1280x720">1280x720 (HD)</option>
+                    <option value="854x480">854x480 (SD)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>FPS</label>
+                <select name="fps" id="cfg-fps">
+                    <option value="24">24</option>
+                    <option value="30" selected>30</option>
+                    <option value="60">60</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Codec</label>
+                <select name="codec" id="cfg-codec">
+                    <option value="libx264" selected>libx264</option>
+                    <option value="h264_nvenc">h264_nvenc (NVIDIA)</option>
+                </select>
+            </div>
         </div>
-        <div class="form-group">
-            <label>FPS</label>
-            <select name="fps">
-                <option value="24">24</option>
-                <option value="30" selected>30</option>
-                <option value="60">60</option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label>Codec</label>
-            <select name="codec">
-                <option value="libx264" selected>libx264</option>
-                <option value="h264_nvenc">h264_nvenc (NVIDIA)</option>
-            </select>
-        </div>
-    </div>
-
-    <div class="form-row">
-        <div class="form-group">
-            <label>Audio bitrate</label>
-            <select name="audio_bitrate">
-                <option value="128k">128k</option>
-                <option value="192k" selected>192k</option>
-                <option value="256k">256k</option>
-                <option value="320k">320k</option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label>Image type</label>
-            <select name="image_type">
-                <option value="none" selected>Static</option>
-                <option value="zoom-in">Zoom In (Ken Burns)</option>
-                <option value="zoom-out">Zoom Out (Ken Burns)</option>
-                <option value="pan-left">Pan Left</option>
-                <option value="pan-right">Pan Right</option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label>CRF (quality: 18=high, 28=low)</label>
-            <input type="range" name="crf" min="18" max="28" value="23" id="crf-slider"
-                   oninput="document.getElementById('crf-val').textContent=this.value">
-            <span id="crf-val">23</span>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Audio bitrate</label>
+                <select name="audio_bitrate" id="cfg-audio-bitrate">
+                    <option value="128k">128k</option>
+                    <option value="192k" selected>192k</option>
+                    <option value="256k">256k</option>
+                    <option value="320k">320k</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Image type</label>
+                <select name="image_type" id="cfg-image-type">
+                    <option value="none" selected>Static</option>
+                    <option value="zoom-in">Zoom In (Ken Burns)</option>
+                    <option value="zoom-out">Zoom Out (Ken Burns)</option>
+                    <option value="pan-left">Pan Left</option>
+                    <option value="pan-right">Pan Right</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>CRF (quality: 18=high, 28=low)</label>
+                <input type="range" name="crf" min="18" max="28" value="23" id="cfg-crf"
+                       oninput="document.getElementById('crf-val').textContent=this.value">
+                <span id="crf-val">23</span>
+            </div>
         </div>
     </div>
 
-    <button type="submit" class="btn-generate">Generate Video</button>
-</form>
+    <button type="button" class="btn-generate" id="btn-generate">Generate Selected Videos</button>
+</div>
 
+<!-- Step 4: Results -->
+<div class="batch-section" id="step-results" style="display:none;">
+    <h3>Results</h3>
+    <div id="results-list"></div>
+</div>
+
+<!-- Recent Videos -->
 {% if recent_videos %}
 <h3>Recent Videos</h3>
 <table>
@@ -97,12 +137,402 @@
         <tr>
             <td>{{ v.name }}</td>
             <td>{{ v.size_mb }} MB</td>
-            <td>
-                <a href="{{ v.url }}" download>Download</a>
-            </td>
+            <td><a href="{{ v.url }}" download>Download</a></td>
         </tr>
     {% endfor %}
     </tbody>
 </table>
 {% endif %}
+
+<style>
+.batch-section { margin: 1.5rem 0; padding: 1rem; background: #fafafa; border-radius: 6px; border: 1px solid #eee; }
+.batch-toolbar { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; font-size: 0.9rem; }
+.batch-toolbar #selected-count { color: #666; }
+.batch-table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
+.batch-table th, .batch-table td { border: 1px solid #ddd; padding: 0.5rem 0.6rem; text-align: left; font-size: 0.9rem; }
+.batch-table th { background: #f0f0f0; font-weight: 600; }
+.batch-table tr.selected { background: #f0f7ff; }
+.col-check { width: 40px; text-align: center; }
+.col-num { width: 40px; }
+.col-size { width: 80px; }
+.col-status { width: 120px; }
+.col-bg { min-width: 280px; }
+.bg-controls { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+.bg-controls select { max-width: 140px; font-size: 0.8rem; }
+.bg-controls input[type=file] { font-size: 0.8rem; width: 130px; }
+.bg-upload-row { display: flex; gap: 0.5rem; align-items: center; margin: 1rem 0; font-size: 0.9rem; }
+.bg-upload-row input[type=file] { font-size: 0.85rem; }
+.btn-sm { padding: 0.25rem 0.75rem; font-size: 0.8rem; background: #555; color: #fff; border: none; border-radius: 3px; cursor: pointer; }
+.btn-sm:hover { background: #333; }
+.status-pending { color: #888; }
+.status-ok { color: #16a34a; font-weight: 600; }
+.status-err { color: #c33; font-weight: 600; }
+.result-item { padding: 0.5rem 0; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 0.75rem; }
+.result-item a { color: #2563eb; font-weight: 600; }
+</style>
+
+<script>
+(function() {
+    const API = {
+        uploadBatch: '/video/upload-batch',
+        generateBatch: '/video/generate-batch',
+        backgrounds: '/video/backgrounds',
+        uploadBg: '/video/upload-background',
+    };
+
+    let batchId = null;
+    let batchFiles = [];
+    let backgrounds = [];
+
+    // Load existing backgrounds
+    async function loadBackgrounds() {
+        try {
+            const res = await fetch(API.backgrounds);
+            const data = await res.json();
+            backgrounds = data.backgrounds || [];
+            refreshBgSelects();
+        } catch(e) { console.error('Failed to load backgrounds', e); }
+    }
+
+    function refreshBgSelects() {
+        document.querySelectorAll('.bg-select').forEach(sel => {
+            const current = sel.value;
+            sel.innerHTML = '<option value="">-- Default --</option>';
+            backgrounds.forEach(bg => {
+                const opt = document.createElement('option');
+                opt.value = bg.path;
+                opt.textContent = bg.is_default ? '(Default) ' + bg.name.split('/').pop() : bg.name;
+                sel.appendChild(opt);
+            });
+            if (current) sel.value = current;
+        });
+    }
+
+    function updateSelectedCount() {
+        const checks = document.querySelectorAll('.row-check');
+        const checked = [...checks].filter(c => c.checked).length;
+        document.getElementById('selected-count').textContent = checked + ' selected';
+    }
+
+    function renderTable(files) {
+        const tbody = document.getElementById('file-table-body');
+        tbody.innerHTML = '';
+        files.forEach((f, i) => {
+            const tr = document.createElement('tr');
+            tr.dataset.index = f.index;
+            tr.innerHTML = `
+                <td class="col-check"><input type="checkbox" class="row-check" data-index="${f.index}" checked></td>
+                <td>${i + 1}</td>
+                <td>${escHtml(f.name)}</td>
+                <td>${f.size_mb} MB</td>
+                <td>
+                    <div class="bg-controls">
+                        <select class="bg-select" data-index="${f.index}">
+                            <option value="">-- Default --</option>
+                        </select>
+                        <input type="file" class="bg-upload-inline" data-index="${f.index}" accept=".jpg,.jpeg,.png,.webp">
+                    </div>
+                </td>
+                <td class="status-pending" data-status="${f.index}">Ready</td>
+            `;
+            tbody.appendChild(tr);
+        });
+        refreshBgSelects();
+        updateSelectedCount();
+
+        tbody.querySelectorAll('.row-check').forEach(cb => {
+            cb.addEventListener('change', updateSelectedCount);
+        });
+
+        document.getElementById('select-all').addEventListener('change', function() {
+            tbody.querySelectorAll('.row-check').forEach(c => { c.checked = this.checked; });
+            updateSelectedCount();
+        });
+
+        tbody.querySelectorAll('.bg-upload-inline').forEach(input => {
+            input.addEventListener('change', async function() {
+                const idx = this.dataset.index;
+                const file = this.files[0];
+                if (!file) return;
+                const fd = new FormData();
+                fd.append('file', file);
+                const statusEl = document.querySelector(`[data-status="${idx}"]`);
+                statusEl.textContent = 'Uploading bg...';
+                statusEl.className = 'status-pending';
+                try {
+                    const res = await fetch(API.uploadBg, { method: 'POST', body: fd });
+                    const data = await res.json();
+                    backgrounds.push({ name: data.name, path: data.path, is_default: false });
+                    refreshBgSelects();
+                    const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
+                    sel.value = data.path;
+                    statusEl.textContent = 'Ready';
+                } catch(e) {
+                    statusEl.textContent = 'BG upload failed';
+                    statusEl.className = 'status-err';
+                }
+            });
+        });
+    }
+
+    function escHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    // Upload form
+    document.getElementById('upload-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const input = document.getElementById('audio-files');
+        if (!input.files.length) return;
+
+        const fd = new FormData();
+        for (const f of input.files) fd.append('files', f);
+
+        const btn = document.getElementById('btn-upload');
+        btn.disabled = true;
+        btn.textContent = 'Uploading...';
+
+        try {
+            const res = await fetch(API.uploadBatch, { method: 'POST', body: fd });
+            const data = await res.json();
+            batchId = data.batch_id;
+            batchFiles = data.files;
+            if (data.errors.length) {
+                alert('Some files skipped:\n' + data.errors.join('\n'));
+            }
+            document.getElementById('step-table').style.display = '';
+            renderTable(batchFiles);
+        } catch(err) {
+            alert('Upload failed: ' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Upload';
+        }
+    });
+
+    // Upload new background
+    document.getElementById('btn-upload-bg').addEventListener('click', async function() {
+        const input = document.getElementById('new-bg-file');
+        if (!input.files.length) return;
+        const fd = new FormData();
+        fd.append('file', input.files[0]);
+        this.disabled = true;
+        try {
+            const res = await fetch(API.uploadBg, { method: 'POST', body: fd });
+            const data = await res.json();
+            backgrounds.push({ name: data.name, path: data.path, is_default: false });
+            refreshBgSelects();
+            input.value = '';
+        } catch(e) {
+            alert('Upload failed');
+        } finally {
+            this.disabled = false;
+        }
+    });
+
+    // Generate
+    document.getElementById('btn-generate').addEventListener('click', async function() {
+        if (!batchId) return;
+        const checks = document.querySelectorAll('.row-check');
+        const selected = [...checks].filter(c => c.checked).map(c => parseInt(c.dataset.index));
+        if (!selected.length) { alert('Chọn ít nhất 1 file'); return; }
+
+        const backgrounds_map = {};
+        document.querySelectorAll('.bg-select').forEach(sel => {
+            backgrounds_map[sel.dataset.index] = sel.value || null;
+        });
+
+        const config = {
+            resolution: document.getElementById('cfg-resolution').value,
+            fps: parseInt(document.getElementById('cfg-fps').value),
+            codec: document.getElementById('cfg-codec').value,
+            audio_bitrate: document.getElementById('cfg-audio-bitrate').value,
+            image_type: document.getElementById('cfg-image-type').value,
+            crf: parseInt(document.getElementById('cfg-crf').value),
+        };
+
+        const btn = this;
+        btn.disabled = true;
+        btn.textContent = 'Generating...';
+
+        document.getElementById('step-results').style.display = '';
+        const resultsList = document.getElementById('results-list');
+        resultsList.innerHTML = '<p>Processing...</p>';
+
+        try {
+            const res = await fetch(API.generateBatch, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ batch_id: batchId, selected, backgrounds: backgrounds_map, config }),
+            });
+            const data = await res.json();
+            resultsList.innerHTML = '';
+            data.results.forEach(r => {
+                const div = document.createElement('div');
+                div.className = 'result-item';
+                if (r.status === 'done') {
+                    div.innerHTML = `<span class="status-ok">✓</span> <span>${escHtml(r.name)}</span> <a href="${r.video_url}" download>Download (${r.size_mb} MB)</a>`;
+                    const statusEl = document.querySelector(`[data-status="${r.index}"]`);
+                    if (statusEl) { statusEl.textContent = 'Done'; statusEl.className = 'status-ok'; }
+                } else {
+                    div.innerHTML = `<span class="status-err">✗</span> <span>#${r.index}</span> <span class="status-err">${escHtml(r.message)}</span>`;
+                    const statusEl = document.querySelector(`[data-status="${r.index}"]`);
+                    if (statusEl) { statusEl.textContent = 'Error'; statusEl.className = 'status-err'; }
+                }
+                resultsList.appendChild(div);
+            });
+        } catch(err) {
+            resultsList.innerHTML = `<div class="error-block"><p>${escHtml(err.message)}</p></div>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Generate Selected Videos';
+        }
+    });
+
+    loadBackgrounds();
+})();
+</script>
+
+<!-- Parameter Reference -->
+<details class="param-reference">
+<summary><h3 style="display:inline">Tham số FFmpeg — Chi tiết</h3></summary>
+
+<div class="param-section">
+<h4>Audio Bitrate (<code>-b:a</code>)</h4>
+<p>Độ bitrate quyết định chất lượng và kích thước file audio trong video.</p>
+<table>
+<thead><tr><th>Giá trị</th><th>Chất lượng</th><th>Kích thước (1 phút)</th><th>Nên dùng khi</th></tr></thead>
+<tbody>
+<tr><td><code>128k</code></td><td>Trung bình</td><td>~1 MB</td><td>Podcast nói chuyện, audiobook giọng đọc đơn giản. Đủ nghe rõ nhưng dải tần cao (treble) bị cắt bớt.</td></tr>
+<tr><td><code>192k</code></td><td>Tốt (mặc định)</td><td>~1.4 MB</td><td>Phù hợp hầu hết trường hợp. Cân bằng giữa chất lượng và kích thước.</td></tr>
+<tr><td><code>256k</code></td><td>Rất tốt</td><td>~1.9 MB</td><td>Music podcast, audio có nhiều dải tần. Giữ lại chi tiết tốt hơn.</td></tr>
+<tr><td><code>320k</code></td><td>Cao nhất (MP3 max)</td><td>~2.4 MB</td><td>Chất lượng studio, music. File lớn nhất nhưng gần như không nghe khác biệt với 256k trên loa thường.</td></tr>
+</tbody>
+</table>
+<div class="param-note">
+<strong>Lưu ý:</strong> FFmpeg encode audio sang <strong>AAC</strong> (<code>-c:a aac</code>) bất kể input. AAC hiệu quả hơn MP3 ở cùng bitrate.
+Bitrate 192k AAC tương đương ~256k MP3 về chất lượng nghe. Nếu file gốc đã là lossy (MP3, M4A), bitrate output không nên cao hơn bitrate gốc — sẽ chỉ làm file lớn hơn mà không thêm chất lượng.
+</div>
+</div>
+
+<div class="param-section">
+<h4>CRF — Constant Rate Factor (<code>-crf</code>)</h4>
+<p>Điều chỉnh chất lượng video (không phải audio). CRF thấp = chất lượng cao = file lớn.</p>
+<table>
+<thead><tr><th>CRF</th><th>Chất lượng</th><th>File size</th><th>Ứng dụng</th></tr></thead>
+<tbody>
+<tr><td>18</td><td>Tốt nhất (lossless-like)</td><td>Rất lớn</td><td>Archive, master file</td></tr>
+<tr><td>20</td><td>Rất tốt</td><td>Lớn</td><td>Chất lượng cao, YouTube</td></tr>
+<tr><td><strong>23</strong></td><td><strong>Tốt (mặc định)</strong></td><td><strong>Vừa phải</strong></td><td><strong>Phù hợp nhất cho hầu hết use case</strong></td></tr>
+<tr><td>25</td><td>Trung bình</td><td>Nhỏ hơn</td><td>Giới hạn bandwidth</td></tr>
+<tr><td>28</td><td>Thấp</td><td>Nhỏ nhất</td><td>Preview, draft</td></tr>
+</tbody>
+</table>
+<div class="param-note">
+<strong>Cách hoạt động:</strong> CRF là logarithmic — mỗi +6 CRF giảm bitrate khoảng 50%.
+Với nội dung tĩnh (hình ảnh + audio, không phải video thực), CRF 23 cho chất lượng rất tốt vì hình ảnh không thay đổi nhiều.
+</div>
+</div>
+
+<div class="param-section">
+<h4>Video Codec</h4>
+<table>
+<thead><tr><th>Codec</th><th>Engine</th><th>Ưu điểm</th><th>Nhược điểm</th></tr></thead>
+<tbody>
+<tr><td><code>libx264</code></td><td>CPU</td><td>Luôn có sẵn, chất lượng ổn định, CRF control chính xác</td><td>Chậm hơn trên CPU yếu</td></tr>
+<tr><td><code>h264_nvenc</code></td><td>NVIDIA GPU</td><td>Rất nhanh (5-10x), giảm tải CPU</td><td>Cần GPU NVIDIA, chất lượng slightly thấp hơn ở cùng CRF</td></tr>
+</tbody>
+</table>
+<div class="param-note">
+<strong>Tune stillimage:</strong> Khi dùng <code>libx264</code>, FFmpeg tự thêm <code>-tune stillimage</code> — tối ưu encoder cho nội dung ảnh tĩnh + audio (giảm bitrate không cần thiết cho motion estimation).
+</div>
+</div>
+
+<div class="param-section">
+<h4>Image Type — Hiệu ứng hình ảnh</h4>
+<p>Khi chọn hiệu ứng (Ken Burns), FFmpeg dùng <code>zoompan</code> filter để tạo chuyển động từ ảnh tĩnh:</p>
+<table>
+<thead><tr><th>Type</th><th>Hiệu ứng</th><th>Chi tiết kỹ thuật</th></tr></thead>
+<tbody>
+<tr><td><code>none</code></td><td>Ảnh tĩnh</td><td>Ảnh được <code>scale</code> + <code>pad</code> giữ nguyên aspect ratio, lặp lại suốt audio.</td></tr>
+<tr><td><code>zoom-in</code></td><td>Phóng to dần</td><td>Zoom từ 1.0x lên 1.5x, giữ trung tâm. Tạo cảm giác tập trung vào chi tiết.</td></tr>
+<tr><td><code>zoom-out</code></td><td>Thu nhỏ dần</td><td>Zoom từ 1.5x xuống 1.0x. Mở ra từ chi tiết ra toàn cảnh.</td></tr>
+<tr><td><code>pan-left</code></td><td>Trượt sang trái</td><td>Ảnh zoom 1.2x, trượt từ phải sang trái. Tạo cảm giác di chuyển.</td></tr>
+<tr><td><code>pan-right</code></td><td>Trượt sang phải</td><td>Ảnh zoom 1.2x, trượt từ trái sang phải.</td></tr>
+</tbody>
+</table>
+<div class="param-note">
+<strong>Kỹ thuật:</strong> <code>zoompan</code> filter tính toán số frame dựa trên <code>duration x fps</code>.
+Ví dụ: audio 60s @ 30fps = 1800 frames, mỗi frame zoom thêm 0.0015x — tổng zoom ~2.7x (bị clip ở 1.5x).
+Ảnh input phải lớn hơn resolution output để có chỗ zoom/pan mà không bị vỡ hình.
+</div>
+</div>
+
+<div class="param-section">
+<h4>Resolution &amp; FPS</h4>
+<table>
+<thead><tr><th>Resolution</th><th>Pixel count</th><th>File size impact</th><th>Nên dùng khi</th></tr></thead>
+<tbody>
+<tr><td>1920x1080</td><td>2.07 MP</td><td>Baseline (tham chiếu)</td><td>Full HD, YouTube, xem trên TV/màn hình lớn</td></tr>
+<tr><td>1280x720</td><td>0.92 MP</td><td>~50% của 1080p</td><td>HD, xem trên điện thoại, tiết kiệm dung lượng</td></tr>
+<tr><td>854x480</td><td>0.41 MP</td><td>~25% của 1080p</td><td>SD, preview, bandwidth thấp</td></tr>
+</tbody>
+</table>
+<table>
+<thead><tr><th>FPS</th><th>Ung dung</th><th>File size</th></tr></thead>
+<tbody>
+<tr><td>24</td><td>Cinematic, phim ảnh</td><td>Nhỏ nhất (ít frame nhất)</td></tr>
+<tr><td><strong>30</strong></td><td><strong>Standard (mặc định)</strong></td><td><strong>Baseline</strong></td></tr>
+<tr><td>60</td><td>Smooth motion, gaming</td><td>Lớn nhất (nhiều frame nhất)</td></tr>
+</tbody>
+</table>
+<div class="param-note">
+<strong>Với nội dung audiobook/podcast:</strong> 30fps là đủ vì hình ảnh gần như tĩnh. 60fps chỉ có ý nghĩa khi dùng Ken Burns effect để chuyển động mượt hơn — nhưng cũng đồng nghĩa file lớn hơn 2x.
+Hình ảnh được scale bằng <code>force_original_aspect_ratio=decrease</code> + <code>pad</code> để vừa resolution mà không bị méo.
+</div>
+</div>
+
+<div class="param-section">
+<h4>Định dạng audio được hỗ trợ</h4>
+<table>
+<thead><tr><th>Format</th><th>Codec</th><th>Đặc điểm</th><th>Lưu ý</th></tr></thead>
+<tbody>
+<tr><td><code>.wav</code></td><td>PCM (uncompressed)</td><td>Chất lượng gốc, không mất dữ liệu</td><td>File rất lớn (~10MB/phút). Nên dùng làm input.</td></tr>
+<tr><td><code>.mp3</code></td><td>MP3 (lossy)</td><td>Phổ biến nhất, tương thích mọi nơi</td><td>Bitrate gốc quyết định chất lượng tối đa. Encode lại sang AAC có thể mất thêm chất lượng.</td></tr>
+<tr><td><code>.m4a</code></td><td>AAC (lossy)</td><td>Hiệu quả hơn MP3, chất lượng tốt hơn ở cùng bitrate</td><td>Format khuyến nghị cho audio lossy. Apple ecosystem dùng format này.</td></tr>
+<tr><td><code>.ogg</code></td><td>Vorbis (lossy)</td><td>Mã nguồn mở, chất lượng tốt</td><td>Ít tương thích hơn MP3/M4A trên một số thiết bị.</td></tr>
+</tbody>
+</table>
+<div class="param-note">
+<strong>Luồng xử lý:</strong> Bất kể định dạng input, FFmpeg luôn encode output sang <strong>AAC</strong> (<code>-c:a aac</code>).
+Quy trình: <code>input codec decode → PCM → AAC encode → mux vào MP4</code>.
+Vì vậy, WAV (lossless) cho chất lượng tốt nhất làm input. Nếu dùng MP3/M4A, chọn bitrate gốc >= bitrate output để tránh generation loss.
+</div>
+</div>
+
+<div class="param-section">
+<h4>FFmpeg command tương đương</h4>
+<p>Mỗi video được tạo tương đương lệnh:</p>
+<pre class="ffmpeg-cmd">ffmpeg -y -loop 1 -i image.jpg -i audio.mp3 \
+  -c:v libx264 -tune stillimage \
+  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" \
+  -r 30 -c:a aac -b:a 192k \
+  -pix_fmt yuv420p -crf 23 -shortest output.mp4</pre>
+</div>
+</details>
+
+<style>
+.param-reference { margin-top: 2rem; }
+.param-reference summary { cursor: pointer; padding: 0.75rem 1rem; background: #f0f4ff; border-radius: 6px; border: 1px solid #d0daf0; }
+.param-reference summary:hover { background: #e5ecff; }
+.param-reference[open] summary { border-radius: 6px 6px 0 0; border-bottom: none; }
+.param-section { padding: 1rem 1.25rem; border: 1px solid #eee; border-top: none; background: #fff; }
+.param-section:last-child { border-radius: 0 0 6px 6px; }
+.param-section h4 { margin: 0 0 0.5rem; color: #1e40af; }
+.param-section table { font-size: 0.88rem; margin: 0.5rem 0; }
+.param-note { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: #fefce8; border-left: 3px solid #eab308; border-radius: 3px; font-size: 0.88rem; }
+.ffmpeg-cmd { background: #1e293b; color: #e2e8f0; padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.82rem; overflow-x: auto; white-space: pre; }
+</style>
 {% endblock %}
