@@ -4,7 +4,7 @@
 <h2>Upload an EPUB</h2>
 
 <div class="card">
-    <form action="/books/upload" method="post" enctype="multipart/form-data">
+    <form action="/books/upload" method="post" enctype="multipart/form-data" id="upload-form">
         <div class="form-group">
             <label for="epub_file">EPUB file <span class="required">*</span></label>
             <div class="dropzone" id="dropzone-epub">
@@ -15,6 +15,29 @@
             </div>
             <div id="epub-preview" class="img-preview" style="display:none"></div>
         </div>
+
+        <div id="chapter-preview-section" style="display:none">
+            <div class="form-group">
+                <label>
+                    Chapters <span id="chapter-summary" style="font-weight:normal;color:var(--text-muted)"></span>
+                </label>
+                <div style="display:flex;gap:var(--space-sm);align-items:center;margin-bottom:var(--space-sm)">
+                    <button type="button" class="btn-outline btn-sm" id="btn-select-all">Chọn tất cả</button>
+                    <button type="button" class="btn-outline btn-sm" id="btn-deselect-all">Bỏ chọn tất cả</button>
+                    <button type="button" class="btn-outline btn-sm" id="btn-preview-selected">Xem trước đã chọn</button>
+                </div>
+                <div class="chapter-checkbox-grid" id="chapter-grid"></div>
+            </div>
+
+            <div id="chapter-text-preview" style="display:none">
+                <div class="form-group">
+                    <label>Nội dung chapter</label>
+                    <div id="chapter-text-content" class="chapter-preview-text" style="max-height:20rem;overflow-y:auto;padding:var(--space-md);background:var(--bg-card);border:1px solid var(--border-color);border-radius:var(--border-radius);font-family:var(--font-serif);font-size:var(--font-size-sm);line-height:1.6;white-space:pre-wrap"></div>
+                </div>
+            </div>
+        </div>
+
+        <input type="hidden" id="excluded_chapters" name="excluded_chapters" value="">
 
         <div class="form-group">
             <label for="patch_size">Chapters per patch</label>
@@ -53,7 +76,7 @@
             <small>Improves cloning accuracy. Type the exact words from the voice sample.</small>
         </div>
 
-        <button type="submit" class="btn-primary" style="margin-top:var(--space-md)">Upload &amp; Parse</button>
+        <button type="submit" class="btn-primary" style="margin-top:var(--space-md)" id="btn-submit">Upload &amp; Parse</button>
     </form>
 </div>
 
@@ -88,6 +111,7 @@ function setupDropzone(dropzoneId, inputId, previewId, type) {
         } else if (type === 'epub') {
             preview.innerHTML = '<span style="font-size:var(--font-size-sm);color:var(--text-secondary)">&#128214; ' + file.name + '</span>';
             preview.style.display = 'inline-block';
+            parseEpubForPreview(file);
         }
     });
 }
@@ -98,6 +122,128 @@ function removePreview(type) {
     if (preview) { preview.style.display = 'none'; preview.innerHTML = ''; }
     if (input) { input.value = ''; }
 }
+
+let allChapters = [];
+
+function parseEpubForPreview(file) {
+    const section = document.getElementById('chapter-preview-section');
+    const grid = document.getElementById('chapter-grid');
+    const summary = document.getElementById('chapter-summary');
+    const textPreview = document.getElementById('chapter-text-preview');
+    const textContent = document.getElementById('chapter-text-content');
+
+    section.style.display = 'none';
+    grid.innerHTML = '<p style="color:var(--text-muted);font-style:italic">Đang parse epub...</p>';
+    section.style.display = 'block';
+    textPreview.style.display = 'none';
+
+    const formData = new FormData();
+    formData.append('epub_file', file);
+
+    fetch('/books/parse-epub', { method: 'POST', body: formData })
+        .then(r => { if (!r.ok) throw new Error('Parse failed'); return r.json(); })
+        .then(data => {
+            allChapters = data.chapters;
+            summary.textContent = '(' + allChapters.length + ' chapters)';
+            renderChapterGrid();
+        })
+        .catch(err => {
+            grid.innerHTML = '<p style="color:var(--color-danger)">Lỗi khi parse epub: ' + err.message + '</p>';
+        });
+}
+
+function renderChapterGrid() {
+    const grid = document.getElementById('chapter-grid');
+    grid.innerHTML = '';
+
+    allChapters.forEach(ch => {
+        const label = document.createElement('label');
+        label.className = 'chapter-checkbox-item';
+        label.style.cursor = 'pointer';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = true;
+        checkbox.dataset.index = ch.index;
+
+        const info = document.createElement('span');
+        info.textContent = ch.index + ': ' + ch.title + ' (' + ch.char_count + ' chars)';
+
+        label.appendChild(checkbox);
+        label.appendChild(info);
+
+        checkbox.addEventListener('change', updateExcludedField);
+
+        label.addEventListener('click', function(e) {
+            if (e.target === checkbox) return;
+            checkbox.checked = !checkbox.checked;
+            updateExcludedField();
+        });
+
+        info.addEventListener('click', function() {
+            showChapterText(ch);
+        });
+
+        grid.appendChild(label);
+    });
+
+    updateExcludedField();
+}
+
+function showChapterText(ch) {
+    const textPreview = document.getElementById('chapter-text-preview');
+    const textContent = document.getElementById('chapter-text-content');
+    textContent.textContent = ch.text_excerpt + (ch.text_excerpt.length >= 300 ? '...' : '');
+    textPreview.style.display = 'block';
+}
+
+function updateExcludedField() {
+    const excluded = [];
+    document.querySelectorAll('#chapter-grid input[type="checkbox"]').forEach(cb => {
+        if (!cb.checked) excluded.push(cb.dataset.index);
+    });
+    document.getElementById('excluded_chapters').value = excluded.join(',');
+    updateSummary();
+}
+
+function updateSummary() {
+    const total = allChapters.length;
+    const excluded = document.querySelectorAll('#chapter-grid input[type="checkbox"]:not(:checked)').length;
+    const included = total - excluded;
+    const summary = document.getElementById('chapter-summary');
+    if (excluded === 0) {
+        summary.textContent = '(' + total + ' chapters)';
+    } else {
+        summary.textContent = '(' + included + ' / ' + total + ' chapters — ' + excluded + ' excluded)';
+    }
+}
+
+document.getElementById('btn-select-all').addEventListener('click', function() {
+    document.querySelectorAll('#chapter-grid input[type="checkbox"]').forEach(cb => cb.checked = true);
+    updateExcludedField();
+});
+
+document.getElementById('btn-deselect-all').addEventListener('click', function() {
+    document.querySelectorAll('#chapter-grid input[type="checkbox"]').forEach(cb => cb.checked = false);
+    updateExcludedField();
+});
+
+document.getElementById('btn-preview-selected').addEventListener('click', function() {
+    const selected = [];
+    document.querySelectorAll('#chapter-grid input[type="checkbox"]:checked').forEach(cb => {
+        const ch = allChapters.find(c => c.index === parseInt(cb.dataset.index));
+        if (ch) selected.push(ch);
+    });
+    if (selected.length === 0) {
+        alert('Không có chapter nào được chọn');
+        return;
+    }
+    const textPreview = document.getElementById('chapter-text-preview');
+    const textContent = document.getElementById('chapter-text-content');
+    let text = selected.map(ch => '[#' + ch.index + '] ' + ch.title + '\n' + ch.text_excerpt + (ch.text_excerpt.length >= 300 ? '...' : '')).join('\n\n---\n\n');
+    textContent.textContent = text;
+    textPreview.style.display = 'block';
+});
 
 setupDropzone('dropzone-epub', 'epub_file', 'epub-preview', 'epub');
 setupDropzone('dropzone-bg', 'background_image', 'bg-preview', 'image');

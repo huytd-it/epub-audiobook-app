@@ -40,6 +40,38 @@ def upload_form(request: Request):
     return templates.TemplateResponse(request, "upload.html", {})
 
 
+@router.post("/books/parse-epub")
+async def parse_epub_preview(request: Request, epub_file: UploadFile = File(...)):
+    """Parse an EPUB and return chapter list as JSON without creating a book."""
+    uploads_dir = Path(settings.data_root) / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    tmp_path = uploads_dir / f"_tmp_preview_{epub_file.filename}"
+    try:
+        with open(tmp_path, "wb") as f:
+            shutil.copyfileobj(epub_file.file, f)
+
+        chapters = parse_epub(str(tmp_path))
+        return JSONResponse({
+            "filename": epub_file.filename,
+            "title": Path(epub_file.filename).stem,
+            "chapters": [
+                {
+                    "index": idx,
+                    "title": ch.title,
+                    "char_count": ch.char_count,
+                    "text_excerpt": ch.text[:300],
+                }
+                for idx, ch in enumerate(chapters)
+            ],
+        })
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 @router.post("/books/upload")
 async def upload_book(
     request: Request,
@@ -48,6 +80,7 @@ async def upload_book(
     background_image: UploadFile | None = File(default=None),
     voice_clip: UploadFile | None = File(default=None),
     voice_transcript: str | None = Form(default=None),
+    excluded_chapters: str | None = Form(default=None),
 ):
     uploads_dir = Path(settings.data_root) / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +115,12 @@ async def upload_book(
             background_image_path=None,
             voice_transcript=voice_transcript or None,
         )
+
+        if excluded_chapters:
+            for idx_str in excluded_chapters.split(","):
+                idx_str = idx_str.strip()
+                if idx_str.isdigit():
+                    repository.set_chapter_excluded(conn, book.id, int(idx_str), True)
 
         final_epub_path = uploads_dir / f"{book.id}.epub"
         tmp_epub_path.rename(final_epub_path)
