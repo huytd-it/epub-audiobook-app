@@ -237,6 +237,45 @@ def reset_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
     return True
 
 
+def delete_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
+    """Delete a single patch, clean up its files, and renumber remaining patches.
+    Refuses if the patch is currently 'processing'."""
+    patch = get_patch(conn, patch_id)
+    if patch is None or patch.status == "processing":
+        return False
+
+    book_id = patch.book_id
+
+    if patch.audio_path:
+        Path(patch.audio_path).unlink(missing_ok=True)
+    if patch.image_path:
+        Path(patch.image_path).unlink(missing_ok=True)
+    video_dir = Path("data") / "books" / str(book_id) / "patch_videos"
+    video_file = video_dir / f"{patch_id}.mp4"
+    if video_file.exists():
+        video_file.unlink(missing_ok=True)
+
+    conn.execute("DELETE FROM patch WHERE id = ?", (patch_id,))
+
+    remaining = conn.execute(
+        "SELECT id FROM patch WHERE book_id = ? ORDER BY patch_index",
+        (book_id,),
+    ).fetchall()
+    for new_idx, row in enumerate(remaining):
+        conn.execute(
+            "UPDATE patch SET patch_index = ?, updated_at = ? WHERE id = ?",
+            (new_idx, _now(), row["id"]),
+        )
+
+    conn.execute(
+        """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,
+           status = 'ready', updated_at = ? WHERE id = ?""",
+        (_now(), book_id),
+    )
+    conn.commit()
+    return True
+
+
 def all_patches_done(conn: sqlite3.Connection, book_id: int) -> bool:
     row = conn.execute(
         "SELECT COUNT(*) AS c FROM patch WHERE book_id = ? AND status != 'done'", (book_id,)
@@ -643,6 +682,80 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
 # ---------------------------------------------------------------------------
 # Auto-build patches
 # ---------------------------------------------------------------------------
+
+
+def preview_auto_build(
+    conn: sqlite3.Connection,
+    book_id: int,
+    start_chapter: int,
+    end_chapter: int | None = None,
+    patch_size: int | None = None,
+) -> list[dict]:
+    """Compute planned patches without writing to DB. Returns list of
+    {patch_index, chapter_start, chapter_end, chunk_count} dicts."""
+    book = get_book(conn, book_id)
+    if book is None:
+        raise ValueError(f"book {book_id} not found")
+
+    if patch_size is None:
+        patch_size = book.patch_size
+    if patch_size < 1:
+        raise ValueError("patch_size must be >= 1")
+
+    max_idx_row = conn.execute(
+        "SELECT MAX(chapter_index) AS m FROM chapter WHERE book_id = ?",
+        (book_id,),
+    ).fetchone()
+    max_index = max_idx_row["m"] if max_idx_row["m"] is not None else -1
+
+    if start_chapter < 0:
+        raise ValueError("start_chapter must be >= 0")
+    if start_chapter > max_index:
+        raise ValueError(f"start_chapter {start_chapter} out of bounds (max chapter is {max_index})")
+
+    if end_chapter is None:
+        end_chapter = max_index
+    if end_chapter < start_chapter:
+        raise ValueError(f"end_chapter must be >= start_chapter ({start_chapter})")
+    if end_chapter > max_index:
+        end_chapter = max_index
+
+    rows = conn.execute(
+        """SELECT chapter_index FROM chapter
+           WHERE book_id = ? AND is_excluded = 0
+             AND chapter_index >= ? AND chapter_index <= ?
+           ORDER BY chapter_index""",
+        (book_id, start_chapter, end_chapter),
+    ).fetchall()
+    included = [r["chapter_index"] for r in rows]
+    if not included:
+        raise ValueError(f"no included chapters in range [{start_chapter}, {end_chapter}]")
+
+    ranges: list[tuple[int, int]] = []
+    for i in range(0, len(included), patch_size):
+        chunk = included[i : i + patch_size]
+        ranges.append((chunk[0], chunk[-1]))
+
+    result: list[dict] = []
+    for idx, (start, end) in enumerate(ranges):
+        row = conn.execute(
+            "SELECT title FROM chapter WHERE book_id = ? AND chapter_index = ?",
+            (book_id, start),
+        ).fetchone()
+        name = row["title"] if row else ""
+        total_chars = conn.execute(
+            "SELECT COALESCE(SUM(char_count), 0) AS c FROM chapter WHERE book_id = ? AND chapter_index BETWEEN ? AND ?",
+            (book_id, start, end),
+        ).fetchone()["c"]
+        chunk_count = max(1, math.ceil(total_chars / _TTS_MAX_CHARS))
+        result.append({
+            "patch_index": idx,
+            "chapter_start": start,
+            "chapter_end": end,
+            "name": name,
+            "chunk_count": chunk_count,
+        })
+    return result
 
 
 def auto_build_patches(

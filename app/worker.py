@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 _WARNING_EVENTS = {"queue.paused", "worker.shutdown_timeout"}
+_TITLE_END_PUNCTUATION = frozenset(".!?…:;,)]\"'»")
 
 
 def _now_iso() -> str:
@@ -203,8 +204,23 @@ class PatchWorker:
         """Blocking: runs in a thread via asyncio.to_thread so the event loop (and thus the
         web UI) isn't frozen during synthesis."""
         with self.db_lock:
-            patch_text = repository.build_patch_text(self.conn, patch)
+            chapters = repository.get_chapters_in_range(
+                self.conn, patch.book_id, patch.chapter_start, patch.chapter_end
+            )
+            rules = repository.list_replace_rules(self.conn, patch.book_id)
             book = repository.get_book(self.conn, patch.book_id)
+
+        included = [ch for ch in chapters if not ch.is_excluded]
+        texts: list[str] = []
+        for ch in included:
+            t = ch.text
+            if ch.title and t.startswith(ch.title) and ch.title[-1] not in _TITLE_END_PUNCTUATION:
+                suffix = t[len(ch.title):].lstrip()
+                if suffix:
+                    t = ch.title + ".\n\n" + suffix
+            texts.append(t)
+        raw = "\n\n".join(texts)
+        patch_text = repository.apply_replace_rules(raw, rules)
 
         ref_wav = book.voice_clip_path if book else None
         ref_text = book.voice_transcript if book else None

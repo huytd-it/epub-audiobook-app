@@ -1,16 +1,13 @@
 {% extends "base.html" %}
 {% block title %}{{ book.title }}{% endblock %}
 {% block content %}
-{% if has_active_patches %}
-<meta http-equiv="refresh" content="5">
-{% endif %}
 
 <h2>{{ book.title }}</h2>
 
 <div class="card" style="margin-top:var(--space-lg)">
     <div class="card-header">
         <h3 style="margin:0">Overview</h3>
-        <span>
+        <span id="book-status-badge">
             {% if book.status == 'done' %}
                 <span class="badge badge-done">Done</span>
             {% elif book.status == 'processing' %}
@@ -62,7 +59,7 @@
             <em>No background image set — video generation skipped.</em>
         </p>
     {% elif video_job %}
-        <div style="margin-bottom:var(--space-md)">
+        <div style="margin-bottom:var(--space-md)" id="video-job-status">
             {% if video_job.status == "pending" %}
                 <span class="badge badge-pending">Pending (queued)</span>
                 <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline;margin-left:0.5rem">
@@ -157,12 +154,23 @@
     <div class="card-header">
         <h3 style="margin:0">Auto-build Patches</h3>
     </div>
-    <form action="/books/{{ book.id }}/patches/auto-build" method="post" class="auto-build-form">
-        <label>Start chapter <input type="number" name="start_chapter" min="0" required></label>
-        <label>End chapter <input type="number" name="end_chapter" min="0" placeholder="to last chapter"></label>
-        <label>Patch size <input type="number" name="patch_size" min="1" value="{{ book.patch_size }}" size="3"></label>
-        <button type="submit" class="btn-primary">Auto-build</button>
+    <form id="auto-build-form" class="auto-build-form">
+        <label>Start chapter <input type="number" name="start_chapter" min="0" required id="ab-start"></label>
+        <label>End chapter <input type="number" name="end_chapter" min="0" placeholder="to last chapter" id="ab-end"></label>
+        <label>Patch size <input type="number" name="patch_size" min="1" value="{{ book.patch_size }}" size="3" id="ab-size"></label>
+        <button type="button" class="btn-outline" onclick="previewAutoBuild()">Preview</button>
+        <button type="button" class="btn-primary" id="btn-start-queue" onclick="startQueue()" style="display:none">Start Queue</button>
     </form>
+    <div id="auto-build-preview" style="display:none;margin-top:var(--space-md)">
+        <p style="margin:0 0 var(--space-sm) 0;font-weight:500">Planned patches:</p>
+        <div class="table-wrap">
+        <table>
+            <thead><tr><th>#</th><th>Chapters</th><th>Name</th><th>Chunks</th></tr></thead>
+            <tbody id="ab-preview-body"></tbody>
+        </table>
+        </div>
+    </div>
+    <p id="ab-error" style="display:none;color:var(--color-error);margin-top:var(--space-sm)"></p>
 </div>
 
 {% if patches %}
@@ -188,7 +196,7 @@
                 <td><strong>{{ patch.name or patch.patch_index }}</strong></td>
                 <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
                 <td>{{ patch.chunk_count }}</td>
-                <td>
+                <td id="patch-status-{{ patch.id }}">
                     {% if patch.status == 'done' %}
                         <span class="badge badge-done">Done</span>
                     {% elif patch.status == 'processing' %}
@@ -205,6 +213,10 @@
                     {% if patch.status != "processing" %}
                     <form action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
                         <button type="submit" class="btn-outline btn-sm">Regenerate</button>
+                    </form>
+                    <form action="/books/{{ book.id }}/patches/{{ patch.id }}/delete" method="post" style="display:inline"
+                          onsubmit="return confirm('Delete this patch? Patches will be renumbered.')">
+                        <button type="submit" class="btn-danger btn-sm">Delete</button>
                     </form>
                     {% endif %}
                     {% if patch.status == "done" and patch.audio_path %}
@@ -224,4 +236,109 @@
     </p>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const BOOK_ID = {{ book.id }};
+    const STATUS_URL = `/books/${BOOK_ID}/status`;
+    const BADGE_HTML = {
+        done:       '<span class="badge badge-done">Done</span>',
+        processing: '<span class="badge badge-processing">Processing</span>',
+        failed:     '<span class="badge badge-failed">Failed</span>',
+        pending:    '<span class="badge badge-pending">Pending</span>',
+    };
+
+    let pollTimer = null;
+
+    function badgeFor(status) {
+        return BADGE_HTML[status] || `<span class="badge badge-pending">${status}</span>`;
+    }
+
+    async function poll() {
+        try {
+            const res = await fetch(STATUS_URL);
+            if (!res.ok) return;
+            const data = await res.json();
+
+            const bookBadge = document.getElementById('book-status-badge');
+            if (bookBadge) bookBadge.innerHTML = badgeFor(data.book_status);
+
+            for (const p of data.patches) {
+                const el = document.getElementById(`patch-status-${p.id}`);
+                if (el) el.innerHTML = badgeFor(p.status);
+            }
+
+            const videoEl = document.getElementById('video-job-status');
+            if (videoEl && data.video_job) {
+                videoEl.innerHTML = badgeFor(data.video_job.status);
+            }
+
+            if (!data.has_active_patches && data.book_status !== 'processing') {
+                window.location.reload();
+                return;
+            }
+        } catch (_) {}
+        pollTimer = setTimeout(poll, 5000);
+    }
+
+    {% if has_active_patches %}
+    pollTimer = setTimeout(poll, 5000);
+    {% endif %}
+
+    // --- Auto-build preview + start queue ---
+    window.previewAutoBuild = async function() {
+        const start = document.getElementById('ab-start').value;
+        const end = document.getElementById('ab-end').value;
+        const size = document.getElementById('ab-size').value;
+        const errEl = document.getElementById('ab-error');
+        const previewEl = document.getElementById('auto-build-preview');
+        const tbody = document.getElementById('ab-preview-body');
+        const btnStart = document.getElementById('btn-start-queue');
+
+        errEl.style.display = 'none';
+        if (!start) { errEl.textContent = 'Start chapter is required'; errEl.style.display = 'block'; return; }
+
+        const params = new URLSearchParams({ start_chapter: start });
+        if (end) params.set('end_chapter', end);
+        if (size) params.set('patch_size', size);
+
+        try {
+            const res = await fetch(`/books/${BOOK_ID}/patches/auto-build/preview?${params}`);
+            const data = await res.json();
+            if (!res.ok) { errEl.textContent = data.detail || 'Preview failed'; errEl.style.display = 'block'; return; }
+
+            tbody.innerHTML = '';
+            for (const p of data.patches) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${p.patch_index + 1}</td><td>${p.chapter_start}–${p.chapter_end}</td><td>${p.name || '–'}</td><td>${p.chunk_count}</td>`;
+                tbody.appendChild(tr);
+            }
+            previewEl.style.display = 'block';
+            btnStart.style.display = 'inline-block';
+        } catch (e) {
+            errEl.textContent = 'Network error'; errEl.style.display = 'block';
+        }
+    };
+
+    window.startQueue = function() {
+        const form = document.getElementById('auto-build-form');
+        const hidden = document.createElement('form');
+        hidden.method = 'POST';
+        hidden.action = `/books/${BOOK_ID}/patches/auto-build`;
+        for (const el of form.elements) {
+            if (el.name) {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = el.name;
+                input.value = el.value;
+                hidden.appendChild(input);
+            }
+        }
+        document.body.appendChild(hidden);
+        hidden.submit();
+    };
+})();
+</script>
 {% endblock %}

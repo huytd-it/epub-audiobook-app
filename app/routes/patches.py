@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from pathlib import Path
@@ -14,6 +15,16 @@ from app.deps import locked_conn
 router = APIRouter()
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/delete")
+def delete_patch(request: Request, book_id: int, patch_id: int):
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        repository.delete_patch(conn, patch_id)
+    return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/regenerate")
@@ -102,7 +113,7 @@ def get_patch_image(request: Request, book_id: int, patch_id: int):
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/generate-video")
-def generate_patch_video(request: Request, book_id: int, patch_id: int):
+async def generate_patch_video(request: Request, book_id: int, patch_id: int):
     with locked_conn(request) as conn:
         patch = repository.get_patch(conn, patch_id)
         if patch is None or patch.book_id != book_id:
@@ -127,7 +138,8 @@ def generate_patch_video(request: Request, book_id: int, patch_id: int):
     out_path = str(out_dir / f"{patch_id}.mp4")
 
     try:
-        video_gen.generate_segment(
+        await asyncio.to_thread(
+            video_gen.generate_segment,
             image, patch.audio_path, out_path,
             image_type=image_type,
             resolution=resolution,

@@ -1,6 +1,7 @@
 """Standalone Video Creator page: upload audio + image + ffmpeg settings -> mp4."""
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import time
@@ -162,7 +163,8 @@ async def generate_video(
     tmp_out = _TMP_DIR / f"{job_id}.mp4"
 
     try:
-        video_gen.generate_standalone_video(
+        await asyncio.to_thread(
+            video_gen.generate_standalone_video,
             str(audio_path), str(image_path), str(tmp_out),
             **cfg,
         )
@@ -312,7 +314,8 @@ async def generate_batch(request: Request):
         out_name = f"{batch_id}_{idx}.mp4"
         tmp_out = _TMP_DIR / out_name
         try:
-            video_gen.generate_standalone_video(
+            await asyncio.to_thread(
+                video_gen.generate_standalone_video,
                 str(audio_path), str(image_path), str(tmp_out),
                 **cfg,
             )

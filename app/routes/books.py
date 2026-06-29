@@ -172,6 +172,31 @@ def book_detail(request: Request, book_id: int):
     )
 
 
+@router.get("/books/{book_id}/status")
+def book_status(request: Request, book_id: int):
+    """Lightweight JSON endpoint for polling status without reloading the page."""
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        patch_list = repository.list_patches(conn, book_id)
+        video_job = repository.get_book_job(conn, book_id, "video")
+    return JSONResponse({
+        "book_status": book.status,
+        "has_final_audio": bool(book.final_audio_path),
+        "has_active_patches": any(p.status in ("pending", "processing") for p in patch_list),
+        "patches": [
+            {"id": p.id, "status": p.status, "error_message": p.error_message}
+            for p in patch_list
+        ],
+        "video_job": {
+            "status": video_job.status,
+            "error_message": video_job.error_message,
+            "output_path": video_job.output_path,
+        } if video_job else None,
+    })
+
+
 @router.post("/books/{book_id}/video")
 def trigger_video(request: Request, book_id: int):
     """Enqueue a video book_job. Video generation is now handled by the worker
@@ -469,6 +494,27 @@ async def auto_build_patches(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+@router.get("/books/{book_id}/patches/auto-build/preview")
+def preview_auto_build(
+    request: Request,
+    book_id: int,
+    start_chapter: int = Query(...),
+    end_chapter: int | None = Query(default=None),
+    patch_size: int | None = Query(default=None),
+):
+    """Return planned patches as JSON without creating them."""
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        try:
+            planned = repository.preview_auto_build(
+                conn, book_id, start_chapter, end_chapter, patch_size,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"patches": planned})
 
 
 @router.get("/books/{book_id}/patches/{patch_id}/text", response_class=PlainTextResponse)

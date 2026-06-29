@@ -98,6 +98,10 @@
                         <form action="/books/{{ book.id }}/patches/{{ p.id }}/regenerate" method="post" style="display:inline">
                             <button type="submit" class="btn-outline btn-sm">Regenerate</button>
                         </form>
+                        <form action="/books/{{ book.id }}/patches/{{ p.id }}/delete" method="post" style="display:inline"
+                              onsubmit="return confirm('Delete this patch? Patches will be renumbered.')">
+                            <button type="submit" class="btn-danger btn-sm">Delete</button>
+                        </form>
                         {% endif %}
                         {% if p.status == "done" and p.audio_path %}
                             <audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ p.id }}/audio"></audio>
