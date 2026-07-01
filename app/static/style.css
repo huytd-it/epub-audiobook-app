@@ -72,7 +72,7 @@
   --transition-slow: 300ms ease;
 
   /* Layout */
-  --max-width: 960px;
+  --max-width: 1340px;
   --nav-height: 60px;
 
   /* Dark mode overrides */

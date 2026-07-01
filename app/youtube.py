@@ -3,9 +3,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Reusing the same OAuth client for both YouTube and Google Drive (see .env.example) means
+# Google's token response often includes every scope ever granted to that client for this
+# account, not just the one this flow requested. oauthlib treats that as an error by
+# default ("Scope has changed") unless this is set - this is the standard, documented way
+# to allow it.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 try:
     from google.auth.transport.requests import Request
@@ -145,12 +153,21 @@ def get_authorization_url(redirect_uri: str) -> str:
             }
         },
         scopes=_SCOPES,
+        # PKCE needs the same code_verifier at both the auth-url step and the token-exchange
+        # step, but those happen in two separate HTTP requests with no shared Flow instance
+        # (no server-side session here) - so auto-generating one here would just get lost by
+        # the time exchange_code() runs, causing "invalid_grant: Missing code verifier". Not
+        # needed anyway since this is a confidential client (has a client_secret).
+        autogenerate_code_verifier=False,
     )
     flow.redirect_uri = redirect_uri
     url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
-        prompt="consent",
+        # select_account forces Google to always show the account chooser, even if the
+        # browser already has an active session for a single Google account (otherwise it
+        # silently reuses that account without letting the user pick a different one).
+        prompt="select_account consent",
     )
     return url
 
@@ -168,6 +185,7 @@ def exchange_code(code: str, redirect_uri: str) -> dict:
             }
         },
         scopes=_SCOPES,
+        autogenerate_code_verifier=False,
     )
     flow.redirect_uri = redirect_uri
     flow.fetch_token(code=code)

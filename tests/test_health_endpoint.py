@@ -19,6 +19,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_mod.settings, "data_root", str(tmp_path))
     monkeypatch.setattr(settings_mod.settings, "worker_poll_interval", 0.05)
     monkeypatch.setattr(settings_mod.settings, "worker_shutdown_timeout_seconds", 1.0)
+    # This test needs a live PatchWorker regardless of the developer's local .env (which may
+    # have ENABLE_WORKER=false for their own dev server) - config.py now loads .env, so pin
+    # this explicitly rather than relying on the field default.
+    monkeypatch.setattr(settings_mod.settings, "enable_worker", True)
     with TestClient(app) as c:
         yield c
 

@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from app import youtube
 from app.config import settings
+from app.deps import locked_conn
 
 logger = logging.getLogger(__name__)
 
@@ -18,16 +19,12 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 
-def _get_conn(request: Request):
-    return request.app.state.conn
-
-
 @router.get("/youtube", response_class=HTMLResponse)
 def youtube_page(request: Request):
-    conn = _get_conn(request)
-    creds = youtube.get_creds_from_db(conn)
-    connected = creds is not None and bool(creds.get("channel_name"))
-    uploads = youtube.list_uploads(conn, limit=30)
+    with locked_conn(request) as conn:
+        creds = youtube.get_creds_from_db(conn)
+        connected = creds is not None and bool(creds.get("channel_name"))
+        uploads = youtube.list_uploads(conn, limit=30)
     return templates.TemplateResponse(request, "youtube.html", {
         "request": request,
         "connected": connected,
@@ -49,7 +46,6 @@ def youtube_connect(request: Request):
 
 @router.get("/youtube/callback")
 def youtube_callback(request: Request, code: str = "", error: str = ""):
-    conn = _get_conn(request)
     if error:
         return RedirectResponse(url=f"/youtube?error={error}")
     if not code:
@@ -62,21 +58,26 @@ def youtube_callback(request: Request, code: str = "", error: str = ""):
         logger.exception("YouTube OAuth callback failed")
         return RedirectResponse(url=f"/youtube?error={str(exc)}")
 
-    youtube.save_credentials(
-        conn,
-        access_token=result["access_token"],
-        refresh_token=result["refresh_token"],
-        token_expiry=result["token_expiry"],
-        channel_id=result["channel_id"],
-        channel_name=result["channel_name"],
-    )
+    try:
+        with locked_conn(request) as conn:
+            youtube.save_credentials(
+                conn,
+                access_token=result["access_token"],
+                refresh_token=result["refresh_token"],
+                token_expiry=result["token_expiry"],
+                channel_id=result["channel_id"],
+                channel_name=result["channel_name"],
+            )
+    except Exception as exc:
+        logger.exception("Failed to save YouTube credentials")
+        return RedirectResponse(url=f"/youtube?error={str(exc)}")
     return RedirectResponse(url="/youtube?connected=1")
 
 
 @router.post("/youtube/disconnect")
 def youtube_disconnect(request: Request):
-    conn = _get_conn(request)
-    youtube.delete_credentials(conn)
+    with locked_conn(request) as conn:
+        youtube.delete_credentials(conn)
     return JSONResponse({"status": "disconnected"})
 
 
@@ -89,22 +90,22 @@ async def youtube_upload_manual(
     tags: str = Form(default=""),
     privacy_status: str = Form(default="private"),
 ):
-    conn = _get_conn(request)
     if not youtube.is_configured():
         raise HTTPException(status_code=400, detail="YouTube not configured")
-    if not youtube.get_creds_from_db(conn):
-        raise HTTPException(status_code=400, detail="YouTube not connected")
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
-    result = youtube.upload_video(
-        conn,
-        video_path=video_path,
-        title=title,
-        description=description,
-        tags=tag_list,
-        privacy_status=privacy_status,
-    )
+    with locked_conn(request) as conn:
+        if not youtube.get_creds_from_db(conn):
+            raise HTTPException(status_code=400, detail="YouTube not connected")
+        result = youtube.upload_video(
+            conn,
+            video_path=video_path,
+            title=title,
+            description=description,
+            tags=tag_list,
+            privacy_status=privacy_status,
+        )
     return JSONResponse(result)
 
 
@@ -118,11 +119,8 @@ async def youtube_upload_file(
     privacy_status: str = Form(default="private"),
 ):
     """Upload a video file directly (for standalone videos not yet on disk)."""
-    conn = _get_conn(request)
     if not youtube.is_configured():
         raise HTTPException(status_code=400, detail="YouTube not configured")
-    if not youtube.get_creds_from_db(conn):
-        raise HTTPException(status_code=400, detail="YouTube not connected")
 
     # Save to tmp
     from app.routes.video import _TMP_DIR
@@ -136,19 +134,22 @@ async def youtube_upload_file(
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
-    result = youtube.upload_video(
-        conn,
-        video_path=str(tmp_path),
-        title=title,
-        description=description,
-        tags=tag_list,
-        privacy_status=privacy_status,
-    )
+    with locked_conn(request) as conn:
+        if not youtube.get_creds_from_db(conn):
+            raise HTTPException(status_code=400, detail="YouTube not connected")
+        result = youtube.upload_video(
+            conn,
+            video_path=str(tmp_path),
+            title=title,
+            description=description,
+            tags=tag_list,
+            privacy_status=privacy_status,
+        )
     return JSONResponse(result)
 
 
 @router.get("/youtube/uploads")
 def youtube_uploads_list(request: Request):
-    conn = _get_conn(request)
-    uploads = youtube.list_uploads(conn)
+    with locked_conn(request) as conn:
+        uploads = youtube.list_uploads(conn)
     return JSONResponse({"uploads": uploads})

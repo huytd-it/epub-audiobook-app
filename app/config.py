@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _APP_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env")
+
     data_root: str = str(_APP_ROOT / "data")
     db_path: str = str(_APP_ROOT / "data" / "app.db")
     log_path: str = str(_APP_ROOT / "data" / "app.log")

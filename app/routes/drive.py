@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app import google_drive, repository
+from app.deps import locked_conn
 
 logger = logging.getLogger(__name__)
 
@@ -15,16 +16,12 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 
-def _get_conn(request: Request):
-    return request.app.state.conn
-
-
 @router.get("/drive", response_class=HTMLResponse)
 def drive_page(request: Request):
-    conn = _get_conn(request)
-    creds = google_drive.get_creds_from_db(conn)
-    connected = creds is not None
-    exports = repository.list_all_patch_exports(conn, limit=30)
+    with locked_conn(request) as conn:
+        creds = google_drive.get_creds_from_db(conn)
+        connected = creds is not None
+        exports = repository.list_all_patch_exports(conn, limit=30)
     return templates.TemplateResponse(request, "drive.html", {
         "request": request,
         "connected": connected,
@@ -42,13 +39,16 @@ def drive_connect(request: Request):
             detail="Google Drive not configured. Set GOOGLE_DRIVE_CLIENT_ID and GOOGLE_DRIVE_CLIENT_SECRET.",
         )
     redirect_uri = str(request.base_url) + "drive/callback"
-    url = google_drive.get_authorization_url(redirect_uri)
+    try:
+        url = google_drive.get_authorization_url(redirect_uri)
+    except Exception as exc:
+        logger.exception("drive_connect failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
     return RedirectResponse(url=url)
 
 
 @router.get("/drive/callback")
 def drive_callback(request: Request, code: str = "", error: str = ""):
-    conn = _get_conn(request)
     if error:
         return RedirectResponse(url=f"/drive?error={error}")
     if not code:
@@ -61,18 +61,23 @@ def drive_callback(request: Request, code: str = "", error: str = ""):
         logger.exception("Google Drive OAuth callback failed")
         return RedirectResponse(url=f"/drive?error={str(exc)}")
 
-    google_drive.save_credentials(
-        conn,
-        access_token=result["access_token"],
-        refresh_token=result["refresh_token"],
-        token_expiry=result["token_expiry"],
-        account_email=result["account_email"],
-    )
+    try:
+        with locked_conn(request) as conn:
+            google_drive.save_credentials(
+                conn,
+                access_token=result["access_token"],
+                refresh_token=result["refresh_token"],
+                token_expiry=result["token_expiry"],
+                account_email=result["account_email"],
+            )
+    except Exception as exc:
+        logger.exception("Failed to save Google Drive credentials")
+        return RedirectResponse(url=f"/drive?error={str(exc)}")
     return RedirectResponse(url="/drive?connected=1")
 
 
 @router.post("/drive/disconnect")
 def drive_disconnect(request: Request):
-    conn = _get_conn(request)
-    google_drive.delete_credentials(conn)
+    with locked_conn(request) as conn:
+        google_drive.delete_credentials(conn)
     return JSONResponse({"status": "disconnected"})
