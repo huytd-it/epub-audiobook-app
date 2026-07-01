@@ -254,7 +254,7 @@ def export_patch_to_drive(request: Request, book_id: int, patch_id: int):
         # used for the actual Drive folder (folder_name_for_patch has a timestamp, so it must
         # only be called once).
         folder_name = drive_export.folder_name_for_patch(book.title, patch)
-        package_dir = drive_export.build_export_package(conn, patch, drive_folder_name=folder_name)
+        package_dir = drive_export.build_export_package(conn, patch, drive_folder_name=folder_name, hf_token=settings.hf_token)
         try:
             service = google_drive.get_drive_service(conn)
             root_id = google_drive.get_or_create_root_folder(service)
@@ -278,11 +278,17 @@ def download_patch_export(request: Request, book_id: int, patch_id: int):
         patch = repository.get_patch(conn, patch_id)
         if patch is None or patch.book_id != book_id:
             raise HTTPException(status_code=404, detail="patch not found")
-        zip_path = drive_export.build_export_zip(conn, patch)
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        # Use the same naming convention as the Drive folder so the zip filename
+        # matches the folder that would be created on Google Drive.
+        folder_name = drive_export.folder_name_for_patch(book.title, patch)
+        zip_path = drive_export.build_export_zip(conn, patch, hf_token=settings.hf_token)
     return FileResponse(
         str(zip_path),
         media_type="application/zip",
-        filename=f"patch_{patch_id}_export.zip",
+        filename=f"{folder_name}.zip",
     )
 
 

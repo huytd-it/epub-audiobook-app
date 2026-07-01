@@ -21,7 +21,10 @@ _TMP_DIR = Path(settings.data_root) / "tmp" / "patch_export"
 
 
 def build_export_package(
-    conn: sqlite3.Connection, patch: Patch, drive_folder_name: str | None = None
+    conn: sqlite3.Connection,
+    patch: Patch,
+    drive_folder_name: str | None = None,
+    hf_token: str | None = None,
 ) -> Path:
     """Write manifest.json + chunk_NNN.txt + (optional) voice reference + the notebook
     template into a fresh temp directory. Caller is responsible for deleting it.
@@ -74,24 +77,29 @@ def build_export_package(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # Bake the patch id + folder name into the notebook so its Colab cell can find the
-    # exported folder automatically (no manual folder-name pasting). Kept as a simple
-    # placeholder substitution rather than parsing/rewriting nbformat cells.
+    # Bake the patch id + folder name + HF token into the notebook so its cells can find
+    # the exported folder and authenticate automatically. Kept as simple placeholder
+    # substitutions rather than parsing/rewriting nbformat cells.
     folder_name = drive_folder_name or folder_name_for_patch(book.title, patch)
     notebook_src = _NOTEBOOK_TEMPLATE.read_text(encoding="utf-8")
     notebook_src = notebook_src.replace("__PATCH_ID__", str(patch.id))
     notebook_src = notebook_src.replace(
         "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]  # escape for JSON string literal
     )
+    notebook_src = notebook_src.replace("__HF_TOKEN__", (hf_token or settings.hf_token) or "")
     (package_dir / "colab_kaggle_tts_template.ipynb").write_text(notebook_src, encoding="utf-8")
 
     return package_dir
 
 
-def build_export_zip(conn: sqlite3.Connection, patch: Patch) -> Path:
+def build_export_zip(
+    conn: sqlite3.Connection,
+    patch: Patch,
+    hf_token: str | None = None,
+) -> Path:
     """Same package as build_export_package, zipped up for local download (the safety
     net that works even without connecting Google Drive)."""
-    package_dir = build_export_package(conn, patch)
+    package_dir = build_export_package(conn, patch, hf_token=hf_token)
     try:
         zip_path = shutil.make_archive(str(package_dir), "zip", root_dir=package_dir)
     finally:

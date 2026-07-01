@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     youtube_default_privacy: str = "private"  # private | unlisted | public
     youtube_auto_upload: bool = True  # auto-upload after video generation
 
+    # Hugging Face token for Colab/Kaggle notebooks (baked into the exported package so the
+    # notebook can download VoxCPM2 without hitting unauthenticated rate limits). Leave empty
+    # to rely on secrets/prompt in the notebook instead. Get a token at:
+    # https://huggingface.co/settings/tokens
+    hf_token: str = ""
+
     # Google Drive export (Colab/Kaggle round trip). Can reuse the same OAuth client as
     # YouTube - just enable the Drive API on that Google Cloud project.
     google_drive_client_id: str = ""
