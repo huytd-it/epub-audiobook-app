@@ -223,6 +223,7 @@
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ patch.error_message or "" }}</td>
                 <td class="patch-actions">
                     <a href="/books/{{ book.id }}/patches/{{ patch.id }}/text" target="_blank" class="btn-outline btn-sm">Preview</a>
+                    <a href="/books/{{ book.id }}/patches/{{ patch.id }}/chunks" class="btn-outline btn-sm">Chunks</a>
                     {% if patch.status != "processing" %}
                     <form action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
                         <button type="submit" class="btn-outline btn-sm">Regenerate</button>

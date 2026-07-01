@@ -280,7 +280,7 @@ class PatchWorker:
         chunk_dir = book_dir / f"{patch.id}_chunks"
         chunk_dir.mkdir(parents=True, exist_ok=True)
         try:
-            chunks = split_into_tts_chunks(patch_text, max_chars=settings.tts_max_chars)
+            chunks = split_into_tts_chunks(patch_text, max_chars=patch.max_chars or settings.tts_max_chars)
             with self.db_lock:
                 repository.update_patch_chunk_count(self.conn, patch.id, len(chunks))
             start_index = max(0, min(patch.next_chunk_index, len(chunks)))
@@ -313,8 +313,11 @@ class PatchWorker:
             chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(len(chunks))]
             audio_merge.merge_chunk_files_to_patch(chunk_paths, audio_path)
             self._log_event("chunk.merged", patch_id=patch.id)
-            audio_merge.cleanup_chunk_dir(str(chunk_dir))
-            self._log_event("chunk.cleaned", patch_id=patch.id)
+            # Chunk files are intentionally left on disk after a successful merge (not
+            # auto-deleted here) - a bad merge wouldn't necessarily raise, and deleting the
+            # source chunks immediately would make that unrecoverable without redoing the
+            # whole patch. They're cleaned up later, only when the patch is explicitly
+            # regenerated/reset/deleted (see repository._delete_chunk_dir call sites).
             return audio_path
         except Exception:
             raise

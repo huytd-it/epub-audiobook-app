@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Google Drive{% endblock %}
+{% block content %}
+<h2>Google Drive</h2>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Ket noi Google Drive de xuat chunk sang Colab/Kaggle va nhap ket qua ve. Khong phai trinh quan ly Drive tong quat - chi dung cho luong export/import theo tung patch.</p>
+
+{% if not configured %}
+<div class="warning-block">
+    <p style="margin:0 0 0.3rem 0"><strong>Google Drive chua duoc cau hinh.</strong></p>
+    <p style="margin:0 0 0.3rem 0">Them <code>GOOGLE_DRIVE_CLIENT_ID</code> va <code>GOOGLE_DRIVE_CLIENT_SECRET</code> vao file <code>.env</code> de kich hoat tinh nang nay.</p>
+    <p style="margin:0">Neu ban da cau hinh YouTube upload, co the dung lai cung OAuth client, chi can bat them "Google Drive API" tren cung Google Cloud project tai <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank">Google Cloud Console</a>.</p>
+</div>
+{% else %}
+
+<div class="yt-status-section">
+    {% if connected %}
+    <div class="yt-connected">
+        <span class="yt-status-dot yt-connected-dot"></span>
+        <strong>Da ket noi</strong>{% if account_email %} — {{ account_email }}{% endif %}
+        <form method="post" action="/drive/disconnect" style="display:inline" onsubmit="return confirm('Ngat ket noi Google Drive?')">
+            <button type="submit" class="btn-danger btn-sm">Ngat ket noi</button>
+        </form>
+    </div>
+    {% else %}
+    <div class="yt-disconnected">
+        <span class="yt-status-dot yt-disconnected-dot"></span>
+        <strong>Chua ket noi</strong>
+        <a href="/drive/connect" class="btn-youtube">Ket noi Google Drive</a>
+    </div>
+    {% endif %}
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Lich su Export</h3>
+    </div>
+    {% if exports %}
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Book</th>
+                <th>Patch</th>
+                <th>Drive folder</th>
+                <th>Status</th>
+                <th>Imported</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for e in exports %}
+            <tr>
+                <td><a href="/books/{{ e.book_id }}">{{ e.book_title }}</a></td>
+                <td><a href="/books/{{ e.book_id }}/patches/{{ e.patch_id }}/chunks">{{ e.patch_index }}</a></td>
+                <td><a href="{{ e.drive_folder_link }}" target="_blank">Open folder</a></td>
+                <td>{{ e.status }}</td>
+                <td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td>
+                <td>{{ e.created_at }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="yt-empty">Chua co patch nao duoc export.</p>
+    {% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

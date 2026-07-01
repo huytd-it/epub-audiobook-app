@@ -29,5 +29,10 @@ class Settings(BaseSettings):
     youtube_default_privacy: str = "private"  # private | unlisted | public
     youtube_auto_upload: bool = True  # auto-upload after video generation
 
+    # Google Drive export (Colab/Kaggle round trip). Can reuse the same OAuth client as
+    # YouTube - just enable the Drive API on that Google Cloud project.
+    google_drive_client_id: str = ""
+    google_drive_client_secret: str = ""
+
 
 settings = Settings()

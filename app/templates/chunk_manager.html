@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}Chunks - {{ patch.name or patch.patch_index }} - {{ book.title }}{% endblock %}
+{% block content %}
+<h2>Chunk Manager</h2>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">
+    <a href="/books/{{ book.id }}/patches/build">&larr; Back to Patch Builder</a>
+</p>
+
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Patch {{ patch.name or patch.patch_index }} (chapters {{ patch.chapter_start }}&ndash;{{ patch.chapter_end }})</h3>
+    </div>
+    <p style="margin:0 0 var(--space-sm) 0">
+        Status:
+        {% if patch.status == 'done' %}
+            <span class="badge badge-done">Done</span>
+        {% elif patch.status == 'processing' %}
+            <span class="badge badge-processing">Processing</span>
+        {% elif patch.status == 'failed' %}
+            <span class="badge badge-failed">Failed</span>
+        {% else %}
+            <span class="badge badge-pending">{{ patch.status }}</span>
+        {% endif %}
+        &nbsp;&middot;&nbsp; {{ chunks|length }} chunk(s)
+    </p>
+    {% if patch.status == 'failed' and patch.error_message %}
+    <p class="preview-help" style="color:var(--color-danger, #c0392b)">{{ patch.error_message }}</p>
+    {% endif %}
+
+    <form method="post" action="/books/{{ book.id }}/patches/{{ patch.id }}/max_chars" class="form-row" style="align-items:flex-end">
+        <div class="form-group">
+            <label for="max_chars">Max chars per chunk</label>
+            <input type="number" id="max_chars" name="max_chars" min="1"
+                   value="{{ patch.max_chars or '' }}"
+                   placeholder="default"
+                   {% if patch.status != 'pending' %}disabled{% endif %}>
+        </div>
+        {% if patch.status == 'pending' %}
+        <button type="submit" class="btn-outline btn-sm">Save &amp; recompute</button>
+        {% endif %}
+    </form>
+    {% if patch.status != 'pending' %}
+    <p class="preview-help" style="margin-top:0">Max chars can only be changed while the patch is pending.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Chunks</h3>
+    </div>
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Chars</th>
+                <th>Status</th>
+                <th>Preview</th>
+                {% if patch.status == 'failed' %}<th>Actions</th>{% endif %}
+            </tr>
+        </thead>
+        <tbody>
+        {% for c in chunks %}
+            <tr>
+                <td>{{ c.index }}</td>
+                <td>{{ c.char_count }}</td>
+                <td>
+                    {% if c.status == 'done' %}
+                        <span class="badge badge-done">Done</span>
+                    {% elif c.status == 'processing' %}
+                        <span class="badge badge-processing">Processing</span>
+                    {% elif c.status == 'failed' %}
+                        <span class="badge badge-failed">Failed</span>
+                    {% else %}
+                        <span class="badge badge-pending">Pending</span>
+                    {% endif %}
+                </td>
+                <td>{{ c.preview_text }}{% if c.char_count > 160 %}&hellip;{% endif %}</td>
+                {% if patch.status == 'failed' %}
+                <td>
+                    <form action="/books/{{ book.id }}/patches/{{ patch.id }}/resume_from_chunk" method="post" style="display:inline"
+                          onsubmit="return confirm('Restart synthesis from chunk {{ c.index }}? Earlier chunks keep their audio.')">
+                        <input type="hidden" name="from_index" value="{{ c.index }}">
+                        <button type="submit" class="btn-outline btn-sm">Restart from here</button>
+                    </form>
+                </td>
+                {% endif %}
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Export to Colab / Kaggle</h3>
+    </div>
+    <p class="preview-help" style="margin-top:0">
+        Export this patch's chunk texts (plus a ready-to-run notebook) so synthesis can run
+        on an external GPU, then import the resulting audio back.
+    </p>
+
+    {% if not drive_configured %}
+    <div class="warning-block">
+        <p style="margin:0 0 0.3rem 0"><strong>Google Drive not configured.</strong></p>
+        <p style="margin:0">Set <code>GOOGLE_DRIVE_CLIENT_ID</code> / <code>GOOGLE_DRIVE_CLIENT_SECRET</code> in <code>.env</code>, then <a href="/drive">connect Google Drive</a>.</p>
+    </div>
+    {% elif not drive_connected %}
+    <div class="warning-block">
+        <p style="margin:0"><strong>Google Drive not connected.</strong> <a href="/drive">Connect it</a> to upload exports automatically.</p>
+    </div>
+    {% endif %}
+
+    <div class="btn-group">
+        <a href="/books/{{ book.id }}/patches/{{ patch.id }}/export/download" class="btn-outline btn-sm">Download package locally</a>
+        {% if drive_configured and drive_connected and patch.status != 'processing' %}
+        <form action="/books/{{ book.id }}/patches/{{ patch.id }}/export" method="post" style="display:inline">
+            <button type="submit" class="btn-primary btn-sm">Export &amp; upload to Drive</button>
+        </form>
+        {% endif %}
+    </div>
+
+    {% if exports %}
+    <div class="table-wrap" style="margin-top:var(--space-md)">
+    <table>
+        <thead>
+            <tr>
+                <th>Created</th>
+                <th>Drive folder</th>
+                <th>Status</th>
+                <th>Imported</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for e in exports %}
+            <tr>
+                <td>{{ e.created_at }}</td>
+                <td><a href="{{ e.drive_folder_link }}" target="_blank">Open folder</a></td>
+                <td>{{ e.status }}</td>
+                <td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td>
+                <td>
+                    {% if loop.first and patch.status != 'processing' %}
+                    <form action="/books/{{ book.id }}/patches/{{ patch.id }}/import" method="post" style="display:inline">
+                        <button type="submit" class="btn-outline btn-sm">Import results from Drive</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% if e.error_message %}
+            <tr><td colspan="5" class="preview-help">{{ e.error_message }}</td></tr>
+            {% endif %}
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

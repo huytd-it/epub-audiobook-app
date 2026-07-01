@@ -107,6 +107,31 @@ CREATE TABLE IF NOT EXISTS youtube_uploads (
     uploaded_at     TEXT,
     created_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS google_drive_credentials (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    access_token    TEXT NOT NULL,
+    refresh_token   TEXT NOT NULL,
+    token_expiry    TEXT NOT NULL,
+    account_email   TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS patch_export (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    patch_id                INTEGER NOT NULL REFERENCES patch(id) ON DELETE CASCADE,
+    drive_folder_id         TEXT NOT NULL,
+    drive_folder_link       TEXT NOT NULL,
+    status                  TEXT NOT NULL DEFAULT 'exported',
+    exported_chunk_count    INTEGER NOT NULL DEFAULT 0,
+    imported_chunk_count    INTEGER NOT NULL DEFAULT 0,
+    error_message           TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_patch_export_patch ON patch_export(patch_id, id DESC);
 """
 
 
@@ -154,3 +179,5 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN video_fps INTEGER NOT NULL DEFAULT 30")
     if "default_image_animation" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN default_image_animation TEXT NOT NULL DEFAULT 'none'")
+    if "max_chars" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN max_chars INTEGER")

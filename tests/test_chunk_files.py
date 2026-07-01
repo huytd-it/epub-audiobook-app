@@ -159,7 +159,10 @@ def _read_patch(tmp_audio_dir, conn):
 
 
 def test_synthesize_with_chunk_files(tmp_audio_dir, seeded_conn, fake_engine, monkeypatch):
-    """Integration: when toggle is ON, chunk files appear then are cleaned up."""
+    """Integration: when toggle is ON, chunk files appear and are kept on disk after a
+    successful merge (not auto-deleted - see worker.py _synthesize for why: a bad merge
+    wouldn't necessarily raise, so deleting the source chunks immediately would make that
+    unrecoverable). They're only removed later via an explicit regenerate/reset/delete."""
     worker = _make_worker(seeded_conn, fake_engine, tmp_audio_dir, monkeypatch)
 
     # Force toggle ON via monkeypatch on the module-level settings
@@ -192,9 +195,10 @@ def test_synthesize_with_chunk_files(tmp_audio_dir, seeded_conn, fake_engine, mo
     import os
 
     assert os.path.isfile(audio_path), f"patch WAV not found at {audio_path}"
-    # Chunk dir should be gone
+    # Chunk dir (and its per-chunk wav files) should still be there after a successful merge.
     chunk_dir = os.path.join(tmp_audio_dir, "books", "1", "patches", "1_chunks")
-    assert not os.path.isdir(chunk_dir), f"chunk dir was not cleaned up: {chunk_dir}"
+    assert os.path.isdir(chunk_dir), f"chunk dir should be kept after merge: {chunk_dir}"
+    assert os.path.isfile(os.path.join(chunk_dir, "chunk_000.wav"))
 
     # Verify patch WAV is valid
     data, sr = sf.read(audio_path)

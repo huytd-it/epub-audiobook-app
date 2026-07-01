@@ -94,6 +94,7 @@
                     </td>
                     <td class="patch-actions">
                         <a href="/books/{{ book.id }}/patches/{{ p.id }}/text" target="_blank" class="btn-outline btn-sm">Preview</a>
+                        <a href="/books/{{ book.id }}/patches/{{ p.id }}/chunks" class="btn-outline btn-sm">Chunks</a>
                         {% if p.status != "processing" %}
                         <form action="/books/{{ book.id }}/patches/{{ p.id }}/regenerate" method="post" style="display:inline">
                             <button type="submit" class="btn-outline btn-sm">Regenerate</button>

@@ -9,9 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.audio_merge import cleanup_chunk_dir
-from app.chunker import group_into_patches
+from app.chunker import group_into_patches, split_into_tts_chunks
 from app.epub_parser import ParsedChapter
-from app.models import Book, BookJob, Chapter, Patch, TextReplaceRule
+from app.models import Book, BookJob, Chapter, Patch, PatchExport, TextReplaceRule
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,85 @@ def update_patch_chunk_progress(
         (next_chunk_index, _now(), patch_id),
     )
     conn.commit()
+
+
+def set_patch_max_chars(conn: sqlite3.Connection, patch_id: int, max_chars: int | None) -> bool:
+    """Override the TTS chunk-size cap for a single patch. Only allowed while the patch
+    hasn't started synthesis (status == 'pending') - once chunk files exist on disk,
+    changing max_chars would desync their indices from a re-split of the text. Recomputes
+    chunk_count with the same estimate formula as rebuild_patches/preview_auto_build so the
+    UI shows an accurate preview before the worker actually chunks the text."""
+    patch = get_patch(conn, patch_id)
+    if patch is None or patch.status != "pending":
+        return False
+    effective = max_chars if max_chars else _TTS_MAX_CHARS
+    total_chars = conn.execute(
+        "SELECT COALESCE(SUM(char_count), 0) AS c FROM chapter WHERE book_id = ? AND chapter_index BETWEEN ? AND ?",
+        (patch.book_id, patch.chapter_start, patch.chapter_end),
+    ).fetchone()["c"]
+    chunk_count = max(1, math.ceil(total_chars / effective))
+    conn.execute(
+        "UPDATE patch SET max_chars = ?, chunk_count = ?, updated_at = ? WHERE id = ?",
+        (max_chars, chunk_count, _now(), patch_id),
+    )
+    conn.commit()
+    return True
+
+
+def resume_patch_from_chunk(conn: sqlite3.Connection, patch_id: int, from_index: int) -> bool:
+    """Resume a failed patch starting at a chosen chunk index instead of regenerating the
+    whole patch from scratch. Chunk files before from_index are left alone (already
+    synthesized); files at or after from_index are deleted so the worker's normal chunk
+    loop (worker.py _synthesize, start_index logic) regenerates them cleanly."""
+    patch = get_patch(conn, patch_id)
+    if patch is None or patch.status != "failed":
+        return False
+    from_index = max(0, min(from_index, patch.next_chunk_index))
+    chunk_dir = _chunk_dir_for(patch.book_id, patch_id)
+    if chunk_dir.exists():
+        for i in range(from_index, max(patch.chunk_count, patch.next_chunk_index)):
+            (chunk_dir / f"chunk_{i:03d}.wav").unlink(missing_ok=True)
+    conn.execute(
+        """UPDATE patch SET status = 'pending', next_chunk_index = ?, error_message = NULL,
+           updated_at = ? WHERE id = ?""",
+        (from_index, _now(), patch_id),
+    )
+    conn.commit()
+    return True
+
+
+def get_patch_chunk_view(conn: sqlite3.Connection, patch: Patch, worker=None) -> list[dict]:
+    """Compute per-chunk status on demand instead of maintaining a separate chunk table.
+    Chunk texts always come from the same split_into_tts_chunks call the worker makes
+    (worker.py _synthesize), so indices line up with whatever chunk_NNN.wav files are (or
+    aren't) currently on disk."""
+    text = build_patch_text(conn, patch)
+    max_chars = patch.max_chars or _TTS_MAX_CHARS
+    chunks = split_into_tts_chunks(text, max_chars=max_chars)
+
+    current_index = None
+    if worker is not None and getattr(worker, "current_patch_id", None) == patch.id:
+        current_index = worker.current_chunk_index
+
+    result = []
+    for i, chunk_text in enumerate(chunks):
+        if patch.status == "done":
+            status = "done"
+        elif patch.status == "processing" and i == current_index:
+            status = "processing"
+        elif i < patch.next_chunk_index:
+            status = "done"
+        elif i == patch.next_chunk_index and patch.status == "failed":
+            status = "failed"
+        else:
+            status = "pending"
+        result.append({
+            "index": i,
+            "char_count": len(chunk_text),
+            "status": status,
+            "preview_text": chunk_text[:160],
+        })
+    return result
 
 
 def mark_patch_failed(conn: sqlite3.Connection, patch_id: int, error_message: str) -> None:
@@ -1252,3 +1331,86 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
         "books_reset": cur_book.rowcount,
         "files_deleted": len(paths_to_delete),
     }
+
+
+# ---------------------------------------------------------------------------
+# Patch export (Google Drive / Colab / Kaggle round trip)
+# ---------------------------------------------------------------------------
+
+
+def _patch_export_from_row(row: sqlite3.Row) -> PatchExport:
+    return PatchExport(**{k: row[k] for k in row.keys()})
+
+
+def create_patch_export(
+    conn: sqlite3.Connection,
+    patch_id: int,
+    drive_folder_id: str,
+    drive_folder_link: str,
+    exported_chunk_count: int,
+) -> PatchExport:
+    now = _now()
+    cur = conn.execute(
+        """INSERT INTO patch_export (patch_id, drive_folder_id, drive_folder_link, status,
+                                      exported_chunk_count, imported_chunk_count, created_at, updated_at)
+           VALUES (?, ?, ?, 'exported', ?, 0, ?, ?)""",
+        (patch_id, drive_folder_id, drive_folder_link, exported_chunk_count, now, now),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM patch_export WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return _patch_export_from_row(row)
+
+
+def list_patch_exports(conn: sqlite3.Connection, patch_id: int) -> list[PatchExport]:
+    rows = conn.execute(
+        "SELECT * FROM patch_export WHERE patch_id = ? ORDER BY id DESC", (patch_id,)
+    ).fetchall()
+    return [_patch_export_from_row(r) for r in rows]
+
+
+def get_latest_patch_export(conn: sqlite3.Connection, patch_id: int) -> PatchExport | None:
+    row = conn.execute(
+        "SELECT * FROM patch_export WHERE patch_id = ? ORDER BY id DESC LIMIT 1", (patch_id,)
+    ).fetchone()
+    return _patch_export_from_row(row) if row else None
+
+
+def update_patch_export(
+    conn: sqlite3.Connection,
+    export_id: int,
+    *,
+    status: str | None = None,
+    imported_chunk_count: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    parts: list[str] = []
+    params: list = []
+    if status is not None:
+        parts.append("status = ?")
+        params.append(status)
+    if imported_chunk_count is not None:
+        parts.append("imported_chunk_count = ?")
+        params.append(imported_chunk_count)
+    if error_message is not None:
+        parts.append("error_message = ?")
+        params.append(error_message)
+    if not parts:
+        return
+    parts.append("updated_at = ?")
+    params.append(_now())
+    params.append(export_id)
+    conn.execute(f"UPDATE patch_export SET {', '.join(parts)} WHERE id = ?", params)
+    conn.commit()
+
+
+def list_all_patch_exports(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    """For the /drive settings page: export history across every book, newest first."""
+    rows = conn.execute(
+        """SELECT pe.*, p.patch_index, p.book_id, b.title AS book_title
+             FROM patch_export pe
+             JOIN patch p ON p.id = pe.patch_id
+             JOIN book b ON b.id = p.book_id
+            ORDER BY pe.id DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]

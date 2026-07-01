@@ -53,6 +53,21 @@ class Patch:
     name: str = ""
     chunk_count: int = 0
     next_chunk_index: int = 0
+    max_chars: int | None = None
+
+
+@dataclass
+class PatchExport:
+    id: int
+    patch_id: int
+    drive_folder_id: str
+    drive_folder_link: str
+    status: str  # exported | partially_imported | imported | failed
+    exported_chunk_count: int
+    imported_chunk_count: int
+    error_message: str | None
+    created_at: str
+    updated_at: str
 
 
 @dataclass
