@@ -4,6 +4,7 @@ import asyncio
 import logging
 import shutil
 import uuid
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -249,11 +250,14 @@ def export_patch_to_drive(request: Request, book_id: int, patch_id: int):
         if google_drive.get_creds_from_db(conn) is None:
             raise HTTPException(status_code=400, detail="Google Drive not connected. Connect it at /drive first.")
 
-        package_dir = drive_export.build_export_package(conn, patch)
+        # Compute the folder name up front so the same name is baked into the notebook and
+        # used for the actual Drive folder (folder_name_for_patch has a timestamp, so it must
+        # only be called once).
+        folder_name = drive_export.folder_name_for_patch(book.title, patch)
+        package_dir = drive_export.build_export_package(conn, patch, drive_folder_name=folder_name)
         try:
             service = google_drive.get_drive_service(conn)
             root_id = google_drive.get_or_create_root_folder(service)
-            folder_name = drive_export.folder_name_for_patch(book.title, patch)
             folder = google_drive.create_folder(service, folder_name, parent_id=root_id)
             for f in sorted(package_dir.iterdir()):
                 google_drive.upload_file(service, folder["id"], str(f))
@@ -303,7 +307,12 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
 
         try:
             service = google_drive.get_drive_service(conn)
-            drive_files = {f["name"]: f["id"] for f in google_drive.list_files(service, export.drive_folder_id)}
+            # The notebook writes chunk_NNN.wav into an "output" subfolder of the exported
+            # folder (see colab_kaggle_tts_template.ipynb) - look there first, falling back
+            # to the export folder's top level for exports made before this existed.
+            output_folder_id = google_drive.find_subfolder(service, export.drive_folder_id, "output")
+            list_from_id = output_folder_id or export.drive_folder_id
+            drive_files = {f["name"]: f["id"] for f in google_drive.list_files(service, list_from_id)}
 
             imported = 0
             for i in range(expected_chunk_count):
@@ -333,5 +342,86 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
             logger.exception("import from Google Drive failed for patch %s", patch_id)
             repository.update_patch_export(conn, export.id, status="failed", error_message=str(exc))
             raise HTTPException(status_code=500, detail=f"Drive import failed: {exc}")
+
+    return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/import-local")
+async def import_patch_from_upload(
+    request: Request,
+    book_id: int,
+    patch_id: int,
+    files: list[UploadFile] = File(...),
+):
+    """Import synthesized audio from uploaded files - no Google Drive connection needed.
+
+    Accepts either the individual chunk_NNN.wav files, or a single .zip containing them
+    (e.g. what you'd download after running the notebook on another Google account). Used
+    for the fully-offline round trip: download package locally -> run on any Colab/Kaggle
+    account -> upload the resulting .wav files back here.
+    """
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        if patch.status == "processing":
+            raise HTTPException(status_code=400, detail="cannot import while the patch is processing")
+
+        text = repository.build_patch_text(conn, patch)
+        max_chars = patch.max_chars or settings.tts_max_chars
+        expected_chunk_count = len(split_into_tts_chunks(text, max_chars=max_chars))
+
+        chunk_dir = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+
+        # Pull every chunk_NNN.wav out of the uploads (loose .wav files and/or .zip archives)
+        # and drop them into the chunk dir, keeping only names we actually expect.
+        wanted = {f"chunk_{i:03d}.wav" for i in range(expected_chunk_count)}
+        saved = 0
+        for upload in files:
+            name = Path(upload.filename or "").name
+            if name.lower().endswith(".zip"):
+                tmp_zip = chunk_dir / f".upload_{uuid.uuid4().hex[:8]}.zip"
+                try:
+                    with open(tmp_zip, "wb") as out:
+                        shutil.copyfileobj(upload.file, out)
+                    with zipfile.ZipFile(tmp_zip) as zf:
+                        for member in zf.namelist():
+                            base = Path(member).name
+                            if base in wanted:
+                                with zf.open(member) as src, open(chunk_dir / base, "wb") as dst:
+                                    shutil.copyfileobj(src, dst)
+                                saved += 1
+                finally:
+                    tmp_zip.unlink(missing_ok=True)
+            elif name in wanted:
+                with open(chunk_dir / name, "wb") as out:
+                    shutil.copyfileobj(upload.file, out)
+                saved += 1
+
+        if saved == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="no matching chunk_NNN.wav files found in the upload",
+            )
+
+        # Same contiguous-prefix logic as the Drive import: count how many chunks we have
+        # in order, merge into the patch WAV if the whole set is present, else just record
+        # progress so the local worker (or another upload) can finish the rest.
+        imported = 0
+        for i in range(expected_chunk_count):
+            if (chunk_dir / f"chunk_{i:03d}.wav").exists():
+                imported += 1
+            else:
+                break
+
+        if imported >= expected_chunk_count:
+            book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+            audio_path = str(book_dir / f"{patch_id}.wav")
+            chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
+            audio_merge.merge_chunk_files_to_patch(chunk_paths, audio_path)
+            repository.mark_patch_done(conn, patch_id, audio_path)
+        else:
+            repository.update_patch_chunk_progress(conn, patch_id, imported)
 
     return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)

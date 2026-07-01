@@ -20,9 +20,16 @@ _NOTEBOOK_TEMPLATE = Path(__file__).parent / "assets" / "colab_kaggle_tts_templa
 _TMP_DIR = Path(settings.data_root) / "tmp" / "patch_export"
 
 
-def build_export_package(conn: sqlite3.Connection, patch: Patch) -> Path:
+def build_export_package(
+    conn: sqlite3.Connection, patch: Patch, drive_folder_name: str | None = None
+) -> Path:
     """Write manifest.json + chunk_NNN.txt + (optional) voice reference + the notebook
-    template into a fresh temp directory. Caller is responsible for deleting it."""
+    template into a fresh temp directory. Caller is responsible for deleting it.
+
+    ``drive_folder_name`` is baked into the notebook so its Colab cell can locate the
+    exported folder automatically. If not given (e.g. the plain local-download path),
+    the deterministic per-patch name is used as the fallback default.
+    """
     book = repository.get_book(conn, patch.book_id)
     if book is None:
         raise ValueError(f"book {patch.book_id} not found")
@@ -67,7 +74,16 @@ def build_export_package(conn: sqlite3.Connection, patch: Patch) -> Path:
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    shutil.copyfile(_NOTEBOOK_TEMPLATE, package_dir / "colab_kaggle_tts_template.ipynb")
+    # Bake the patch id + folder name into the notebook so its Colab cell can find the
+    # exported folder automatically (no manual folder-name pasting). Kept as a simple
+    # placeholder substitution rather than parsing/rewriting nbformat cells.
+    folder_name = drive_folder_name or folder_name_for_patch(book.title, patch)
+    notebook_src = _NOTEBOOK_TEMPLATE.read_text(encoding="utf-8")
+    notebook_src = notebook_src.replace("__PATCH_ID__", str(patch.id))
+    notebook_src = notebook_src.replace(
+        "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]  # escape for JSON string literal
+    )
+    (package_dir / "colab_kaggle_tts_template.ipynb").write_text(notebook_src, encoding="utf-8")
 
     return package_dir
 

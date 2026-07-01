@@ -241,6 +241,24 @@ def upload_file(service, folder_id: str, local_path: str, mime_type: str | None 
     return file["id"]
 
 
+def find_subfolder(service, parent_id: str, name: str) -> str | None:
+    """Return the id of a folder named ``name`` directly inside ``parent_id``, or None.
+
+    The Colab/Kaggle notebook writes synthesized chunk_NNN.wav files into an "output"
+    subfolder of the exported folder (see colab_kaggle_tts_template.ipynb) - this locates
+    it so the import routes can look there instead of the export folder's top level.
+    """
+    resp = service.files().list(
+        q=(
+            f"'{parent_id}' in parents and name = '{name}' and "
+            "mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        ),
+        fields="files(id)",
+    ).execute()
+    files = resp.get("files", [])
+    return files[0]["id"] if files else None
+
+
 def list_files(service, folder_id: str) -> list[dict]:
     """Return every non-trashed file directly inside folder_id: [{id, name, modifiedTime}]."""
     files: list[dict] = []

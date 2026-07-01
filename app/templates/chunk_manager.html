@@ -27,13 +27,31 @@
     {% endif %}
 
     <div class="btn-group">
-        <a href="/books/{{ book.id }}/patches/{{ patch.id }}/export/download" class="btn-outline btn-sm">Download package locally</a>
+        <a href="/books/{{ book.id }}/patches/{{ patch.id }}/export/download" class="btn-primary btn-sm">Download package (.zip)</a>
         {% if drive_configured and drive_connected and patch.status != 'processing' %}
         <form action="/books/{{ book.id }}/patches/{{ patch.id }}/export" method="post" style="display:inline">
-            <button type="submit" class="btn-primary btn-sm">Export &amp; upload to Drive</button>
+            <button type="submit" class="btn-outline btn-sm">Export &amp; upload to Drive</button>
         </form>
         {% endif %}
     </div>
+
+    {% if patch.status != 'processing' %}
+    <div style="margin-top:var(--space-md);padding-top:var(--space-md);border-top:1px solid var(--border, #333)">
+        <p class="preview-help" style="margin-top:0">
+            <strong>No Google connection needed.</strong> Download the .zip above, run the notebook on
+            any Colab/Kaggle account (even a different Google account), then upload the resulting
+            <code>chunk_NNN.wav</code> files (or a .zip of them) back here:
+        </p>
+        <form action="/books/{{ book.id }}/patches/{{ patch.id }}/import-local" method="post"
+              enctype="multipart/form-data" class="form-row" style="align-items:flex-end">
+            <div class="form-group">
+                <label for="files">Synthesized audio (.wav files or .zip)</label>
+                <input type="file" id="files" name="files" accept=".wav,.zip" multiple required>
+            </div>
+            <button type="submit" class="btn-primary btn-sm">Upload &amp; import results</button>
+        </form>
+    </div>
+    {% endif %}
 
     {% if exports %}
     <div class="table-wrap" style="margin-top:var(--space-md)">
@@ -156,71 +174,5 @@
         </tbody>
     </table>
     </div>
-</div>
-
-<div class="card">
-    <div class="card-header">
-        <h3 style="margin:0">Export to Colab / Kaggle</h3>
-    </div>
-    <p class="preview-help" style="margin-top:0">
-        Export this patch's chunk texts (plus a ready-to-run notebook) so synthesis can run
-        on an external GPU, then import the resulting audio back.
-    </p>
-
-    {% if not drive_configured %}
-    <div class="warning-block">
-        <p style="margin:0 0 0.3rem 0"><strong>Google Drive not configured.</strong></p>
-        <p style="margin:0">Set <code>GOOGLE_DRIVE_CLIENT_ID</code> / <code>GOOGLE_DRIVE_CLIENT_SECRET</code> in <code>.env</code>, then <a href="/drive">connect Google Drive</a>.</p>
-    </div>
-    {% elif not drive_connected %}
-    <div class="warning-block">
-        <p style="margin:0"><strong>Google Drive not connected.</strong> <a href="/drive">Connect it</a> to upload exports automatically.</p>
-    </div>
-    {% endif %}
-
-    <div class="btn-group">
-        <a href="/books/{{ book.id }}/patches/{{ patch.id }}/export/download" class="btn-outline btn-sm">Download package locally</a>
-        {% if drive_configured and drive_connected and patch.status != 'processing' %}
-        <form action="/books/{{ book.id }}/patches/{{ patch.id }}/export" method="post" style="display:inline">
-            <button type="submit" class="btn-primary btn-sm">Export &amp; upload to Drive</button>
-        </form>
-        {% endif %}
-    </div>
-
-    {% if exports %}
-    <div class="table-wrap" style="margin-top:var(--space-md)">
-    <table>
-        <thead>
-            <tr>
-                <th>Created</th>
-                <th>Drive folder</th>
-                <th>Status</th>
-                <th>Imported</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-        {% for e in exports %}
-            <tr>
-                <td>{{ e.created_at }}</td>
-                <td><a href="{{ e.drive_folder_link }}" target="_blank">Open folder</a></td>
-                <td>{{ e.status }}</td>
-                <td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td>
-                <td>
-                    {% if loop.first and patch.status != 'processing' %}
-                    <form action="/books/{{ book.id }}/patches/{{ patch.id }}/import" method="post" style="display:inline">
-                        <button type="submit" class="btn-outline btn-sm">Import results from Drive</button>
-                    </form>
-                    {% endif %}
-                </td>
-            </tr>
-            {% if e.error_message %}
-            <tr><td colspan="5" class="preview-help">{{ e.error_message }}</td></tr>
-            {% endif %}
-        {% endfor %}
-        </tbody>
-    </table>
-    </div>
-    {% endif %}
 </div>
 {% endblock %}
