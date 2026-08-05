@@ -521,8 +521,10 @@
         <strong id="result-upload-title" class="result-upload-title">Upload kết quả hàng loạt (thư mục <code>result/</code>)</strong>
         <p class="ru-hint">
             Thả cả <code>.wav</code> lẫn <code>.timeline.json</code> vào chung một ô. File được ghép vào patch
-            theo số <code>NNN</code> đứng đầu tên — đúng cách notebook đặt tên (<code>NNN - tên.wav</code>).
+            theo số <code>NNN</code> đứng đầu tên — <code>000 = Tập 1</code>, <code>001 = Tập 2</code>
+            (<code>NNN - tên.wav</code>).
             Timeline không khớp WAV sẽ bị bỏ qua và báo lại, timeline thả riêng sẽ gắn vào audio đã có sẵn.
+            {% if youtube_config.auto_upload %}Các WAV hợp lệ sẽ tự tạo video và upload theo cấu hình YouTube của sách.{% endif %}
         </p>
         <div id="ru-drop" class="ru-drop" tabindex="0" role="button"
              aria-label="Kéo thả hoặc bấm để chọn file kết quả">
@@ -1004,6 +1006,9 @@ const ACTIVE_TASKS = new Set();
 
 // YouTube availability + defaults from the server (mirrors the video-config modal).
 const YOUTUBE_CONFIGURED = {{ 'true' if youtube_configured else 'false' }};
+const BOOK_YOUTUBE_AUTO_UPLOAD = {{ 'true' if youtube_config.auto_upload else 'false' }};
+const BOOK_YOUTUBE_PRIVACY = {{ youtube_config.privacy_status|tojson }};
+const BOOK_YOUTUBE_PLAYLIST = {{ (youtube_config.playlist.playlist_id or '')|tojson }};
 const YOUTUBE_DEFAULT_PRIVACY = "{{ youtube_default_privacy }}";
 
 (function() {
@@ -3058,11 +3063,15 @@ async function genSelectedImages() {
     // What the server did with one patch, in the row's own words.
     function stateFor(item) {
         if (item.status !== 'ok') return { text: item.detail || 'lỗi', cls: 'err' };
+        const publish = item.publish_status === 'queued' ? ' — video/YouTube đã xếp hàng'
+            : item.publish_status === 'skipped_already_published' ? ' — đã published, không upload lại'
+            : item.publish_status === 'skipped_youtube_not_ready' ? ' — YouTube chưa sẵn sàng'
+            : item.publish_status === 'enqueue_failed' ? ' — enqueue lỗi, cần retry' : '';
         if (item.timeline === 'rejected') {
-            return { text: item.audio ? 'đã cài — timeline lệch WAV' : 'timeline lệch WAV', cls: 'warn' };
+            return { text: (item.audio ? 'đã cài — timeline lệch WAV' : 'timeline lệch WAV') + publish, cls: 'warn' };
         }
         if (!item.audio) return { text: 'đã gắn timeline', cls: 'ok' };
-        return { text: item.timeline === 'installed' ? 'đã cài + timeline' : 'đã cài (không timeline)', cls: 'ok' };
+        return { text: (item.timeline === 'installed' ? 'đã cài + timeline' : 'đã cài (không timeline)') + publish, cls: item.publish_status === 'enqueue_failed' ? 'warn' : 'ok' };
     }
 
     drop.addEventListener('click', () => input.click());
@@ -3084,6 +3093,11 @@ async function genSelectedImages() {
     submitBtn.addEventListener('click', async () => {
         const { rows } = group();
         if (!rows.length) return;
+        const audioCount = rows.filter(row => row.audio).length;
+        if (BOOK_YOUTUBE_AUTO_UPLOAD && audioCount && !confirm(
+            `Sẽ cài ${audioCount} audio, tạo và upload tối đa ${audioCount} video YouTube (${BOOK_YOUTUBE_PRIVACY}` +
+            `${BOOK_YOUTUBE_PLAYLIST ? ', có playlist' : ', chưa có playlist'}). Tiếp tục?`
+        )) return;
         const orig = submitBtn.textContent;
         submitBtn.disabled = true;
         submitBtn.textContent = 'Đang tải lên…';
@@ -3108,7 +3122,9 @@ async function genSelectedImages() {
                 else if (item.audio) markPatchAudioReady(item.patch_id);
             }
             render();
-            showToast(`Đã cài ${data.installed} audio` + (failed ? `, ${failed} patch lỗi` : ''), failed ? 'error' : 'ok');
+            const warning = data.publish_warning ? ` — ${data.publish_warning}` : '';
+            showToast(`Đã cài ${data.installed} audio` + (failed ? `, ${failed} patch lỗi` : '') + warning,
+                failed ? 'error' : data.publish_warning ? 'warning' : 'ok');
         } catch (e) {
             showToast('Upload kết quả lỗi: ' + (e.message || e), 'error');
         } finally {

@@ -28,7 +28,7 @@ from app.config import settings
 from app.deps import locked_conn
 from app.jobqueue import store
 from app.patch_publishing import enqueue_patch_publish, fetch_thumbnail_inputs, on_patch_audio_ready, run_patch_publish_stage, warm_patch_thumbnail
-from app.youtube_metadata import get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_timeline
+from app.youtube_metadata import get_book_youtube_config, get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_book_youtube_config, validate_timeline
 from app.video_config import get_book_video_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
@@ -1187,6 +1187,59 @@ def _install_result_upload(audio_path: Path, audio: UploadFile | None, timeline_
     }
 
 
+def _result_publish_preflight(conn, book_id: int) -> tuple[bool, str | None, dict]:
+    config = get_book_youtube_config(conn, book_id)
+    if not config.get("auto_upload"):
+        return False, None, config
+    try:
+        config = validate_book_youtube_config(config)
+    except ValueError as exc:
+        return False, f"cấu hình YouTube không hợp lệ: {exc}", config
+    if not youtube.is_configured() or youtube.get_creds_from_db(conn) is None:
+        return False, "YouTube chưa được cấu hình hoặc kết nối", config
+    playlist = config["playlist"]
+    if playlist["mode"] != "existing" or not playlist["playlist_id"]:
+        return False, "Auto-upload cần một playlist hợp lệ", config
+    return True, None, config
+
+
+def _result_patch_publish_state(conn, patch_id: int) -> str | None:
+    pipeline = conn.execute(
+        """SELECT pp.stage, pp.youtube_upload_id, yu.status AS youtube_status,
+                  yu.youtube_video_id
+             FROM patch_pipeline pp
+             LEFT JOIN youtube_uploads yu ON yu.id=pp.youtube_upload_id
+            WHERE pp.patch_id=?""", (patch_id,),
+    ).fetchone()
+    if pipeline and pipeline["youtube_video_id"]:
+        return "published"
+    live_job = conn.execute(
+        """SELECT 1 FROM job
+            WHERE (patch_id=? OR (job_type='patch_video' AND json_extract(payload_json, '$.patch_id')=?))
+              AND job_type IN ('patch_video', 'youtube_upload')
+              AND status IN ('pending', 'running') LIMIT 1""", (patch_id, patch_id),
+    ).fetchone()
+    if live_job or (pipeline and pipeline["youtube_status"] in {"pending", "uploading"}):
+        return "active"
+    return None
+
+
+def _discard_stale_patch_video(conn, book_id: int, patch_id: int) -> None:
+    video_path = _patch_video_path(book_id, patch_id)
+    row = conn.execute("SELECT id FROM videos WHERE file_path=?", (str(video_path),)).fetchone()
+    if row:
+        video_repository.delete_video(conn, row["id"])
+    else:
+        video_path.unlink(missing_ok=True)
+    conn.execute(
+        """UPDATE patch_pipeline SET stage='video', video_status='pending', video_id=NULL,
+                  video_path=NULL, youtube_upload_id=NULL, upload_status='pending',
+                  playlist_status='pending', last_error=NULL, updated_at=?
+            WHERE patch_id=?""", (datetime.now(timezone.utc).isoformat(), patch_id),
+    )
+    conn.commit()
+
+
 @router.post("/books/{book_id}/patches/upload-results")
 async def upload_batch_results(
     request: Request,
@@ -1204,6 +1257,8 @@ async def upload_batch_results(
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail="book not found")
         patches = {p.patch_index: p for p in repository.list_patches(conn, book_id)}
+        publish_ready, publish_warning, youtube_config = _result_publish_preflight(conn, book_id)
+        publish_states = {p.id: _result_patch_publish_state(conn, p.id) for p in patches.values()}
 
     groups: dict[int, dict[str, UploadFile]] = {}
     skipped: list[dict] = []
@@ -1242,6 +1297,9 @@ async def upload_batch_results(
             # audio right now, so installing over it would race the merge.
             results.append({**row, "status": "error", "detail": "patch đang xử lý"})
             continue
+        if publish_states[patch.id] == "active":
+            results.append({**row, "status": "error", "detail": "patch đang tạo hoặc upload video", "publish_status": "blocked_active_pipeline"})
+            continue
         try:
             outcome = await asyncio.to_thread(
                 _install_result_upload, audio_path, group.get("audio"), group.get("timeline")
@@ -1252,13 +1310,50 @@ async def upload_batch_results(
             continue
         if outcome["audio"]:
             installed_audio.append((patch.id, audio_path))
-        results.append({**row, "status": "ok", **outcome})
+        publish_status = "skipped_already_published" if publish_states[patch.id] == "published" else (
+            "pending" if publish_ready and outcome["audio"] else
+            "skipped_youtube_not_ready" if youtube_config.get("auto_upload") and outcome["audio"] else
+            "skipped_auto_upload_disabled"
+        )
+        results.append({**row, "status": "ok", **outcome, "publish_status": publish_status})
 
     for patch_id, _ in installed_audio:
         await asyncio.to_thread(_warm_thumbnail, request, patch_id)
     with locked_conn(request) as conn:
         for patch_id, audio_path in installed_audio:
             repository.mark_patch_done(conn, patch_id, str(audio_path))
-            on_patch_audio_ready(conn, patch_id)
+            if publish_ready and publish_states[patch_id] != "published":
+                _discard_stale_patch_video(conn, book_id, patch_id)
 
-    return {"ok": True, "installed": len(installed_audio), "results": results + skipped}
+    if publish_ready:
+        for patch_id, _ in installed_audio:
+            if publish_states[patch_id] == "published":
+                continue
+            result = next(row for row in results if row.get("patch_id") == patch_id)
+            try:
+                with locked_conn(request) as conn:
+                    enqueue_patch_publish(conn, patch_id, force_new=True)
+                    job_id = store.enqueue(
+                        conn, "patch_video",
+                        payload={"patch_id": patch_id, "upload_youtube": True,
+                                 "privacy": youtube_config["privacy_status"]},
+                        book_id=book_id, patch_id=patch_id,
+                        dedupe_key=f"patch_video:patch={patch_id}",
+                    )
+                if job_id is None:
+                    raise RuntimeError("không thể enqueue job tạo video")
+                result["publish_status"] = "queued"
+                result["job_id"] = job_id
+            except Exception as exc:  # audio remains installed and can be retried manually
+                logger.warning("result publish enqueue failed for patch %s", patch_id, exc_info=True)
+                result["publish_status"] = "enqueue_failed"
+                result["publish_error"] = str(exc)
+
+    return {
+        "ok": True,
+        "installed": len(installed_audio),
+        "auto_upload": bool(youtube_config.get("auto_upload")),
+        "publish_ready": publish_ready,
+        "publish_warning": publish_warning,
+        "results": results + skipped,
+    }

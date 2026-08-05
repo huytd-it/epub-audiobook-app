@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from app import db, repository
 from app.config import settings
 from app.main import app
+from app.youtube_metadata import save_book_youtube_config
 
 NOW = datetime.now(timezone.utc).isoformat()
 RATE = 100
@@ -71,6 +72,19 @@ def client(tmp_path, monkeypatch):
 def _patch_paths(book_id, patch_id):
     base = Path(settings.data_root) / "books" / str(book_id) / "patches"
     return base / f"{patch_id}.wav", base / f"{patch_id}.timeline.json"
+
+
+def _enable_auto_upload(book_id):
+    with db.connect(settings.db_path) as conn:
+        save_book_youtube_config(conn, book_id, {
+            "auto_upload": True,
+            "playlist": {"mode": "existing", "playlist_id": "PL1"},
+        })
+
+
+def _connected_youtube(monkeypatch):
+    monkeypatch.setattr("app.routes.patches.youtube.is_configured", lambda: True)
+    monkeypatch.setattr("app.routes.patches.youtube.get_creds_from_db", lambda conn: {"id": 1})
 
 
 def test_bulk_upload_installs_wav_and_timeline_per_patch(client):
@@ -199,3 +213,100 @@ def test_upload_results_rejects_an_unknown_book(client):
     response = c.post("/books/9999/patches/upload-results",
                       files=[_upload("000 - a.wav", _wav_bytes())])
     assert response.status_code == 404
+
+
+def test_auto_upload_preflight_failure_keeps_audio_without_rendering(client, monkeypatch):
+    c, book_id = client
+    _enable_auto_upload(book_id)
+    monkeypatch.setattr("app.routes.patches.youtube.is_configured", lambda: False)
+
+    body = c.post(f"/books/{book_id}/patches/upload-results", files=[
+        _upload("000 - a.wav", _wav_bytes()),
+    ]).json()
+
+    row = body["results"][0]
+    assert body["publish_ready"] is False
+    assert "YouTube chưa" in body["publish_warning"]
+    assert row["status"] == "ok"
+    assert row["publish_status"] == "skipped_youtube_not_ready"
+    assert _patch_paths(book_id, 41)[0].is_file()
+    with db.connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM job").fetchone()[0] == 0
+
+
+def test_auto_upload_partial_success_only_enqueues_valid_patch(client, monkeypatch):
+    c, book_id = client
+    _enable_auto_upload(book_id)
+    _connected_youtube(monkeypatch)
+    monkeypatch.setattr("app.routes.patches._warm_thumbnail", lambda request, patch_id: None)
+    monkeypatch.setattr("app.routes.patches.enqueue_patch_publish", lambda conn, patch_id, force_new=False: {})
+
+    body = c.post(f"/books/{book_id}/patches/upload-results", files=[
+        _upload("000 - ok.wav", _wav_bytes()),
+        _upload("001 - broken.wav", b"not wav"),
+    ]).json()
+
+    rows = {row["patch_id"]: row for row in body["results"]}
+    assert body["installed"] == 1
+    assert rows[41]["publish_status"] == "queued"
+    assert rows[42]["status"] == "error"
+    with db.connect(settings.db_path) as conn:
+        jobs = conn.execute("SELECT job_type, patch_id FROM job").fetchall()
+        assert [(row["job_type"], row["patch_id"]) for row in jobs] == [("patch_video", 41)]
+
+
+def test_live_patch_video_job_blocks_only_that_patch(client):
+    c, book_id = client
+    with db.connect(settings.db_path) as conn:
+        conn.execute(
+            """INSERT INTO job (job_type,status,book_id,payload_json,dedupe_key,patch_id,created_at,updated_at)
+               VALUES ('patch_video','running',?,'{}','patch_video:patch=41',41,?,?)""",
+            (book_id, NOW, NOW),
+        )
+        conn.commit()
+
+    body = c.post(f"/books/{book_id}/patches/upload-results", files=[
+        _upload("000 - busy.wav", _wav_bytes()),
+        _upload("001 - free.wav", _wav_bytes()),
+    ]).json()
+
+    rows = {row["patch_id"]: row for row in body["results"]}
+    assert rows[41]["publish_status"] == "blocked_active_pipeline"
+    assert "đang tạo hoặc upload" in rows[41]["detail"]
+    assert rows[42]["status"] == "ok"
+    assert not _patch_paths(book_id, 41)[0].exists()
+    assert _patch_paths(book_id, 42)[0].is_file()
+
+
+def test_published_patch_updates_audio_without_republishing(client, monkeypatch):
+    c, book_id = client
+    _enable_auto_upload(book_id)
+    _connected_youtube(monkeypatch)
+    monkeypatch.setattr("app.routes.patches._warm_thumbnail", lambda request, patch_id: None)
+    with db.connect(settings.db_path) as conn:
+        upload_id = conn.execute(
+            """INSERT INTO youtube_uploads
+               (video_path,youtube_video_id,status,render_source_type,render_source_id,created_at)
+               VALUES ('old.mp4','yt-existing','done','patch',41,?)""", (NOW,),
+        ).lastrowid
+        conn.execute(
+            """INSERT INTO patch_pipeline
+               (patch_id,stage,thumbnail_status,video_status,upload_status,playlist_status,
+                youtube_upload_id,config_snapshot,media_snapshot,created_at,updated_at)
+               VALUES (41,'published','done','done','done','done',?,'{}','{}',?,?)""",
+            (upload_id, NOW, NOW),
+        )
+        conn.commit()
+
+    body = c.post(f"/books/{book_id}/patches/upload-results", files=[
+        _upload("000 - replacement.wav", _wav_bytes(frames=FRAMES * 2)),
+    ]).json()
+
+    row = body["results"][0]
+    assert row["status"] == "ok"
+    assert row["publish_status"] == "skipped_already_published"
+    assert sf.info(str(_patch_paths(book_id, 41)[0])).frames == FRAMES * 2
+    with db.connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM job").fetchone()[0] == 0
+        pipeline = conn.execute("SELECT stage,youtube_upload_id FROM patch_pipeline WHERE patch_id=41").fetchone()
+        assert (pipeline["stage"], pipeline["youtube_upload_id"]) == ("published", upload_id)
