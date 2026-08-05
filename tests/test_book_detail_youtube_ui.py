@@ -104,7 +104,8 @@ def test_video_config_uses_media_library_background_checkboxes(client, seeded_bo
     assert "a.png" in html and "b.mp4" in html
     assert '<video src="/video/backgrounds/preview?' in html
     assert '<img src="/video/backgrounds/preview?' in html
-    assert "Array.from(document.querySelectorAll('.vc-background-check:checked'))" in html
+    assert "selectedBackgroundOrder.slice()" in html
+    assert "selectedBackgroundOrder.push(e.target.value)" in html
     assert '<textarea id="vc-backgrounds"' not in html
 
 

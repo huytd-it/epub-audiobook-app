@@ -177,18 +177,12 @@ def validate_book_youtube_config(config: dict) -> dict:
     if not isinstance(result["playlist"], dict):
         raise ValueError("playlist must be an object")
     playlist = {**DEFAULT_BOOK_YOUTUBE_CONFIG["playlist"], **result["playlist"]}
-    if playlist["mode"] not in {"none", "existing", "create"} or not isinstance(playlist["playlist_id"], str) or not isinstance(playlist.get("title_template", ""), str) or not isinstance(playlist.get("description_template", ""), str):
+    if playlist["mode"] == "create":
+        playlist = {**DEFAULT_BOOK_YOUTUBE_CONFIG["playlist"], "mode": "none"}
+    if playlist["mode"] not in {"none", "existing"} or not isinstance(playlist["playlist_id"], str):
         raise ValueError("invalid playlist")
     if playlist["mode"] == "existing" and not playlist["playlist_id"]:
         raise ValueError("existing playlist id is required")
-    if playlist["mode"] == "create":
-        playlist["playlist_id"] = ""
-        _validate_template(playlist["title_template"], "playlist title")
-        _validate_template(playlist["description_template"], "playlist description")
-        if "{" not in playlist["title_template"] and not 1 <= len(playlist["title_template"]) <= 150:
-            raise ValueError("playlist title must be 1-150 characters")
-        if "{" not in playlist["description_template"] and len(playlist["description_template"]) > 5000:
-            raise ValueError("playlist description exceeds 5000 characters")
     if len(result["description"]) > 5000:
         raise ValueError("description exceeds 5000 characters")
     result["playlist"] = playlist
@@ -232,7 +226,7 @@ def _validate_override(override: dict) -> dict:
         raise ValueError("invalid privacy status")
     if "playlist" in override:
         playlist = override["playlist"]
-        if not isinstance(playlist, dict) or playlist.get("mode", "none") not in {"none", "existing", "create"} or not isinstance(playlist.get("playlist_id", ""), str):
+        if not isinstance(playlist, dict) or playlist.get("mode", "none") not in {"none", "existing"} or not isinstance(playlist.get("playlist_id", ""), str):
             raise ValueError("invalid playlist")
     return override
 

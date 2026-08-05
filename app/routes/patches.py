@@ -544,7 +544,11 @@ def get_patch_overlay_image(request: Request, book_id: int, patch_id: int):
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
 
-    overlay = image_overlay.ensure_patch_overlay(book, patch, settings.default_font_path or None)
+    force = request.query_params.get("force") in {"1", "true"}
+    overlay = image_overlay.ensure_patch_overlay(
+        book, patch, settings.default_font_path or None,
+        force=force,
+    )
     if overlay and Path(overlay).exists():
         return FileResponse(str(overlay), media_type="image/png")
     # Fall back to the raw patch/book background so the row still shows something.

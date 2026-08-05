@@ -46,6 +46,7 @@ DEFAULT_OVERLAY_CONFIG: dict[str, Any] = {
     "margin": 40,             # distance from image edge
     "offset_x": 0,            # px nudge applied after anchoring (drag-to-position)
     "offset_y": 0,
+    "overlays": [],
 }
 
 
@@ -69,7 +70,24 @@ def parse_overlay_config(raw: str | None) -> dict[str, Any]:
             merged[key].update(val)
         else:
             merged[key] = val
+    if not merged.get("overlays"):
+        merged["overlays"] = [{key: value for key, value in merged.items() if key != "overlays"}]
     return merged
+
+
+def list_overlay_fonts() -> list[dict[str, str]]:
+    """Return usable, server-local fonts exposed to the overlay editor."""
+    seen: set[str] = set()
+    fonts: list[dict[str, str]] = []
+    candidates = ([settings.default_font_path] if settings.default_font_path else []) + _FONT_PATHS
+    for raw in candidates:
+        path = Path(raw)
+        key = str(path).lower()
+        if key in seen or not path.is_file():
+            continue
+        seen.add(key)
+        fonts.append({"name": path.stem, "path": str(path)})
+    return fonts
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -328,7 +346,41 @@ def overlay_cfg_from_values(values) -> dict:
         "padding_y": _int("box_padding_y", 12, 0, 200),
         "radius": _int("box_radius", 12, 0, 200),
     }
+    overlays_json = values.get("overlays_json")
+    if overlays_json:
+        try:
+            raw_overlays = json.loads(overlays_json)
+        except (TypeError, ValueError):
+            raw_overlays = []
+        allowed_fonts = {item["path"] for item in list_overlay_fonts()}
+        overlays = []
+        for raw in raw_overlays[:12] if isinstance(raw_overlays, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            item = overlay_cfg_from_values(raw)
+            item["text"] = str(raw.get("text") or "")[:500]
+            font_path = str(raw.get("font_path") or "")
+            item["font_path"] = font_path if font_path in allowed_fonts else ""
+            overlays.append(item)
+        cfg["overlays"] = overlays
     return cfg
+
+
+def expand_overlay_text(template: str, book: Book, patch: Patch) -> str:
+    patch_name = patch.name or str(patch.patch_index)
+    values = {
+        "book_title": book.title,
+        "patch_name": patch_name,
+        "patch_index": patch.patch_index,
+        "episode": patch.patch_index + 1,
+        "chapter": f"{patch.chapter_start}-{patch.chapter_end}",
+        "chapter_start": patch.chapter_start,
+        "chapter_end": patch.chapter_end,
+    }
+    text = template or "{book_title} - {patch_name}"
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", str(value))
+    return text
 
 
 def build_overlay_lines(image: "Image.Image", text: str, cfg: dict) -> list[str]:
@@ -383,16 +435,13 @@ def render_patch_overlay(
     if out_path is None:
         out_path = str(get_patch_overlay_path(book.id, patch.id))
 
-    patch_label = patch.name or str(patch.patch_index)
-    text = cfg.get("text") or f"{book.title} - {patch_label}"
-
     from PIL import Image, ImageDraw
     img = Image.open(str(bg)).convert("RGB")
-    draw = ImageDraw.Draw(img)
-
-    lines = build_overlay_lines(img, text, cfg)
-    text_color = _hex_to_rgb(cfg.get("text_color", "#FFFFFF"))
-    _draw_text_block(img, draw, lines, cfg, text_color)
+    overlays = cfg.get("overlays") or [cfg]
+    for overlay in overlays:
+        text = expand_overlay_text(overlay.get("text", ""), book, patch)
+        lines = build_overlay_lines(img, text, overlay)
+        img, _ = render_overlay_with_rect(img, lines, overlay)
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -413,7 +462,7 @@ def needs_rerender(book: Book, patch: Patch, out_path: Path) -> bool:
 
 def ensure_patch_overlay(
     book: Book, patch: Patch, font_path: str | None = None, *,
-    background_path: str | None = None, out_path: str | None = None,
+    background_path: str | None = None, out_path: str | None = None, force: bool = False,
 ) -> str | None:
     """Build overlay config from legacy font_path arg and render if stale."""
     cfg = parse_overlay_config(book.overlay_config)
@@ -422,7 +471,7 @@ def ensure_patch_overlay(
     if _resolve_background(book, background_path) is None:
         return None
     output = Path(out_path) if out_path else get_patch_overlay_path(book.id, patch.id)
-    if background_path or needs_rerender(book, patch, output):
+    if force or background_path or needs_rerender(book, patch, output):
         try:
             render_patch_overlay(book, patch, cfg, str(output), background_path)
         except Exception as exc:

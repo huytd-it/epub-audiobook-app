@@ -289,3 +289,30 @@ def test_render_patch_overlay_with_box_enabled(tmp_path):
     image_overlay.render_patch_overlay(book, patch, cfg, str(out))
     assert out.exists()
     assert Image.open(str(out)).size == (640, 360)
+
+
+def test_expand_overlay_text_uses_patch_placeholders():
+    from types import SimpleNamespace
+    from app import image_overlay
+
+    book = SimpleNamespace(title="My Book")
+    patch = SimpleNamespace(name="Opening", patch_index=2, chapter_start=4, chapter_end=7)
+    text = image_overlay.expand_overlay_text(
+        "{book_title}|{patch_name}|{episode}|{chapter}|{chapter_start}|{chapter_end}",
+        book, patch,
+    )
+    assert text == "My Book|Opening|3|4-7|4|7"
+
+
+def test_overlay_config_accepts_multiple_layers():
+    import json
+    from app import image_overlay
+
+    cfg = image_overlay.overlay_cfg_from_values({
+        "overlays_json": json.dumps([
+            {"text": "{book_title}", "position": "top", "font_size": 60},
+            {"text": "Tập {episode}", "position": "bottom", "font_size": 36},
+        ])
+    })
+    assert [item["text"] for item in cfg["overlays"]] == ["{book_title}", "Tập {episode}"]
+    assert [item["position"] for item in cfg["overlays"]] == ["top", "bottom"]

@@ -90,7 +90,7 @@ def test_settings_rejects_inaccessible_existing_playlist(tmp_path, monkeypatch):
     assert response.status_code == 400
 
 
-def test_settings_accepts_auto_create_after_playlist_api_access(tmp_path, monkeypatch):
+def test_settings_rejects_auto_create_playlist(tmp_path, monkeypatch):
     conn, client = _client(tmp_path)
     book_id, _ = _seed(conn)
     monkeypatch.setattr(books.youtube, "is_configured", lambda: True)
@@ -98,8 +98,9 @@ def test_settings_accepts_auto_create_after_playlist_api_access(tmp_path, monkey
     calls = []
     monkeypatch.setattr(books.youtube, "list_playlists", lambda conn: calls.append(True) or [])
     response = client.post(f"/books/{book_id}/youtube-settings", json={"auto_upload": True, "playlist": {"mode": "create", "title_template": "{book_title}"}})
-    assert response.status_code == 200
-    assert calls == [True]
+    assert response.status_code == 400
+    assert "no longer supported" in response.json()["detail"]
+    assert calls == []
 
 
 

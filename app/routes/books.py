@@ -7,6 +7,7 @@ import uuid
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
@@ -103,13 +104,8 @@ async def parse_epub_preview(request: Request, epub_file: UploadFile = File(...)
 async def upload_book(
     request: Request,
     epub_file: UploadFile = File(...),
-    patch_size: int = Form(default=10),
-    excluded_chapters: str | None = Form(default=None),
 ):
-    """Upload only handles what's needed to start parsing a book: the EPUB
-    file, chapter selection, and patch size. Background image and voice
-    clone reference are configured afterwards on the book detail page
-    (Studio), which already offers a richer, library-backed picker for both."""
+    """Upload and parse an EPUB; patches are configured later on the book page."""
     uploads_dir = Path(settings.data_root) / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
@@ -126,16 +122,10 @@ async def upload_book(
             title=title,
             original_filename=epub_file.filename,
             epub_path="",  # finalized below once the book id (and thus its folder name) is known
-            patch_size=patch_size,
+            patch_size=10,
             chapters=chapters,
             background_image_path=None,
         )
-
-        if excluded_chapters:
-            for idx_str in excluded_chapters.split(","):
-                idx_str = idx_str.strip()
-                if idx_str.isdigit():
-                    repository.set_chapter_excluded(conn, book.id, int(idx_str), True)
 
         final_epub_path = uploads_dir / f"{book.id}.epub"
         tmp_epub_path.rename(final_epub_path)
@@ -223,6 +213,7 @@ def book_detail(request: Request, book_id: int):
             "current_music": current_music,
             "backgrounds": _list_backgrounds(),
             "overlay_cfg": overlay_cfg,
+            "overlay_fonts": image_overlay.list_overlay_fonts(),
             "voices": voices,
             "current_voice_name": current_voice_name,
             "default_max_chars": settings.tts_max_chars,
@@ -309,6 +300,8 @@ async def update_youtube_settings(request: Request, book_id: int):
     if "description_template" in data:
         data["description"] = data.pop("description_template")
     playlist = data.get("playlist") or {}
+    if playlist.get("mode") == "create":
+        raise HTTPException(400, "playlist creation is no longer supported; select an existing playlist")
     if "id" in playlist:
         playlist["playlist_id"] = playlist.pop("id")
     data["playlist"] = playlist
@@ -326,8 +319,6 @@ async def update_youtube_settings(request: Request, book_id: int):
                 if playlist["mode"] == "existing":
                     if not playlist["playlist_id"]:
                         raise ValueError("playlist was not found")
-                if playlist["mode"] == "create" and not playlist.get("title_template", "").strip():
-                    raise ValueError("playlist title template is required")
             save_book_youtube_config(conn, book_id, data)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -338,11 +329,6 @@ async def update_youtube_settings(request: Request, book_id: int):
                 raise HTTPException(400, "playlist was not found")
         except HTTPException:
             raise
-        except Exception as exc:
-            raise HTTPException(400, "YouTube playlist access could not be verified") from exc
-    if result.get("auto_upload") and result["playlist"]["mode"] == "create":
-        try:
-            _list_youtube_playlists()
         except Exception as exc:
             raise HTTPException(400, "YouTube playlist access could not be verified") from exc
     return result
@@ -505,13 +491,6 @@ async def update_overlay_config(request: Request, book_id: int):
         )
         conn.commit()
         book = repository.get_book(conn, book_id)
-        patches = repository.list_patches(conn, book_id)
-
-    for patch in patches:
-        try:
-            image_overlay.render_patch_overlay(book, patch, cfg, None)
-        except Exception as exc:
-            logger.warning("overlay-config: re-render failed for patch %s: %s", patch.id, exc)
     if request.headers.get("X-Requested-With") == "autosave":
         return {"status": "ok"}
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
@@ -558,14 +537,21 @@ def overlay_preview(request: Request, book_id: int):
 
     from PIL import Image
     img = Image.open(str(bg)).convert("RGB")
-    text = cfg.get("text") or f"{book.title} - {patch_label}"
-    lines = image_overlay.build_overlay_lines(img, text, cfg)
-    img, rect = image_overlay.render_overlay_with_rect(img, lines, cfg)
+    preview_patch = sample_patch or SimpleNamespace(
+        name=patch_label, patch_index=0, chapter_start=0, chapter_end=0,
+    )
+    rects = []
+    for overlay in cfg.get("overlays") or [cfg]:
+        text = image_overlay.expand_overlay_text(overlay.get("text", ""), book, preview_patch)
+        lines = image_overlay.build_overlay_lines(img, text, overlay)
+        img, rect = image_overlay.render_overlay_with_rect(img, lines, overlay)
+        rects.append(rect)
     buf = BytesIO()
     img.save(buf, "PNG", optimize=True)
     rect_header = json.dumps({
-        "x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3],
+        "x": rects[0][0], "y": rects[0][1], "w": rects[0][2], "h": rects[0][3],
         "img_w": img.size[0], "img_h": img.size[1],
+        "rects": [{"x": r[0], "y": r[1], "w": r[2], "h": r[3]} for r in rects],
     })
     return Response(
         content=buf.getvalue(),

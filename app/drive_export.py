@@ -77,7 +77,15 @@ def _export_tts_config(book: Book, model_id: str, voice_id: str | None = None) -
     if model_id not in models:
         raise ValueError(f"unknown TTS model: {model_id}")
     model = models[model_id]
-    reference = _voice_clip_or_raise(book) if model["supports_reference"] else None
+    reference = None
+    if model["supports_reference"]:
+        if voice_id:
+            voice_name = Path(voice_id).name
+            reference = Path(settings.data_root) / "voices" / voice_name
+            if voice_name != voice_id or not reference.is_file():
+                raise ValueError(f"unknown reference voice: {voice_id}")
+        else:
+            reference = _voice_clip_or_raise(book)
     if not model["supports_reference"] and not voice_id:
         voice_id = model.get("default_voice")
     if not model["supports_reference"] and not voice_id:

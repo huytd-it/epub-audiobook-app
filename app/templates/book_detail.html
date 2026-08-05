@@ -25,18 +25,10 @@
 
 <nav class="book-nav" aria-label="Điều hướng nội dung sách">
     <button type="button" data-open-dialog="studio-modal">Studio Setup</button>
-    <a href="/books/{{ book.id }}/text-studio">Text Studio</a>
-    {% if patches %}<a href="#patches-section">Patches</a>{% endif %}
-    <a href="#patches-section" onclick="document.querySelector('.patch-pagination')?.scrollIntoView({behavior:'smooth'});return false;">Export</a>
-    <details class="book-tools">
-        <summary>Tools</summary>
-        <div class="book-tools-menu">
-            <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
-            <button type="button" data-open-dialog="video-config-modal">Cấu hình video</button>
-            <button type="button" data-open-dialog="youtube-settings-modal">YouTube settings</button>
-            <button type="button" data-open-dialog="rules-modal">Replace rules</button>
-        </div>
-    </details>
+    <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
+    <button type="button" data-open-dialog="video-config-modal">Cấu hình video</button>
+    <button type="button" data-open-dialog="youtube-settings-modal">YouTube settings</button>
+    <button type="button" data-open-dialog="rules-modal">Replace rules</button>
 </nav>
 
 <dialog id="youtube-settings-modal" class="book-modal">
@@ -47,10 +39,7 @@
         <label>Genre tags <input name="genre_tags" value="{{ youtube_config.genre_tags }}"></label>
         <label>Title template <input name="title_template" value="{{ youtube_config.title_template }}"></label>
         <label>Description template <textarea name="description_template">{{ youtube_config.description }}</textarea></label>
-        <label>Playlist mode <select name="playlist_mode"><option value="none" {% if youtube_config.playlist.mode == 'none' %}selected{% endif %}>None</option><option value="existing" {% if youtube_config.playlist.mode == 'existing' %}selected{% endif %}>Existing</option><option value="create" {% if youtube_config.playlist.mode == 'create' %}selected{% endif %}>Create</option></select></label>
-        <label>Existing playlist <select name="playlist_id"><option value="">Select playlist</option>{% for playlist in youtube_playlists %}<option value="{{ playlist.id }}" {% if youtube_config.playlist.playlist_id == playlist.id %}selected{% endif %}>{{ playlist.title }}</option>{% endfor %}</select></label>
-        <label>Auto-create playlist title <input name="playlist_title_template" value="{{ youtube_config.playlist.title_template }}"></label>
-        <label>Auto-create playlist description <textarea name="playlist_description_template">{{ youtube_config.playlist.description_template }}</textarea></label>
+        <label>Playlist <select name="playlist_id"><option value="">Không dùng playlist</option>{% for playlist in youtube_playlists %}<option value="{{ playlist.id }}" {% if youtube_config.playlist.mode == 'existing' and youtube_config.playlist.playlist_id == playlist.id %}selected{% endif %}>{{ playlist.title }}</option>{% endfor %}</select></label>
         <div id="youtube-connection-state">{% if youtube_connected %}Connected: {{ youtube_channel_name }}{% else %}YouTube not connected{% endif %}</div>
         <label>Patch preview <select id="youtube-preview"><option value="">Select patch</option>{% for patch in patches %}<option value="{{ patch.id }}">{{ patch.name or patch.patch_index }}</option>{% endfor %}</select></label>
         <pre id="youtube-preview-output" style="white-space:pre-wrap"></pre>
@@ -90,7 +79,6 @@
                 <select id="patch-playlist" data-patch-field="playlist">
                     <option value="none">None</option>
                     <option value="existing">Existing</option>
-                    <option value="create">Create</option>
                 </select>
                 <button type="button" class="btn-outline btn-sm" data-use-book-default="playlist">Use book default</button>
             </div>
@@ -174,26 +162,30 @@
             <hr style="border-color:var(--border-color);margin:var(--space-md) 0">
             <div class="form-group" style="margin:0">
                 <label>Tải xuống / xuất cho các patch đã chọn</label>
-                <div class="btn-group" style="flex-wrap:wrap">
+                <div class="export-actions">
                     <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled>Download selected (.zip)</button>
                     {% if sync_targets %}
-                    <select name="sync_target_id" id="batch-sync-target" form="batch-export-form"
-                            title="Tài khoản Google Drive Desktop để xuất gói Colab/Kaggle">
-                        <option value="">Chọn tài khoản Drive</option>
-                        {% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}
-                    </select>
-                    <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
-                            formaction="/books/{{ book.id }}/patches/export-batch">Export vào Drive Desktop</button>
+                    <div class="export-action-group">
+                        <select name="sync_target_id" id="batch-sync-target" form="batch-export-form"
+                                title="Tài khoản Google Drive Desktop để xuất gói Colab/Kaggle">
+                            <option value="">Chọn tài khoản Drive</option>
+                            {% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}
+                        </select>
+                        <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
+                                formaction="/books/{{ book.id }}/patches/export-batch">Export vào Drive Desktop</button>
+                    </div>
                     {% endif %}
                     {% if drive_accounts %}
-                    <select name="account_id" id="batch-drive-account" form="batch-export-form"
-                            title="Tài khoản Drive phải trùng với secret GDRIVE_CREDS đã đặt trên Kaggle">
-                        <option value="">Chọn tài khoản (Kaggle)</option>
-                        {% for a in drive_accounts %}<option value="{{ a.id }}">{{ a.account_email or ('account #' ~ a.id) }}</option>{% endfor %}
-                    </select>
-                    <button type="submit" form="batch-export-form" id="batch-drive-api-btn" class="btn-outline btn-sm" disabled
-                            formaction="/books/{{ book.id }}/patches/export-batch-api"
-                            title="Upload batch lên Drive qua API để chạy trên Kaggle (Cell 4 dùng GDRIVE_CREDS)">Export lên Drive (Kaggle)</button>
+                    <div class="export-action-group">
+                        <select name="account_id" id="batch-drive-account" form="batch-export-form"
+                                title="Tài khoản Drive phải trùng với secret GDRIVE_CREDS đã đặt trên Kaggle">
+                            <option value="">Chọn tài khoản (Kaggle)</option>
+                            {% for a in drive_accounts %}<option value="{{ a.id }}">{{ a.account_email or ('account #' ~ a.id) }}</option>{% endfor %}
+                        </select>
+                        <button type="submit" form="batch-export-form" id="batch-drive-api-btn" class="btn-outline btn-sm" disabled
+                                formaction="/books/{{ book.id }}/patches/export-batch-api"
+                                title="Upload batch lên Drive qua API để chạy trên Kaggle (Cell 4 dùng GDRIVE_CREDS)">Export lên Drive (Kaggle)</button>
+                    </div>
                     {% endif %}
                 </div>
             </div>
@@ -257,7 +249,11 @@
 
             <div class="form-group vc-wide">
                 <span>Background chung từ Media Library</span>
-                <div id="vc-backgrounds" class="vc-background-grid">
+                <div id="vc-background-selected" class="vc-background-selected" aria-live="polite"></div>
+                <details class="vc-background-picker">
+                    <summary>Chọn từ thư viện <span id="vc-background-count"></span></summary>
+                    <input type="search" id="vc-background-search" placeholder="Tìm media..." aria-label="Tìm background trong Media Library">
+                    <div id="vc-backgrounds" class="vc-background-grid">
                     {% for bg in backgrounds %}
                     <label class="vc-background-option" data-bg-path="{{ bg.path }}" data-bg-name="{{ bg.name }}">
                         <input type="checkbox" class="vc-background-check" value="{{ bg.path }}" {% if bg.path in video_config.backgrounds %}checked{% endif %}>
@@ -272,7 +268,9 @@
                         {% endif %}
                     </label>
                     {% endfor %}
-                </div>
+                    </div>
+                    <p id="vc-background-empty" class="vc-background-empty" hidden>Không tìm thấy media phù hợp.</p>
+                </details>
             </div>
             <div class="form-group">
                 <label for="vc-background-mode">Cách đổi background</label>
@@ -519,8 +517,8 @@
          <input type="hidden" name="model_id"><input type="hidden" name="voice_id">
          <input type="hidden" name="max_chars"><input type="hidden" name="with_effects">
      </form>
-    <details id="result-upload" class="result-upload">
-        <summary>Upload kết quả hàng loạt (thư mục <code>result/</code>)</summary>
+    <section id="result-upload" class="result-upload" aria-labelledby="result-upload-title">
+        <strong id="result-upload-title" class="result-upload-title">Upload kết quả hàng loạt (thư mục <code>result/</code>)</strong>
         <p class="ru-hint">
             Thả cả <code>.wav</code> lẫn <code>.timeline.json</code> vào chung một ô. File được ghép vào patch
             theo số <code>NNN</code> đứng đầu tên — đúng cách notebook đặt tên (<code>NNN - tên.wav</code>).
@@ -540,7 +538,7 @@
             </div>
             <ul id="ru-list" class="ru-list"></ul>
         </div>
-    </details>
+    </section>
     <div class="table-wrap">
     <table data-table-key="patch-table">
         <thead>
@@ -685,12 +683,23 @@
 .video-config-grid { margin-bottom:var(--space-md); }
 .vc-wide { grid-column:1/-1; }
 
-.vc-background-grid { display:flex; flex-direction:column; gap:var(--space-xs); }
+.vc-background-selected { display:flex; gap:var(--space-xs); flex-wrap:wrap; min-height:38px; margin-top:var(--space-xs); padding:var(--space-xs); background:var(--bg-primary); border:1px solid var(--border-color); border-radius:var(--border-radius); }
+.vc-background-selected:empty::before { content:'Chưa chọn background'; align-self:center; color:var(--text-muted); font-size:var(--font-size-xs); }
+.vc-background-chip { display:flex; align-items:center; gap:var(--space-xs); max-width:240px; padding:3px 5px; border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-card); }
+.vc-background-chip img, .vc-background-chip video { width:48px; height:27px; object-fit:cover; border-radius:3px; }
+.vc-background-chip span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--font-size-xs); }
+.vc-background-chip button { flex:none; padding:0 3px; border:0; background:none; color:var(--text-muted); cursor:pointer; font-size:var(--font-size-md); }
+.vc-background-picker { margin-top:var(--space-sm); }
+.vc-background-picker > summary { cursor:pointer; color:var(--color-primary); font-size:var(--font-size-sm); }
+.vc-background-picker > input { width:100%; margin:var(--space-sm) 0; }
+.vc-background-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:var(--space-xs); max-height:360px; overflow:auto; padding-right:var(--space-xs); }
 .vc-background-option { display:flex; gap:var(--space-xs); align-items:center; padding:var(--space-xs); border:1px solid var(--border-color); border-radius:var(--border-radius); }
+.vc-background-option:has(.vc-background-check:checked) { border-color:var(--color-primary); background:color-mix(in srgb,var(--color-primary) 8%,transparent); }
 .vc-background-preview { flex:none; width:96px; height:54px; object-fit:cover; border-radius:var(--border-radius-sm); }
 .vc-background-option span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vc-background-del { flex:none; background:none; border:none; cursor:pointer; padding:2px; opacity:.45; font-size:var(--font-size-sm); line-height:1; }
 .vc-background-del:hover { opacity:1; color:var(--color-error, #dc2626); }
+.vc-background-empty { margin:var(--space-sm) 0 0; color:var(--text-muted); font-size:var(--font-size-xs); }
 
 /* Patch image modal 2-col layout */
 .pi-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-lg); align-items:start; margin-top:var(--space-md); }
@@ -727,11 +736,6 @@
 .pv-job-error { color:var(--color-error, #dc2626); }
 
 /* Workflow navigation and selected-patch action groups */
-.book-tools { position:relative; }
-.book-tools > summary { cursor:pointer; list-style:none; }
-.book-tools-menu { position:absolute; z-index:20; min-width:180px; padding:var(--space-xs); background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 4px 16px rgba(0,0,0,.2); }
-.book-tools-menu a, .book-tools-menu button { display:block; width:100%; padding:var(--space-xs) var(--space-sm); border:0; background:none; color:inherit; font:inherit; text-align:left; text-decoration:none; cursor:pointer; }
-.book-tools-menu a:hover, .book-tools-menu button:hover { background:var(--border-color); }
 .patch-bottom-nav { align-items:center; flex-wrap:wrap; }
 .batch-action-group { display:flex; align-items:center; gap:var(--space-xs); flex-wrap:wrap; }
 .batch-action-label { color:var(--text-muted); font-size:var(--font-size-xs); font-weight:600; text-transform:uppercase; }
@@ -742,10 +746,15 @@
 .bn-check { font-size:var(--font-size-xs); white-space:nowrap; color:var(--text-muted); }
 .btn-link { border:0; background:none; padding:0; color:var(--color-primary); cursor:pointer; font:inherit; text-decoration:underline; }
 .patch-inline-section select { font-size:var(--font-size-xs); padding:2px 4px; }
+.export-actions { display:flex; align-items:flex-end; gap:var(--space-sm); flex-wrap:wrap; }
+.export-action-group { display:flex; align-items:stretch; }
+.export-action-group select { min-width:180px; border-top-right-radius:0; border-bottom-right-radius:0; }
+.export-action-group .btn-sm { border-top-left-radius:0; border-bottom-left-radius:0; }
+@media (max-width:640px) { .export-action-group { width:100%; } .export-action-group select { flex:1; min-width:0; } }
 
 /* Bulk upload of a batch's result/ folder: one dropzone for WAVs and timelines. */
-.result-upload { margin-bottom:var(--space-md); }
-.result-upload > summary { cursor:pointer; font-weight:500; font-size:var(--font-size-sm); }
+.result-upload { position:sticky; top:4.25rem; z-index:9; margin-bottom:var(--space-md); padding:var(--space-sm); background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 2px 8px rgba(0,0,0,.08); }
+.result-upload-title { display:block; font-weight:500; font-size:var(--font-size-sm); }
 .ru-hint { margin:var(--space-sm) 0; color:var(--text-muted); font-size:var(--font-size-xs); line-height:1.5; }
 .ru-drop { display:flex; flex-direction:column; gap:2px; align-items:center; padding:var(--space-lg); border:2px dashed var(--border-color); border-radius:var(--border-radius); background:var(--bg-primary); color:var(--text-muted); font-size:var(--font-size-sm); text-align:center; cursor:pointer; }
 .ru-drop strong { color:var(--text-primary); }
@@ -779,6 +788,14 @@
         @media (max-width: 960px) { #studio-grid { grid-template-columns:1fr; } }
         .studio-section { border:1px solid var(--border-color); border-radius:var(--border-radius); padding:var(--space-md); }
         .studio-section h4 { margin:0 0 var(--space-sm) 0; font-size:var(--font-size-sm); text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
+        #overlay-layers { display:grid; gap:var(--space-sm); margin-top:var(--space-sm); }
+        .overlay-layer { padding:var(--space-sm); border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-primary); cursor:pointer; }
+        .overlay-layer.active { border-color:var(--color-primary); box-shadow:0 0 0 1px var(--color-primary); }
+        .overlay-layer-header { display:flex; justify-content:space-between; align-items:center; gap:var(--space-sm); margin-bottom:var(--space-sm); }
+        .overlay-layer-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-sm); }
+        .overlay-layer-grid .form-group:first-child { grid-column:1/-1; }
+        .overlay-offset { display:block; margin-top:var(--space-xs); color:var(--text-muted); }
+        @media (max-width:640px) { .overlay-layer-grid { grid-template-columns:1fr; } .overlay-layer-grid .form-group:first-child { grid-column:auto; } }
         #drag-rect { position:absolute; border:2px dashed #38bdf8; background:rgba(56,189,248,.10); cursor:move; touch-action:none; display:none; border-radius:4px; }
         #drag-rect:hover, #drag-rect.dragging { background:rgba(56,189,248,.22); }
         /* Real size, not transform:scale — a scaled box keeps its 16px layout
@@ -819,7 +836,7 @@
                 <div id="preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--border-radius);overflow:hidden">
                     <img id="overlay-preview" alt="Preview" style="width:100%;display:block">
                     <video id="overlay-preview-video" muted loop playsinline preload="metadata" style="width:100%;display:none"></video>
-                    <div id="drag-rect" title="Kéo để chỉnh vị trí chữ"></div>
+                    <div id="drag-rect" title="Kéo để chỉnh vị trí overlay đang chọn"></div>
                 </div>
                 <div style="display:flex;justify-content:flex-end;margin-top:var(--space-sm)">
                     <a id="preview-download" class="btn-outline btn-sm" href="#" download="background-preview.png" style="display:none">Tải background preview</a>
@@ -889,107 +906,17 @@
                 </p>
             </form>
 
-            <form id="overlay-form" data-autosave method="post" action="/books/{{ book.id }}/overlay-config" class="studio-section">
-                <h4>Chữ overlay</h4>
-                <input type="hidden" name="offset_x" id="ov-offset-x" value="{{ overlay_cfg.offset_x }}">
-                <input type="hidden" name="offset_y" id="ov-offset-y" value="{{ overlay_cfg.offset_y }}">
-                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-md);margin-bottom:var(--space-md)">
-                     <div class="form-group" style="margin:0;grid-column:1/-1">
-                         <label for="ov-text">Nội dung chữ overlay</label>
-                         <input type="text" name="text" id="ov-text" value="{{ overlay_cfg.text or '' }}"
-                                maxlength="500" placeholder="Mặc định: tên sách - tên patch">
-                         <small>Để trống để tự dùng tên sách và tên patch.</small>
-                     </div>
-                     <div class="form-group" style="margin:0">
-                        <label for="ov-position">Vị trí</label>
-                        <select name="position" id="ov-position">
-                            <option value="top" {% if overlay_cfg.position == 'top' %}selected{% endif %}>Trên</option>
-                            <option value="center" {% if overlay_cfg.position == 'center' %}selected{% endif %}>Giữa</option>
-                            <option value="bottom" {% if overlay_cfg.position == 'bottom' %}selected{% endif %}>Dưới</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="margin:0">
-                        <label for="ov-alignment">Căn ngang</label>
-                        <select name="alignment" id="ov-alignment">
-                            <option value="left" {% if overlay_cfg.alignment == 'left' %}selected{% endif %}>Trái</option>
-                            <option value="center" {% if overlay_cfg.alignment == 'center' %}selected{% endif %}>Giữa</option>
-                            <option value="right" {% if overlay_cfg.alignment == 'right' %}selected{% endif %}>Phải</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="margin:0">
-                        <label for="ov-font-size">Cỡ chữ (px)</label>
-                        <input type="number" name="font_size" id="ov-font-size" min="12" max="200" value="{{ overlay_cfg.font_size }}">
-                    </div>
-                    <div class="form-group" style="margin:0">
-                        <label for="ov-text-color">Màu chữ</label>
-                        <input type="color" name="text_color" id="ov-text-color" value="{{ overlay_cfg.text_color }}">
-                    </div>
-                    <div class="form-group" style="margin:0">
-                        <label for="ov-margin">Khoảng cách mép (px)</label>
-                        <input type="number" name="margin" id="ov-margin" min="0" max="200" value="{{ overlay_cfg.margin }}">
-                    </div>
+            <form id="overlay-form" method="post" action="/books/{{ book.id }}/overlay-config" class="studio-section">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-sm)">
+                    <h4 style="margin:0">Nội dung overlay</h4>
+                    <button type="button" id="overlay-add" class="btn-outline btn-sm">+ Thêm overlay</button>
                 </div>
-                <div style="display:flex;align-items:center;gap:var(--space-sm);margin-bottom:var(--space-md);font-size:var(--font-size-xs);color:var(--text-muted)">
-                    <span>Offset kéo: <code id="ov-offset-label">{{ overlay_cfg.offset_x }}, {{ overlay_cfg.offset_y }}</code> px</span>
-                    <button type="button" id="ov-offset-reset" class="btn-outline btn-sm">Reset vị trí</button>
-                </div>
-
-                <button type="button" class="btn-outline btn-sm" data-open-dialog="overlay-advanced-modal">Cấu hình nâng cao</button>
-                <dialog id="overlay-advanced-modal" class="book-modal">
-                    <div class="card-header ui-modal-header">
-                        <h3 style="margin:0">Cấu hình overlay nâng cao</h3>
-                        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
-                    </div>
-                <details open style="margin-bottom:var(--space-md)">
-                    <summary style="cursor:pointer;font-weight:500">Shadow (đổ bóng)</summary>
-                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-md);padding:var(--space-md) 0">
-                        <label>
-                            <input type="checkbox" name="shadow_enabled" {% if overlay_cfg.shadow.enabled %}checked{% endif %}>
-                            Bật
-                        </label>
-                        <div class="form-group" style="margin:0">
-                            <label for="ov-shadow-color">Màu</label>
-                            <input type="color" name="shadow_color" id="ov-shadow-color" value="{{ overlay_cfg.shadow.color }}">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="ov-shadow-offset">Offset (px)</label>
-                            <input type="number" name="shadow_offset" id="ov-shadow-offset" min="0" max="20" value="{{ overlay_cfg.shadow.offset }}">
-                        </div>
-                    </div>
-                </details>
-
-                <details style="margin-bottom:var(--space-md)">
-                    <summary style="cursor:pointer;font-weight:500">Background box (hộp nền)</summary>
-                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-md);padding:var(--space-md) 0">
-                        <label>
-                            <input type="checkbox" name="box_enabled" {% if overlay_cfg.box.enabled %}checked{% endif %}>
-                            Bật
-                        </label>
-                        <div class="form-group" style="margin:0">
-                            <label for="ov-box-color">Màu</label>
-                            <input type="color" name="box_color" id="ov-box-color" value="{{ overlay_cfg.box.color }}">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="ov-box-opacity">Độ mờ: <span id="ov-opacity-label">{{ overlay_cfg.box.opacity }}%</span></label>
-                            <input type="range" name="box_opacity" id="ov-box-opacity" min="0" max="100" value="{{ overlay_cfg.box.opacity }}"
-                                   oninput="document.getElementById('ov-opacity-label').textContent=this.value+'%'">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="ov-box-px">Padding X (px)</label>
-                            <input type="number" name="box_padding_x" id="ov-box-px" min="0" max="200" value="{{ overlay_cfg.box.padding_x }}">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="ov-box-py">Padding Y (px)</label>
-                            <input type="number" name="box_padding_y" id="ov-box-py" min="0" max="200" value="{{ overlay_cfg.box.padding_y }}">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="ov-box-radius">Bo góc (px)</label>
-                            <input type="number" name="box_radius" id="ov-box-radius" min="0" max="200" value="{{ overlay_cfg.box.radius }}">
-                        </div>
-                    </div>
-                </details>
-
-                </dialog>
+                <input type="hidden" name="overlays_json" id="overlays-json">
+                <p style="font-size:var(--font-size-xs);color:var(--text-muted)">
+                    Placeholder: <code>{book_title}</code>, <code>{patch_name}</code>, <code>{episode}</code>,
+                    <code>{chapter}</code>, <code>{chapter_start}</code>, <code>{chapter_end}</code>.
+                </p>
+                <div id="overlay-layers"></div>
             </form>
 
              <form id="music-form" data-autosave method="post" action="/books/{{ book.id }}/music" class="studio-section" hidden>
@@ -1140,11 +1067,8 @@ async function refreshYoutubeSettings() {
     settingsForm.genre_tags.value = data.config.genre_tags || '';
     settingsForm.title_template.value = data.config.title_template || '';
     settingsForm.description_template.value = data.config.description || '';
-    settingsForm.playlist_mode.value = data.config.playlist.mode;
-    settingsForm.playlist_id.value = data.config.playlist.playlist_id || '';
-    settingsForm.playlist_title_template.value = data.config.playlist.title_template || '';
-    settingsForm.playlist_description_template.value = data.config.playlist.description_template || '';
-    const select = document.querySelector('[name="playlist_id"]'); select.innerHTML = '<option value="">Select playlist</option>';
+    settingsForm.playlist_id.value = data.config.playlist.mode === 'existing' ? (data.config.playlist.playlist_id || '') : '';
+    const select = document.querySelector('[name="playlist_id"]'); select.innerHTML = '<option value="">Không dùng playlist</option>';
     (data.playlists || []).forEach(item => select.add(new Option(item.title, item.id)));
     select.value = data.config.playlist.playlist_id || '';
     } catch (error) { const el = document.getElementById('youtube-settings-error'); el.textContent = error.message; el.hidden = false; showToast(error.message, 'error'); }
@@ -1171,8 +1095,8 @@ document.getElementById('youtube-settings-form')?.addEventListener('submit', asy
     const data = Object.fromEntries(new FormData(form));
     data.auto_upload = form.auto_upload.checked;
     data.genre_tags = String(data.genre_tags || '').split(',').map(s => s.trim()).filter(Boolean).join(', ');
-    data.playlist = {mode: data.playlist_mode, id: data.playlist_id, title_template: data.playlist_title_template, description_template: data.playlist_description_template};
-    delete data.playlist_mode; delete data.playlist_id; delete data.playlist_title_template; delete data.playlist_description_template;
+    data.playlist = {mode: data.playlist_id ? 'existing' : 'none', id: data.playlist_id};
+    delete data.playlist_id;
     try {
         const response = await fetch(`/books/${BOOK_ID}/youtube-settings`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
         if (!response.ok) throw new Error((await response.json()).detail || 'Save failed');
@@ -1620,9 +1544,12 @@ function filterAndPaginate(resetPage) {
     const emptyMsg = document.getElementById('preview-empty');
     const overlayForm = document.getElementById('overlay-form');
     const bgSelect = document.getElementById('bg-select');
-    const offX = document.getElementById('ov-offset-x');
-    const offY = document.getElementById('ov-offset-y');
-    const offsetLabel = document.getElementById('ov-offset-label');
+    const layersEl = document.getElementById('overlay-layers');
+    const overlaysJson = document.getElementById('overlays-json');
+    const fonts = {{ overlay_fonts | tojson }};
+    let overlays = {{ overlay_cfg.overlays | tojson }};
+    if (!overlays.length) overlays = [{{ overlay_cfg | tojson }}];
+    let activeOverlay = 0;
     if (!previewImg || !overlayForm) return;
 
     let rect = null;       // last X-Overlay-Rect from the server, in image pixels
@@ -1630,6 +1557,66 @@ function filterAndPaginate(resetPage) {
     let refreshTimer = null;
     let refreshing = false;
     let refreshQueued = false;
+
+    function layerField(label, control) {
+        const group = document.createElement('div');
+        group.className = 'form-group'; group.style.margin = '0';
+        const caption = document.createElement('label'); caption.textContent = label;
+        group.append(caption, control); return group;
+    }
+
+    function selectField(options, value) {
+        const select = document.createElement('select');
+        options.forEach(([key, label]) => select.add(new Option(label, key, false, key === value)));
+        return select;
+    }
+
+    function renderLayers() {
+        layersEl.replaceChildren();
+        overlays.forEach((item, index) => {
+            const card = document.createElement('div');
+            card.className = 'overlay-layer' + (index === activeOverlay ? ' active' : '');
+            card.dataset.index = index;
+            const header = document.createElement('div'); header.className = 'overlay-layer-header';
+            const title = document.createElement('strong'); title.textContent = `Overlay ${index + 1}`;
+            const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn-danger btn-sm overlay-remove'; remove.textContent = 'Xóa'; remove.disabled = overlays.length === 1;
+            header.append(title, remove);
+            const grid = document.createElement('div'); grid.className = 'overlay-layer-grid';
+            const text = document.createElement('input'); text.value = item.text || ''; text.maxLength = 500; text.placeholder = '{book_title} - Tập {episode}'; text.dataset.field = 'text';
+            const font = selectField([['', 'Font mặc định'], ...fonts.map(f => [f.path, f.name])], item.font_path || ''); font.dataset.field = 'font_path';
+            const position = selectField([['top','Trên'],['center','Giữa'],['bottom','Dưới']], item.position || 'top'); position.dataset.field = 'position';
+            const alignment = selectField([['left','Trái'],['center','Giữa'],['right','Phải']], item.alignment || 'center'); alignment.dataset.field = 'alignment';
+            const size = document.createElement('input'); size.type = 'number'; size.min = 12; size.max = 200; size.value = item.font_size || 52; size.dataset.field = 'font_size';
+            const color = document.createElement('input'); color.type = 'color'; color.value = item.text_color || '#FFFFFF'; color.dataset.field = 'text_color';
+            const margin = document.createElement('input'); margin.type = 'number'; margin.min = 0; margin.max = 200; margin.value = item.margin ?? 40; margin.dataset.field = 'margin';
+            grid.append(layerField('Nội dung', text), layerField('Font chữ', font), layerField('Vị trí', position), layerField('Căn ngang', alignment), layerField('Cỡ chữ', size), layerField('Màu chữ', color), layerField('Cách mép', margin));
+            const offset = document.createElement('small'); offset.className = 'overlay-offset'; offset.textContent = `Offset: ${item.offset_x || 0}, ${item.offset_y || 0}px`;
+            card.append(header, grid, offset); layersEl.appendChild(card);
+        });
+        syncOverlayJson();
+    }
+
+    function syncOverlayJson() { overlaysJson.value = JSON.stringify(overlays); }
+
+    layersEl.addEventListener('click', e => {
+        const card = e.target.closest('.overlay-layer'); if (!card) return;
+        activeOverlay = Number(card.dataset.index);
+        if (e.target.closest('.overlay-remove') && overlays.length > 1) {
+            overlays.splice(activeOverlay, 1); activeOverlay = Math.max(0, activeOverlay - 1);
+        }
+        renderLayers(); scheduleRefresh();
+    });
+    layersEl.addEventListener('input', e => {
+        const field = e.target.dataset.field; if (!field) return;
+        const index = Number(e.target.closest('.overlay-layer').dataset.index);
+        overlays[index][field] = e.target.type === 'number' ? Number(e.target.value) : e.target.value;
+        activeOverlay = index; syncOverlayJson(); scheduleRefresh();
+    });
+    document.getElementById('overlay-add').addEventListener('click', () => {
+        overlays.push({text:'{book_title} - Tập {episode}',position:'center',alignment:'center',font_size:52,font_path:'',text_color:'#FFFFFF',margin:40,offset_x:0,offset_y:0,shadow:{enabled:true,color:'#000000',offset:3},box:{enabled:false,color:'#000000',opacity:60,padding_x:24,padding_y:12,radius:12}});
+        activeOverlay = overlays.length - 1; renderLayers(); scheduleRefresh();
+    });
+    renderLayers();
 
     function previewParams() {
         const params = new URLSearchParams(new FormData(overlayForm));
@@ -1698,6 +1685,7 @@ function filterAndPaginate(resetPage) {
             emptyMsg.style.display = 'none';
             const header = res.headers.get('X-Overlay-Rect');
             rect = header ? JSON.parse(header) : null;
+            if (rect?.rects?.[activeOverlay]) rect = {...rect, ...rect.rects[activeOverlay]};
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
             previewImg.onload = function() {
@@ -1710,7 +1698,6 @@ function filterAndPaginate(resetPage) {
                 positionRect();
             };
             previewImg.src = url;
-            offsetLabel.textContent = `${offX.value || 0}, ${offY.value || 0}`;
         } catch (_) {
         } finally {
             refreshing = false;
@@ -1726,18 +1713,6 @@ function filterAndPaginate(resetPage) {
     overlayForm.addEventListener('input', scheduleRefresh);
     overlayForm.addEventListener('change', scheduleRefresh);
     if (bgSelect) bgSelect.addEventListener('change', scheduleRefresh);
-
-    // Changing the anchor selects resets the drag offset so the text snaps to
-    // the chosen corner predictably instead of keeping a stale nudge.
-    for (const id of ['ov-position', 'ov-alignment']) {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener('change', () => { offX.value = 0; offY.value = 0; });
-    }
-    document.getElementById('ov-offset-reset').addEventListener('click', () => {
-        offX.value = 0;
-        offY.value = 0;
-        scheduleRefresh();
-    });
 
     // Drag the text block; on release the delta is folded into offset_x/y and
     // the server re-renders (it applies the same clamping).
@@ -1762,10 +1737,11 @@ function filterAndPaginate(resetPage) {
     });
     dragRect.addEventListener('pointerup', () => {
         if (!drag) return;
-        offX.value = Math.round((parseInt(offX.value, 10) || 0) + drag.dx);
-        offY.value = Math.round((parseInt(offY.value, 10) || 0) + drag.dy);
+        overlays[activeOverlay].offset_x = Math.round((Number(overlays[activeOverlay].offset_x) || 0) + drag.dx);
+        overlays[activeOverlay].offset_y = Math.round((Number(overlays[activeOverlay].offset_y) || 0) + drag.dy);
         drag = null;
         dragRect.classList.remove('dragging');
+        renderLayers();
         refreshPreview();
     });
     dragRect.addEventListener('pointercancel', () => {
@@ -1935,6 +1911,7 @@ function _ttsEsc(s) { const d = document.createElement('div'); d.textContent = (
 
 const TTS_CFG_KEY = 'tts-cfg:' + BOOK_ID;
 const BOOK_REF_NAME = {{ (current_voice_name or '') | tojson }};
+const REFERENCE_VOICES = {{ voices | tojson }};
 
 // modelId -> how its voice field behaves. Light models map straight onto the
 // light-tts preview/run routes; reference-capable models require a book clip.
@@ -1947,7 +1924,7 @@ const TTS_MODEL_INFO = {
 };
 
 function defaultTtsCfg() {
-    return { model: 'edge-tts', voice: '', maxChars: 0, withF: false };
+    return { model: 'omnivoice', voice: BOOK_REF_NAME, maxChars: 1200, withF: false };
 }
 
 function getTtsCfg() {
@@ -2014,17 +1991,23 @@ function openTtsModal(mode, action) {
 async function renderTtsVoiceArea(model, voice) {
     const area = document.getElementById('tts-voice-area');
     if (!area) return;
+    area.dataset.model = model;
     const info = TTS_MODEL_INFO[model] || TTS_MODEL_INFO['edge-tts'];
     if (info.kind === 'reference') {
-        if (!BOOK_REF_NAME) {
+        if (!REFERENCE_VOICES.length) {
             area.innerHTML = '<p style="color:var(--text-muted);font-size:var(--font-size-xs)">' +
                 'Model này cần một voice tham chiếu của sách — tải lên voice tham chiếu trước.</p>';
             return;
         }
+        const selectedVoice = REFERENCE_VOICES.includes(voice) ? voice :
+            (REFERENCE_VOICES.includes(BOOK_REF_NAME) ? BOOK_REF_NAME : REFERENCE_VOICES[0]);
+        const options = REFERENCE_VOICES.map(name =>
+            `<option value="${_ttsEsc(name)}" ${name === selectedVoice ? 'selected' : ''}>${_ttsEsc(name)}</option>`
+        ).join('');
         area.innerHTML = '<div class="form-group">' +
             '<label for="tts-ref-voice">Voice tham chiếu (bắt buộc)</label>' +
-            '<input id="tts-ref-voice" readonly value="' + _ttsEsc(BOOK_REF_NAME) + '">' +
-            '<small style="color:var(--text-muted)">Voice mẫu của sách dùng để clone giọng cho model này.</small>' +
+            '<select id="tts-ref-voice">' + options + '</select>' +
+            '<small style="color:var(--text-muted)">Voice mẫu được đóng gói và dùng để clone giọng cho lượt export này.</small>' +
             '</div>';
         return;
     }
@@ -2036,12 +2019,13 @@ async function renderTtsVoiceArea(model, voice) {
     try {
         const res = await fetch(`/text-studio/light-tts/voices?backend=${encodeURIComponent(model)}`);
         const data = res.ok ? await res.json() : { voices: [] };
+        if (area.dataset.model !== model || !sel.isConnected) return;
         sel.innerHTML = (data.voices || []).map(v =>
             `<option value="${_ttsEsc(v.id)}" ${v.id === voice ? 'selected' : ''}>${_ttsEsc(v.label)}</option>`
         ).join('');
         if (!sel.value && sel.options.length) sel.selectedIndex = 0;
     } catch (_) {
-        sel.innerHTML = '';
+        if (area.dataset.model === model && sel.isConnected) sel.innerHTML = '';
     }
 }
 
@@ -2782,13 +2766,14 @@ async function genSelectedImages() {
     const btn = document.getElementById('btnGenSelectedImages');
     const ids = getSelectedPatchIds();
     if (!ids.length) { showToast('Không có patch nào để tạo ảnh.', 'error'); return; }
+    if (!confirm(`Tạo lại ảnh overlay cho ${ids.length} patch đã chọn?\n\nHãy chắc chắn bạn đã bấm "Lưu tất cả" trong Studio. Ảnh overlay hiện tại của các patch này sẽ bị thay thế.`)) return;
     const orig = btn.textContent;
     btn.disabled = true;
     let done = 0, errors = 0;
     for (const pid of ids) {
         btn.textContent = `Tạo ảnh ${done + errors + 1}/${ids.length}…`;
         try {
-            const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/overlay-image?v=${Date.now()}`, { cache: 'no-store' });
+            const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/overlay-image?force=1&v=${Date.now()}`, { cache: 'no-store' });
             if (!res.ok) throw new Error('HTTP ' + res.status);
             refreshPatchThumb(pid);
             done++;
@@ -2825,6 +2810,70 @@ async function genSelectedImages() {
         if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
     });
 
+    const backgroundGrid = document.getElementById('vc-backgrounds');
+    const backgroundSelected = document.getElementById('vc-background-selected');
+    const backgroundCount = document.getElementById('vc-background-count');
+    let selectedBackgroundOrder = {{ video_config.backgrounds | tojson }}.filter(path =>
+        Array.from(backgroundGrid?.querySelectorAll('.vc-background-check') || []).some(input => input.value === path && input.checked)
+    );
+
+    function refreshSelectedBackgrounds() {
+        if (!backgroundGrid || !backgroundSelected) return;
+        backgroundSelected.replaceChildren();
+        const checked = selectedBackgroundOrder.map(path =>
+            Array.from(backgroundGrid.querySelectorAll('.vc-background-check')).find(input => input.value === path && input.checked)
+        ).filter(Boolean);
+        checked.forEach(input => {
+            const tile = input.closest('.vc-background-option');
+            const chip = document.createElement('div');
+            chip.className = 'vc-background-chip';
+            const preview = tile.querySelector('.vc-background-preview')?.cloneNode(true);
+            if (preview) {
+                preview.removeAttribute('controls');
+                chip.appendChild(preview);
+            }
+            const name = document.createElement('span');
+            name.textContent = tile.dataset.bgName;
+            name.title = tile.dataset.bgName;
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.textContent = '\u00d7';
+            remove.title = `Bỏ chọn ${tile.dataset.bgName}`;
+            remove.dataset.bgPath = tile.dataset.bgPath;
+            chip.append(name, remove);
+            backgroundSelected.appendChild(chip);
+        });
+        if (backgroundCount) backgroundCount.textContent = checked.length ? `(${checked.length} đã chọn)` : '';
+    }
+
+    backgroundGrid?.addEventListener('change', e => {
+        if (!e.target.classList.contains('vc-background-check')) return;
+        if (e.target.checked && !selectedBackgroundOrder.includes(e.target.value)) selectedBackgroundOrder.push(e.target.value);
+        if (!e.target.checked) selectedBackgroundOrder = selectedBackgroundOrder.filter(path => path !== e.target.value);
+        refreshSelectedBackgrounds();
+    });
+    backgroundSelected?.addEventListener('click', e => {
+        const btn = e.target.closest('button[data-bg-path]');
+        if (!btn) return;
+        const input = Array.from(backgroundGrid.querySelectorAll('.vc-background-check'))
+            .find(item => item.value === btn.dataset.bgPath);
+        if (input) input.checked = false;
+        selectedBackgroundOrder = selectedBackgroundOrder.filter(path => path !== btn.dataset.bgPath);
+        refreshSelectedBackgrounds();
+    });
+    document.getElementById('vc-background-search')?.addEventListener('input', function () {
+        const query = this.value.trim().toLocaleLowerCase();
+        const tiles = Array.from(backgroundGrid.querySelectorAll('.vc-background-option'));
+        let visible = 0;
+        tiles.forEach(tile => {
+            const matches = !query || tile.dataset.bgName.toLocaleLowerCase().includes(query);
+            tile.hidden = !matches;
+            if (matches) visible += 1;
+        });
+        document.getElementById('vc-background-empty').hidden = visible > 0;
+    });
+    refreshSelectedBackgrounds();
+
     // Video-config: delete a media file straight from the background grid. The
     // tile is a <label>, so stop the click from toggling its checkbox.
     document.getElementById('vc-backgrounds')?.addEventListener('click', async (e) => {
@@ -2843,6 +2892,8 @@ async function genSelectedImages() {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
             tile.remove();
+            selectedBackgroundOrder = selectedBackgroundOrder.filter(path => path !== tile.dataset.bgPath);
+            refreshSelectedBackgrounds();
             showToast(`Đã xóa media: ${name}`);
         } catch (err) {
             btn.disabled = false;
@@ -2870,7 +2921,7 @@ async function genSelectedImages() {
             const musicRes = await fetch(`/books/${BOOK_ID}/music`, { method: 'POST', body: musicFd });
             if (!musicRes.ok) throw new Error(`HTTP ${musicRes.status}`);
             const videoConfig = {
-                backgrounds: Array.from(document.querySelectorAll('.vc-background-check:checked')).map(input => input.value),
+                backgrounds: selectedBackgroundOrder.slice(),
                 background_mode: document.getElementById('vc-background-mode').value,
                 image_duration_seconds: Number(document.getElementById('vc-image-duration').value),
                 intro_voice: document.getElementById('vc-intro').value,
