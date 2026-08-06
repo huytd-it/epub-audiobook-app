@@ -161,7 +161,9 @@ class JobQueue:
         except JobFatalError as exc:
             ctx.flush(); store.fail(conn, job.id, str(exc), fatal=True)
         except Exception as exc:
-            ctx.flush(); store.fail(conn, job.id, str(exc), max_attempts=spec.max_attempts)
+            # The enqueue request may set a per-job retry policy. HandlerSpec is
+            # only the default; do not overwrite the persisted max_attempts.
+            ctx.flush(); store.fail(conn, job.id, str(exc), max_attempts=job.max_attempts)
         finally:
             ctx.close(); conn.close()
 

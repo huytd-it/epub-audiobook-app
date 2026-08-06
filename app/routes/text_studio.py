@@ -458,6 +458,14 @@ async def generate_selected_tts(request: Request, book_id: int):
 
     body = await request.json()
     patch_ids = [int(value) for value in body.get("patch_ids") or []]
+    auto_upload_youtube = body.get("auto_upload_youtube") is True
+    auto_create_video = body.get("auto_create_video") is True or auto_upload_youtube
+    try:
+        retry_count = int(body.get("retry_count", 2))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="retry_count must be an integer")
+    if not 0 <= retry_count <= 10:
+        raise HTTPException(status_code=400, detail="retry_count must be between 0 and 10")
     payload = normalize_tt_payload({
         "tts_engine": body.get("model_id"),
         "voice": body.get("voice_id"),
@@ -476,9 +484,12 @@ async def generate_selected_tts(request: Request, book_id: int):
         queued = enqueue_pending_patch_jobs(
             conn, book_id, payload["tts_engine"], voice=payload["voice"],
             max_chars=payload["max_chars"], with_effects=payload["with_effects"],
-            patch_ids=patch_ids,
+            patch_ids=patch_ids, auto_create_video=auto_create_video,
+            auto_upload_youtube=auto_upload_youtube, retry_count=retry_count,
+            missing_audio_only=True,
         )
-    return {"queued": queued}
+    return {"queued": queued, "auto_create_video": auto_create_video,
+            "auto_upload_youtube": auto_upload_youtube, "retry_count": retry_count}
 
 
 def _finish_patch_audio(

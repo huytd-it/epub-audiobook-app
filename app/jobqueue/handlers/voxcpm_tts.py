@@ -91,6 +91,18 @@ def handle(ctx) -> dict:
     warm_patch_thumbnail(thumbnail_inputs)
     repository.mark_patch_done(ctx.conn, patch_id, audio_path)
     on_patch_audio_ready(ctx.conn, patch_id)
+    auto_upload_youtube = bool(payload.get("auto_upload_youtube"))
+    if payload.get("auto_create_video") or auto_upload_youtube:
+        from app.jobqueue import store
+        from app.youtube_metadata import get_book_youtube_config
+        youtube_config = get_book_youtube_config(ctx.conn, patch.book_id)
+        store.enqueue(
+            ctx.conn, "patch_video",
+            payload={"patch_id": patch_id, "upload_youtube": auto_upload_youtube,
+                     "privacy": youtube_config.get("privacy_status", "private")},
+            book_id=patch.book_id, patch_id=patch_id,
+            dedupe_key=f"patch_video:patch={patch_id}",
+        )
     ctx.log(f"patch {patch_id} xong -> {audio_path}")
     final_path = finalize_book_if_ready(ctx, patch.book_id)
     ctx.progress(chunk_count, chunk_count, phase="synthesizing")

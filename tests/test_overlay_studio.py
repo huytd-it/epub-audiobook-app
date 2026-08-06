@@ -190,8 +190,29 @@ def test_book_detail_page_renders_studio(client, tmp_path):
     resp = client.get("/books/1")
     assert resp.status_code == 200
     assert 'id="studio-modal"' in resp.text
-    assert 'id="drag-rect"' in resp.text
+    assert 'id="drag-rect" tabindex="0" role="button"' in resp.text
     assert 'id="mix-play"' in resp.text
+    assert "shadow.enabled" in resp.text
+    assert "box.opacity" in resp.text
+
+
+
+def test_overlay_font_list_includes_bundled_display_font():
+    from app import image_overlay
+
+    fonts = image_overlay.list_overlay_fonts()
+    pacifico = next((font for font in fonts if "Pacifico" in font["name"]), None)
+    assert pacifico is not None
+    assert Path(pacifico["path"]).name == "Pacifico-Regular.ttf"
+
+
+def test_overlay_font_list_excludes_invalid_font(tmp_path, monkeypatch):
+    from app import image_overlay
+
+    invalid = tmp_path / "broken.ttf"
+    invalid.write_bytes(b"not a font")
+    monkeypatch.setattr(image_overlay.settings, "default_font_path", str(invalid))
+    assert all(font["path"] != str(invalid) for font in image_overlay.list_overlay_fonts())
 
 
 def test_mix_reference_lists_voices(client, tmp_path):
@@ -316,3 +337,32 @@ def test_overlay_config_accepts_multiple_layers():
     })
     assert [item["text"] for item in cfg["overlays"]] == ["{book_title}", "Tập {episode}"]
     assert [item["position"] for item in cfg["overlays"]] == ["top", "bottom"]
+
+
+def test_overlay_config_accepts_advanced_layer_settings():
+    from app import image_overlay
+
+    cfg = image_overlay.overlay_cfg_from_values({
+        "overlays_json": json.dumps([{
+            "text": "Tập {episode}",
+            "shadow": {"enabled": False, "color": "#112233", "offset": 99},
+            "box": {
+                "enabled": True,
+                "color": "#445566",
+                "opacity": 125,
+                "padding_x": 31,
+                "padding_y": 17,
+                "radius": 22,
+            },
+        }])
+    })
+    layer = cfg["overlays"][0]
+    assert layer["shadow"] == {"enabled": False, "color": "#112233", "offset": 20}
+    assert layer["box"] == {
+        "enabled": True,
+        "color": "#445566",
+        "opacity": 100,
+        "padding_x": 31,
+        "padding_y": 17,
+        "radius": 22,
+    }

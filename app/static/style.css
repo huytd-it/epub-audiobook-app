@@ -2099,3 +2099,391 @@ th[data-sort="desc"]::after { content: " \25BC"; }
   background: var(--text-primary);
   color: var(--bg-card);
 }
+
+/* ============================================
+   YouTube Playlist Manager ("Quản lý Playlist" tab)
+   ============================================ */
+
+/* Page-level tabs keep their panels in normal flow (the shared .ui-tab-panel
+   is a grid for form settings; this page needs full-width blocks). */
+.yt-tab-panel {
+  display: block;
+  min-width: 0;
+}
+
+.yt-tab-panel[hidden] {
+  display: none;
+}
+
+/* Modal base for the playlist dialogs (native <dialog>) */
+.yt-modal {
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+
+.yt-modal::backdrop {
+  background: rgba(0,0,0,0.35);
+}
+
+.yt-pm-root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.yt-pm-root.yt-pm-busy,
+.yt-modal.yt-pm-busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.yt-pm-auth-banner {
+  margin-bottom: var(--space-lg);
+  padding: var(--space-lg);
+  border: 1px solid var(--accent-red);
+  border-radius: var(--border-radius);
+  background: var(--accent-red);
+  color: var(--accent-red-text);
+}
+
+.yt-pm-auth-banner a {
+  color: var(--accent-red-text);
+  font-weight: 600;
+}
+
+.yt-pm-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.yt-pm-playlist-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-right: var(--space-xs);
+}
+
+.yt-pm-playlist-picker label {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.yt-pm-playlist-picker select {
+  width: auto;
+  min-width: 16rem;
+  max-width: 100%;
+}
+
+.yt-pm-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--accent-blue);
+  border: 1px solid var(--accent-blue);
+  border-radius: var(--border-radius);
+}
+
+.yt-pm-muted {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.yt-pm-status {
+  font-size: var(--font-size-sm);
+}
+
+.yt-pm-status.err {
+  color: var(--accent-red-text);
+}
+
+.yt-pm-status.ok {
+  color: var(--accent-green-text);
+}
+
+.yt-pm-result {
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--border-radius);
+  font-size: var(--font-size-sm);
+  background: var(--accent-blue);
+  border: 1px solid var(--accent-blue);
+  color: var(--accent-blue-text);
+}
+
+.yt-pm-result .added {
+  color: var(--accent-green-text);
+  font-weight: 600;
+}
+
+.yt-pm-result .dup {
+  color: var(--accent-yellow-text);
+}
+
+.yt-pm-result .fail {
+  color: var(--accent-red-text);
+}
+
+.yt-pm-loading,
+.yt-pm-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.yt-pm-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+}
+
+.yt-pm-page-info {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Items table */
+.yt-pm-items-table th,
+.yt-pm-items-table td {
+  font-size: var(--font-size-sm);
+}
+
+.yt-pm-items-table .col-check {
+  width: 40px;
+  text-align: center;
+}
+
+.yt-pm-items-table .col-pos {
+  width: 64px;
+  text-align: center;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.yt-pm-items-table .col-actions {
+  width: 90px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.yt-pm-row {
+  cursor: grab;
+}
+
+.yt-pm-row.selected td {
+  background: var(--accent-blue);
+}
+
+.yt-pm-row.dragging {
+  opacity: 0.45;
+}
+
+.yt-pm-row.dragover td {
+  background: var(--accent-yellow);
+}
+
+.yt-pm-title-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.yt-pm-title {
+  min-width: 0;
+  font-weight: 500;
+}
+
+.yt-pm-title a {
+  text-decoration: none;
+}
+
+.yt-pm-title a:hover {
+  text-decoration: underline;
+}
+
+.yt-pm-title .yt-pm-id {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+}
+
+.yt-pm-thumb {
+  width: 60px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  flex: none;
+}
+
+.yt-pm-thumb-placeholder {
+  width: 60px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-input);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--border-radius-sm);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  flex: none;
+}
+
+/* Channel video picker */
+.yt-pm-picker-search-row {
+  display: flex;
+  gap: var(--space-xs);
+  align-items: center;
+  margin-bottom: var(--space-md);
+}
+
+.yt-pm-picker-search-row input {
+  flex: 1;
+}
+
+.yt-pm-picker-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+}
+
+.yt-pm-picker-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border-color);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.yt-pm-picker-item:last-child {
+  border-bottom: none;
+}
+
+.yt-pm-picker-item:hover {
+  background: var(--bg-input);
+}
+
+.yt-pm-picker-item.selected {
+  background: var(--accent-blue);
+}
+
+.yt-pm-picker-item .yt-pm-thumb {
+  width: 48px;
+  height: 30px;
+}
+
+.yt-pm-picker-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yt-pm-picker-empty {
+  padding: var(--space-md);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.yt-pm-picker-count {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  margin-left: auto;
+}
+
+/* Sort direction toggle */
+.yt-pm-dir-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  overflow: hidden;
+}
+
+.yt-pm-dir-toggle button {
+  padding: 0.5rem 0.85rem;
+  border: none;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+  transition: all var(--transition-fast);
+}
+
+.yt-pm-dir-toggle button.active {
+  background: var(--text-primary);
+  color: var(--bg-card);
+}
+
+/* Sort preview table */
+.yt-pm-sort-preview {
+  max-height: 50vh;
+  overflow: auto;
+  margin: var(--space-md) 0;
+}
+
+.yt-pm-sort-preview table {
+  font-size: var(--font-size-sm);
+}
+
+.yt-pm-sort-num {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.yt-pm-sort-changed {
+  color: var(--accent-red-text);
+  font-weight: 600;
+}
+
+.yt-pm-sort-same {
+  color: var(--text-muted);
+}
+
+/* Explicit hidden overrides (flex/block components otherwise beat the UA
+   [hidden] rule). */
+.yt-tab-panel[hidden],
+.yt-pm-selection-bar[hidden],
+.yt-pm-pagination[hidden],
+.yt-pm-result[hidden],
+.yt-pm-loading[hidden],
+.yt-pm-empty[hidden],
+.yt-pm-status[hidden],
+.yt-pm-picker-status[hidden],
+.yt-pm-dest-status[hidden],
+.yt-pm-sort-status[hidden],
+.yt-pm-auth-banner[hidden] {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .yt-pm-playlist-picker select {
+    min-width: 0;
+    flex: 1 1 10rem;
+  }
+
+  .yt-pm-playlist-picker {
+    width: 100%;
+  }
+
+  .yt-pm-selection-bar > button,
+  .yt-pm-toolbar > button {
+    flex: 1 1 auto;
+  }
+}

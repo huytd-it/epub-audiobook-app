@@ -113,7 +113,7 @@ def test_header_column_count_matches_body_cells(client, seeded_book):
     parser = _PatchTable()
     parser.feed(client.get("/books/1").text)
     assert parser.headers == parser.body_cells
-    assert parser.headers == 11
+    assert parser.headers == 10
 
 
 @pytest.mark.parametrize(

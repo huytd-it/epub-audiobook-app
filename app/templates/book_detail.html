@@ -24,28 +24,41 @@
 </form>
 
 <nav class="book-nav" aria-label="Điều hướng nội dung sách">
-    <button type="button" data-open-dialog="studio-modal">Studio Setup</button>
+    <button type="button" data-open-dialog="studio-modal">Overlay Studio</button>
     <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
     <button type="button" data-open-dialog="video-config-modal">Cấu hình video</button>
     <button type="button" data-open-dialog="youtube-settings-modal">YouTube settings</button>
     <button type="button" data-open-dialog="rules-modal">Replace rules</button>
 </nav>
 
-<dialog id="youtube-settings-modal" class="book-modal">
+<dialog id="youtube-settings-modal" class="book-modal youtube-settings-dialog">
     <div class="card-header ui-modal-header"><h3 style="margin:0">YouTube settings</h3><button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button></div>
-    <form id="youtube-settings-form" class="form-grid">
-        <label><input type="checkbox" name="auto_upload" {% if youtube_config.auto_upload %}checked{% endif %}> Auto-upload</label>
-        <label>Privacy <select name="privacy_status"><option value="private" {% if youtube_config.privacy_status == 'private' %}selected{% endif %}>Private</option><option value="unlisted" {% if youtube_config.privacy_status == 'unlisted' %}selected{% endif %}>Unlisted</option><option value="public" {% if youtube_config.privacy_status == 'public' %}selected{% endif %}>Public</option></select></label>
-        <label>Genre tags <input name="genre_tags" value="{{ youtube_config.genre_tags }}"></label>
-        <label>Title template <input name="title_template" value="{{ youtube_config.title_template }}"></label>
-        <label>Description template <textarea name="description_template">{{ youtube_config.description }}</textarea></label>
-        <label>Playlist <select name="playlist_id"><option value="">Không dùng playlist</option>{% for playlist in youtube_playlists %}<option value="{{ playlist.id }}" {% if youtube_config.playlist.mode == 'existing' and youtube_config.playlist.playlist_id == playlist.id %}selected{% endif %}>{{ playlist.title }}</option>{% endfor %}</select></label>
-        <div id="youtube-connection-state">{% if youtube_connected %}Connected: {{ youtube_channel_name }}{% else %}YouTube not connected{% endif %}</div>
-        <label>Patch preview <select id="youtube-preview"><option value="">Select patch</option>{% for patch in patches %}<option value="{{ patch.id }}">{{ patch.name or patch.patch_index }}</option>{% endfor %}</select></label>
-        <pre id="youtube-preview-output" style="white-space:pre-wrap"></pre>
-        <div id="yts-preview-error" class="error-block" hidden></div>
-        <span id="youtube-settings-error" class="error-block" hidden></span>
-        <div class="btn-group"><button type="submit" class="btn-primary btn-sm">Save</button><button type="button" class="btn-outline btn-sm" id="youtube-refresh">Refresh</button></div>
+    <form id="youtube-settings-form" class="youtube-settings-form">
+        <div class="ui-modal-body youtube-settings-body">
+            <div class="form-grid">
+                <label><input type="checkbox" name="auto_upload" {% if youtube_config.auto_upload %}checked{% endif %}> Auto-upload</label>
+                <label>Privacy <select name="privacy_status"><option value="private" {% if youtube_config.privacy_status == 'private' %}selected{% endif %}>Private</option><option value="unlisted" {% if youtube_config.privacy_status == 'unlisted' %}selected{% endif %}>Unlisted</option><option value="public" {% if youtube_config.privacy_status == 'public' %}selected{% endif %}>Public</option></select></label>
+                <label>Genre tags <input name="genre_tags" value="{{ youtube_config.genre_tags }}"></label>
+                <label>Title template <input name="title_template" value="{{ youtube_config.title_template }}"></label>
+                <label>Description template <textarea name="description_template">{{ youtube_config.description }}</textarea></label>
+                <label>Playlist <select name="playlist_id"><option value="">Không dùng playlist</option>{% for playlist in youtube_playlists %}<option value="{{ playlist.id }}" {% if youtube_config.playlist.mode == 'existing' and youtube_config.playlist.playlist_id == playlist.id %}selected{% endif %}>{{ playlist.title }}</option>{% endfor %}</select></label>
+            </div>
+            <div id="youtube-connection-state">{% if youtube_connected %}Connected: {{ youtube_channel_name }}{% else %}YouTube not connected{% endif %}</div>
+            <section class="youtube-preview-section" aria-labelledby="youtube-preview-heading">
+                <div class="youtube-preview-heading">
+                    <strong id="youtube-preview-heading">Preview metadata</strong>
+                    <label>Patch <select id="youtube-preview"><option value="">Select patch</option>{% for patch in patches %}<option value="{{ patch.id }}">{{ patch.name or patch.patch_index }}</option>{% endfor %}</select></label>
+                </div>
+                <div id="youtube-preview-output" class="youtube-preview-output" aria-live="polite">
+                    <p class="youtube-preview-empty">Chọn một patch để xem nội dung YouTube hiệu lực.</p>
+                </div>
+                <div id="yts-preview-error" class="error-block" hidden></div>
+            </section>
+            <span id="youtube-settings-error" class="error-block" hidden></span>
+        </div>
+        <div class="ui-modal-footer">
+            <div class="ui-modal-footer-actions"><button type="button" class="btn-outline btn-sm" id="youtube-refresh">Refresh</button><button type="submit" class="btn-primary btn-sm">Save</button></div>
+        </div>
     </form>
 </dialog>
 
@@ -157,6 +170,15 @@
         <label style="margin-top:var(--space-sm)">
             <input type="checkbox" id="tts-fx"> Chèn hiệu ứng âm thanh (theo effect marker trong text)
         </label>
+        <div id="tts-runtime-fields" class="check-stack" style="margin-top:var(--space-md)">
+            <label><input type="checkbox" id="tts-auto-video"> Tự tạo video cho từng patch sau khi có audio</label>
+            <label><input type="checkbox" id="tts-auto-youtube" {% if not youtube_configured %}disabled{% endif %}> Tự upload video lên YouTube{% if not youtube_configured %} (chưa kết nối){% endif %}</label>
+            <div class="form-group">
+                <label for="tts-retry-count">Số lần tự động thử lại patch chưa có audio</label>
+                <input type="number" id="tts-retry-count" min="0" max="10" step="1" value="2">
+                <small style="color:var(--text-muted)">Không tính lần chạy đầu tiên; chỉ áp dụng khi TTS lỗi.</small>
+            </div>
+        </div>
 
         <div id="tts-export-fields" hidden>
             <hr style="border-color:var(--border-color);margin:var(--space-md) 0">
@@ -425,6 +447,16 @@
     </div>
 </dialog>
 
+<dialog id="patch-audio-modal" class="book-modal patch-audio-modal">
+    <div class="card-header ui-modal-header">
+        <h3 style="margin:0">Audio — <span id="pam-title"></span></h3>
+        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+    </div>
+    <div class="ui-modal-body">
+        <audio id="pam-audio" controls preload="metadata" style="width:100%"></audio>
+    </div>
+</dialog>
+
 <dialog id="chunks-modal" class="book-modal">
     <div class="card-header ui-modal-header">
         <h3 style="margin:0">Preview chunks — <span id="chunks-modal-title"></span></h3>
@@ -552,7 +584,6 @@
                 <th>Audio</th><th>Thumbnail</th>
                 <th>Chunks</th>
                 <th>Status</th>
-                <th>Pipeline</th>
                 <th>Video/YouTube</th>
                 <th>Actions</th>
             </tr>
@@ -581,7 +612,7 @@
                     <strong>{{ patch.name or patch.patch_index }}</strong>
                 </td>
                 <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
-                <td id="patch-audio-{{ patch.id }}">{% if patch.audio_path %}<audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ patch.id }}/audio"></audio>{% else %}&mdash;{% endif %}</td>
+                <td id="patch-audio-{{ patch.id }}" class="patch-audio-cell">{% if patch.audio_path %}<button type="button" class="btn-outline btn-sm pv-icon-btn patch-audio-open" data-patch-id="{{ patch.id }}" data-patch-name="{{ patch.name or ('Tập ' ~ episode) }}" title="Nghe audio" aria-label="Nghe audio {{ patch.name or ('Tập ' ~ episode) }}">&#9654;</button>{% else %}<span class="pv-muted">&mdash;</span>{% endif %}</td>
                 <td class="patch-image-cell">
                     <button type="button" class="patch-thumb-btn" data-patch-id="{{ patch.id }}"
                             data-patch-name="{{ patch.name or patch.patch_index }}"
@@ -618,15 +649,19 @@
                     {% else %}
                         <span class="badge badge-pending">{{ patch.status }}</span>
                     {% endif %}
+                    {% if pipeline and pipeline.stage != 'published' %}
+                    <small class="patch-status-detail{% if pipeline.last_error %} error{% endif %}">{{ pipeline.stage }}{% if pipeline.last_error %}: {{ pipeline.last_error }}{% endif %}</small>
+                    {% endif %}
                 </td>
-                <td id="patch-pipeline-{{ patch.id }}" class="patch-pipeline-state">{{ pipeline_rows.get(patch.id, {}).get('stage', '') }} {{ pipeline_rows.get(patch.id, {}).get('last_error', '') }}</td>
                 <td class="patch-video-cell" id="patch-video-{{ patch.id }}"
                     data-patch-id="{{ patch.id }}"
                     data-patch-name="{{ patch.name or patch.patch_index }}"
                     data-has-video="{% if patch.id in patch_video_ids %}1{% else %}0{% endif %}"
                     data-audio-ready="{% if patch.status == 'done' and patch.audio_path %}1{% else %}0{% endif %}"
                     data-updated="{{ patch.updated_at }}"
-                    data-youtube="{% if youtube_configured %}1{% else %}0{% endif %}">
+                    data-youtube="{% if youtube_configured %}1{% else %}0{% endif %}"
+                    data-upload-state="{% if pipeline and pipeline.stage == 'published' %}published{% elif pipeline and pipeline.youtube_upload_id and pipeline.upload_status in ['claiming','queued','pending','uploading'] %}active{% elif pipeline and pipeline.last_error %}failed{% else %}ready{% endif %}"
+                    data-can-force-new="{% if pipeline and pipeline.stage == 'published' %}1{% else %}0{% endif %}">
                     <span class="pv-pipeline-state"></span>
                     <div class="pv-job-state" hidden></div>
                     {# An already-rendered MP4 stays playable/deletable even when the audio
@@ -680,6 +715,22 @@
 </div>
 
 <style>
+/* YouTube settings modal */
+.youtube-settings-dialog { width:min(820px,calc(100% - 2rem)); max-height:min(90vh,900px); overflow:hidden; }
+.youtube-settings-dialog[open] { display:flex; flex-direction:column; }
+.youtube-settings-dialog .ui-modal-header { flex:none; }
+.youtube-settings-form { display:flex; flex:1; min-height:0; flex-direction:column; }
+.youtube-settings-body { flex:1; min-height:0; overflow-y:auto; padding-right:var(--space-xs); }
+.youtube-settings-dialog .ui-modal-footer { flex:none; position:static; bottom:auto; }
+.youtube-preview-section { margin-top:var(--space-lg); padding-top:var(--space-md); border-top:1px solid var(--border-color); }
+.youtube-preview-heading, .youtube-preview-item-header { display:flex; align-items:center; justify-content:space-between; gap:var(--space-sm); }
+.youtube-preview-heading label { display:flex; align-items:center; gap:var(--space-xs); font-size:var(--font-size-sm); }
+.youtube-preview-output { display:grid; gap:var(--space-sm); margin-top:var(--space-sm); }
+.youtube-preview-item { min-width:0; padding:var(--space-sm); border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-primary); }
+.youtube-preview-value { margin:var(--space-xs) 0 0; max-height:12rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:var(--font-size-sm); }
+.youtube-preview-empty { margin:0; color:var(--text-muted); font-size:var(--font-size-sm); }
+@media (max-width:640px) { .youtube-preview-heading { align-items:stretch; flex-direction:column; } .youtube-preview-heading label { align-items:stretch; flex-direction:column; } }
+
 /* Video config modal */
 .vc-help { margin:0 0 var(--space-md) 0; color:var(--text-muted); font-size:var(--font-size-sm); }
 .video-config-grid { margin-bottom:var(--space-md); }
@@ -720,6 +771,10 @@
 
 /* Per-row video cell */
 .patch-video-cell { min-width:150px; }
+.patch-audio-cell { width:48px; text-align:center; }
+.patch-status-detail { display:block; margin-top:4px; max-width:220px; color:var(--text-muted); font-size:var(--font-size-xs); overflow-wrap:anywhere; }
+.patch-status-detail.error { color:var(--color-error, #dc2626); }
+.patch-audio-modal { width:min(520px,calc(100% - 2rem)); }
 .pv-muted { color:var(--text-muted); }
 .pv-wrap { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
 .pv-wrap .btn-sm { padding:2px 8px; }
@@ -786,20 +841,28 @@
         .book-modal { width:min(720px,calc(100% - 2rem)); max-height:calc(100vh - 2rem); padding:var(--space-lg); color:var(--text-primary); background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 20px 60px rgba(0,0,0,.3); }
         .book-modal::backdrop { background:rgba(0,0,0,.55); backdrop-filter:blur(2px); }
         @media (max-width: 760px) { .book-nav { overflow-x:auto; flex-wrap:nowrap; } .book-nav a, .book-nav button { white-space:nowrap; } .book-modal { padding:var(--space-md); } }
-        #studio-grid { display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:var(--space-lg); align-items:start; }
-        @media (max-width: 960px) { #studio-grid { grid-template-columns:1fr; } }
+        #studio-grid { display:grid; grid-template-columns:minmax(360px,3fr) minmax(320px,2fr); gap:var(--space-lg); align-items:start; }
+        .studio-preview-column, .studio-controls-column { display:flex; flex-direction:column; gap:var(--space-md); min-width:0; }
+        .studio-preview-column { position:sticky; top:var(--space-md); }
+        @media (max-width: 960px) { #studio-grid { grid-template-columns:1fr; } .studio-preview-column { position:static; } }
         .studio-section { border:1px solid var(--border-color); border-radius:var(--border-radius); padding:var(--space-md); }
         .studio-section h4 { margin:0 0 var(--space-sm) 0; font-size:var(--font-size-sm); text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
+        .studio-section-header { display:flex; align-items:center; justify-content:space-between; gap:var(--space-sm); }
         #overlay-layers { display:grid; gap:var(--space-sm); margin-top:var(--space-sm); }
         .overlay-layer { padding:var(--space-sm); border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-primary); cursor:pointer; }
         .overlay-layer.active { border-color:var(--color-primary); box-shadow:0 0 0 1px var(--color-primary); }
         .overlay-layer-header { display:flex; justify-content:space-between; align-items:center; gap:var(--space-sm); margin-bottom:var(--space-sm); }
-        .overlay-layer-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-sm); }
+        .overlay-layer-grid, .overlay-advanced-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-sm); }
         .overlay-layer-grid .form-group:first-child { grid-column:1/-1; }
+        .overlay-advanced { margin-top:var(--space-sm); border-top:1px solid var(--border-color); padding-top:var(--space-sm); }
+        .overlay-advanced > summary { cursor:pointer; color:var(--text-muted); font-size:var(--font-size-xs); font-weight:600; }
+        .overlay-advanced-grid { margin-top:var(--space-sm); }
+        .overlay-toggle { align-self:end; min-height:38px; display:flex; align-items:center; gap:var(--space-xs); font-size:var(--font-size-sm); }
         .overlay-offset { display:block; margin-top:var(--space-xs); color:var(--text-muted); }
-        @media (max-width:640px) { .overlay-layer-grid { grid-template-columns:1fr; } .overlay-layer-grid .form-group:first-child { grid-column:auto; } }
-        #drag-rect { position:absolute; border:2px dashed #38bdf8; background:rgba(56,189,248,.10); cursor:move; touch-action:none; display:none; border-radius:4px; }
-        #drag-rect:hover, #drag-rect.dragging { background:rgba(56,189,248,.22); }
+        @media (max-width:640px) { .overlay-layer-grid, .overlay-advanced-grid { grid-template-columns:1fr; } .overlay-layer-grid .form-group:first-child { grid-column:auto; } }
+        #drag-rect { position:absolute; z-index:2; border:2px dashed #38bdf8; background:rgba(56,189,248,.10); cursor:move; touch-action:none; display:none; border-radius:4px; }
+        #drag-rect:hover, #drag-rect.dragging, #drag-rect:focus { background:rgba(56,189,248,.22); }
+        #drag-rect:focus-visible { outline:3px solid #f8fafc; outline-offset:2px; box-shadow:0 0 0 5px #0284c7; }
         /* Real size, not transform:scale — a scaled box keeps its 16px layout
            slot, so it overlapped the next cell and the hit area drifted. */
         /* Typed selector needed: bare .batch-patch-checkbox loses to
@@ -826,19 +889,21 @@
         .patch-pagination .page-info { font-size:var(--font-size-xs); color:var(--text-muted); }
     </style>
     <div class="card-header ui-modal-header">
-        <h3 style="margin:0">Studio — Preview &amp; chỉnh kết quả</h3>
+        <h3 style="margin:0">Overlay Studio — Thiết kế &amp; Preview</h3>
         <div style="display:flex;gap:var(--space-sm);align-items:center">
             <button type="button" id="studio-save" class="btn-primary btn-sm">Lưu tất cả</button>
             <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
         </div>
     </div>
     <div id="studio-grid">
-        <div style="position:sticky;top:var(--space-md);display:flex;flex-direction:column;gap:var(--space-md)">
+        <div class="studio-preview-column">
             <div>
                 <div id="preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--border-radius);overflow:hidden">
                     <img id="overlay-preview" alt="Preview" style="width:100%;display:block">
                     <video id="overlay-preview-video" muted loop playsinline preload="metadata" style="width:100%;display:none"></video>
-                    <div id="drag-rect" title="Kéo để chỉnh vị trí overlay đang chọn"></div>
+                    <div id="drag-rect" tabindex="0" role="button"
+                         aria-label="Di chuyển overlay đang chọn. Dùng các phím mũi tên để chỉnh vị trí."
+                         title="Kéo hoặc dùng phím mũi tên để chỉnh vị trí overlay đang chọn"></div>
                 </div>
                 <div style="display:flex;justify-content:flex-end;margin-top:var(--space-sm)">
                     <a id="preview-download" class="btn-outline btn-sm" href="#" download="background-preview.png" style="display:none">Tải background preview</a>
@@ -891,7 +956,7 @@
             </form>
         </div>
 
-        <div style="display:flex;flex-direction:column;gap:var(--space-md)">
+        <div class="studio-controls-column">
             <form id="bg-form" method="post" action="/books/{{ book.id }}/background-image-select" class="studio-section">
                 <h4>Ảnh / video nền</h4>
                 <div class="form-group" style="margin:0">
@@ -909,7 +974,7 @@
             </form>
 
             <form id="overlay-form" method="post" action="/books/{{ book.id }}/overlay-config" class="studio-section">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-sm)">
+                <div class="studio-section-header">
                     <h4 style="margin:0">Nội dung overlay</h4>
                     <button type="button" id="overlay-add" class="btn-outline btn-sm">+ Thêm overlay</button>
                 </div>
@@ -1032,6 +1097,7 @@ document.addEventListener('click', event => {
     modal.dataset.patchId = button.dataset.patchYoutubeId;
     const actions = modal.querySelectorAll('[data-patch-publish-action]');
     actions.forEach(action => action.disabled = true);
+    modal.querySelector('[data-patch-publish-action="new"]').hidden = true;
     ['title', 'description', 'genre_tags', 'privacy_status'].forEach(field => document.getElementById(`patch-${field}`).value = '');
     document.getElementById('patch-playlist').value = 'none';
     document.getElementById('pym-stage').textContent = 'Loading...';
@@ -1055,7 +1121,7 @@ async function loadPatchMetadata(patchId) {
     document.getElementById('pym-thumbnail').src = data.pipeline?.thumbnail_path ? `/books/${BOOK_ID}/patches/${patchId}/overlay-image` : '';
     document.getElementById('pym-video').src = data.pipeline?.video_path ? `/books/${BOOK_ID}/patches/${patchId}/video` : '';
     document.getElementById('pym-audio').src = `/books/${BOOK_ID}/patches/${patchId}/audio`;
-    document.querySelector('[data-patch-publish-action="new"]').hidden = data.pipeline?.stage !== 'published';
+    document.getElementById('patch-youtube-modal').querySelector('[data-patch-publish-action="new"]').hidden = data.pipeline?.stage !== 'published';
     return true;
     } catch (error) { document.getElementById('pym-error').textContent = error.message || 'Metadata load failed'; showToast(error.message || 'Metadata load failed', 'error'); return false; }
 }
@@ -1079,17 +1145,71 @@ async function refreshYoutubeSettings() {
     } catch (error) { const el = document.getElementById('youtube-settings-error'); el.textContent = error.message; el.hidden = false; showToast(error.message, 'error'); }
 }
 document.getElementById('youtube-refresh')?.addEventListener('click', refreshYoutubeSettings);
+
+function renderYoutubePreview(data) {
+    const output = document.getElementById('youtube-preview-output');
+    output.replaceChildren();
+    const labels = {title: 'Title', description: 'Description', tags: 'Tags', genre_tags: 'Genre tags', privacy_status: 'Privacy', playlist: 'Playlist'};
+    const entries = Object.entries(data || {});
+    if (!entries.length) {
+        const empty = document.createElement('p');
+        empty.className = 'youtube-preview-empty';
+        empty.textContent = 'Không có metadata để preview.';
+        output.append(empty);
+        return;
+    }
+    entries.forEach(([key, rawValue]) => {
+        const value = Array.isArray(rawValue) ? rawValue.join(', ') : (rawValue && typeof rawValue === 'object' ? JSON.stringify(rawValue, null, 2) : String(rawValue ?? ''));
+        const item = document.createElement('div');
+        item.className = 'youtube-preview-item';
+        const header = document.createElement('div');
+        header.className = 'youtube-preview-item-header';
+        const label = document.createElement('strong');
+        label.textContent = labels[key] || key;
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'btn-outline btn-sm';
+        copy.dataset.copyYoutubePreview = key;
+        copy.textContent = 'Copy';
+        const content = document.createElement(key === 'description' ? 'div' : 'pre');
+        content.className = 'youtube-preview-value';
+        content.dataset.youtubePreviewValue = key;
+        content.textContent = value;
+        header.append(label, copy);
+        item.append(header, content);
+        output.append(item);
+    });
+}
+
+document.getElementById('youtube-preview-output')?.addEventListener('click', async event => {
+    const button = event.target.closest('[data-copy-youtube-preview]');
+    if (!button) return;
+    const value = document.querySelector(`[data-youtube-preview-value="${CSS.escape(button.dataset.copyYoutubePreview)}"]`)?.textContent || '';
+    try {
+        await navigator.clipboard.writeText(value);
+        showToast(`Đã copy ${button.dataset.copyYoutubePreview}`, 'success');
+    } catch (_) {
+        showToast('Không thể copy vào clipboard', 'error');
+    }
+});
+
 document.getElementById('youtube-preview')?.addEventListener('change', async event => {
-    if (!event.target.value) return;
+    const output = document.getElementById('youtube-preview-output');
+    const errorEl = document.getElementById('yts-preview-error');
+    errorEl.textContent = '';
+    errorEl.hidden = true;
+    if (!event.target.value) {
+        renderYoutubePreview({});
+        return;
+    }
+    output.textContent = 'Đang tải preview...';
     try {
         const response = await fetch(`/books/${BOOK_ID}/youtube-metadata-preview?patch_id=${event.target.value}`);
         if (!response.ok) throw new Error('Preview failed');
-        const data = await response.json();
-        document.getElementById('youtube-preview-output').textContent = JSON.stringify(data, null, 2);
-        document.getElementById('yts-preview-error').hidden = true;
+        renderYoutubePreview(await response.json());
     } catch (error) {
+        output.replaceChildren();
         const message = error.message || 'Preview failed';
-        const errorEl = document.getElementById('yts-preview-error');
         errorEl.textContent = message; errorEl.hidden = false; showToast(message, 'error');
     }
 });
@@ -1114,6 +1234,7 @@ document.getElementById('patch-youtube-modal')?.addEventListener('click', async 
     const clickedAction = event.target.closest('[data-patch-publish-action]');
     const patchId = event.currentTarget.dataset.patchId;
     if (!action || !patchId) return;
+    if (action === 'new' && !window.confirm('Upload video này thành một video YouTube mới?\n\nVideo YouTube cũ sẽ KHÔNG bị thay thế hoặc xóa. Cả video cũ và video mới sẽ cùng tồn tại trên YouTube.')) return;
     clickedAction.disabled = true;
     try {
     const fields = {};
@@ -1144,15 +1265,53 @@ document.getElementById('patch-youtube-modal')?.addEventListener('click', async 
 
 document.addEventListener('click', event => { const field = event.target.closest('[data-use-book-default]'); if (field) { const name = field.dataset.useBookDefault; window.PATCH_INHERITED = window.PATCH_INHERITED || new Set(); window.PATCH_INHERITED.add(name); const input = document.getElementById(`patch-${name}`); if (input) input.value = ''; } });
 
+function patchStatusHtml(status, pipeline) {
+    if (pipeline?.stage === 'published') return '<span class="badge badge-done">Published</span>';
+    const badges = {done:'<span class="badge badge-done">Hoàn tất</span>', processing:'<span class="badge badge-processing">Đang xử lý</span>', failed:'<span class="badge badge-failed">Thất bại</span>', pending:'<span class="badge badge-pending">Chờ xử lý</span>'};
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = badges[status] || `<span class="badge badge-pending"></span>`;
+    if (!badges[status]) wrapper.querySelector('.badge').textContent = status || '';
+    if (pipeline?.stage) {
+        const detail = document.createElement('small');
+        detail.className = `patch-status-detail${pipeline.last_error ? ' error' : ''}`;
+        detail.textContent = [pipeline.stage, pipeline.last_error].filter(Boolean).join(': ');
+        wrapper.append(detail);
+    }
+    return wrapper.innerHTML;
+}
+
+document.addEventListener('click', event => {
+    const button = event.target.closest('.patch-audio-open');
+    if (!button) return;
+    const modal = document.getElementById('patch-audio-modal');
+    const player = document.getElementById('pam-audio');
+    document.getElementById('pam-title').textContent = button.dataset.patchName || '';
+    player.src = `/books/${BOOK_ID}/patches/${button.dataset.patchId}/audio?v=${Date.now()}`;
+    modal.showModal();
+});
+
+document.getElementById('patch-audio-modal')?.addEventListener('close', event => {
+    const player = event.currentTarget.querySelector('audio');
+    player.pause();
+    player.removeAttribute('src');
+    player.load();
+});
+
 function updatePatchRow(patchId, data) {
     const patch = (data.patches || []).find(item => item.id === Number(patchId));
     const pipeline = data.pipelines?.[patchId];
     const cell = document.getElementById(`patch-status-${patchId}`);
-    if (cell && (pipeline || patch)) cell.innerHTML = pipeline?.stage === 'published' ? '<span class="badge badge-done">Published</span>' : (pipeline?.stage || patch?.status || '');
-    const pipelineCell = document.getElementById(`patch-pipeline-${patchId}`);
-    if (pipelineCell) pipelineCell.textContent = [pipeline?.stage, pipeline?.thumbnail_status, pipeline?.video_status, pipeline?.upload_status, pipeline?.playlist_status, pipeline?.last_error].filter(Boolean).join(' | ');
+    if (cell && (pipeline || patch)) cell.innerHTML = patchStatusHtml(patch?.status, pipeline);
     const video = document.getElementById(`patch-video-${patchId}`);
-    if (video && pipeline) { video.dataset.pipelineStage = pipeline.stage || ''; video.dataset.pipelineError = pipeline.last_error || ''; const state = video.querySelector('.pv-pipeline-state'); if (state) state.textContent = [pipeline.stage, pipeline.last_error].filter(Boolean).join(' | '); }
+    if (video && pipeline) {
+        video.dataset.pipelineStage = pipeline.stage || '';
+        video.dataset.pipelineError = pipeline.last_error || '';
+        video.dataset.uploadState = pipeline.upload_state || (pipeline.stage === 'published' ? 'published' : 'ready');
+        video.dataset.canForceNew = pipeline.can_force_new ? '1' : '0';
+        const state = video.querySelector('.pv-pipeline-state');
+        if (state) state.textContent = [pipeline.stage, pipeline.last_error].filter(Boolean).join(' | ');
+        buildVideoCell(video);
+    }
 }
 
 (function() {
@@ -1419,7 +1578,7 @@ function filterAndPaginate(resetPage) {
 
                 const el = document.getElementById(`patch-status-${p.id}`);
                 const pipe = data.pipelines && data.pipelines[p.id];
-                if (el) el.innerHTML = pipe?.stage === 'published' ? '<span class="badge badge-done">Published</span>' : badgeFor(p.status);
+                if (el) el.innerHTML = patchStatusHtml(p.status, pipe);
 
                 const progEl = document.getElementById(`patch-progress-${p.id}`);
                 if (progEl) {
@@ -1576,6 +1735,36 @@ function filterAndPaginate(resetPage) {
         return select;
     }
 
+    function inputField(type, value, field, min, max) {
+        const input = document.createElement('input');
+        input.type = type; input.value = value; input.dataset.field = field;
+        if (min !== undefined) input.min = min;
+        if (max !== undefined) input.max = max;
+        return input;
+    }
+
+    function toggleField(label, checked, field) {
+        const wrapper = document.createElement('label'); wrapper.className = 'overlay-toggle';
+        const input = document.createElement('input'); input.type = 'checkbox'; input.checked = checked; input.dataset.field = field;
+        wrapper.append(input, document.createTextNode(label)); return wrapper;
+    }
+
+    function getNested(object, path, fallback) {
+        const value = path.split('.').reduce((current, key) => current?.[key], object);
+        return value ?? fallback;
+    }
+
+    function setNested(object, path, value) {
+        const keys = path.split('.');
+        const last = keys.pop();
+        const target = keys.reduce((current, key) => current[key] ||= {}, object);
+        target[last] = value;
+    }
+
+    function newOverlay() {
+        return {text:'{book_title} - Tập {episode}',position:'center',alignment:'center',font_size:52,font_path:'',text_color:'#FFFFFF',margin:40,offset_x:0,offset_y:0,shadow:{enabled:true,color:'#000000',offset:3},box:{enabled:false,color:'#000000',opacity:60,padding_x:24,padding_y:12,radius:12}};
+    }
+
     function renderLayers() {
         layersEl.replaceChildren();
         overlays.forEach((item, index) => {
@@ -1587,16 +1776,29 @@ function filterAndPaginate(resetPage) {
             const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn-danger btn-sm overlay-remove'; remove.textContent = 'Xóa'; remove.disabled = overlays.length === 1;
             header.append(title, remove);
             const grid = document.createElement('div'); grid.className = 'overlay-layer-grid';
-            const text = document.createElement('input'); text.value = item.text || ''; text.maxLength = 500; text.placeholder = '{book_title} - Tập {episode}'; text.dataset.field = 'text';
+            const text = inputField('text', item.text || '', 'text'); text.maxLength = 500; text.placeholder = '{book_title} - Tập {episode}';
             const font = selectField([['', 'Font mặc định'], ...fonts.map(f => [f.path, f.name])], item.font_path || ''); font.dataset.field = 'font_path';
             const position = selectField([['top','Trên'],['center','Giữa'],['bottom','Dưới']], item.position || 'top'); position.dataset.field = 'position';
             const alignment = selectField([['left','Trái'],['center','Giữa'],['right','Phải']], item.alignment || 'center'); alignment.dataset.field = 'alignment';
-            const size = document.createElement('input'); size.type = 'number'; size.min = 12; size.max = 200; size.value = item.font_size || 52; size.dataset.field = 'font_size';
-            const color = document.createElement('input'); color.type = 'color'; color.value = item.text_color || '#FFFFFF'; color.dataset.field = 'text_color';
-            const margin = document.createElement('input'); margin.type = 'number'; margin.min = 0; margin.max = 200; margin.value = item.margin ?? 40; margin.dataset.field = 'margin';
-            grid.append(layerField('Nội dung', text), layerField('Font chữ', font), layerField('Vị trí', position), layerField('Căn ngang', alignment), layerField('Cỡ chữ', size), layerField('Màu chữ', color), layerField('Cách mép', margin));
+            grid.append(layerField('Nội dung', text), layerField('Font chữ', font), layerField('Vị trí', position), layerField('Căn ngang', alignment), layerField('Cỡ chữ', inputField('number', item.font_size || 52, 'font_size', 12, 200)), layerField('Màu chữ', inputField('color', item.text_color || '#FFFFFF', 'text_color')), layerField('Cách mép', inputField('number', item.margin ?? 40, 'margin', 0, 200)));
+
+            const advanced = document.createElement('details'); advanced.className = 'overlay-advanced';
+            const summary = document.createElement('summary'); summary.textContent = 'Nâng cao: đổ bóng, hộp nền và khoảng đệm';
+            const advancedGrid = document.createElement('div'); advancedGrid.className = 'overlay-advanced-grid';
+            advancedGrid.append(
+                toggleField('Bật đổ bóng', getNested(item, 'shadow.enabled', true), 'shadow.enabled'),
+                layerField('Màu bóng', inputField('color', getNested(item, 'shadow.color', '#000000'), 'shadow.color')),
+                layerField('Độ dày bóng', inputField('number', getNested(item, 'shadow.offset', 3), 'shadow.offset', 0, 20)),
+                toggleField('Bật hộp nền', getNested(item, 'box.enabled', false), 'box.enabled'),
+                layerField('Màu hộp', inputField('color', getNested(item, 'box.color', '#000000'), 'box.color')),
+                layerField('Độ mờ (%)', inputField('number', getNested(item, 'box.opacity', 60), 'box.opacity', 0, 100)),
+                layerField('Đệm ngang', inputField('number', getNested(item, 'box.padding_x', 24), 'box.padding_x', 0, 200)),
+                layerField('Đệm dọc', inputField('number', getNested(item, 'box.padding_y', 12), 'box.padding_y', 0, 200)),
+                layerField('Bo góc', inputField('number', getNested(item, 'box.radius', 12), 'box.radius', 0, 200))
+            );
+            advanced.append(summary, advancedGrid);
             const offset = document.createElement('small'); offset.className = 'overlay-offset'; offset.textContent = `Offset: ${item.offset_x || 0}, ${item.offset_y || 0}px`;
-            card.append(header, grid, offset); layersEl.appendChild(card);
+            card.append(header, grid, advanced, offset); layersEl.appendChild(card);
         });
         syncOverlayJson();
     }
@@ -1605,20 +1807,30 @@ function filterAndPaginate(resetPage) {
 
     layersEl.addEventListener('click', e => {
         const card = e.target.closest('.overlay-layer'); if (!card) return;
-        activeOverlay = Number(card.dataset.index);
+        const nextOverlay = Number(card.dataset.index);
         if (e.target.closest('.overlay-remove') && overlays.length > 1) {
-            overlays.splice(activeOverlay, 1); activeOverlay = Math.max(0, activeOverlay - 1);
+            overlays.splice(nextOverlay, 1);
+            activeOverlay = Math.max(0, Math.min(nextOverlay, overlays.length - 1));
+            renderLayers();
+            scheduleRefresh();
+            return;
         }
-        renderLayers(); scheduleRefresh();
+        if (nextOverlay === activeOverlay) return;
+        activeOverlay = nextOverlay;
+        layersEl.querySelectorAll('.overlay-layer').forEach((layer, index) => {
+            layer.classList.toggle('active', index === activeOverlay);
+        });
+        scheduleRefresh();
     });
     layersEl.addEventListener('input', e => {
         const field = e.target.dataset.field; if (!field) return;
         const index = Number(e.target.closest('.overlay-layer').dataset.index);
-        overlays[index][field] = e.target.type === 'number' ? Number(e.target.value) : e.target.value;
+        const value = e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'number' ? Number(e.target.value) : e.target.value;
+        setNested(overlays[index], field, value);
         activeOverlay = index; syncOverlayJson(); scheduleRefresh();
     });
     document.getElementById('overlay-add').addEventListener('click', () => {
-        overlays.push({text:'{book_title} - Tập {episode}',position:'center',alignment:'center',font_size:52,font_path:'',text_color:'#FFFFFF',margin:40,offset_x:0,offset_y:0,shadow:{enabled:true,color:'#000000',offset:3},box:{enabled:false,color:'#000000',opacity:60,padding_x:24,padding_y:12,radius:12}});
+        overlays.push(newOverlay());
         activeOverlay = overlays.length - 1; renderLayers(); scheduleRefresh();
     });
     renderLayers();
@@ -1725,6 +1937,7 @@ function filterAndPaginate(resetPage) {
     dragRect.addEventListener('pointerdown', (e) => {
         if (!rect) return;
         e.preventDefault();
+        dragRect.focus({preventScroll: true});
         try { dragRect.setPointerCapture(e.pointerId); } catch (_) {}
         dragRect.classList.add('dragging');
         drag = { startX: e.clientX, startY: e.clientY, dx: 0, dy: 0 };
@@ -1753,6 +1966,20 @@ function filterAndPaginate(resetPage) {
         drag = null;
         dragRect.classList.remove('dragging');
         positionRect();
+    });
+    dragRect.addEventListener('keydown', (e) => {
+        const directions = {ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1]};
+        if (!rect || !directions[e.key]) return;
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        const [dx, dy] = directions[e.key];
+        const item = overlays[activeOverlay];
+        item.offset_x = Math.max(-4000, Math.min(4000, (Number(item.offset_x) || 0) + dx * step));
+        item.offset_y = Math.max(-4000, Math.min(4000, (Number(item.offset_y) || 0) + dy * step));
+        syncOverlayJson();
+        const offset = layersEl.querySelector(`.overlay-layer[data-index="${activeOverlay}"] .overlay-offset`);
+        if (offset) offset.textContent = `Offset: ${item.offset_x}, ${item.offset_y}px`;
+        scheduleRefresh();
     });
 
     // --- save all three forms in one click ---
@@ -1929,7 +2156,7 @@ const TTS_MODEL_INFO = {
 };
 
 function defaultTtsCfg() {
-    return { model: 'omnivoice', voice: BOOK_REF_NAME, maxChars: 1200, withF: false };
+    return { model: 'omnivoice', voice: BOOK_REF_NAME, maxChars: 1200, withF: false, autoVideo: false, autoYoutube: false, retryCount: 2 };
 }
 
 function getTtsCfg() {
@@ -1941,6 +2168,9 @@ function getTtsCfg() {
                 voice: typeof saved.voice === 'string' ? saved.voice : '',
                 maxChars: Math.max(0, parseInt(saved.maxChars, 10) || 0),
                 withF: !!saved.withF,
+                autoVideo: !!saved.autoVideo,
+                autoYoutube: !!saved.autoYoutube,
+                retryCount: Math.max(0, Math.min(10, parseInt(saved.retryCount, 10) || 0)),
             };
         }
     } catch (_) {}
@@ -1951,6 +2181,7 @@ function saveTtsCfg(cfg) {
     try {
         localStorage.setItem(TTS_CFG_KEY, JSON.stringify({
             model: cfg.model, voice: cfg.voice, maxChars: cfg.maxChars, withF: cfg.withF,
+            autoVideo: cfg.autoVideo, autoYoutube: cfg.autoYoutube, retryCount: cfg.retryCount,
         }));
     } catch (_) {}
 }
@@ -1984,6 +2215,10 @@ function openTtsModal(mode, action) {
     if (maxChars) maxChars.value = cfg.maxChars ? String(cfg.maxChars) : '';
     const fx = document.getElementById('tts-fx');
     if (fx) fx.checked = cfg.withF;
+    document.getElementById('tts-auto-video').checked = cfg.autoVideo || cfg.autoYoutube;
+    document.getElementById('tts-auto-youtube').checked = cfg.autoYoutube && YOUTUBE_CONFIGURED;
+    document.getElementById('tts-retry-count').value = String(cfg.retryCount);
+    document.getElementById('tts-runtime-fields').hidden = ttsModalMode === 'export';
     document.getElementById('tts-export-fields').hidden = ttsModalMode !== 'export';
     document.getElementById('tts-modal-title').textContent = ttsModalMode === 'export' ? 'Export' : 'Generate';
     document.getElementById('tts-modal-confirm').textContent = ttsModalMode === 'export' ? 'Export' : 'Generate';
@@ -2045,11 +2280,18 @@ function readTtsCfgFromModal() {
     }
     const maxChars = parseInt((document.getElementById('tts-max-chars') || {}).value, 10);
     const withF = !!((document.getElementById('tts-fx') || {}).checked);
-    return { model, voice, maxChars: (maxChars >= 1 ? maxChars : 0), withF };
+    const autoYoutube = !!document.getElementById('tts-auto-youtube').checked;
+    const autoVideo = !!document.getElementById('tts-auto-video').checked || autoYoutube;
+    const retryCount = parseInt(document.getElementById('tts-retry-count').value, 10);
+    return { model, voice, maxChars: (maxChars >= 1 ? maxChars : 0), withF,
+        autoVideo, autoYoutube, retryCount: Math.max(0, Math.min(10, Number.isFinite(retryCount) ? retryCount : 2)) };
+
 }
 
 document.addEventListener('change', event => {
     if (event.target.id === 'tts-model') renderTtsVoiceArea(event.target.value, '');
+    if (event.target.id === 'tts-auto-youtube' && event.target.checked) document.getElementById('tts-auto-video').checked = true;
+    if (event.target.id === 'tts-auto-video' && !event.target.checked && document.getElementById('tts-auto-youtube').checked) event.target.checked = true;
 });
 
 document.getElementById('tts-modal-confirm')?.addEventListener('click', async () => {
@@ -2196,7 +2438,9 @@ async function runAllLightTTS(cfg) {
         const res = await fetch(`/books/${BOOK_ID}/tts/generate`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({patch_ids: patchIds, model_id: cfg.model, voice_id: cfg.voice,
-                max_chars: cfg.maxChars, with_effects: cfg.withF}),
+                max_chars: cfg.maxChars, with_effects: cfg.withF,
+                auto_create_video: cfg.autoVideo, auto_upload_youtube: cfg.autoYoutube,
+                retry_count: cfg.retryCount}),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.detail || 'Không thể tạo queue TTS');
@@ -2346,7 +2590,15 @@ function buildVideoCell(cell) {
         // MP4 that is already on disk does not.
         if (audioReady) html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-gen" title="Tạo lại video">&#8635;</button>`;
         html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-del" title="Xóa video">&#128465;</button>`;
-        if (YOUTUBE_CONFIGURED) html += `<button type="button" class="btn-outline btn-sm pv-yt" title="Upload lên YouTube">YT</button>`;
+        if (YOUTUBE_CONFIGURED) {
+            const uploadState = cell.dataset.uploadState || 'ready';
+            const active = uploadState === 'active' || uploadState === 'postprocessing';
+            if (cell.dataset.canForceNew === '1') {
+                html += `<button type="button" class="btn-outline btn-sm pv-yt-new" title="Upload thành video YouTube mới">YT mới</button>`;
+            } else {
+                html += `<button type="button" class="btn-outline btn-sm pv-yt" title="${active ? 'YouTube đang upload' : 'Upload lên YouTube'}" ${active ? 'disabled' : ''}>${active ? 'YT…' : 'YT'}</button>`;
+            }
+        }
     } else if (audioReady) {
         html += `<button type="button" class="btn-primary btn-sm pv-gen">&#127916; Tạo</button>`;
     } else {
@@ -2480,16 +2732,28 @@ async function genPatchVideo(pid, cell, opts = {}) {
     }
 }
 
+function audioButtonHtml(pid, name = '') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn-outline btn-sm pv-icon-btn patch-audio-open';
+    button.dataset.patchId = pid;
+    button.dataset.patchName = name || `Patch ${pid}`;
+    button.title = 'Nghe audio';
+    button.setAttribute('aria-label', `Nghe audio ${button.dataset.patchName}`);
+    button.innerHTML = '&#9654;';
+    return button;
+}
+
 // Bring one patch row up to date after its audio landed, whichever upload put it
-// there: status badge, the player cell, the video cell (which also backs the
+// there: status badge, the audio action, the video cell (which also backs the
 // "Có âm thanh" filter) and the batch checkbox.
 function markPatchAudioReady(pid) {
     const statusCell = document.getElementById(`patch-status-${pid}`);
     if (statusCell) statusCell.innerHTML = '<span class="badge badge-done">Hoàn tất</span>';
     const audioCell = document.getElementById(`patch-audio-${pid}`);
     if (audioCell) {
-        // Cache-bust: the same URL now serves a different file.
-        audioCell.innerHTML = `<audio controls preload="none" class="patch-audio-player" src="/books/${BOOK_ID}/patches/${pid}/audio?v=${Date.now()}"></audio>`;
+        const name = audioCell.closest('tr')?.querySelector('.patch-name-cell')?.textContent.trim() || '';
+        audioCell.replaceChildren(audioButtonHtml(pid, name));
     }
     const videoCell = document.getElementById(`patch-video-${pid}`);
     if (videoCell) {
@@ -2588,15 +2852,34 @@ async function deletePatchVideo(pid, cell) {
     }
 }
 
-async function uploadPatchYouTube(pid, cell) {
+async function uploadPatchYouTube(pid, cell, forceNew = false) {
+    const button = cell?.querySelector(forceNew ? '.pv-yt-new' : '.pv-yt');
+    if (button?.disabled) return;
+    if (forceNew && !window.confirm('Upload video này thành một video YouTube mới?\n\nVideo YouTube cũ sẽ KHÔNG bị thay thế hoặc xóa.')) return;
+    if (button) button.disabled = true;
     try {
         const fd = new FormData();
         fd.set('privacy', getBatchPrivacy());
+        fd.set('force_new', forceNew ? 'true' : 'false');
         const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/youtube-upload`, { method: 'POST', body: fd });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const state = cell?.querySelector('.pv-pipeline-state');
+        if (data.status === 'skipped') {
+            if (state) { state.textContent = `Bỏ qua: ${data.detail || data.reason}`; state.className = 'pv-pipeline-state pv-yt-state err'; }
+            cell.dataset.uploadState = data.reason === 'already_published' ? 'published' : 'active';
+            cell.dataset.canForceNew = data.can_force_new ? '1' : '0';
+            buildVideoCell(cell);
+            showToast(data.detail || 'YouTube upload bị bỏ qua', 'warning');
+            return;
+        }
+        cell.dataset.uploadState = 'active';
+        cell.dataset.canForceNew = '0';
+        if (state) { state.textContent = 'YouTube: đã xếp hàng'; state.className = 'pv-pipeline-state pv-yt-state'; }
+        buildVideoCell(cell);
         showToast(`Đã xếp hàng upload YouTube: ${cell ? cell.dataset.patchName : pid}`);
     } catch (e) {
+        if (button) button.disabled = false;
         showToast('YouTube lỗi: ' + (e.message || e), 'error');
     }
 }
@@ -2805,6 +3088,7 @@ async function genSelectedImages() {
             else if (e.target.closest('.pv-preview')) { e.preventDefault(); openPatchVideoModal(pid, cell.dataset.patchName); }
             else if (e.target.closest('.pv-del')) { e.preventDefault(); deletePatchVideo(pid, cell); }
             else if (e.target.closest('.pv-yt')) { e.preventDefault(); uploadPatchYouTube(pid, cell); }
+            else if (e.target.closest('.pv-yt-new')) { e.preventDefault(); uploadPatchYouTube(pid, cell, true); }
         });
     }
 

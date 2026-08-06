@@ -509,6 +509,7 @@ def delete_patch_video(
 def upload_patch_video_to_youtube(
     request: Request, book_id: int, patch_id: int,
     privacy: str = Form(default=""),
+    force_new: bool = Form(default=False),
 ):
     """Push a patch's already-generated MP4 (server-rendered or uploaded from
     Colab/Kaggle) to YouTube via the upload worker. Returns JSON."""
@@ -522,13 +523,27 @@ def upload_patch_video_to_youtube(
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
+        existing = conn.execute("SELECT * FROM patch_pipeline WHERE patch_id=?", (patch_id,)).fetchone()
+        if existing and not force_new:
+            if existing["stage"] == "published":
+                return JSONResponse({"status": "skipped", "reason": "already_published",
+                    "detail": "Video đã được publish; video YouTube cũ sẽ không bị thay thế.",
+                    "can_force_new": True, "pipeline": dict(existing)})
+            if existing["upload_status"] in {"claiming", "queued", "pending", "uploading"} and existing["youtube_upload_id"]:
+                return JSONResponse({"status": "skipped", "reason": "upload_in_progress",
+                    "detail": "Video đang được xếp hàng hoặc upload lên YouTube.",
+                    "can_force_new": False, "pipeline": dict(existing)})
+        if force_new and existing and existing["upload_status"] in {"claiming", "queued", "pending", "uploading"} and existing["stage"] != "published":
+            raise HTTPException(status_code=409, detail="YouTube upload is already active")
         video_db_id = _register_patch_video(conn, book, patch, video_path)
 
     with locked_conn(request) as conn:
         from app.patch_publishing import seed_patch_video
+        if force_new:
+            enqueue_patch_publish(conn, patch_id, force_new=True)
         seed_patch_video(conn, patch_id, video_db_id, str(video_path))
     status = _run_publish_stage(request, patch_id, book_id=book_id)
-    return JSONResponse({"status": "queued", "pipeline": status})
+    return JSONResponse({"status": "queued", "reason": None, "can_force_new": False, "pipeline": status})
 
 
 @router.get("/books/{book_id}/patches/{patch_id}/overlay-image")
@@ -547,6 +562,7 @@ def get_patch_overlay_image(request: Request, book_id: int, patch_id: int):
     force = request.query_params.get("force") in {"1", "true"}
     overlay = image_overlay.ensure_patch_overlay(
         book, patch, settings.default_font_path or None,
+        background_path=patch.image_path or None,
         force=force,
     )
     if overlay and Path(overlay).exists():

@@ -43,7 +43,9 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
 def enqueue_pending_patch_jobs(
     conn: sqlite3.Connection, book_id: int | None = None, tts_engine: str | None = None,
     *, voice: str | None = None, max_chars: int = 0, with_effects: bool = False,
-    patch_ids: list[int] | None = None,
+    patch_ids: list[int] | None = None, auto_create_video: bool = False,
+    auto_upload_youtube: bool = False, retry_count: int = 2,
+    missing_audio_only: bool = False,
 ) -> int:
     """Queue a voxcpm_tts job for every 'pending' patch, optionally of a single book.
 
@@ -56,9 +58,15 @@ def enqueue_pending_patch_jobs(
         if not ids:
             return 0
         placeholders = ",".join("?" for _ in ids)
+        params: list[int] = []
+        where_book = ""
+        if book_id is not None:
+            where_book = " AND book_id=?"
+            params.append(book_id)
+        params.extend(ids)
         rows = conn.execute(
-            f"SELECT id, book_id FROM patch WHERE id IN ({placeholders}) AND status!='processing' ORDER BY book_id, patch_index",
-            ids,
+            f"SELECT id, book_id, audio_path FROM patch WHERE status!='processing'{where_book} AND id IN ({placeholders}) ORDER BY book_id, patch_index",
+            params,
         ).fetchall()
     elif book_id is None:
         rows = conn.execute(
@@ -78,9 +86,12 @@ def enqueue_pending_patch_jobs(
     del engine
     queued = 0
     for row in rows:
+        if missing_audio_only and row["audio_path"] and Path(row["audio_path"]).is_file():
+            continue
         request = {
             "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
-            "with_effects": with_effects,
+            "with_effects": with_effects, "auto_create_video": auto_create_video,
+            "auto_upload_youtube": auto_upload_youtube,
         }
         if not explicit_config:
             snapshot = (
@@ -98,7 +109,9 @@ def enqueue_pending_patch_jobs(
             "voxcpm_tts",
             payload={"patch_id": row["id"], **request},
             book_id=row["book_id"],
+            patch_id=row["id"],
             dedupe_key=f"voxcpm_tts:patch={row['id']}",
+            max_attempts=max(1, min(11, int(retry_count) + 1)),
         ) is not None:
             queued += 1
     return queued

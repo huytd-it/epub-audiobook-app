@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -612,17 +613,697 @@ def playlist_contains_video(conn: sqlite3.Connection, playlist_id: str, youtube_
     return False
 
 
-def add_video_to_playlist(conn: sqlite3.Connection, playlist_id: str, youtube_video_id: str) -> dict:
-    """Add a video to a playlist. Returns the API response dict."""
+def add_video_to_playlist(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    youtube_video_id: str,
+    position: int | None = None,
+) -> dict:
+    """Add a video to a playlist. Returns the API response dict.
+
+    position is an optional zero-based insert position; when omitted the video is
+    appended at the end of the playlist.
+    """
     _require_google_imports()
     service = get_youtube_service(conn)
+    return _add_playlist_item(service, playlist_id, youtube_video_id, position=position)
+
+
+# ---------------------------------------------------------------------------
+# Playlist management
+#
+# All batch operations return a standardized result:
+#   {requested, succeeded, skipped, failed, items}
+# where `items` is a list of {key, status, message} with status in
+# succeeded/skipped/failed. Every call that builds a service object once and
+# reuses it across the batch to avoid re-authorizing per item.
+# ---------------------------------------------------------------------------
+
+
+def _new_batch_result() -> dict:
+    """Create an empty standardized batch-operation result."""
+    return {"requested": 0, "succeeded": 0, "skipped": 0, "failed": 0, "items": []}
+
+
+def _batch_add(result: dict, key: str, status: str, message: str = "") -> dict:
+    """Record one item in a batch result and bump the matching counter."""
+    if status not in ("succeeded", "skipped", "failed"):
+        raise ValueError(f"invalid batch status: {status}")
+    result["requested"] += 1
+    result[status] += 1
+    result["items"].append({"key": key, "status": status, "message": message})
+    return result
+
+
+def _normalize_playlist_item(item: dict, playlist_id: str | None = None) -> dict:
+    """Flatten a raw playlistItems.list resource into the normalized shape."""
+    snippet = item.get("snippet") or {}
+    resource = snippet.get("resourceId") or {}
+    content = item.get("contentDetails") or {}
+    thumbnails = snippet.get("thumbnails") or {}
+    thumbnail = next(
+        (thumbnails[size].get("url") for size in ("medium", "high", "default") if size in thumbnails),
+        None,
+    )
+    return {
+        "playlist_item_id": item.get("id", ""),
+        "playlist_id": snippet.get("playlistId") or playlist_id or "",
+        "video_id": resource.get("videoId") or content.get("videoId") or "",
+        "title": snippet.get("title", "") or "",
+        "thumbnail": thumbnail,
+        "position": snippet.get("position", 0),
+        "published_at": content.get("videoPublishedAt"),
+    }
+
+
+def _list_playlist_items_page(
+    service,
+    playlist_id: str,
+    max_results: int = 50,
+    page_token: str | None = None,
+    part: str = "snippet,contentDetails",
+) -> dict:
+    """One playlistItems.list call, normalized.
+
+    Returns {items, next_page_token, prev_page_token, total} with `total` taken from
+    the API's pageInfo.totalResults when available.
+    """
+    params = {"part": part, "playlistId": playlist_id, "maxResults": max_results}
+    if page_token:
+        params["pageToken"] = page_token
+    resp = service.playlistItems().list(**params).execute()
+    items = [_normalize_playlist_item(item, playlist_id) for item in resp.get("items", [])]
+    return {
+        "items": items,
+        "next_page_token": resp.get("nextPageToken"),
+        "prev_page_token": resp.get("prevPageToken"),
+        "total": (resp.get("pageInfo") or {}).get("totalResults", len(items)),
+    }
+
+
+def list_playlist_items(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    max_results: int = 50,
+    page_token: str | None = None,
+) -> dict:
+    """List the videos in a playlist.
+
+    Returns {items, next_page_token, prev_page_token, total} where each item is
+    normalized to {playlist_item_id, playlist_id, video_id, title, thumbnail,
+    position, published_at}.
+    """
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    return _list_playlist_items_page(service, playlist_id, max_results=max_results, page_token=page_token)
+
+
+def _get_all_playlist_items(service, playlist_id: str, max_results: int = 50) -> list[dict]:
+    """Page through an entire playlist, returning a flat normalized item list."""
+    items = []
+    page_token = None
+    while True:
+        page = _list_playlist_items_page(service, playlist_id, max_results=max_results, page_token=page_token)
+        items.extend(page["items"])
+        page_token = page["next_page_token"]
+        if not page_token:
+            return items
+
+
+def get_all_playlist_items(conn: sqlite3.Connection, playlist_id: str) -> list[dict]:
+    """Return every item in a playlist as a flat normalized list (paginates)."""
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    return _get_all_playlist_items(service, playlist_id)
+
+
+def _find_playlist_item(service, playlist_id: str, video_id: str) -> dict | None:
+    """Locate the normalized item for a video, paging until found (or exhausted)."""
+    page_token = None
+    while True:
+        page = _list_playlist_items_page(service, playlist_id, page_token=page_token)
+        for item in page["items"]:
+            if item["video_id"] == video_id:
+                return item
+        page_token = page["next_page_token"]
+        if not page_token:
+            return None
+
+
+def find_playlist_item(conn: sqlite3.Connection, playlist_id: str, video_id: str) -> dict | None:
+    """Return the normalized item for a video in a playlist, or None."""
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    return _find_playlist_item(service, playlist_id, video_id)
+
+
+def _find_playlist_item_by_id(service, playlist_id: str, playlist_item_id: str) -> dict | None:
+    """Locate an item by its playlistItem.id, paging until found (or exhausted)."""
+    page_token = None
+    while True:
+        page = _list_playlist_items_page(service, playlist_id, page_token=page_token)
+        for item in page["items"]:
+            if item["playlist_item_id"] == playlist_item_id:
+                return item
+        page_token = page["next_page_token"]
+        if not page_token:
+            return None
+
+
+def _add_playlist_item(service, playlist_id: str, video_id: str, position: int | None = None) -> dict:
     body = {
         "snippet": {
             "playlistId": playlist_id,
-            "resourceId": {"kind": "youtube#video", "videoId": youtube_video_id},
+            "resourceId": {"kind": "youtube#video", "videoId": video_id},
         },
     }
+    if position is not None:
+        body["snippet"]["position"] = int(position)
     return service.playlistItems().insert(part="snippet", body=body).execute()
+
+
+def _delete_playlist_item(service, playlist_item_id: str) -> dict:
+    return service.playlistItems().delete(id=playlist_item_id).execute()
+
+
+def _update_playlist_item(
+    service,
+    playlist_item_id: str,
+    playlist_id: str,
+    position: int,
+    video_id: str,
+) -> dict:
+    body = {
+        "id": playlist_item_id,
+        "snippet": {
+            "playlistId": playlist_id,
+            "position": int(position),
+            "resourceId": {"kind": "youtube#video", "videoId": video_id},
+        },
+    }
+    return service.playlistItems().update(part="snippet", body=body).execute()
+
+
+def remove_playlist_item(conn: sqlite3.Connection, playlist_id: str, playlist_item_id: str) -> dict:
+    """Remove an item from a playlist by its playlistItem.id. Returns the API response."""
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    return _delete_playlist_item(service, playlist_item_id)
+
+
+def remove_video_from_playlist(conn: sqlite3.Connection, playlist_id: str, youtube_video_id: str) -> bool:
+    """Remove a video from a playlist (resolving its playlist item id first).
+
+    Returns True when an item was removed, False when the video was not present.
+    """
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    item = _find_playlist_item(service, playlist_id, youtube_video_id)
+    if item is None:
+        return False
+    _delete_playlist_item(service, item["playlist_item_id"])
+    return True
+
+
+def update_playlist_item_position(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    playlist_item_id: str,
+    position: int,
+    video_id: str | None = None,
+) -> dict:
+    """Move a playlist item to a new zero-based position. Returns the API response.
+
+    The update needs the item's video id; when omitted it is resolved with one extra
+    playlistItems.list call.
+    """
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    if video_id is None:
+        item = _find_playlist_item_by_id(service, playlist_id, playlist_item_id)
+        if item is None:
+            raise ValueError(f"playlist item {playlist_item_id} not found in playlist {playlist_id}")
+        video_id = item["video_id"]
+    return _update_playlist_item(service, playlist_item_id, playlist_id, position, video_id)
+
+
+def move_playlist_item(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    playlist_item_id: str,
+    new_position: int,
+    video_id: str | None = None,
+) -> dict:
+    """Move a playlist item to an arbitrary position (alias of update_playlist_item_position)."""
+    return update_playlist_item_position(conn, playlist_id, playlist_item_id, new_position, video_id=video_id)
+
+
+def bulk_add_to_playlist(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    video_ids: list[str],
+    position: int | None = None,
+    skip_duplicates: bool = True,
+) -> dict:
+    """Add many videos to a playlist in one batch.
+
+    Videos already in the playlist are skipped as duplicates ('skipped', not
+    'failed'). Returns a standardized batch result.
+    """
+    result = _new_batch_result()
+    if not video_ids:
+        return result
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    existing: set[str] | None = None
+    if skip_duplicates:
+        existing = {i["video_id"] for i in _get_all_playlist_items(service, playlist_id)}
+    for video_id in video_ids:
+        if existing is not None and video_id in existing:
+            _batch_add(result, video_id, "skipped", "duplicate: already in playlist")
+            continue
+        try:
+            _add_playlist_item(service, playlist_id, video_id, position=position)
+            if existing is not None:
+                existing.add(video_id)
+            _batch_add(result, video_id, "succeeded")
+        except Exception as exc:
+            _batch_add(result, video_id, "failed", str(exc)[:500])
+    return result
+
+
+def bulk_remove_from_playlist(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    video_ids: list[str] | None = None,
+    playlist_item_ids: list[str] | None = None,
+) -> dict:
+    """Remove many items from a playlist in one batch.
+
+    Pass video_ids to remove by video (resolved to their playlist item ids) or
+    playlist_item_ids to remove directly by playlistItem.id. Videos that are not in
+    the playlist are skipped. Returns a standardized batch result.
+    """
+    result = _new_batch_result()
+    if not video_ids and not playlist_item_ids:
+        return result
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    targets: list[tuple[str, str]] = []
+    if playlist_item_ids:
+        targets = [(item_id, item_id) for item_id in playlist_item_ids]
+    else:
+        for video_id in video_ids or []:
+            item = _find_playlist_item(service, playlist_id, video_id)
+            if item is None:
+                _batch_add(result, video_id, "skipped", "not in playlist")
+                continue
+            targets.append((video_id, item["playlist_item_id"]))
+    for key, item_id in targets:
+        try:
+            _delete_playlist_item(service, item_id)
+            _batch_add(result, key, "succeeded")
+        except Exception as exc:
+            _batch_add(result, key, "failed", str(exc)[:500])
+    return result
+
+
+def _select_source_items(service, source_playlist_id: str, video_ids: list[str] | None) -> list[dict]:
+    items = _get_all_playlist_items(service, source_playlist_id)
+    if video_ids is not None:
+        wanted = set(video_ids)
+        items = [i for i in items if i["video_id"] in wanted]
+    return items
+
+
+def copy_playlist_items(
+    conn: sqlite3.Connection,
+    source_playlist_id: str,
+    target_playlist_id: str,
+    video_ids: list[str] | None = None,
+    skip_duplicates: bool = True,
+) -> dict:
+    """Copy items from one playlist into another. Returns a standardized batch result.
+
+    Videos already present in the target playlist are skipped as duplicates. When
+    video_ids is given only those videos are copied.
+    """
+    result = _new_batch_result()
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    sources = _select_source_items(service, source_playlist_id, video_ids)
+    existing = {i["video_id"] for i in _get_all_playlist_items(service, target_playlist_id)} if skip_duplicates else set()
+    for item in sources:
+        video_id = item["video_id"]
+        if video_id in existing:
+            _batch_add(result, video_id, "skipped", "duplicate: already in target playlist")
+            continue
+        try:
+            _add_playlist_item(service, target_playlist_id, video_id)
+            _batch_add(result, video_id, "succeeded")
+        except Exception as exc:
+            _batch_add(result, video_id, "failed", str(exc)[:500])
+    return result
+
+
+def move_playlist_items(
+    conn: sqlite3.Connection,
+    source_playlist_id: str,
+    target_playlist_id: str,
+    video_ids: list[str] | None = None,
+    skip_duplicates: bool = True,
+) -> dict:
+    """Move items from one playlist to another (add-before-remove).
+
+    Each video is added to the target first and only removed from the source after a
+    successful add, so an add failure or a duplicate skip leaves the source item
+    retained. Returns a standardized batch result.
+    """
+    result = _new_batch_result()
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    sources = _select_source_items(service, source_playlist_id, video_ids)
+    existing = {i["video_id"] for i in _get_all_playlist_items(service, target_playlist_id)} if skip_duplicates else set()
+    for item in sources:
+        video_id = item["video_id"]
+        if video_id in existing:
+            _batch_add(result, video_id, "skipped", "duplicate: already in target playlist; source retained")
+            continue
+        try:
+            _add_playlist_item(service, target_playlist_id, video_id)
+        except Exception as exc:
+            _batch_add(result, video_id, "failed", f"add failed; source retained: {str(exc)[:400]}")
+            continue
+        try:
+            _delete_playlist_item(service, item["playlist_item_id"])
+            _batch_add(result, video_id, "succeeded")
+        except Exception as exc:
+            _batch_add(result, video_id, "succeeded", f"added to target; source removal failed: {str(exc)[:300]}")
+    return result
+
+
+def _natural_sort_key(title: str):
+    """Case-insensitive, numeric-chunk sort key (e.g. 'Part 2' sorts before 'Part 10')."""
+    chunks = re.split(r"(\d+)", (title or "").lower())
+    key = []
+    for chunk in chunks:
+        if chunk.isdigit():
+            key.append((1, int(chunk)))
+        else:
+            key.append((0, chunk))
+    return tuple(key)
+
+
+def _new_order(items: list[dict], order: list[str] | None, direction: str) -> list[dict]:
+    """Resolve the target item order.
+
+    order is an explicit list of video ids in the desired order; items not listed
+    keep their relative place at the end. When order is None the items are
+    natural-title sorted in the given direction ('asc' or 'desc'). The result is a
+    permutation of `items` (stable for ties).
+    """
+    if order is not None:
+        seen = set()
+        deduped = []
+        for video_id in order:
+            if video_id not in seen:
+                seen.add(video_id)
+                deduped.append(video_id)
+        order = deduped
+        by_id = {i["video_id"]: i for i in items}
+        ordered = [by_id[video_id] for video_id in order if video_id in by_id]
+        placed = {i["video_id"] for i in ordered}
+        ordered.extend(i for i in items if i["video_id"] not in placed)
+        return ordered
+    return sorted(
+        items,
+        key=lambda i: _natural_sort_key(i.get("title", "")),
+        reverse=str(direction).lower() == "desc",
+    )
+
+
+def _compute_positions(
+    items: list[dict],
+    order: list[str] | None = None,
+    direction: str = "asc",
+) -> list[tuple[dict, int]]:
+    """Pair each item with its new zero-based position without calling the API."""
+    return list(zip(_new_order(items, order, direction), range(len(items))))
+
+
+def reorder_playlist_preview(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    order: list[str] | None = None,
+    direction: str = "asc",
+) -> dict:
+    """Compute a reorder without mutating the playlist.
+
+    order is an explicit list of video ids for arbitrary-position reordering; when
+    None the items are natural-title sorted (asc/desc). Returns {items, ordered}
+    where every item carries both current_position and new_position. Non-mutating:
+    no playlistItems write is made.
+    """
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    items = _get_all_playlist_items(service, playlist_id)
+    current = {i["video_id"]: i["position"] for i in items}
+    preview = []
+    for item, new_position in _compute_positions(items, order, direction):
+        preview.append({
+            **item,
+            "current_position": current.get(item["video_id"], item["position"]),
+            "new_position": new_position,
+        })
+    return {"items": preview, "ordered": [i["video_id"] for i in _new_order(items, order, direction)]}
+
+
+def reorder_playlist(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    order: list[str] | None = None,
+    direction: str = "asc",
+) -> dict:
+    """Apply a reorder to a playlist.
+
+    order is an explicit list of video ids for arbitrary-position reordering; when
+    None the playlist is natural-title sorted (asc by default). Only items whose
+    position actually changes are updated and failures do not stop the rest of the
+    batch. Returns a standardized batch result.
+    """
+    result = _new_batch_result()
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    items = _get_all_playlist_items(service, playlist_id)
+    current = {i["video_id"]: i["position"] for i in items}
+    for item, new_position in _compute_positions(items, order, direction):
+        if current.get(item["video_id"], item["position"]) == new_position:
+            _batch_add(result, item["video_id"], "skipped", f"already at position {new_position}")
+            continue
+        try:
+            _update_playlist_item(service, item["playlist_item_id"], playlist_id, new_position, item["video_id"])
+            _batch_add(result, item["video_id"], "succeeded", f"moved to position {new_position}")
+        except Exception as exc:
+            _batch_add(result, item["video_id"], "failed", str(exc)[:500])
+    return result
+
+
+def sort_playlist_preview(conn: sqlite3.Connection, playlist_id: str, direction: str = "asc") -> dict:
+    """Non-mutating preview of a natural-title sort of a playlist."""
+    return reorder_playlist_preview(conn, playlist_id, order=None, direction=direction)
+
+
+def sort_playlist(conn: sqlite3.Connection, playlist_id: str, direction: str = "asc") -> dict:
+    """Sort a playlist by natural title order (asc/desc). Applies the new positions."""
+    return reorder_playlist(conn, playlist_id, order=None, direction=direction)
+
+
+def playlist_page_range(position: int, page_size: int = 50) -> tuple[int, int]:
+    """Return the half-open position span [start, end) of the page holding a position.
+
+    YouTube caps playlistItems.list at 50 per page; page N covers positions
+    [N*page_size, (N+1)*page_size).
+    """
+    start = (int(position) // page_size) * page_size
+    return start, start + page_size
+
+
+def playlist_page_for(position: int, page_size: int = 50) -> int:
+    """Return the zero-based page index a position belongs to."""
+    return int(position) // page_size
+
+
+def reorder_playlist_page(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    page_index: int,
+    order: list[str],
+    page_size: int = 50,
+) -> dict:
+    """Reorder the items that live on one page of a playlist.
+
+    All target positions stay within the page's span, so no update ever has to move
+    an item across a page boundary. Returns a standardized batch result.
+    """
+    result = _new_batch_result()
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    start = page_index * page_size
+    span = set(range(start, start + len(order)))
+    items = [i for i in _get_all_playlist_items(service, playlist_id) if i["position"] in span]
+    if len(items) != len(order):
+        for video_id in order:
+            _batch_add(result, video_id, "failed", f"video not found on page {page_index}")
+        return result
+    current = {i["video_id"]: i["position"] for i in items}
+    for item, new_position in zip(_new_order(items, order, "asc"), range(start, start + len(order))):
+        if current.get(item["video_id"]) == new_position:
+            _batch_add(result, item["video_id"], "skipped", f"already at position {new_position}")
+            continue
+        try:
+            _update_playlist_item(service, item["playlist_item_id"], playlist_id, new_position, item["video_id"])
+            _batch_add(result, item["video_id"], "succeeded", f"moved to position {new_position}")
+        except Exception as exc:
+            _batch_add(result, item["video_id"], "failed", str(exc)[:500])
+    return result
+
+
+def _channel_uploads_playlist_id(channel_id: str) -> str | None:
+    """Derive a channel's uploads playlist id: 'UC...' -> 'UU...'.
+
+    Returns None when the channel id does not follow the 'UC' prefix convention, in
+    which case callers fall back to search.
+    """
+    if isinstance(channel_id, str) and channel_id.startswith("UC"):
+        return "UU" + channel_id[2:]
+    return None
+
+
+def _search_videos_page(
+    service,
+    channel_id: str | None,
+    query: str,
+    max_results: int,
+    page_token: str | None,
+) -> dict:
+    """One search.list call, normalized (100 quota units per call)."""
+    params = {"part": "snippet", "type": "video", "maxResults": max_results}
+    if channel_id:
+        params["channelId"] = channel_id
+    else:
+        params["forMine"] = True
+    if query:
+        params["q"] = query
+    if page_token:
+        params["pageToken"] = page_token
+    resp = service.search().list(**params).execute()
+    items = []
+    for item in resp.get("items", []):
+        video_id = (item.get("id") or {}).get("videoId", "")
+        snippet = item.get("snippet") or {}
+        thumbnails = snippet.get("thumbnails") or {}
+        thumbnail = next(
+            (thumbnails[size].get("url") for size in ("medium", "high", "default") if size in thumbnails),
+            None,
+        )
+        items.append({
+            "video_id": video_id,
+            "title": snippet.get("title", ""),
+            "channel_id": snippet.get("channelId", ""),
+            "thumbnail": thumbnail,
+            "published_at": snippet.get("publishedAt"),
+        })
+    return {
+        "items": items,
+        "next_page_token": resp.get("nextPageToken"),
+        "prev_page_token": resp.get("prevPageToken"),
+        "total": (resp.get("pageInfo") or {}).get("totalResults", len(items)),
+    }
+
+
+def search_channel_videos(
+    conn: sqlite3.Connection,
+    channel_id: str | None = None,
+    query: str = "",
+    max_results: int = 25,
+    page_token: str | None = None,
+) -> dict:
+    """Search videos on the authenticated channel (or a given channel) by title.
+
+    Backed by search.list, which costs 100 quota units per request - prefer
+    list_channel_videos / find_channel_videos_by_title when paging the whole uploads
+    playlist is acceptable. Returns {items, next_page_token, prev_page_token, total}
+    with items normalized to {video_id, title, thumbnail, channel_id, published_at}.
+    """
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    return _search_videos_page(service, channel_id, query, max_results, page_token)
+
+
+def list_channel_videos(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    max_results: int = 50,
+    page_token: str | None = None,
+    title_query: str | None = None,
+) -> dict:
+    """List a channel's videos by title.
+
+    Prefers paging through the channel's uploads playlist (1 quota unit per page)
+    over search.list (100 units); falls back to search when the uploads playlist id
+    cannot be derived. When title_query is given, only titles containing it are
+    returned (client-side filter on the current page).
+    """
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    uploads_id = _channel_uploads_playlist_id(channel_id)
+    if uploads_id:
+        page = _list_playlist_items_page(service, uploads_id, max_results=max_results, page_token=page_token)
+    else:
+        page = _search_videos_page(service, channel_id, "", max_results, page_token)
+    if title_query:
+        query = title_query.strip().lower()
+        page["items"] = [i for i in page["items"] if query in (i.get("title") or "").lower()]
+    return page
+
+
+def find_channel_videos_by_title(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    query: str,
+    limit: int = 50,
+    max_pages: int = 10,
+) -> dict:
+    """Search a channel's videos by title with remote pagination.
+
+    Uses the cheap uploads-playlist listing and keeps paging until `limit` matches
+    are found or the playlist is exhausted. Falls back to search.list when the
+    uploads playlist id cannot be derived. Returns {items, next_page_token, total}.
+    """
+    _require_google_imports()
+    query = (query or "").strip().lower()
+    uploads_id = _channel_uploads_playlist_id(channel_id)
+    if not uploads_id or not query:
+        return search_channel_videos(conn, channel_id=channel_id, query=query, max_results=min(limit, 50))
+    service = get_youtube_service(conn)
+    matches = []
+    page_token = None
+    pages = 0
+    while pages < max_pages:
+        page = _list_playlist_items_page(service, uploads_id, max_results=50, page_token=page_token)
+        pages += 1
+        for item in page["items"]:
+            if query in (item.get("title") or "").lower():
+                matches.append(item)
+        page_token = page["next_page_token"]
+        if not page_token or len(matches) >= limit:
+            break
+    return {
+        "items": matches[:limit],
+        "next_page_token": page_token,
+        "prev_page_token": None,
+        "total": len(matches),
+    }
 
 
 def _playlist_marker(book_id: int) -> str:

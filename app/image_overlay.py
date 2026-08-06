@@ -76,18 +76,30 @@ def parse_overlay_config(raw: str | None) -> dict[str, Any]:
 
 
 def list_overlay_fonts() -> list[dict[str, str]]:
-    """Return usable, server-local fonts exposed to the overlay editor."""
+    """Return local fonts that load correctly and include Vietnamese glyphs."""
     seen: set[str] = set()
     fonts: list[dict[str, str]] = []
-    candidates = ([settings.default_font_path] if settings.default_font_path else []) + _FONT_PATHS
-    for raw in candidates:
-        path = Path(raw)
-        key = str(path).lower()
-        if key in seen or not path.is_file():
+    bundled_dir = Path(__file__).parent.parent / "assets" / "fonts"
+    bundled = sorted(
+        path for pattern in ("*.ttf", "*.otf", "*.ttc")
+        for path in bundled_dir.glob(pattern)
+    )
+    candidates = (
+        ([Path(settings.default_font_path)] if settings.default_font_path else [])
+        + bundled
+        + [Path(raw) for raw in _FONT_PATHS]
+    )
+    for path in candidates:
+        try:
+            key = str(path.resolve()).lower()
+        except OSError:
+            key = str(path).lower()
+        if key in seen or not path.is_file() or not _try_load_font(str(path), 32):
             continue
         seen.add(key)
-        fonts.append({"name": path.stem, "path": str(path)})
+        fonts.append({"name": _FONT_DISPLAY_NAMES.get(path.name.lower(), path.stem), "path": str(path)})
     return fonts
+
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -112,6 +124,19 @@ def _resolve_background(book: Book, background_path: str | None = None) -> Path 
 
 _VIETNAMESE_TEST = "âêôưỢĐáàảãạéèẻẽẹíìỉĩịóòỏõọúùủũụýỳỷỹỵ"
 
+_FONT_DISPLAY_NAMES: dict[str, str] = {
+    "pacifico-regular.ttf": "Pacifico — Viết tay",
+    "segoeui.ttf": "Segoe UI — Hiện đại",
+    "arial.ttf": "Arial — Cổ điển",
+    "times.ttf": "Times New Roman — Sách",
+    "tahoma.ttf": "Tahoma — Gọn",
+    "calibri.ttf": "Calibri — Mềm mại",
+    "cambria.ttc": "Cambria — Serif tiêu đề",
+    "candara.ttf": "Candara — Thanh lịch",
+    "corbel.ttf": "Corbel — Humanist",
+    "verdana.ttf": "Verdana — Rõ nét",
+}
+
 _FONT_PATHS: list[str] = [
     "C:/Windows/Fonts/SEGOEUI.TTF",
     "C:/Windows/Fonts/segoeui.ttf",
@@ -121,6 +146,11 @@ _FONT_PATHS: list[str] = [
     "C:/Windows/Fonts/times.ttf",
     "C:/Windows/Fonts/TAHOMA.TTF",
     "C:/Windows/Fonts/tahoma.ttf",
+    "C:/Windows/Fonts/calibri.ttf",
+    "C:/Windows/Fonts/cambria.ttc",
+    "C:/Windows/Fonts/candara.ttf",
+    "C:/Windows/Fonts/corbel.ttf",
+    "C:/Windows/Fonts/verdana.ttf",
     str(Path(__file__).parent.parent / "assets" / "fonts" / "NotoSansVietnamese.ttf"),
     str(Path(__file__).parent.parent / "assets" / "fonts" / "NotoSansVietnamese-Regular.ttf"),
 ]
@@ -357,7 +387,21 @@ def overlay_cfg_from_values(values) -> dict:
         for raw in raw_overlays[:12] if isinstance(raw_overlays, list) else []:
             if not isinstance(raw, dict):
                 continue
-            item = overlay_cfg_from_values(raw)
+            shadow = raw.get("shadow") if isinstance(raw.get("shadow"), dict) else {}
+            box = raw.get("box") if isinstance(raw.get("box"), dict) else {}
+            layer_values = {
+                **raw,
+                "shadow_enabled": shadow.get("enabled", True),
+                "shadow_color": shadow.get("color", "#000000"),
+                "shadow_offset": shadow.get("offset", 3),
+                "box_enabled": box.get("enabled", False),
+                "box_color": box.get("color", "#000000"),
+                "box_opacity": box.get("opacity", 60),
+                "box_padding_x": box.get("padding_x", 24),
+                "box_padding_y": box.get("padding_y", 12),
+                "box_radius": box.get("radius", 12),
+            }
+            item = overlay_cfg_from_values(layer_values)
             item["text"] = str(raw.get("text") or "")[:500]
             font_path = str(raw.get("font_path") or "")
             item["font_path"] = font_path if font_path in allowed_fonts else ""
@@ -466,8 +510,10 @@ def ensure_patch_overlay(
 ) -> str | None:
     """Build overlay config from legacy font_path arg and render if stale."""
     cfg = parse_overlay_config(book.overlay_config)
-    if font_path and not cfg.get("font_path"):
-        cfg["font_path"] = font_path
+    if font_path:
+        for overlay in cfg.get("overlays") or [cfg]:
+            if not overlay.get("font_path"):
+                overlay["font_path"] = font_path
     if _resolve_background(book, background_path) is None:
         return None
     output = Path(out_path) if out_path else get_patch_overlay_path(book.id, patch.id)

@@ -61,6 +61,10 @@ def test_patch_row_exposes_pipeline_stage(client, seeded_book):
     conn.close()
     html = client.get(f"/books/{seeded_book.id}").text
     assert "Published" in html
+    assert '<th>Pipeline</th>' not in html
+    assert 'class="btn-outline btn-sm pv-icon-btn patch-audio-open"' in html
+    assert 'class="patch-audio-player"' not in html
+    assert "player.removeAttribute('src')" in html
 
 
 def test_patch_media_modal_has_only_audio_and_video_uploads(client, seeded_book):
@@ -80,6 +84,8 @@ def test_patch_media_modal_has_only_audio_and_video_uploads(client, seeded_book)
     assert ">More</button>" not in html
     assert 'id="pm-audio-file"' in html
     assert 'id="pm-video-file"' in html
+    assert 'id="patch-audio-modal"' in html
+    assert 'class="btn-outline btn-sm pv-icon-btn patch-audio-open"' not in html
     assert 'id="pm-bg-select"' not in html
     assert "patch-bg-select" not in html
     assert "patch-bg-save-btn" not in html
@@ -92,6 +98,11 @@ def test_book_detail_youtube_controls_use_exact_settings_shape(client, seeded_bo
     assert 'name="playlist_id"' in html
     assert 'id="youtube-connection-state"' in html
     assert 'id="youtube-preview"' in html
+    assert 'class="ui-modal-body youtube-settings-body"' in html
+    assert 'class="ui-modal-footer"' in html
+    assert "renderYoutubePreview" in html
+    assert "copy.dataset.copyYoutubePreview" in html
+    assert "navigator.clipboard.writeText(value)" in html
 
 
 def test_video_config_uses_media_library_background_checkboxes(client, seeded_book):
@@ -118,6 +129,9 @@ def test_patch_youtube_modal_renders_override_controls_and_metadata_flow(client,
     assert "/youtube-metadata" in html
     assert "response.ok" in html
     assert "force_new" in html
+    assert "action === 'new' && !window.confirm" in html
+    assert "Video YouTube cũ sẽ KHÔNG bị thay thế hoặc xóa" in html
+    assert "modal.querySelector('[data-patch-publish-action=\"new\"]').hidden = true" in html
     assert "join(', ')" in html
     assert "PATCH_INHERITED = new Set" in html
     assert "delete fields.playlist" in html
@@ -126,7 +140,8 @@ def test_patch_youtube_modal_renders_override_controls_and_metadata_flow(client,
     assert "action === 'retry'" in html
     assert "action.disabled = true" in html
     assert "loadPatchMetadata(button.dataset.patchYoutubeId).then" in html
-    assert "pipeline-status" in html or "patch-pipeline-" in html
+    assert "patch-status-detail" in html
+    assert 'id="patch-pipeline-' not in html
     assert "if (!statusResponse.ok)" in html
     assert "Patch queued; status refresh failed" in html
     assert "return true" in html

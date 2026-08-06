@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app import db, repository, video_gen
+from app import db, image_overlay, repository, video_gen
 from app.models import Book, Patch
 
 
@@ -140,6 +140,41 @@ def test_resolve_patch_image_returns_none_when_nothing_available():
                   image_path=None, image_type="static")
     result = video_gen.resolve_patch_image(patch, None, "/tmp/nonexistent.jpg")
     assert result is None
+
+
+def test_ensure_patch_overlay_uses_patch_background_and_layer_font(tmp_path, monkeypatch):
+    from PIL import Image
+
+    book_bg = tmp_path / "book.png"
+    patch_bg = tmp_path / "patch.png"
+    Image.new("RGB", (320, 180), (255, 0, 0)).save(book_bg)
+    Image.new("RGB", (640, 360), (0, 255, 0)).save(patch_bg)
+    book = Book(id=1, title="Sách", original_filename="f", epub_path="", patch_size=10,
+                status="done", final_audio_path=None, final_video_path=None,
+                background_image_path=str(book_bg), voice_clip_path=None,
+                voice_transcript=None, created_at="", updated_at="",
+                overlay_config='{"overlays":[{"text":"{book_title}","font_path":""}]}')
+    patch = Patch(id=1, book_id=1, patch_index=0, chapter_start=0, chapter_end=5,
+                  status="done", audio_path=None, error_message=None,
+                  attempt_count=0, created_at="", updated_at="", name="P1",
+                  image_path=str(patch_bg), image_type="static")
+    output = tmp_path / "overlay.png"
+    captured = {}
+
+    def fake_render(book_arg, patch_arg, cfg, out_path, background_path):
+        captured["cfg"] = cfg
+        captured["background_path"] = background_path
+        Image.open(background_path).save(out_path)
+
+    monkeypatch.setattr(image_overlay, "render_patch_overlay", fake_render)
+    result = image_overlay.ensure_patch_overlay(
+        book, patch, "C:/fonts/default.ttf", background_path=patch.image_path,
+        out_path=str(output), force=True,
+    )
+    assert result == str(output)
+    assert captured["background_path"] == str(patch_bg)
+    assert captured["cfg"]["overlays"][0]["font_path"] == "C:/fonts/default.ttf"
+    assert Image.open(output).size == (640, 360)
 
 
 # ---- generate_segment (mock ffmpeg) ----

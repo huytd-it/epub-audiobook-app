@@ -368,9 +368,17 @@ def book_status(request: Request, book_id: int):
                 "playlist_status": row["playlist_status"],
                 "thumbnail_path": row["thumbnail_path"],
                 "youtube_upload_id": row["youtube_upload_id"],
+                "last_error": row["last_error"],
+                "upload_state": (
+                    "published" if row["stage"] == "published" else
+                    "active" if row["youtube_upload_id"] and row["upload_status"] in {"claiming", "queued", "pending", "uploading"} else
+                    "postprocessing" if row["stage"] in {"thumbnail_setting", "playlist"} else
+                    "failed" if row["last_error"] else "ready"
+                ),
+                "can_force_new": row["stage"] == "published",
             }
             for row in conn.execute(
-                "SELECT patch_id,stage,thumbnail_status,video_status,upload_status,playlist_status,thumbnail_path,youtube_upload_id FROM patch_pipeline WHERE patch_id IN ({})".format(
+                "SELECT patch_id,stage,thumbnail_status,video_status,upload_status,playlist_status,thumbnail_path,youtube_upload_id,last_error FROM patch_pipeline WHERE patch_id IN ({})".format(
                     ",".join("?" for _ in patch_list)
                 ),
                 [p.id for p in patch_list],
