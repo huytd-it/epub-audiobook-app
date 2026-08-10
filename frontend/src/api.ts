@@ -1,5 +1,5 @@
 export type Book = { id: number; title: string; status: string; original_filename: string; created_at: string; patches?: { total: number; done: number; active: number; failed: number } };
-export type Patch = { id: number; patch_index: number; name: string; status: string; chunk_count: number; next_chunk_index: number; error_message: string | null };
+export type Patch = { id: number; book_id: number; patch_index: number; chapter_start: number; chapter_end: number; name: string; status: string; chunk_count: number; next_chunk_index: number; error_message: string | null; audio_path?: string | null };
 export type Chapter = { id: number; chapter_index: number; title: string; char_count: number; is_excluded: boolean };
 export type Job = { id: number; job_type: string; status: string; phase: string; percent: number; book_id: number | null; error_message: string | null; created_at: string };
 export type Media = { music: Array<{ id: number; name: string; duration_sec: number | null; description?: string; license?: string }>; photos: Array<{ name: string; size: number; is_video: boolean }>; voices: Array<{ name: string; size: number; description?: string }> };
@@ -75,8 +75,20 @@ export type DriveClient = {
 export type PatchExport = {
   id: number;
   patch_id: number;
-  export_dir: string;
+  drive_folder_id: string;
+  drive_folder_link: string;
+  status: string;
+  exported_chunk_count: number;
+  imported_chunk_count: number;
+  error_message: string | null;
   created_at: string;
+  updated_at: string;
+  drive_account_id: number | null;
+  account_email: string | null;
+  sync_target_id: number | null;
+  local_folder_path: string | null;
+  sync_target_name: string | null;
+  sync_target_email: string | null;
 };
 
 export type FlowDefinition = {

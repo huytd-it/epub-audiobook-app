@@ -10,6 +10,7 @@ from app.config import settings
 from app.deps import locked_conn
 from app.jobqueue import store
 from app.routes.queue import _job_dict, _pools
+from app import google_drive
 
 
 router = APIRouter(prefix="/api/ui", tags=["ui"])
@@ -57,6 +58,8 @@ def books(request: Request, page: int = 1, per_page: int = 24):
 
 @router.get("/books/{book_id}")
 def book(request: Request, book_id: int):
+    from app.tts_engine import list_tts_models
+
     with locked_conn(request) as conn:
         row = repository.get_book(conn, book_id)
         if row is None:
@@ -66,7 +69,8 @@ def book(request: Request, book_id: int):
         rules = [asdict(item) for item in repository.list_replace_rules(conn, book_id)]
         last_error = repository.get_last_error_for_book(conn, book_id)
     return {"book": asdict(row), "patches": patches, "chapters": chapters,
-            "rules": rules, "last_error": last_error}
+            "rules": rules, "last_error": last_error,
+            "tts_models": list_tts_models()}
 
 
 @router.get("/media")
@@ -87,3 +91,41 @@ def media(request: Request):
                "is_video": path.suffix.lower() in {".mp4", ".webm", ".mov"}}
               for path in sorted(backgrounds.iterdir()) if path.is_file()]
     return {"music": music, "photos": photos, "voices": voice_items}
+
+
+_RCLONE_CLIENT_ID_KEY = "rclone.drive_client_id"
+_RCLONE_CLIENT_SECRET_KEY = "rclone.drive_client_secret"
+
+
+@router.get("/drive")
+def drive(request: Request):
+    with locked_conn(request) as conn:
+        targets = repository.list_drive_sync_targets(conn)
+        exports = repository.list_all_patch_exports(conn, limit=30)
+        accounts = google_drive.list_accounts(conn)
+        clients = google_drive.list_clients(conn)
+        rclone_client_id = repository.get_app_state(conn, _RCLONE_CLIENT_ID_KEY) or ""
+        rclone_client_secret = repository.get_app_state(conn, _RCLONE_CLIENT_SECRET_KEY) or ""
+    return {
+        "targets": targets,
+        "exports": exports,
+        "accounts": accounts,
+        "clients": clients,
+        "rclone_client_id": rclone_client_id,
+        "rclone_client_secret": rclone_client_secret,
+    }
+
+
+@router.get("/books/{book_id}/exports")
+def book_exports(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(404, "Không tìm thấy sách")
+        patches = repository.list_patches(conn, book_id)
+        exports = []
+        for patch in patches:
+            for exp in repository.list_patch_exports(conn, patch.id):
+                exports.append(asdict(exp))
+        sync_targets = repository.list_drive_sync_targets(conn)
+        accounts = google_drive.list_accounts(conn)
+    return {"exports": exports, "sync_targets": sync_targets, "accounts": accounts}
