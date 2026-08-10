@@ -74,7 +74,7 @@ function SidebarNav({ onSelect }: { onSelect?: () => void }) {
         className="flex items-center gap-3 px-3 py-4 border-b border-border hover:opacity-90 transition-opacity"
         onClick={onSelect}
       >
-        <div className="h-9 w-9 rounded-md bg-foreground flex items-center justify-center p-1.5 shrink-0">
+        <div className="h-9 w-9 rounded-md flex items-center justify-center p-1.5 shrink-0">
           <img src="/studio-mark.svg" alt="Xưởng Sách Nói" className="h-full w-full invert" />
         </div>
         <div className="flex flex-col leading-tight">

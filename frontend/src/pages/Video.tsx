@@ -1,56 +1,19 @@
 import React, { useEffect, useState } from "react";
-import { Film, Video as VideoIcon } from "lucide-react";
-import { api } from "@/api";
+import { Film, Video as VideoIcon, RefreshCw, Trash2, Pencil, Search, CheckSquare } from "lucide-react";
+import { api, patchJson, del } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/common/StatusBadge";
 
 export function Video() {
-  const [items, setItems] = useState<any[]>();
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api<any>("/video/api/videos")
-      .then((x) => setItems(x.videos || x.items || x))
-      .catch((err) => console.error(err))
-      .finally(() => setLoading(false));
-  }, []);
-
-  return (
-    <div className="space-y-6">
-      <Header
-        title="Phòng dựng video thành phẩm"
-        subtitle="Danh sách các video audiobook đã hoàn thành ghép hình ảnh, sóng âm và phụ đề."
-      />
-
-      {loading ? (
-        <LoadingState text="Đang mở kho video..." />
-      ) : !items || items.length === 0 ? (
-        <EmptyState text="Chưa có video thành phẩm nào được dựng." />
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {items.map((v) => (
-            <Card key={v.id || v.filename} className="border-border hover:border-primary/40 transition-colors">
-              <CardHeader className="p-4 pb-2">
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="h-8 w-8 rounded bg-primary/10 text-primary flex items-center justify-center">
-                    <VideoIcon className="h-4 w-4" />
-                  </div>
-                  <StatusBadge value={v.status || "ready"} />
-                </div>
-                <CardTitle className="text-sm font-bold text-foreground truncate">
-                  {v.title || v.filename}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-4 pt-1">
-                <div className="text-xs text-muted-foreground font-mono bg-muted/40 p-2 rounded border border-border">
-                  {v.resolution || "Video mp4 thành phẩm"}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  const [items, setItems] = useState<any[]>([]); const [selected, setSelected] = useState<number[]>([]); const [loading, setLoading] = useState(true); const [search, setSearch] = useState(""); const [edit, setEdit] = useState<any | null>(null);
+  const load = () => { setLoading(true); api<any>(`/video/api/videos?per_page=9999&search=${encodeURIComponent(search)}`).then((x) => setItems(x.videos || x.items || x)).catch(console.error).finally(() => setLoading(false)); };
+  useEffect(load, []);
+  const remove = async (id: number) => { if (!confirm("Xóa video này?")) return; try { await del(`/video/api/videos/${id}`); load(); } catch (e: any) { alert(e.message); } };
+  const bulkRemove = async () => { if (!selected.length || !confirm(`Xóa ${selected.length} video đã chọn?`)) return; try { await api(`/video/api/videos/bulk-delete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: selected }) }); setSelected([]); load(); } catch (e: any) { alert(e.message); } };
+  const save = async () => { if (!edit) return; try { await patchJson(`/video/api/videos/${edit.id}`, { title: edit.title || "", description: edit.description || "", tags: edit.tags || "", privacy: edit.privacy || "private" }); setEdit(null); load(); } catch (e: any) { alert(e.message); } };
+  return <div className="space-y-6"><Header title="Phòng dựng video thành phẩm" subtitle="Thư viện video audiobook đã hoàn thành ghép hình ảnh, sóng âm và phụ đề." action={<Button variant="outline" size="sm" onClick={load}><RefreshCw className="h-4 w-4" /> Làm mới</Button>} /><div className="flex flex-wrap gap-2"><div className="relative flex-1 min-w-56"><Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" /><Input className="pl-9" placeholder="Tìm theo tên video..." value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load()} /></div><Button onClick={load}>Tìm kiếm</Button>{selected.length > 0 && <Button variant="destructive" onClick={bulkRemove}><Trash2 className="h-4 w-4" /> Xóa {selected.length}</Button>}</div>{loading ? <LoadingState text="Đang mở kho video..." /> : !items.length ? <EmptyState text="Chưa có video thành phẩm nào được dựng." /> : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{items.map((v) => <Card key={v.id || v.filename} className="border-border hover:border-primary/40 transition-colors"><CardHeader className="p-4 pb-2"><div className="flex items-center justify-between gap-2 mb-2"><label className="flex items-center gap-2"><input type="checkbox" checked={selected.includes(v.id)} onChange={(e) => setSelected((p) => e.target.checked ? [...p, v.id] : p.filter((id) => id !== v.id))} aria-label={`Chọn ${v.title || v.filename}`} /><CheckSquare className="h-4 w-4 text-muted-foreground" /></label><StatusBadge value={v.upload_status || v.status || "ready"} /></div><CardTitle className="text-sm font-bold truncate">{v.title || v.filename}</CardTitle></CardHeader><CardContent className="p-4 pt-1 space-y-3"><div className="text-xs text-muted-foreground font-mono bg-muted/40 p-2 rounded border border-border">{v.resolution || "Video mp4 thành phẩm"} · {Math.round((v.file_size_bytes || 0) / 1024 / 1024 * 10) / 10} MB</div><div className="flex justify-end gap-1"><Button variant="ghost" size="icon" onClick={() => setEdit(v)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="text-destructive" onClick={() => remove(v.id)}><Trash2 className="h-4 w-4" /></Button></div></CardContent></Card>)}</div>}<Dialog open={!!edit} onOpenChange={(v) => !v && setEdit(null)}><DialogContent><DialogHeader><DialogTitle>Chỉnh sửa metadata video</DialogTitle></DialogHeader>{edit && <div className="space-y-3"><Input placeholder="Tiêu đề" value={edit.title || ""} onChange={(e) => setEdit({ ...edit, title: e.target.value })} /><Input placeholder="Mô tả" value={edit.description || ""} onChange={(e) => setEdit({ ...edit, description: e.target.value })} /><Input placeholder="Tags" value={edit.tags || ""} onChange={(e) => setEdit({ ...edit, tags: e.target.value })} /></div>}<DialogFooter><Button variant="outline" onClick={() => setEdit(null)}>Hủy</Button><Button onClick={save}>Lưu thay đổi</Button></DialogFooter></DialogContent></Dialog></div>;
 }
