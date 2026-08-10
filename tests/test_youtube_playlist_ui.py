@@ -204,19 +204,35 @@ def test_local_storage_playlist_restored_only_if_still_listed():
 
 
 # ---------------------------------------------------------------------------
-# Remote pagination token
+# Item list: one unpaginated page
 # ---------------------------------------------------------------------------
 
 
-def test_items_pagination_round_trips_the_page_token():
+def test_items_are_loaded_in_one_unpaginated_request():
     src = _pm_script()
-    assert "if (pageToken) qs.set('page_token', pageToken);" in src
-    assert "state.nextPageToken = data.next_page_token || null;" in src
-    assert "state.prevPageToken = data.prev_page_token || null;" in src
-    assert "els.prev.addEventListener('click', function() { loadItems(state.prevPageToken); });" in src
-    assert "els.next.addEventListener('click', function() { loadItems(state.nextPageToken); });" in src
-    # Refresh must reload the current page, not silently jump to page one.
-    assert "loadItems(state.pageToken);" in src
+    assert "'/items?fetch_all=1'" in src
+    # The paging controls are gone with the paging: no tokens, no prev/next buttons.
+    assert "page_token" not in src[src.index("async function loadItems()"):src.index("// ---- playlist list ----")]
+    assert "els.prev" not in src and "els.next" not in src
+
+
+def test_items_route_returns_every_item_when_fetch_all(connected, monkeypatch):
+    from app import youtube as yt
+
+    monkeypatch.setattr(
+        yt, "get_all_playlist_items",
+        lambda conn, playlist_id: [
+            {"playlist_item_id": f"it{i}", "playlist_id": playlist_id, "video_id": f"v{i}",
+             "title": f"T{i}", "thumbnail": None, "position": i, "published_at": None}
+            for i in range(75)
+        ],
+    )
+    resp = connected.get("/youtube/api/playlists/PL1/items?fetch_all=1")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 75 and body["total"] == 75
+    assert body["next_page_token"] is None and body["prev_page_token"] is None
 
 
 def test_playlists_and_picker_also_paginate_remotely():
@@ -263,9 +279,9 @@ def test_items_route_echoes_pagination_tokens(connected, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_selection_clears_before_every_item_page_load():
+def test_selection_clears_before_every_item_load():
     src = _pm_script()
-    load = src[src.index("async function loadItems(pageToken) {"):src.index("// ---- playlist list ----")]
+    load = src[src.index("async function loadItems() {"):src.index("// ---- playlist list ----")]
     assert "clearSelection();" in load
 
 
@@ -279,9 +295,11 @@ def test_clear_selection_resets_checks_and_select_all():
 
 def test_switching_playlist_reloads_from_start_which_clears_selection():
     src = _pm_script()
-    handler = src[src.index("els['playlist-select'].addEventListener('change'"):src.index("els.prev.addEventListener")]
+    handler = src[src.index("els['playlist-select'].addEventListener('change'"):src.index("els.refresh.addEventListener")]
     assert "state.currentId = id;" in handler
-    assert "loadItems(null);" in handler
+    assert "loadItems();" in handler
+    # Switching away would drop a pending order, so it has to be confirmed first.
+    assert "if (!confirmDiscard('Đổi playlist'))" in handler
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +316,7 @@ def test_auth_banner_with_reconnect_cta_renders_when_connected(connected):
 
 def test_auth_handler_shows_banner_and_disables_manager():
     src = _pm_script()
-    assert "els.authBanner.hidden = false;" in src
+    assert "els['auth-banner'].hidden = false;" in src
     assert "state.auth = true;" in src
     assert "updateControls();" in src
 
@@ -317,49 +335,102 @@ def test_auth_banner_styling_exists():
 
 
 # ---------------------------------------------------------------------------
-# Sort: preview, then a separate confirmed apply
+# Sort: non-mutating preview applied locally, written only by "save all"
 # ---------------------------------------------------------------------------
 
 
-def test_sort_uses_distinct_preview_and_apply_endpoints():
+def test_sort_uses_the_non_mutating_preview_endpoint_only():
     src = _pm_script()
-    assert "/sort/preview" in src
-    assert "/sort/apply" in src
+    run_sort = src[src.index("async function runSort() {"):src.index("// ---- channel video picker ----")]
+    assert "'/sort/preview'" in run_sort
+    # Sorting must never write: /sort/apply would reorder the playlist behind the user.
+    assert "/sort/apply" not in src
 
 
-def test_sort_preview_runs_on_open_and_direction_change_only():
+def test_sort_sends_direction_and_mode():
     src = _pm_script()
-    open_sort = src[src.index("async function openSort() {"):src.index("function sortDirection()")]
-    assert "sortModal.showModal();" in open_sort
-    assert "await loadSortPreview(sortDirection());" in open_sort
-    # The direction toggle re-fetches the preview; it never applies anything.
-    for_each_idx = src.index("['asc','desc'].forEach(function(dir)")
-    apply_idx = src.index("document.getElementById('yt-pm-sort-apply')", for_each_idx)
-    dir_handler = src[for_each_idx:apply_idx]
-    assert "loadSortPreview(dir).catch" in dir_handler
-    assert "/sort/apply" not in dir_handler
+    assert "JSON.stringify({ direction: sortDirection(), mode: els['sort-mode'].value })" in src
 
 
-def test_sort_apply_is_a_separate_confirmed_button():
+def test_sort_result_is_applied_locally_and_left_pending():
     src = _pm_script()
-    apply = src[src.index("document.getElementById('yt-pm-sort-apply').addEventListener('click'"):src.index("// modal close handling")]
-    assert "/sort/apply" in apply
-    assert "/sort/preview" not in apply
-    assert "sortModal.close();" in apply
+    run_sort = src[src.index("async function runSort() {"):src.index("// ---- channel video picker ----")]
+    assert "applyOrderIds(orderedItemIds);" in run_sort
+    assert "location.reload" not in run_sort
+    assert "reloadFromStart" not in run_sort
 
 
-def test_sort_apply_stays_disabled_until_the_preview_shows_a_change():
-    src = _pm_script()
-    assert "document.getElementById('yt-pm-sort-apply').disabled = changed === 0;" in src
-    assert 'id="yt-pm-sort-apply" disabled' in _source()
-
-
-def test_sort_modals_render_expected_controls(connected):
+def test_sort_controls_render_in_the_top_nav(connected):
     html = _youtube_page(connected)
-    assert 'id="yt-pm-sort-modal"' in html
+    assert 'id="yt-pm-sort-mode"' in html
+    assert '<option value="episode" selected>' in html
+    assert '<option value="natural">' in html
     assert 'class="active" id="yt-pm-sort-dir-asc"' in html
     assert 'id="yt-pm-sort-dir-desc"' in html
-    assert 'id="yt-pm-sort-preview-body"' in html
+    # The preview/apply modal is gone; sorting happens in place.
+    assert "yt-pm-sort-modal" not in html
+
+
+# ---------------------------------------------------------------------------
+# Pending order: local edits, one "save all", explicit revert
+# ---------------------------------------------------------------------------
+
+
+def test_top_nav_is_sticky_with_the_action_buttons(connected):
+    html = _youtube_page(connected)
+    assert 'class="yt-pm-topnav" id="yt-pm-topnav"' in html
+    assert 'id="yt-pm-save" disabled' in html
+    assert 'id="yt-pm-revert" disabled' in html
+    assert 'id="yt-pm-dirty-badge"' in html
+    css = _css()
+    topnav = css[css.index(".yt-pm-topnav {"):css.index(".yt-pm-toolbar {")]
+    assert "position: sticky;" in topnav
+    assert "top: 0;" in topnav
+
+
+def test_dirty_state_is_derived_from_the_saved_baseline():
+    src = _pm_script()
+    assert "state.baseline = currentOrder();" in src
+    dirty = src[src.index("function isDirty() {"):src.index("function markOrderChanged()")]
+    assert "now.length !== state.baseline.length" in dirty
+    assert "id !== state.baseline[i]" in dirty
+
+
+def test_save_posts_the_whole_order_once():
+    src = _pm_script()
+    save = src[src.index("async function saveOrder() {"):src.index("function revertOrder() {")]
+    assert "'/reorder-all'" in save
+    assert "JSON.stringify({ item_ids: itemIds })" in save
+    assert "await reloadFromStart();" in save
+
+
+def test_save_and_revert_are_disabled_while_clean():
+    src = _pm_script()
+    assert "els.save.disabled = busy || !dirty;" in src
+    assert "els.revert.disabled = busy || !dirty;" in src
+
+
+def test_revert_restores_the_baseline_order_without_a_fetch():
+    src = _pm_script()
+    revert = src[src.index("function revertOrder() {"):src.index("// ---- drag & drop reorder")]
+    assert "state.baseline.map(" in revert
+    assert "pmFetch" not in revert
+
+
+def test_unsaved_order_is_guarded_on_unload():
+    src = _pm_script()
+    assert "window.addEventListener('beforeunload', function(e) {" in src
+    assert "if (!state.loaded || !isDirty()) return;" in src
+
+
+def test_index_column_is_an_editable_input_that_moves_rows_locally():
+    src = _pm_script()
+    assert "posInput.className = 'yt-pm-pos-input';" in src
+    assert "applyIndexEdit(it.playlist_item_id, posInput.value);" in src
+    edit = src[src.index("function applyIndexEdit("):src.index("function applyOrderIds(")]
+    assert "moveLocal(itemId, n - 1);" in edit
+    assert "pmFetch" not in edit
+    assert ".yt-pm-pos-input" in _css()
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +491,7 @@ def test_picker_fetches_channel_videos_with_search_and_pagination():
 
 def test_picker_add_posts_selected_video_ids():
     src = _pm_script()
-    add = src[src.index("document.getElementById('yt-pm-picker-add').addEventListener('click'"):src.index("// sort modal")]
+    add = src[src.index("document.getElementById('yt-pm-picker-add').addEventListener('click'"):src.index("// modal close handling")]
     assert "const videoIds = Array.from(picker.selected);" in add
     assert "JSON.stringify({ video_ids: videoIds })" in add
 
@@ -463,16 +534,15 @@ def test_upload_bulk_actions_only_arm_when_appropriate():
 # ---------------------------------------------------------------------------
 
 
-def test_rows_are_draggable_and_drop_posts_absolute_positions():
+def test_rows_are_draggable_and_drop_reorders_locally():
     src = _pm_script()
     assert "tr.draggable = true;" in src
     assert "tr.addEventListener('dragstart', onDragStart);" in src
     assert "tr.addEventListener('drop', onDrop);" in src
-    drop = src[src.index("async function onDrop(e) {"):src.index("// ---- sort (whole playlist")]
-    assert "const positions = {};" in drop
-    assert "positions[id] = pageStart + i;" in drop
-    assert "body: JSON.stringify({ positions: positions })" in drop
-    assert "'/reorder'" in drop
+    drop = src[src.index("function onDrop(e) {"):src.index("// ---- sort (whole playlist")]
+    assert "moveLocal(dragId, to);" in drop
+    # A drop is a pending edit: it must not write to YouTube on its own.
+    assert "pmFetch" not in drop
 
 
 # ---------------------------------------------------------------------------
@@ -490,16 +560,18 @@ def test_position_controls_render_when_connected(connected):
 
 def test_up_down_move_single_selection_one_step():
     src = _pm_script()
-    assert "moveToPosition((typeof it.position === 'number' ? it.position : 0) - 1);" in src
-    assert "moveToPosition((typeof it.position === 'number' ? it.position : 0) + 1);" in src
+    assert "if (i >= 0) moveToPosition(i - 1);" in src
+    assert "if (i >= 0) moveToPosition(i + 1);" in src
 
 
-def test_position_go_sends_one_based_target():
+def test_position_go_uses_a_one_based_target_and_stays_local():
     src = _pm_script()
     assert "const v = parseInt(els.position.value, 10);" in src
     assert "if (isNaN(v) || v < 1)" in src
     assert "moveToPosition(v - 1);" in src
-    assert "body: JSON.stringify({ position: newPos + 1 })" in src
+    move = src[src.index("function moveToPosition(newPos) {"):src.index("// ---- save / revert")]
+    assert "moveLocal(ids[0], newPos);" in move
+    assert "pmFetch" not in move
 
 
 # ---------------------------------------------------------------------------

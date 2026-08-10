@@ -261,6 +261,9 @@ def test_network_errors_are_normalized(
         ("post", "/youtube/api/playlists/PL1/reorder", {"positions": {}}),
         ("post", "/youtube/api/playlists/PL1/sort/preview", {"direction": "sideways"}),
         ("post", "/youtube/api/playlists/PL1/sort/apply", {"direction": "up"}),
+        ("post", "/youtube/api/playlists/PL1/sort/preview", {"mode": "vibes"}),
+        ("post", "/youtube/api/playlists/PL1/reorder-all", {}),
+        ("post", "/youtube/api/playlists/PL1/reorder-all", {"item_ids": []}),
     ],
 )
 def test_malformed_or_empty_body_rejected(make_client, method, path, body):
@@ -509,6 +512,94 @@ def test_reorder_sorts_positions_and_computes_page_index(make_client, monkeypatc
     assert calls == [("PL1", 0, ["V1", "V2"], 50)]
 
 
+def test_reorder_all_maps_item_ids_to_video_ids_in_order(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "get_all_playlist_items",
+        lambda conn, pid: [_item("PI1", "V1", position=0), _item("PI2", "V2", position=1)],
+    )
+    monkeypatch.setattr(
+        youtube_module, "reorder_playlist",
+        lambda conn, pid, order=None, **kw: calls.append((pid, order)) or _batch(succeeded=2),
+    )
+
+    response = c.client.post(
+        "/youtube/api/playlists/PL1/reorder-all", json={"item_ids": ["PI2", "PI1"]}
+    )
+
+    assert response.status_code == 200
+    assert calls == [("PL1", ["V2", "V1"])]
+
+
+def test_reorder_all_unknown_item_returns_400(make_client, monkeypatch):
+    c = make_client()
+    monkeypatch.setattr(
+        youtube_module, "get_all_playlist_items",
+        lambda conn, pid: [_item("PI1", "V1", position=0)],
+    )
+    monkeypatch.setattr(
+        youtube_module, "reorder_playlist",
+        lambda *a, **k: pytest.fail("reorder must not be called for an unknown item id"),
+    )
+
+    response = c.client.post(
+        "/youtube/api/playlists/PL1/reorder-all", json={"item_ids": ["PI1", "PI9"]}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "validation"
+    assert "PI9" in response.json()["detail"]["message"]
+
+
+def test_sort_routes_pass_direction_and_mode(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+    for name in ("sort_playlist_preview", "sort_playlist"):
+        monkeypatch.setattr(
+            youtube_module, name,
+            lambda conn, pid, direction="asc", mode="natural", _n=name: (
+                calls.append((_n, pid, direction, mode)) or {"items": [], "ordered": []}
+            ),
+        )
+
+    c.client.post("/youtube/api/playlists/PL1/sort/preview",
+                  json={"direction": "desc", "mode": "episode"})
+    c.client.post("/youtube/api/playlists/PL1/sort/apply", json={"direction": "asc"})
+
+    assert calls == [
+        ("sort_playlist_preview", "PL1", "desc", "episode"),
+        # mode defaults to the pre-existing natural-title behaviour
+        ("sort_playlist", "PL1", "asc", "natural"),
+    ]
+
+
+def test_list_items_fetch_all_returns_every_item_without_page_tokens(make_client, monkeypatch):
+    c = make_client()
+    monkeypatch.setattr(
+        youtube_module, "get_all_playlist_items",
+        lambda conn, pid: [_item(f"PI{i}", f"V{i}", position=i) for i in range(120)],
+    )
+    monkeypatch.setattr(
+        youtube_module, "list_playlist_items",
+        lambda *a, **k: pytest.fail("fetch_all must not fall back to the paged call"),
+    )
+
+    response = c.client.get("/youtube/api/playlists/PL1/items?fetch_all=1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 120 and body["total"] == 120
+    assert body["next_page_token"] is None and body["prev_page_token"] is None
+
+
+def test_list_items_fetch_all_ignores_the_page_size_cap(make_client, monkeypatch):
+    c = make_client()
+    monkeypatch.setattr(youtube_module, "get_all_playlist_items", lambda conn, pid: [])
+    response = c.client.get("/youtube/api/playlists/PL1/items?fetch_all=1&max_results=500")
+    assert response.status_code == 200
+
+
 def test_reorder_unknown_item_returns_400(make_client, monkeypatch):
     c = make_client()
     monkeypatch.setattr(
@@ -704,4 +795,25 @@ def test_reorder_service_calls_run_off_lock_on_throwaway_conn(make_client, monke
 
     assert response.status_code == 200
     assert len(probe.records) == 2
+    _assert_off_lock(probe, c.conn)
+
+
+def test_reorder_all_service_calls_run_off_lock_on_throwaway_conn(make_client, monkeypatch):
+    c = make_client()
+    probe = _Probe(c.lock)
+    monkeypatch.setattr(
+        youtube_module, "get_all_playlist_items",
+        lambda conn, pid: probe.record(conn) or [_item("PI1", "V1", position=0)],
+    )
+    monkeypatch.setattr(
+        youtube_module, "reorder_playlist",
+        lambda conn, pid, order=None, **kw: probe.record(conn) or _batch(succeeded=1),
+    )
+
+    response = c.client.post(
+        "/youtube/api/playlists/PL1/reorder-all", json={"item_ids": ["PI1"]}
+    )
+
+    assert response.status_code == 200
+    assert len(probe.records) == 2, "reorder-all must run a mapping call and the reorder call"
     _assert_off_lock(probe, c.conn)

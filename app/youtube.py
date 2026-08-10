@@ -1014,13 +1014,70 @@ def _natural_sort_key(title: str):
     return tuple(key)
 
 
-def _new_order(items: list[dict], order: list[str] | None, direction: str) -> list[dict]:
+# Episode markers used by the upload title template and by hand-named videos:
+# "<book> - Tập 3 - Chương 11-15", "Tập 3 - <book>", "Part 3", "EP.3", "#3".
+# The separator in front of the marker keeps it from matching inside a word.
+_EPISODE_RE = re.compile(
+    r"(?:^|[\s\-–—:|(\[.])(?:episode|tập|tap|phần|phan|part|quyển|quyen|vol|ep|#)"
+    r"\s*[.:#]?\s*(\d+)",
+    re.IGNORECASE,
+)
+
+_SERIES_STRIP = " \t-–—:|·.,()[]#"
+
+_SEGMENT_SPLIT_RE = re.compile(r"[-–—:|]")
+
+
+def _episode_series(text: str, match: "re.Match") -> str:
+    """The series name around an episode marker, whichever layout the title uses.
+
+    "Dị Độ Lữ Xá - Tập 3 - Chương ..." puts it in front of the marker; the upload
+    template's "Tập 3 - Dị Độ Lữ Xá" puts it right after. Both must yield the same
+    series so one playlist holding both layouts still interleaves by episode.
+    """
+    before = text[:match.start()].strip(_SERIES_STRIP)
+    if before:
+        return before
+    return _SEGMENT_SPLIT_RE.split(text[match.end():], 1)[0].strip(_SERIES_STRIP)
+
+
+def _episode_sort_key(title: str):
+    """Group by series name, then order by episode number.
+
+    Only the series and the episode number decide the order - the chapter range,
+    patch name and tags that trail the number vary per episode and would otherwise
+    drive the comparison whenever the titles are not perfectly uniform. Titles with
+    no episode marker fall back to the plain natural key and sort among themselves.
+    """
+    text = title or ""
+    match = _EPISODE_RE.search(text)
+    if not match:
+        return (_natural_sort_key(text), (0, 0), _natural_sort_key(text))
+    return (
+        _natural_sort_key(_episode_series(text, match)),
+        (1, int(match.group(1))),
+        _natural_sort_key(text[match.end():]),
+    )
+
+
+SORT_MODES = ("natural", "episode")
+
+_SORT_KEYS = {"natural": _natural_sort_key, "episode": _episode_sort_key}
+
+
+def _sort_key_for(mode: str):
+    """Return the title sort key for a sort mode (unknown modes fall back to natural)."""
+    return _SORT_KEYS.get(str(mode or "natural").lower(), _natural_sort_key)
+
+
+def _new_order(items: list[dict], order: list[str] | None, direction: str,
+               mode: str = "natural") -> list[dict]:
     """Resolve the target item order.
 
     order is an explicit list of video ids in the desired order; items not listed
     keep their relative place at the end. When order is None the items are
-    natural-title sorted in the given direction ('asc' or 'desc'). The result is a
-    permutation of `items` (stable for ties).
+    title-sorted in the given direction ('asc' or 'desc') using the sort mode
+    ('natural' or 'episode'). The result is a permutation of `items` (stable for ties).
     """
     if order is not None:
         seen = set()
@@ -1035,9 +1092,10 @@ def _new_order(items: list[dict], order: list[str] | None, direction: str) -> li
         placed = {i["video_id"] for i in ordered}
         ordered.extend(i for i in items if i["video_id"] not in placed)
         return ordered
+    key = _sort_key_for(mode)
     return sorted(
         items,
-        key=lambda i: _natural_sort_key(i.get("title", "")),
+        key=lambda i: key(i.get("title", "")),
         reverse=str(direction).lower() == "desc",
     )
 
@@ -1046,9 +1104,10 @@ def _compute_positions(
     items: list[dict],
     order: list[str] | None = None,
     direction: str = "asc",
+    mode: str = "natural",
 ) -> list[tuple[dict, int]]:
     """Pair each item with its new zero-based position without calling the API."""
-    return list(zip(_new_order(items, order, direction), range(len(items))))
+    return list(zip(_new_order(items, order, direction, mode), range(len(items))))
 
 
 def reorder_playlist_preview(
@@ -1056,26 +1115,30 @@ def reorder_playlist_preview(
     playlist_id: str,
     order: list[str] | None = None,
     direction: str = "asc",
+    mode: str = "natural",
 ) -> dict:
     """Compute a reorder without mutating the playlist.
 
     order is an explicit list of video ids for arbitrary-position reordering; when
-    None the items are natural-title sorted (asc/desc). Returns {items, ordered}
-    where every item carries both current_position and new_position. Non-mutating:
-    no playlistItems write is made.
+    None the items are title sorted (asc/desc) using the given sort mode. Returns
+    {items, ordered} where every item carries both current_position and new_position.
+    Non-mutating: no playlistItems write is made.
     """
     _require_google_imports()
     service = get_youtube_service(conn)
     items = _get_all_playlist_items(service, playlist_id)
     current = {i["video_id"]: i["position"] for i in items}
     preview = []
-    for item, new_position in _compute_positions(items, order, direction):
+    for item, new_position in _compute_positions(items, order, direction, mode):
         preview.append({
             **item,
             "current_position": current.get(item["video_id"], item["position"]),
             "new_position": new_position,
         })
-    return {"items": preview, "ordered": [i["video_id"] for i in _new_order(items, order, direction)]}
+    return {
+        "items": preview,
+        "ordered": [i["video_id"] for i in _new_order(items, order, direction, mode)],
+    }
 
 
 def reorder_playlist(
@@ -1083,20 +1146,21 @@ def reorder_playlist(
     playlist_id: str,
     order: list[str] | None = None,
     direction: str = "asc",
+    mode: str = "natural",
 ) -> dict:
     """Apply a reorder to a playlist.
 
     order is an explicit list of video ids for arbitrary-position reordering; when
-    None the playlist is natural-title sorted (asc by default). Only items whose
-    position actually changes are updated and failures do not stop the rest of the
-    batch. Returns a standardized batch result.
+    None the playlist is title sorted (asc by default) using the given sort mode.
+    Only items whose position actually changes are updated and failures do not stop
+    the rest of the batch. Returns a standardized batch result.
     """
     result = _new_batch_result()
     _require_google_imports()
     service = get_youtube_service(conn)
     items = _get_all_playlist_items(service, playlist_id)
     current = {i["video_id"]: i["position"] for i in items}
-    for item, new_position in _compute_positions(items, order, direction):
+    for item, new_position in _compute_positions(items, order, direction, mode):
         if current.get(item["video_id"], item["position"]) == new_position:
             _batch_add(result, item["video_id"], "skipped", f"already at position {new_position}")
             continue
@@ -1108,14 +1172,17 @@ def reorder_playlist(
     return result
 
 
-def sort_playlist_preview(conn: sqlite3.Connection, playlist_id: str, direction: str = "asc") -> dict:
-    """Non-mutating preview of a natural-title sort of a playlist."""
-    return reorder_playlist_preview(conn, playlist_id, order=None, direction=direction)
+def sort_playlist_preview(conn: sqlite3.Connection, playlist_id: str, direction: str = "asc",
+                          mode: str = "natural") -> dict:
+    """Non-mutating preview of a title sort of a playlist ('natural' or 'episode')."""
+    return reorder_playlist_preview(conn, playlist_id, order=None, direction=direction, mode=mode)
 
 
-def sort_playlist(conn: sqlite3.Connection, playlist_id: str, direction: str = "asc") -> dict:
-    """Sort a playlist by natural title order (asc/desc). Applies the new positions."""
-    return reorder_playlist(conn, playlist_id, order=None, direction=direction)
+def sort_playlist(conn: sqlite3.Connection, playlist_id: str, direction: str = "asc",
+                  mode: str = "natural") -> dict:
+    """Sort a playlist by title order (asc/desc, 'natural' or 'episode'). Applies the
+    new positions."""
+    return reorder_playlist(conn, playlist_id, order=None, direction=direction, mode=mode)
 
 
 def playlist_page_range(position: int, page_size: int = 50) -> tuple[int, int]:

@@ -219,31 +219,47 @@
                 <h3 style="margin:0">Quản lý Playlist</h3>
             </div>
             <div class="yt-pm-root" id="yt-pm-root">
-                <div class="yt-pm-result" id="yt-pm-result" hidden></div>
-
-                <div class="yt-pm-toolbar">
-                    <div class="yt-pm-playlist-picker">
-                        <label for="yt-pm-playlist-select">Playlist</label>
-                        <select id="yt-pm-playlist-select" aria-label="Chọn playlist">
-                            <option value="">Đang tải...</option>
-                        </select>
+                <div class="yt-pm-topnav" id="yt-pm-topnav">
+                    <div class="yt-pm-toolbar">
+                        <div class="yt-pm-playlist-picker">
+                            <label for="yt-pm-playlist-select">Playlist</label>
+                            <select id="yt-pm-playlist-select" aria-label="Chọn playlist">
+                                <option value="">Đang tải...</option>
+                            </select>
+                        </div>
+                        <button type="button" class="btn-primary btn-sm" id="yt-pm-add">+ Thêm video</button>
+                        <span class="yt-pm-sort-group">
+                            <select id="yt-pm-sort-mode" aria-label="Kiểu sắp xếp" title="Kiểu sắp xếp">
+                                <option value="episode" selected>Theo tập (Tên - Tập N)</option>
+                                <option value="natural">Theo tiêu đề</option>
+                            </select>
+                            <span class="yt-pm-dir-toggle">
+                                <button type="button" class="active" id="yt-pm-sort-dir-asc" title="Tăng dần">1 &#x2192; 9</button>
+                                <button type="button" id="yt-pm-sort-dir-desc" title="Giảm dần">9 &#x2192; 1</button>
+                            </span>
+                            <button type="button" class="btn-outline btn-sm" id="yt-pm-sort">Sắp xếp</button>
+                        </span>
+                        <span class="yt-pm-topnav-spacer"></span>
+                        <span class="yt-pm-dirty-badge" id="yt-pm-dirty-badge" hidden>Chưa lưu</span>
+                        <button type="button" class="btn-primary btn-sm" id="yt-pm-save" disabled>Lưu tất cả</button>
+                        <button type="button" class="btn-outline btn-sm" id="yt-pm-revert" disabled>Hoàn tác</button>
+                        <button type="button" class="btn-outline btn-sm" id="yt-pm-refresh" title="Làm mới">Làm mới</button>
                     </div>
-                    <button type="button" class="btn-primary btn-sm" id="yt-pm-add">+ Thêm video</button>
-                    <button type="button" class="btn-outline btn-sm" id="yt-pm-sort">Sắp xếp</button>
-                    <button type="button" class="btn-outline btn-sm" id="yt-pm-refresh" title="Làm mới">Làm mới</button>
+
+                    <div class="yt-pm-selection-bar" id="yt-pm-selection-bar" hidden>
+                        <span class="yt-pm-muted" id="yt-pm-selected-count"></span>
+                        <button type="button" class="btn-danger btn-sm" id="yt-pm-remove">Xóa khỏi playlist</button>
+                        <button type="button" class="btn-outline btn-sm" id="yt-pm-copy">Copy</button>
+                        <button type="button" class="btn-outline btn-sm" id="yt-pm-move">Move</button>
+                        <span class="yt-pm-muted">&mdash;</span>
+                        <button type="button" class="btn-outline btn-sm" id="yt-pm-up" title="Di chuyển lên một vị trí">&#x25B2;</button>
+                        <button type="button" class="btn-outline btn-sm" id="yt-pm-down" title="Di chuyển xuống một vị trí">&#x25BC;</button>
+                        <input type="number" class="input-narrow" id="yt-pm-position" min="1" step="1" placeholder="Vị trí" aria-label="Vị trí mới">
+                        <button type="button" class="btn-outline btn-sm" id="yt-pm-position-go">Đi tới</button>
+                    </div>
                 </div>
 
-                <div class="yt-pm-selection-bar" id="yt-pm-selection-bar" hidden>
-                    <span class="yt-pm-muted" id="yt-pm-selected-count"></span>
-                    <button type="button" class="btn-danger btn-sm" id="yt-pm-remove">Xóa khỏi playlist</button>
-                    <button type="button" class="btn-outline btn-sm" id="yt-pm-copy">Copy</button>
-                    <button type="button" class="btn-outline btn-sm" id="yt-pm-move">Move</button>
-                    <span class="yt-pm-muted">&mdash;</span>
-                    <button type="button" class="btn-outline btn-sm" id="yt-pm-up" title="Di chuyển lên một vị trí">&#x25B2;</button>
-                    <button type="button" class="btn-outline btn-sm" id="yt-pm-down" title="Di chuyển xuống một vị trí">&#x25BC;</button>
-                    <input type="number" class="input-narrow" id="yt-pm-position" min="1" step="1" placeholder="Vị trí" aria-label="Vị trí mới">
-                    <button type="button" class="btn-outline btn-sm" id="yt-pm-position-go">Đi tới</button>
-                </div>
+                <div class="yt-pm-result" id="yt-pm-result" hidden></div>
 
                 <p class="yt-pm-loading" id="yt-pm-loading" hidden>Đang tải video trong playlist...</p>
                 <p class="yt-pm-empty" id="yt-pm-empty" hidden>Playlist không có video nào.</p>
@@ -253,7 +269,7 @@
                     <table class="yt-pm-items-table" id="yt-pm-items">
                         <thead>
                             <tr>
-                                <th class="col-check"><input type="checkbox" id="yt-pm-select-all" aria-label="Chọn tất cả video trong trang"></th>
+                                <th class="col-check"><input type="checkbox" id="yt-pm-select-all" aria-label="Chọn tất cả video"></th>
                                 <th class="col-pos">#</th>
                                 <th>Video</th>
                                 <th>Kênh</th>
@@ -266,9 +282,7 @@
                 </div>
 
                 <div class="yt-pm-pagination" id="yt-pm-pagination" hidden>
-                    <button type="button" class="btn-outline btn-sm" id="yt-pm-prev">&#x2039; Trang trước</button>
                     <span class="yt-pm-page-info" id="yt-pm-page-info"></span>
-                    <button type="button" class="btn-outline btn-sm" id="yt-pm-next">Trang sau &#x203A;</button>
                 </div>
             </div>
         </div>
@@ -317,37 +331,6 @@
     </div>
 </dialog>
 
-<dialog id="yt-pm-sort-modal" class="yt-modal" style="width:min(760px,calc(100% - 2rem));max-height:calc(100vh - 2rem);padding:var(--space-lg)">
-    <div class="card-header ui-modal-header"><h3 style="margin:0">Sắp xếp playlist</h3><button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button></div>
-    <div class="form-inline" style="margin-bottom:var(--space-md)">
-        <span class="yt-pm-muted">Sắp xếp theo tiêu đề:</span>
-        <div class="yt-pm-dir-toggle">
-            <button type="button" class="active" id="yt-pm-sort-dir-asc">A &#x2192; Z</button>
-            <button type="button" id="yt-pm-sort-dir-desc">Z &#x2192; A</button>
-        </div>
-        <span class="yt-pm-muted" id="yt-pm-sort-summary"></span>
-    </div>
-    <div class="yt-pm-sort-preview">
-        <table>
-            <thead>
-                <tr>
-                    <th>Tiêu đề</th>
-                    <th style="width:5rem;text-align:center">Cũ</th>
-                    <th style="width:5rem;text-align:center">Mới</th>
-                    <th style="width:6rem">Thay đổi</th>
-                </tr>
-            </thead>
-            <tbody id="yt-pm-sort-preview-body"></tbody>
-        </table>
-    </div>
-    <p class="yt-pm-status" id="yt-pm-sort-status" hidden></p>
-    <div class="ui-modal-footer">
-        <div class="ui-modal-footer-actions">
-            <button type="button" class="btn-outline btn-sm" data-close-dialog>Hủy</button>
-            <button type="button" class="btn-primary btn-sm" id="yt-pm-sort-apply" disabled>Áp dụng sắp xếp</button>
-        </div>
-    </div>
-</dialog>
 {% endif %}
 
 {% endif %}
@@ -625,6 +608,9 @@ async function copyYouTubeCreds() {
     const STORE_KEY = 'yt-playlist-last';
     const PAGE_SIZE = 50;
 
+    // The whole playlist is loaded at once and every reorder (drag, ▲/▼, index edit,
+    // sort) only permutes state.items in the browser. Nothing is written to YouTube
+    // until "Lưu tất cả" posts the final order, so the page never reloads mid-edit.
     const state = {
         loaded: false,
         busy: false,
@@ -633,25 +619,22 @@ async function copyYouTubeCreds() {
         playlistMap: {},
         currentId: '',
         items: [],
-        pageToken: null,
-        nextPageToken: null,
-        prevPageToken: null,
+        baseline: [],
         selection: new Set(),
     };
 
-    const IDS = ['playlist-select','add','sort','refresh','selection-bar','selected-count',
+    const IDS = ['playlist-select','add','sort','sort-mode','save','revert','dirty-badge',
+        'refresh','selection-bar','selected-count',
         'remove','copy','move','up','down','position','position-go',
         'loading','empty','status','items','items-body','select-all',
-        'pagination','page-info','prev','next','result','auth-banner'];
+        'pagination','page-info','result','auth-banner'];
     const els = {};
     IDS.forEach(function(id) { els[id] = document.getElementById('yt-pm-' + id); });
 
     const pickerModal = document.getElementById('yt-pm-picker-modal');
     const destModal = document.getElementById('yt-pm-dest-modal');
-    const sortModal = document.getElementById('yt-pm-sort-modal');
     const picker = { items: [], next: null, prev: null, pageToken: null, q: '', selected: new Set() };
     let destMode = 'copy';
-    let sortPreview = [];
     let dragId = null;
 
     function el(tag, className, text) {
@@ -679,10 +662,31 @@ async function copyYouTubeCreds() {
     function setBusy(b) {
         state.busy = b;
         root.classList.toggle('yt-pm-busy', b || state.auth);
-        [pickerModal, destModal, sortModal].forEach(function(m) {
+        [pickerModal, destModal].forEach(function(m) {
             if (m) m.classList.toggle('yt-pm-busy', b || state.auth);
         });
         updateControls();
+    }
+
+    // ---- pending (unsaved) order ----
+
+    function currentOrder() {
+        return state.items.map(function(it) { return it.playlist_item_id; });
+    }
+
+    function isDirty() {
+        const now = currentOrder();
+        return now.length !== state.baseline.length
+            || now.some(function(id, i) { return id !== state.baseline[i]; });
+    }
+
+    function markOrderChanged() {
+        renderItems();
+    }
+
+    function confirmDiscard(what) {
+        if (!isDirty()) return true;
+        return confirm('Bạn có thay đổi thứ tự chưa lưu. ' + what + ' sẽ bỏ các thay đổi đó. Tiếp tục?');
     }
 
     function showStatus(msg, isErr) {
@@ -715,12 +719,12 @@ async function copyYouTubeCreds() {
 
     function handleAuth() {
         state.auth = true;
-        [pickerModal, destModal, sortModal].forEach(function(m) {
+        [pickerModal, destModal].forEach(function(m) {
             if (m && m.open) m.close();
         });
         hideResult();
         showStatus(null);
-        els.authBanner.hidden = false;
+        els['auth-banner'].hidden = false;
         updateControls();
     }
 
@@ -761,12 +765,12 @@ async function copyYouTubeCreds() {
 
     // ---- selection ----
 
-    function selectedItem(id) {
-        return state.items.find(function(it) { return it.playlist_item_id === id; }) || null;
-    }
-
     function selectedIds() {
         return Array.from(state.selection);
+    }
+
+    function indexOf(itemId) {
+        return state.items.findIndex(function(it) { return it.playlist_item_id === itemId; });
     }
 
     function updateSelectionBar() {
@@ -774,8 +778,8 @@ async function copyYouTubeCreds() {
         els['selection-bar'].hidden = n === 0;
         els['selected-count'].textContent = n ? 'Đã chọn: ' + n : '';
         if (n === 1) {
-            const it = selectedItem(state.selection.values().next().value);
-            if (it) els.position.value = (typeof it.position === 'number' ? it.position : 0) + 1;
+            const i = indexOf(state.selection.values().next().value);
+            if (i >= 0) els.position.value = i + 1;
         } else {
             els.position.value = '';
         }
@@ -803,36 +807,36 @@ async function copyYouTubeCreds() {
         const busy = state.busy || state.auth;
         const n = state.selection.size;
         const single = n === 1;
+        const dirty = isDirty();
         ['remove','copy','move'].forEach(function(id) { els[id].disabled = busy || n === 0; });
         ['up','down','position','position-go'].forEach(function(id) { els[id].disabled = busy || !single; });
         els.add.disabled = busy || !state.currentId;
         els.sort.disabled = busy || state.items.length < 2;
+        els['sort-mode'].disabled = busy;
+        els.save.disabled = busy || !dirty;
+        els.revert.disabled = busy || !dirty;
+        els.save.textContent = dirty ? 'Lưu tất cả (' + state.items.length + ')' : 'Lưu tất cả';
+        els['dirty-badge'].hidden = !dirty;
         els.refresh.disabled = busy;
         els['playlist-select'].disabled = busy || state.playlists.length === 0;
-        els.prev.disabled = busy || !state.prevPageToken;
-        els.next.disabled = busy || !state.nextPageToken;
         els['select-all'].disabled = busy || state.items.length === 0;
     }
 
     // ---- items ----
 
-    async function loadItems(pageToken) {
+    async function loadItems() {
         if (!state.currentId || state.auth) return;
         clearSelection();
         showStatus(null);
-        hideResult();
         els.loading.hidden = false;
         els.empty.hidden = true;
         els.pagination.hidden = true;
         els['items-body'].replaceChildren();
         try {
-            const qs = new URLSearchParams({ max_results: String(PAGE_SIZE) });
-            if (pageToken) qs.set('page_token', pageToken);
-            const data = await pmFetch(playlistUrl(state.currentId) + '/items?' + qs.toString());
+            // fetch_all pages the whole playlist server-side: one flat list, no paging.
+            const data = await pmFetch(playlistUrl(state.currentId) + '/items?fetch_all=1');
             state.items = data.items || [];
-            state.pageToken = pageToken || null;
-            state.nextPageToken = data.next_page_token || null;
-            state.prevPageToken = data.prev_page_token || null;
+            state.baseline = currentOrder();
             els.loading.hidden = true;
             renderItems();
         } catch (e) {
@@ -842,7 +846,7 @@ async function copyYouTubeCreds() {
     }
 
     async function reloadFromStart() {
-        await loadItems(null);
+        await loadItems();
     }
 
     function renderItems() {
@@ -856,23 +860,42 @@ async function copyYouTubeCreds() {
             return;
         }
         els.empty.hidden = true;
-        const pageStart = typeof items[0].position === 'number' ? items[0].position : 0;
-        items.forEach(function(it) {
+        items.forEach(function(it, index) {
             const tr = document.createElement('tr');
             tr.className = 'yt-pm-row';
             tr.draggable = true;
             tr.dataset.itemId = it.playlist_item_id;
             tr.dataset.videoId = it.video_id || '';
+            if (state.baseline[index] !== it.playlist_item_id) tr.classList.add('moved');
 
             const checkTd = el('td', 'col-check');
             const cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.className = 'yt-pm-check';
             cb.value = it.playlist_item_id;
+            cb.checked = state.selection.has(it.playlist_item_id);
+            if (cb.checked) tr.classList.add('selected');
             cb.addEventListener('change', function() { onCheckChange(it.playlist_item_id, cb.checked); });
             checkTd.appendChild(cb);
 
-            const posTd = el('td', 'col-pos', String((typeof it.position === 'number' ? it.position : pageStart) + 1));
+            // Editable index: typing a new number moves the row locally (1-based), the
+            // change is only written to YouTube by "Lưu tất cả".
+            const posTd = el('td', 'col-pos');
+            const posInput = document.createElement('input');
+            posInput.type = 'number';
+            posInput.className = 'yt-pm-pos-input';
+            posInput.min = '1';
+            posInput.step = '1';
+            posInput.value = String(index + 1);
+            posInput.setAttribute('aria-label', 'Vị trí');
+            posInput.draggable = false;  // keep row drag from hijacking the field
+            posInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') { e.preventDefault(); posInput.blur(); }
+            });
+            posInput.addEventListener('change', function() {
+                applyIndexEdit(it.playlist_item_id, posInput.value);
+            });
+            posTd.appendChild(posInput);
 
             const titleTd = el('td');
             const cell = el('div', 'yt-pm-title-cell');
@@ -912,9 +935,49 @@ async function copyYouTubeCreds() {
             tbody.appendChild(tr);
         });
         els.pagination.hidden = false;
-        els['page-info'].textContent = items.length + ' video';
+        els['page-info'].textContent = items.length + ' video'
+            + (isDirty() ? ' — thứ tự đã đổi, chưa lưu' : '');
         updateSelectionBar();
         updateSelectAll();
+    }
+
+    // ---- local reordering (nothing is written until "Lưu tất cả") ----
+
+    function moveLocal(itemId, toIndex) {
+        const from = indexOf(itemId);
+        if (from < 0) return;
+        const to = Math.max(0, Math.min(state.items.length - 1, toIndex));
+        if (from === to) { renderItems(); return; }
+        const [moved] = state.items.splice(from, 1);
+        state.items.splice(to, 0, moved);
+        hideResult();
+        showStatus(null);
+        markOrderChanged();
+    }
+
+    function applyIndexEdit(itemId, raw) {
+        const n = parseInt(raw, 10);
+        if (isNaN(n) || n < 1 || n > state.items.length) {
+            showStatus('Vị trí phải nằm trong khoảng 1 - ' + state.items.length + '.', true);
+            renderItems();
+            return;
+        }
+        moveLocal(itemId, n - 1);
+    }
+
+    function applyOrderIds(orderedIds) {
+        const byId = {};
+        state.items.forEach(function(it) { byId[it.playlist_item_id] = it; });
+        const seen = new Set();
+        const next = [];
+        orderedIds.forEach(function(id) {
+            if (byId[id] && !seen.has(id)) { seen.add(id); next.push(byId[id]); }
+        });
+        state.items.forEach(function(it) {
+            if (!seen.has(it.playlist_item_id)) next.push(it);
+        });
+        state.items = next;
+        markOrderChanged();
     }
 
     function onCheckChange(itemId, checked) {
@@ -970,7 +1033,7 @@ async function copyYouTubeCreds() {
         sel.value = selected;
         try { localStorage.setItem(STORE_KEY, selected); } catch (_) {}
         state.currentId = selected;
-        loadItems(null);
+        loadItems();
     }
 
     // ---- actions ----
@@ -978,6 +1041,8 @@ async function copyYouTubeCreds() {
     async function removeItems(itemIds) {
         const n = itemIds.length;
         if (!n) return;
+        // Removal writes immediately and reloads, so a pending order would be lost.
+        if (!confirmDiscard('Xóa video')) return;
         if (!confirm('Xóa ' + n + ' video khỏi playlist này? Video trên kênh không bị xóa.')) return;
         setBusy(true);
         try {
@@ -999,6 +1064,7 @@ async function copyYouTubeCreds() {
     function openDest(mode) {
         const n = state.selection.size;
         if (!n) return;
+        if (!confirmDiscard(mode === 'move' ? 'Move video' : 'Copy video')) return;
         destMode = mode;
         const title = document.getElementById('yt-pm-dest-title');
         const hint = document.getElementById('yt-pm-dest-hint');
@@ -1023,33 +1089,51 @@ async function copyYouTubeCreds() {
         st.textContent = msg || '';
     }
 
-    async function moveToPosition(newPos) {
+    function moveToPosition(newPos) {
         const ids = selectedIds();
         if (ids.length !== 1) return;
-        const it = selectedItem(ids[0]);
-        if (!it) return;
-        const currentPos = typeof it.position === 'number' ? it.position : 0;
         if (newPos < 0) { showStatus('Đã ở vị trí đầu của playlist.', true); return; }
-        if (newPos === currentPos) return;
+        if (newPos > state.items.length - 1) { showStatus('Đã ở vị trí cuối của playlist.', true); return; }
+        moveLocal(ids[0], newPos);
+    }
+
+    // ---- save / revert the pending order ----
+
+    async function saveOrder() {
+        if (!isDirty() || !state.currentId) return;
+        const itemIds = currentOrder();
         setBusy(true);
+        showStatus('Đang lưu thứ tự lên YouTube...');
         try {
-            // UI is 1-based; the route converts to 0-based for the backend.
-            await pmFetch(playlistUrl(state.currentId) + '/items/' + encodeURIComponent(it.playlist_item_id) + '/position', {
+            const data = await pmFetch(playlistUrl(state.currentId) + '/reorder-all', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ position: newPos + 1 }),
+                body: JSON.stringify({ item_ids: itemIds }),
             });
-            showResult([{ text: 'Đã chuyển video tới vị trí ' + (newPos + 1) + '.', cls: 'added' }]);
+            const parts = [{ text: 'Đã lưu thứ tự: ' + (data.succeeded != null ? data.succeeded : 0) + ' video đã chuyển.', cls: 'added' }];
+            if (data.skipped > 0) parts.push({ text: 'Giữ nguyên: ' + data.skipped + ' video', cls: 'dup' });
+            if (data.failed > 0) parts.push({ text: 'Lỗi: ' + data.failed + ' video', cls: 'fail' });
             clearSelection();
             await reloadFromStart();
+            showResult(parts);
         } catch (e) {
-            if (!state.auth) showStatus('Không thể đổi vị trí: ' + e.message, true);
+            if (!state.auth) showStatus('Không thể lưu thứ tự: ' + e.message, true);
         } finally {
             setBusy(false);
         }
     }
 
-    // ---- drag & drop reorder (current page) ----
+    function revertOrder() {
+        if (!isDirty()) return;
+        const byId = {};
+        state.items.forEach(function(it) { byId[it.playlist_item_id] = it; });
+        state.items = state.baseline.map(function(id) { return byId[id]; }).filter(Boolean);
+        showStatus(null);
+        hideResult();
+        markOrderChanged();
+    }
+
+    // ---- drag & drop reorder (local, whole playlist) ----
 
     function onDragStart(e) {
         const tr = e.target.closest('tr');
@@ -1075,98 +1159,51 @@ async function copyYouTubeCreds() {
         dragId = null;
     }
 
-    async function onDrop(e) {
+    function onDrop(e) {
         e.preventDefault();
         const tr = e.target.closest('tr');
         if (!tr || !dragId) return;
         e.stopPropagation();
         const targetId = tr.dataset.itemId;
+        document.querySelectorAll('.yt-pm-row.dragover').forEach(function(r) { r.classList.remove('dragover'); });
         if (dragId === targetId) return;
-        const ids = state.items.map(function(it) { return it.playlist_item_id; });
-        const from = ids.indexOf(dragId);
-        const to = ids.indexOf(targetId);
-        if (from < 0 || to < 0) return;
-        ids.splice(from, 1);
-        ids.splice(to, 0, dragId);
-        const pageStart = typeof state.items[0].position === 'number' ? state.items[0].position : 0;
-        const positions = {};
-        ids.forEach(function(id, i) { positions[id] = pageStart + i; });
-        setBusy(true);
-        try {
-            const data = await pmFetch(playlistUrl(state.currentId) + '/reorder', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ positions: positions }),
-            });
-            showResult([{ text: 'Đã sắp xếp lại trang hiện tại: ' + (data.succeeded != null ? data.succeeded : ids.length) + ' video.', cls: 'added' }]);
-            clearSelection();
-            await reloadFromStart();
-        } catch (err) {
-            if (!state.auth) showStatus('Không thể sắp xếp lại: ' + err.message, true);
-        } finally {
-            setBusy(false);
-            document.querySelectorAll('.yt-pm-row.dragover').forEach(function(r) { r.classList.remove('dragover'); });
-        }
+        const to = indexOf(targetId);
+        if (to < 0) return;
+        moveLocal(dragId, to);
     }
 
-    // ---- sort (whole playlist, backend preview/apply; natural title order) ----
-
-    async function openSort() {
-        if (state.items.length < 2) return;
-        sortStatus(null);
-        setBusy(true);
-        try {
-            sortPreview = [];
-            renderSortPreview();
-            sortModal.showModal();
-            await loadSortPreview(sortDirection());
-        } catch (e) {
-            if (!state.auth) showStatus('Không thể tải preview sắp xếp: ' + e.message, true);
-        } finally {
-            setBusy(false);
-        }
-    }
+    // ---- sort (whole playlist, applied locally and saved with "Lưu tất cả") ----
 
     function sortDirection() {
         return document.getElementById('yt-pm-sort-dir-asc').classList.contains('active') ? 'asc' : 'desc';
     }
 
-    async function loadSortPreview(dir) {
-        const data = await pmFetch(playlistUrl(state.currentId) + '/sort/preview', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ direction: dir }),
-        });
-        sortPreview = data.items || [];
-        renderSortPreview();
-    }
-
-    function renderSortPreview() {
-        const tbody = document.getElementById('yt-pm-sort-preview-body');
-        tbody.replaceChildren();
-        let changed = 0;
-        sortPreview.forEach(function(it) {
-            const oldPos = typeof it.current_position === 'number' ? it.current_position : 0;
-            const newPos = typeof it.new_position === 'number' ? it.new_position : 0;
-            const moved = oldPos !== newPos;
-            if (moved) changed++;
-            const tr = document.createElement('tr');
-            tr.appendChild(el('td', '', it.title || '(không tiêu đề)'));
-            tr.appendChild(el('td', 'yt-pm-sort-num', String(oldPos + 1)));
-            tr.appendChild(el('td', 'yt-pm-sort-num', String(newPos + 1)));
-            tr.appendChild(el('td', moved ? 'yt-pm-sort-changed' : 'yt-pm-sort-same', moved ? 'Thay đổi' : 'Giữ nguyên'));
-            tbody.appendChild(tr);
-        });
-        document.getElementById('yt-pm-sort-summary').textContent =
-            'Toàn bộ playlist: ' + sortPreview.length + ' video. ' + changed + ' video đổi vị trí.';
-        document.getElementById('yt-pm-sort-apply').disabled = changed === 0;
-    }
-
-    function sortStatus(msg, isErr) {
-        const st = document.getElementById('yt-pm-sort-status');
-        st.hidden = !msg;
-        st.className = 'yt-pm-status ' + (isErr ? 'err' : 'ok');
-        st.textContent = msg || '';
+    async function runSort() {
+        if (state.items.length < 2 || !state.currentId) return;
+        setBusy(true);
+        showStatus('Đang tính thứ tự mới...');
+        try {
+            // /sort/preview is non-mutating: it returns the order, the browser applies
+            // it, and nothing reaches YouTube until the user saves.
+            const data = await pmFetch(playlistUrl(state.currentId) + '/sort/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ direction: sortDirection(), mode: els['sort-mode'].value }),
+            });
+            const byVideo = {};
+            state.items.forEach(function(it) { byVideo[it.video_id] = it.playlist_item_id; });
+            const orderedItemIds = (data.ordered || [])
+                .map(function(videoId) { return byVideo[videoId]; })
+                .filter(Boolean);
+            applyOrderIds(orderedItemIds);
+            showStatus(isDirty()
+                ? 'Đã sắp xếp tạm thời — bấm "Lưu tất cả" để ghi lên YouTube.'
+                : 'Playlist đã đúng thứ tự, không có gì để đổi.');
+        } catch (e) {
+            if (!state.auth) showStatus('Không thể sắp xếp: ' + e.message, true);
+        } finally {
+            setBusy(false);
+        }
     }
 
     // ---- channel video picker ----
@@ -1293,21 +1330,37 @@ async function copyYouTubeCreds() {
     els['playlist-select'].addEventListener('change', function() {
         const id = this.value;
         if (!id) return;
+        if (!confirmDiscard('Đổi playlist')) { this.value = state.currentId; return; }
         state.currentId = id;
         try { localStorage.setItem(STORE_KEY, id); } catch (_) {}
-        loadItems(null);
+        loadItems();
     });
-
-    els.prev.addEventListener('click', function() { loadItems(state.prevPageToken); });
-    els.next.addEventListener('click', function() { loadItems(state.nextPageToken); });
 
     els.refresh.addEventListener('click', function() {
+        if (!confirmDiscard('Làm mới')) return;
         if (!state.currentId) { init(); return; }
-        loadItems(state.pageToken);
+        loadItems();
     });
 
-    els.add.addEventListener('click', openPicker);
-    els.sort.addEventListener('click', openSort);
+    els.add.addEventListener('click', function() {
+        if (confirmDiscard('Thêm video')) openPicker();
+    });
+    els.sort.addEventListener('click', runSort);
+    els.save.addEventListener('click', saveOrder);
+    els.revert.addEventListener('click', revertOrder);
+
+    ['asc','desc'].forEach(function(dir) {
+        document.getElementById('yt-pm-sort-dir-' + dir).addEventListener('click', function() {
+            document.getElementById('yt-pm-sort-dir-asc').classList.toggle('active', dir === 'asc');
+            document.getElementById('yt-pm-sort-dir-desc').classList.toggle('active', dir === 'desc');
+        });
+    });
+
+    window.addEventListener('beforeunload', function(e) {
+        if (!state.loaded || !isDirty()) return;
+        e.preventDefault();
+        e.returnValue = '';
+    });
 
     els['select-all'].addEventListener('change', function() {
         const check = this.checked;
@@ -1326,12 +1379,12 @@ async function copyYouTubeCreds() {
     els.move.addEventListener('click', function() { openDest('move'); });
 
     els.up.addEventListener('click', function() {
-        const it = selectedItem(selectedIds()[0]);
-        if (it) moveToPosition((typeof it.position === 'number' ? it.position : 0) - 1);
+        const i = indexOf(selectedIds()[0]);
+        if (i >= 0) moveToPosition(i - 1);
     });
     els.down.addEventListener('click', function() {
-        const it = selectedItem(selectedIds()[0]);
-        if (it) moveToPosition((typeof it.position === 'number' ? it.position : 0) + 1);
+        const i = indexOf(selectedIds()[0]);
+        if (i >= 0) moveToPosition(i + 1);
     });
     els['position-go'].addEventListener('click', function() {
         const v = parseInt(els.position.value, 10);
@@ -1427,48 +1480,8 @@ async function copyYouTubeCreds() {
         }
     });
 
-    // sort modal
-    ['asc','desc'].forEach(function(dir) {
-        document.getElementById('yt-pm-sort-dir-' + dir).addEventListener('click', function() {
-            document.getElementById('yt-pm-sort-dir-asc').classList.toggle('active', dir === 'asc');
-            document.getElementById('yt-pm-sort-dir-desc').classList.toggle('active', dir === 'desc');
-            if (sortModal.open) {
-                sortStatus(null);
-                loadSortPreview(dir).catch(function(e) {
-                    if (!state.auth) sortStatus('Không thể tải preview: ' + e.message, true);
-                });
-            }
-        });
-    });
-    document.getElementById('yt-pm-sort-apply').addEventListener('click', async function() {
-        const dir = sortDirection();
-        setBusy(true);
-        try {
-            const data = await pmFetch(playlistUrl(state.currentId) + '/sort/apply', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ direction: dir }),
-            });
-            sortModal.close();
-            const parts = [{ text: 'Đã sắp xếp playlist: ' + (data.succeeded != null ? data.succeeded : 0) + ' video.', cls: 'added' }];
-            if (data.skipped > 0) {
-                parts.push({ text: 'Giữ nguyên: ' + data.skipped + ' video', cls: 'dup' });
-            }
-            if (data.failed > 0) {
-                parts.push({ text: 'Lỗi: ' + data.failed + ' video', cls: 'fail' });
-            }
-            showResult(parts);
-            clearSelection();
-            await reloadFromStart();
-        } catch (e) {
-            sortStatus('Không thể áp dụng sắp xếp: ' + e.message, true);
-        } finally {
-            setBusy(false);
-        }
-    });
-
     // modal close handling
-    [pickerModal, destModal, sortModal].forEach(function(m) {
+    [pickerModal, destModal].forEach(function(m) {
         if (!m) return;
         m.addEventListener('click', function(e) {
             if (e.target.closest('[data-close-dialog]') || e.target === m) m.close();

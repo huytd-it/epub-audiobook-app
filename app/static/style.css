@@ -640,8 +640,10 @@ table {
   font-variant-numeric: tabular-nums;
 }
 
+/* Compact rows: tables here are working lists (uploads, batches, playlist items)
+   that are read many rows at a time, so cells stay tight rather than airy. */
 th, td {
-  padding: 0.75rem 1rem;
+  padding: 0.3rem 0.55rem;
   text-align: left;
   border-bottom: 1px solid var(--border-color);
 }
@@ -655,8 +657,21 @@ th {
   letter-spacing: 0.05em;
 }
 
-tr:last-child td { 
-  border-bottom: none; 
+/* Controls inside a row must not re-inflate what the cell padding just tightened. */
+td .btn-sm,
+td button.btn-sm {
+  padding: 0.2rem 0.55rem;
+}
+
+td input:not([type="checkbox"]):not([type="radio"]),
+td select,
+td textarea {
+  min-height: 1.75rem;
+  padding: 0.2rem 0.4rem;
+}
+
+tr:last-child td {
+  border-bottom: none;
 }
 
 tr:hover td { 
@@ -2154,11 +2169,54 @@ th[data-sort="desc"]::after { content: " \25BC"; }
   font-weight: 600;
 }
 
+/* The action bar sticks to the top of the viewport: the item list is one long
+   unpaginated table, so Save / Sort / selection actions have to stay reachable
+   however far down the user has scrolled. */
+.yt-pm-topnav {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  margin: calc(var(--space-sm) * -1) calc(var(--space-md) * -1) 0;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+  box-shadow: var(--shadow-md);
+}
+
 .yt-pm-toolbar {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
   flex-wrap: wrap;
+}
+
+.yt-pm-topnav-spacer {
+  flex: 1 1 auto;
+}
+
+.yt-pm-sort-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.yt-pm-sort-group select {
+  width: auto;
+  min-height: 0;
+  padding: 0.3rem 0.5rem;
+}
+
+.yt-pm-dirty-badge {
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--border-radius-sm);
+  background: var(--accent-yellow);
+  color: var(--accent-yellow-text);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .yt-pm-playlist-picker {
@@ -2260,10 +2318,25 @@ th[data-sort="desc"]::after { content: " \25BC"; }
 }
 
 .yt-pm-items-table .col-pos {
-  width: 64px;
+  width: 68px;
   text-align: center;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.yt-pm-pos-input {
+  width: 3.4rem;
+  max-width: none;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A row whose index no longer matches the saved playlist order. */
+.yt-pm-row.moved .yt-pm-pos-input {
+  border-color: var(--accent-yellow-text);
+  background: var(--accent-yellow);
+  color: var(--accent-yellow-text);
+  font-weight: 600;
 }
 
 .yt-pm-items-table .col-actions {
@@ -2430,32 +2503,6 @@ th[data-sort="desc"]::after { content: " \25BC"; }
   color: var(--bg-card);
 }
 
-/* Sort preview table */
-.yt-pm-sort-preview {
-  max-height: 50vh;
-  overflow: auto;
-  margin: var(--space-md) 0;
-}
-
-.yt-pm-sort-preview table {
-  font-size: var(--font-size-sm);
-}
-
-.yt-pm-sort-num {
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-}
-
-.yt-pm-sort-changed {
-  color: var(--accent-red-text);
-  font-weight: 600;
-}
-
-.yt-pm-sort-same {
-  color: var(--text-muted);
-}
-
 /* Explicit hidden overrides (flex/block components otherwise beat the UA
    [hidden] rule). */
 .yt-tab-panel[hidden],
@@ -2467,7 +2514,7 @@ th[data-sort="desc"]::after { content: " \25BC"; }
 .yt-pm-status[hidden],
 .yt-pm-picker-status[hidden],
 .yt-pm-dest-status[hidden],
-.yt-pm-sort-status[hidden],
+.yt-pm-topnav [hidden],
 .yt-pm-auth-banner[hidden] {
   display: none;
 }

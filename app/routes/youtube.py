@@ -121,14 +121,31 @@ class _PlaylistReorderBody(BaseModel):
     positions: dict[str, int] = Field(min_length=1)
 
 
+class _PlaylistReorderAllBody(BaseModel):
+    # Every playlistItem.id of the playlist, in the desired order. Used by the
+    # "save all" button, which batches a whole session of local reordering.
+    item_ids: list[str] = Field(min_length=1)
+
+
 class _PlaylistSortBody(BaseModel):
     direction: str = Field(default="asc")
+    # 'natural' keeps the plain numeric-chunk title order; 'episode' groups by the
+    # series name in front of the episode marker ("... - Tập 3 - ...") and orders by
+    # its number, so the chapter range and tags that follow it never drive the sort.
+    mode: str = Field(default="natural")
 
     @field_validator("direction")
     @classmethod
     def _valid_direction(cls, v):
         if v not in ("asc", "desc"):
             raise ValueError("direction must be 'asc' or 'desc'")
+        return v
+
+    @field_validator("mode")
+    @classmethod
+    def _valid_mode(cls, v):
+        if v not in youtube.SORT_MODES:
+            raise ValueError(f"mode must be one of {', '.join(youtube.SORT_MODES)}")
         return v
 
 
@@ -406,7 +423,8 @@ def youtube_bulk_retry_uploads(request: Request, ids: list[int]):
 # (list_playlists, list_playlist_items, list_channel_videos, bulk_add_to_playlist,
 # bulk_remove_from_playlist, get_all_playlist_items, copy_playlist_items,
 # move_playlist_items, update_playlist_item_position, reorder_playlist_page,
-# sort_playlist_preview, sort_playlist) on a throwaway connection via _call_youtube,
+# reorder_playlist, sort_playlist_preview, sort_playlist) on a throwaway connection
+# via _call_youtube,
 # so no network work ever runs on the shared connection under the db_lock. Errors are
 # normalized to JSON (never redirects) with auth CTA metadata when a reconnect is needed.
 #
@@ -433,10 +451,24 @@ def api_list_playlists(request: Request, max_results: int = 50):
 
 @router.get("/youtube/api/playlists/{playlist_id}/items")
 def api_list_playlist_items(request: Request, playlist_id: str, max_results: int = 50,
-                            page_token: str | None = None):
-    """List one page of items (videos) in a playlist."""
+                            page_token: str | None = None, fetch_all: bool = False):
+    """List items (videos) in a playlist.
+
+    One page by default. fetch_all=1 pages through the whole playlist server-side and
+    returns every item with no page tokens, so the manager can show one flat list.
+    """
     _require_connected(request)
     _require_playlist_id(playlist_id)
+    if fetch_all:
+        items = _call_youtube(request, youtube.get_all_playlist_items, playlist_id)
+        return JSONResponse({
+            "playlist_id": playlist_id,
+            "items": items,
+            "next_page_token": None,
+            "prev_page_token": None,
+            "total": len(items),
+            "count": len(items),
+        })
     _validate_page_size(max_results)
     page = _call_youtube(request, youtube.list_playlist_items, playlist_id,
                          max_results=max_results, page_token=page_token)
@@ -612,19 +644,36 @@ def api_reorder_playlist_page(request: Request, playlist_id: str, body: _Playlis
     return JSONResponse(_mark_partial(result))
 
 
-@router.post("/youtube/api/playlists/{playlist_id}/sort/preview")
-def api_preview_playlist_sort(request: Request, playlist_id: str, body: _PlaylistSortBody):
-    """Preview a whole-playlist natural-title sort without applying it."""
+@router.post("/youtube/api/playlists/{playlist_id}/reorder-all")
+def api_reorder_playlist_all(request: Request, playlist_id: str, body: _PlaylistReorderAllBody):
+    """Apply one whole-playlist order in a single call.
+
+    `item_ids` is every playlistItem.id in its target order - the shape the manager's
+    "save all" produces after a session of local drag/sort/index edits. Unlike
+    /reorder this is not page-bounded, so items may cross page boundaries.
+    """
     _require_connected(request)
     _require_playlist_id(playlist_id)
-    preview = _call_youtube(request, youtube.sort_playlist_preview, playlist_id, body.direction)
+    order = _map_playlist_item_ids(request, playlist_id, body.item_ids)
+    result = _call_youtube(request, youtube.reorder_playlist, playlist_id, order)
+    return JSONResponse(_mark_partial(result))
+
+
+@router.post("/youtube/api/playlists/{playlist_id}/sort/preview")
+def api_preview_playlist_sort(request: Request, playlist_id: str, body: _PlaylistSortBody):
+    """Preview a whole-playlist title sort without applying it."""
+    _require_connected(request)
+    _require_playlist_id(playlist_id)
+    preview = _call_youtube(request, youtube.sort_playlist_preview, playlist_id,
+                            body.direction, body.mode)
     return JSONResponse(preview)
 
 
 @router.post("/youtube/api/playlists/{playlist_id}/sort/apply")
 def api_apply_playlist_sort(request: Request, playlist_id: str, body: _PlaylistSortBody):
-    """Apply a whole-playlist natural-title sort."""
+    """Apply a whole-playlist title sort."""
     _require_connected(request)
     _require_playlist_id(playlist_id)
-    result = _call_youtube(request, youtube.sort_playlist, playlist_id, body.direction)
+    result = _call_youtube(request, youtube.sort_playlist, playlist_id,
+                           body.direction, body.mode)
     return JSONResponse(_mark_partial(result))

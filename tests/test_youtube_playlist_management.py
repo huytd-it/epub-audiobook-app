@@ -267,6 +267,106 @@ def test_natural_sort_key_handles_empty_titles():
     assert yt._natural_sort_key("") == yt._natural_sort_key(None)
 
 
+# ---------------------------------------------------------------------------
+# Episode sort: series name in front of the marker, then episode number
+# ---------------------------------------------------------------------------
+
+
+def test_episode_sort_key_orders_by_episode_not_by_trailing_text():
+    # The chapter range that follows "Tập N" would drive a plain title sort
+    # ("Chương 10-14" < "Chương 5-9"); the episode key must ignore it.
+    titles = [
+        "Dị Độ Lữ Xá - Tập 3 - Chương 10-14",
+        "Dị Độ Lữ Xá - Tập 1 - Chương 1-4",
+        "Dị Độ Lữ Xá - Tập 10 - Chương 40-44",
+        "Dị Độ Lữ Xá - Tập 2 - Chương 5-9",
+    ]
+    assert sorted(titles, key=yt._episode_sort_key) == [
+        "Dị Độ Lữ Xá - Tập 1 - Chương 1-4",
+        "Dị Độ Lữ Xá - Tập 2 - Chương 5-9",
+        "Dị Độ Lữ Xá - Tập 3 - Chương 10-14",
+        "Dị Độ Lữ Xá - Tập 10 - Chương 40-44",
+    ]
+
+
+def test_episode_sort_key_groups_by_series_name():
+    titles = ["Book B - Tập 1", "Book A - Tập 2", "Book B - Tập 2", "Book A - Tập 1"]
+    assert sorted(titles, key=yt._episode_sort_key) == [
+        "Book A - Tập 1", "Book A - Tập 2", "Book B - Tập 1", "Book B - Tập 2",
+    ]
+
+
+@pytest.mark.parametrize("marker", ["Tập", "tập", "TẬP", "Tap", "Phần", "Part", "EP.", "#"])
+def test_episode_sort_key_accepts_marker_spellings(marker):
+    titles = [f"Sách - {marker} 10", f"Sách - {marker} 2"]
+    assert sorted(titles, key=yt._episode_sort_key) == [f"Sách - {marker} 2", f"Sách - {marker} 10"]
+
+
+def test_episode_sort_key_handles_marker_first_titles():
+    titles = ["Tập 2 - Dị Độ Lữ Xá", "Tập 10 - Dị Độ Lữ Xá", "Tập 1 - Dị Độ Lữ Xá"]
+    assert sorted(titles, key=yt._episode_sort_key) == [
+        "Tập 1 - Dị Độ Lữ Xá", "Tập 2 - Dị Độ Lữ Xá", "Tập 10 - Dị Độ Lữ Xá",
+    ]
+
+
+def test_episode_sort_key_interleaves_both_title_layouts():
+    # A playlist that mixes the upload template's "Tập N - Sách" with hand-named
+    # "Sách - Tập N" must still come out in episode order, not in two blocks.
+    titles = [
+        "Dị Độ Lữ Xá - Tập 3 - Chương 9-12",
+        "Tập 1 - Dị Độ Lữ Xá",
+        "Dị Độ Lữ Xá - Tập 4",
+        "Tập 2 - Dị Độ Lữ Xá - Chương 5-8",
+    ]
+    assert sorted(titles, key=yt._episode_sort_key) == [
+        "Tập 1 - Dị Độ Lữ Xá",
+        "Tập 2 - Dị Độ Lữ Xá - Chương 5-8",
+        "Dị Độ Lữ Xá - Tập 3 - Chương 9-12",
+        "Dị Độ Lữ Xá - Tập 4",
+    ]
+
+
+def test_episode_sort_key_falls_back_for_titles_without_a_marker():
+    titles = ["Intro 10", "Intro 2", "Sách - Tập 1"]
+    assert sorted(titles, key=yt._episode_sort_key) == ["Intro 2", "Intro 10", "Sách - Tập 1"]
+
+
+def test_episode_sort_key_handles_empty_titles():
+    assert yt._episode_sort_key("") == yt._episode_sort_key(None)
+
+
+def test_new_order_episode_mode_beats_natural_mode():
+    items = _items([
+        ("v2", "Dị Độ Lữ Xá - Tập 2"),
+        ("v1", "Tập 1 - Dị Độ Lữ Xá"),
+    ])
+    # natural compares whole strings, so the two title layouts split into blocks
+    assert [i["video_id"] for i in yt._new_order(items, None, "asc", "natural")] == ["v2", "v1"]
+    assert [i["video_id"] for i in yt._new_order(items, None, "asc", "episode")] == ["v1", "v2"]
+
+
+def test_sort_key_for_unknown_mode_falls_back_to_natural():
+    assert yt._sort_key_for("nonsense") is yt._natural_sort_key
+    assert yt._sort_key_for("episode") is yt._episode_sort_key
+
+
+def test_sort_playlist_episode_mode_applies_episode_order(fake):
+    fake.seed("PL1", _raw_list([
+        ("v2", "Sách - Tập 2 - Chương 1-4"),
+        ("v10", "Sách - Tập 10 - Chương 5-9"),
+        ("v1", "Sách - Tập 1 - Chương 90-94"),
+    ]))
+    yt.sort_playlist(_conn(), "PL1", direction="asc", mode="episode")
+    assert fake.video_ids_of("PL1") == ["v1", "v2", "v10"]
+
+
+def test_sort_preview_episode_mode_is_non_mutating(fake):
+    fake.seed("PL1", _raw_list([("v2", "Sách - Tập 2"), ("v1", "Sách - Tập 1")]))
+    result = yt.sort_playlist_preview(_conn(), "PL1", "asc", "episode")
+    assert result["ordered"] == ["v1", "v2"]
+    assert fake.update_calls == [] and fake.video_ids_of("PL1") == ["v2", "v1"]
+
+
 def test_new_order_asc_and_desc_directions():
     items = _items([("v2", "Part 2"), ("v10", "Part 10"), ("v1", "Part 1")])
     assert [i["video_id"] for i in yt._new_order(items, None, "asc")] == ["v1", "v2", "v10"]
