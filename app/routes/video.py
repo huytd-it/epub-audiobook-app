@@ -259,7 +259,7 @@ def video_creator_page(request: Request):
     })
 
 
-@router.post("/video/generate", response_class=HTMLResponse)
+@router.post("/video/generate")
 async def generate_video(
     request: Request,
     audio: UploadFile = File(...),
@@ -273,12 +273,7 @@ async def generate_video(
 ):
     audio_ext = Path(audio.filename or "").suffix.lower()
     if audio_ext not in ALLOWED_AUDIO_EXTENSIONS:
-        return templates.TemplateResponse(request, "video_creator.html", {
-            "request": request,
-            "video_url": None,
-            "error": f"Unsupported audio format: {audio_ext}",
-            "recent_videos": _get_recent_videos(),
-        })
+        raise HTTPException(400, f"Unsupported audio format: {audio_ext}")
 
     _TMP_DIR.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4().hex[:12]
@@ -292,12 +287,7 @@ async def generate_video(
         img_ext = Path(image.filename).suffix.lower()
         if img_ext not in ALLOWED_BACKGROUND_EXTENSIONS:
             audio_path.unlink(missing_ok=True)
-            return templates.TemplateResponse(request, "video_creator.html", {
-                "request": request,
-                "video_url": None,
-                "error": f"Unsupported background format: {img_ext}",
-                "recent_videos": _get_recent_videos(),
-            })
+            raise HTTPException(400, f"Unsupported background format: {img_ext}")
         image_path = _TMP_DIR / f"{job_id}_image{img_ext}"
         with open(image_path, "wb") as f:
             shutil.copyfileobj(image.file, f)
@@ -307,12 +297,7 @@ async def generate_video(
             image_path = Path(default)
         else:
             audio_path.unlink(missing_ok=True)
-            return templates.TemplateResponse(request, "video_creator.html", {
-                "request": request,
-                "video_url": None,
-                "error": "Please upload an image or configure a default background image",
-                "recent_videos": _get_recent_videos(),
-            })
+            raise HTTPException(400, "Please upload an image or configure a default background image")
 
     cfg = _validate_config(resolution, fps, codec, audio_bitrate, image_type, crf)
     tmp_out = _TMP_DIR / f"{job_id}.mp4"
@@ -330,24 +315,14 @@ async def generate_video(
         )
     except Exception as exc:
         tmp_out.unlink(missing_ok=True)
-        return templates.TemplateResponse(request, "video_creator.html", {
-            "request": request,
-            "video_url": None,
-            "error": f"Video generation failed: {exc}",
-            "recent_videos": _get_recent_videos(),
-        })
+        raise HTTPException(500, f"Video generation failed: {exc}")
 
     _VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     final_name = f"{job_id}.mp4"
     final_path = _VIDEOS_DIR / final_name
     shutil.move(str(tmp_out), str(final_path))
 
-    return templates.TemplateResponse(request, "video_creator.html", {
-        "request": request,
-        "video_url": f"/video/videos/{final_name}",
-        "error": None,
-        "recent_videos": _get_recent_videos(),
-    })
+    return {"video_url": f"/video/videos/{final_name}", "filename": final_name}
 
 
 # ---------------------------------------------------------------------------

@@ -25,3 +25,7 @@ data/music
 .worktrees/
 build
 data/piper_voices
+node_modules/
+app/spa_dist/
+src-tauri/target/
+*.tsbuildinfo

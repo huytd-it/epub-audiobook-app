@@ -97,6 +97,29 @@ ffprobe -version
 
 Open http://localhost:8000
 
+### SPA / PWA
+
+Giao diện chính là React SPA và được FastAPI phục vụ sau khi build:
+
+```bash
+npm install
+npm run build
+./.venv/Scripts/python.exe -m uvicorn app.main:app --reload
+```
+
+Trong lúc phát triển, chạy backend ở cổng `8000` rồi chạy `npm run dev` ở terminal khác.
+PWA có thể được cài trực tiếp từ trình duyệt; API và media luôn dùng network để tránh cache dữ liệu vận hành.
+
+### Tauri desktop
+
+Tauri dùng cùng backend FastAPI. Chạy backend trước, sau đó:
+
+```bash
+npm run tauri dev
+```
+
+Để tạo installer, chạy `npm run tauri build` sau khi backend Python đã được đóng gói hoặc có sẵn trên máy đích.
+
 ### Batch Export To Colab/Kaggle
 
 Remote TTS export uses only the batch workflow:
@@ -158,9 +181,13 @@ app/
 │   ├── youtube.py    # YouTube upload and OAuth
 │   ├── automation.py # Automation settings, media selection, enqueue/retry
 │   └── logs.py       # Log streaming
-├── templates/        # Jinja2 HTML (automation_settings.html, youtube.html, book_detail.html)
-└── static/           # CSS, JS, images
+├── routes/           # API và file/media endpoints
+└── spa_dist/         # React/PWA production build (generated)
 ```
+
+`frontend/` là nguồn giao diện duy nhất. Các URL giao diện cũ vẫn được giữ để
+bookmark và OAuth redirect tiếp tục hoạt động, nhưng đều trả về cùng SPA shell;
+ứng dụng không còn thư mục `app/templates` hoặc static JavaScript/CSS legacy.
 
 ## API Endpoints
 

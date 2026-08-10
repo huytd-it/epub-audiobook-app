@@ -3,18 +3,18 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import threading
+import re
 from contextlib import asynccontextmanager
 
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from app import db, repository
 from app.config import settings
-from app.routes import books, database_io, downloads, drive, effects, flows, local_bridge, logs, music, patches, photos, queue, text_studio, video, video_api, voices, youtube
+from app.routes import books, database_io, downloads, drive, effects, flows, local_bridge, logs, music, patches, photos, queue, text_studio, ui_api, video, video_api, voices, youtube
 import asyncio
 
 from app.jobqueue import joblog
@@ -109,13 +109,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EPUB Audiobook App", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-templates = Jinja2Templates(directory="app/templates")
-
-
-@app.exception_handler(404)
-async def not_found_handler(request: Request, exc):
-    return templates.TemplateResponse(request, "404.html", {"request": request}, status_code=404)
 app.include_router(books.router)
 app.include_router(patches.router)
 app.include_router(downloads.router)
@@ -133,8 +126,53 @@ app.include_router(database_io.router)
 app.include_router(effects.router)
 app.include_router(flows.router)
 app.include_router(local_bridge.router)
+app.include_router(ui_api.router)
 
 
-@app.get("/")
+SPA_DIR = Path("app/spa_dist")
+if SPA_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=SPA_DIR / "assets"), name="spa-assets")
+
+
+def _spa_index():
+    index = SPA_DIR / "index.html"
+    if not index.exists():
+        return HTMLResponse("Frontend chưa được build. Chạy npm install && npm run build.", status_code=503)
+    return HTMLResponse(index.read_text(encoding="utf-8"))
+
+
+_SPA_PATHS = (
+    re.compile(r"^/books(?:/upload|/\d+|/\d+/chapters/preview-ui|/\d+/patches/build|/\d+/patches/\d+/chunks|/\d+/text-studio)?$"),
+    re.compile(r"^/(?:queue|video|music|photos|voices|effects|youtube|drive|database-io|logs|flows)$"),
+)
+
+
+@app.middleware("http")
+async def spa_pages(request: Request, call_next):
+    if request.method == "GET" and any(pattern.fullmatch(request.url.path) for pattern in _SPA_PATHS):
+        return _spa_index()
+    response = await call_next(request)
+    if request.method == "GET" and response.status_code == 404 and "text/html" in request.headers.get("accept", ""):
+        return _spa_index()
+    return response
+
+
+@app.get("/", include_in_schema=False)
 def root():
-    return RedirectResponse(url="/books")
+    return _spa_index()
+
+
+@app.get("/app/{path:path}", include_in_schema=False)
+def spa(path: str):
+    candidate = (SPA_DIR / path).resolve()
+    if path and SPA_DIR.resolve() in candidate.parents and candidate.is_file():
+        return FileResponse(candidate)
+    return _spa_index()
+
+
+@app.get("/{filename}", include_in_schema=False)
+def spa_root_asset(filename: str):
+    candidate = (SPA_DIR / filename).resolve()
+    if SPA_DIR.resolve() in candidate.parents and candidate.is_file():
+        return FileResponse(candidate)
+    return _spa_index()
