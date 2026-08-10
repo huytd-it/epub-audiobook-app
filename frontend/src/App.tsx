@@ -1,26 +1,43 @@
-import { FormEvent, useEffect, useState } from "react";
-import { Link, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
-import { api, Book, Chapter, Job, Media, Patch, post } from "./api";
+import React from "react";
+import { Route, Routes } from "react-router-dom";
+import { Shell } from "@/components/layout/Shell";
+import { Dashboard } from "@/pages/Dashboard";
+import { Books } from "@/pages/Books";
+import { Upload } from "@/pages/Upload";
+import { BookDetail } from "@/pages/BookDetail";
+import { Queue } from "@/pages/Queue";
+import { Video } from "@/pages/Video";
+import { MediaPage } from "@/pages/MediaPage";
+import { Tools } from "@/pages/Tools";
+import { LegacyTool } from "@/pages/LegacyTool";
+import { NotFound } from "@/pages/NotFound";
 
-const nav=[['/','Bàn làm việc','⌁'],['/books','Thư viện','▤'],['/books/upload','Nhập EPUB','＋'],['/queue','Hàng đợi','≋'],['/video','Video','▷'],['/media','Kho tư liệu','◇'],['/tools','Công cụ','⚙']];
-function Shell({children}:{children:React.ReactNode}){return <div className="shell"><aside><Link className="brand" to="/"><img src="/studio-mark.svg"/><span>XƯỞNG<br/>SÁCH NÓI</span></Link><nav>{nav.map(([to,label,icon])=><NavLink key={to} to={to} end={to==='/' }><b>{icon}</b>{label}</NavLink>)}</nav><div className="side-note"><i/>Backend cục bộ<br/><small>FastAPI + Tauri</small></div></aside><main>{children}</main></div>}
-function Loading(){return <div className="loading">Đang mở xưởng...</div>}
-function Header({eyebrow,title,action}:{eyebrow:string;title:string;action?:React.ReactNode}){return <header><div><small>{eyebrow}</small><h1>{title}</h1></div>{action}</header>}
-function Dashboard(){const [data,setData]=useState<any>();useEffect(()=>{api<any>('/api/ui/bootstrap').then(setData)},[]);if(!data)return <Loading/>;const taskCount=Object.values(data.queue.jobs||{}).reduce<number>((sum,value)=>sum+Number(value),0);return <><Header eyebrow="Tổng quan hôm nay" title="Từ trang sách đến thanh âm." action={<Link className="button primary" to="/upload">＋ Nhập sách mới</Link>}/><section className="hero"><div><span className="kicker">DÂY CHUYỀN XUẤT BẢN</span><h2>{data.book_count} đầu sách<br/><em>đang trong xưởng.</em></h2><p>Biên tập văn bản, tổng hợp giọng đọc, dựng video và xuất bản trong một không gian làm việc.</p></div><div className="dial"><strong>{taskCount}</strong><span>TÁC VỤ</span></div></section><div className="grid two"><Panel title="Sách gần đây" link="/books">{data.books.map((b:Book)=><BookRow key={b.id} book={b}/>)}</Panel><Panel title="Nhịp xưởng" link="/queue">{data.jobs.length?data.jobs.map((j:Job)=><JobRow key={j.id} job={j}/>):<Empty text="Chưa có tác vụ"/>}</Panel></div></>}
-function Panel({title,link,children}:{title:string;link:string;children:React.ReactNode}){return <section className="panel"><div className="panel-head"><h3>{title}</h3><Link to={link}>Xem tất cả →</Link></div>{children}</section>}
-function BookRow({book}:{book:Book}){return <Link className="row" to={`/books/${book.id}`}><span className="book-icon">Aa</span><span><strong>{book.title}</strong><small>{book.original_filename}</small></span><Status value={book.status}/></Link>}
-function JobRow({job}:{job:Job}){return <div className="row"><span className="job-num">{job.percent}%</span><span><strong>{job.job_type}</strong><small>Job #{job.id} · {job.phase||'chờ xử lý'}</small></span><Status value={job.status}/></div>}
-function Status({value}:{value:string}){return <span className={`status ${value}`}>{value}</span>}
-function Empty({text}:{text:string}){return <div className="empty">{text}</div>}
-function Books(){const [data,setData]=useState<any>();useEffect(()=>{api('/api/ui/books').then(setData)},[]);return <><Header eyebrow="Bộ sưu tập" title="Thư viện sách" action={<Link className="button primary" to="/upload">＋ EPUB</Link>}/>{!data?<Loading/>:<div className="book-grid">{data.items.map((b:Book)=><Link className="book-card" to={`/books/${b.id}`} key={b.id}><span className="book-spine">{String(b.id).padStart(2,'0')}</span><div><Status value={b.status}/><h3>{b.title}</h3><p>{b.original_filename}</p><footer><span>{b.patches?.done}/{b.patches?.total} patch hoàn tất</span><b>→</b></footer></div></Link>)}</div>}</>}
-function Upload(){const nav=useNavigate();const [busy,setBusy]=useState(false);const [error,setError]=useState('');async function submit(e:FormEvent<HTMLFormElement>){e.preventDefault();setBusy(true);const form=new FormData(e.currentTarget);try{const r=await fetch('/books/upload',{method:'POST',body:form});const id=r.url.match(/books\/(\d+)/)?.[1];nav(id?`/books/${id}`:'/books')}catch(x){setError(String(x))}finally{setBusy(false)}}return <><Header eyebrow="Cổng nhập liệu" title="Đưa một cuốn sách vào xưởng"/><form className="drop" onSubmit={submit}><span>EPUB</span><h2>Thả bản thảo vào đây</h2><p>Chọn tệp .epub, hệ thống sẽ tách chương và chuẩn bị văn bản.</p><input name="epub_file" type="file" accept=".epub" required/><button className="button primary" disabled={busy}>{busy?'Đang phân tích...':'Chọn và nhập sách'}</button>{error&&<b className="error">{error}</b>}</form></>}
-function BookDetail(){const {id}=useParams();const [data,setData]=useState<{book:Book;patches:Patch[];chapters:Chapter[];last_error:any}>();useEffect(()=>{api<{book:Book;patches:Patch[];chapters:Chapter[];last_error:any}>(`/api/ui/books/${id}`).then(setData)},[id]);if(!data)return <Loading/>;return <><Header eyebrow={`Sách #${id}`} title={data.book.title}/><div className="metrics"><Metric label="Chương" value={data.chapters.length}/><Metric label="Patch" value={data.patches.length}/><Metric label="Hoàn tất" value={data.patches.filter(p=>p.status==='done').length}/></div><div className="grid two"><Panel title="Các patch" link="/queue">{data.patches.map(p=><div className="row" key={p.id}><span className="job-num">{p.patch_index+1}</span><span><strong>{p.name||`Patch ${p.patch_index+1}`}</strong><small>{p.next_chunk_index}/{p.chunk_count} đoạn</small></span><Status value={p.status}/></div>)}</Panel><section className="panel"><div className="panel-head"><h3>Mục lục</h3></div>{data.chapters.map(c=><div className="row" key={c.id}><span className="job-num">{c.chapter_index+1}</span><span><strong>{c.title}</strong><small>{c.char_count.toLocaleString('vi')} ký tự</small></span>{c.is_excluded&&<Status value="excluded"/>}</div>)}</section></div></>}
-function Metric({label,value}:{label:string;value:number}){return <div className="metric"><strong>{value}</strong><span>{label}</span></div>}
-function Queue(){const [jobs,setJobs]=useState<Job[]>();const load=()=>api<{jobs:Job[]}>('/queue/jobs?limit=200').then(x=>setJobs(x.jobs));useEffect(()=>{load();const timer=setInterval(load,3000);return()=>clearInterval(timer)},[]);async function act(id:number,a:string){await post(`/queue/jobs/${id}/${a}`);load()}return <><Header eyebrow="Điều phối" title="Hàng đợi sản xuất" action={<button className="button" onClick={()=>post('/queue/clear').then(load)}>Dọn tác vụ cũ</button>}/><section className="panel wide">{!jobs?<Loading/>:jobs.map(j=><div className="queue-row" key={j.id}><span className="job-num">#{j.id}</span><div><strong>{j.job_type}</strong><small>{j.phase||'Đang chờ'} · sách {j.book_id||'—'}</small></div><div className="progress"><i style={{width:`${j.percent}%`}}/></div><b>{j.percent}%</b><Status value={j.status}/><div className="actions">{['failed','cancelled'].includes(j.status)&&<button onClick={()=>act(j.id,'retry')}>Thử lại</button>}{['pending','running'].includes(j.status)&&<button onClick={()=>act(j.id,'cancel')}>Dừng</button>}</div></div>)}</section></>}
-function Video(){const [items,setItems]=useState<any[]>();useEffect(()=>{api<any>('/video/api/videos').then(x=>setItems(x.videos||x.items||x))},[]);return <><Header eyebrow="Phòng dựng" title="Video thành phẩm"/><div className="book-grid">{items?.map(v=><article className="book-card" key={v.id}><span className="book-spine">▶</span><div><Status value={v.status||'ready'}/><h3>{v.title||v.filename}</h3><p>{v.resolution||'Video đã dựng'}</p></div></article>)||<Loading/>}{items?.length===0&&<Empty text="Chưa có video thành phẩm"/>}</div></>}
-function MediaPage(){const [data,setData]=useState<Media>();useEffect(()=>{api<Media>('/api/ui/media').then(setData)},[]);return <><Header eyebrow="Nguyên liệu" title="Kho tư liệu"/><div className="grid three"><MediaPanel title="Nhạc nền" items={data?.music||[]} kind="music"/><MediaPanel title="Hình & video" items={data?.photos||[]} kind="photos"/><MediaPanel title="Giọng mẫu" items={data?.voices||[]} kind="voices"/></div></>}
-function MediaPanel({title,items,kind}:{title:string;items:any[];kind:string}){return <section className="panel"><div className="panel-head"><h3>{title}</h3><span>{items.length}</span></div>{items.map((x,i)=><div className="row" key={x.id||x.name}><span className="job-num">{i+1}</span><span><strong>{x.name}</strong><small>{x.duration_sec?`${Math.round(x.duration_sec)} giây`:kind}</small></span></div>)}{!items.length&&<Empty text="Kho đang trống"/>}</section>}
-function LegacyTool(){const path=location.pathname;const labels:Record<string,string>={'/youtube':'YouTube','/drive':'Google Drive','/database-io':'Dữ liệu','/flows':'Luồng tự động','/logs':'Nhật ký','/effects':'Hiệu ứng'};const title=labels[path]||'Bộ công cụ';return <><Header eyebrow="Không gian vận hành" title={title}/><section className="panel"><div className="panel-head"><h3>Công cụ SPA</h3></div><div className="empty">Khu vực này đã được chuyển khỏi Jinja. Các API nghiệp vụ vẫn hoạt động trong cùng app shell.</div>{path==='/logs'&&<iframe title="Nhật ký" src="/logs/raw" style={{width:'100%',height:'55vh',border:0,background:'#111'}}/>}</section></>}
-function Tools(){return <><Header eyebrow="Mở rộng xưởng" title="Bộ công cụ"/><div className="book-grid">{[['/youtube','YouTube'],['/drive','Google Drive'],['/database-io','Dữ liệu'],['/flows','Luồng tự động'],['/logs','Nhật ký'],['/effects','Hiệu ứng']].map(([to,title],i)=><Link className="book-card" to={to} key={to}><span className="book-spine">{String(i+1).padStart(2,'0')}</span><div><h3>{title}</h3><p>Mở trong SPA</p></div></Link>)}</div></>}
-function App(){return <Shell><Routes><Route path="/" element={<Dashboard/>}/><Route path="/books" element={<Books/>}/><Route path="/books/upload" element={<Upload/>}/><Route path="/upload" element={<Upload/>}/><Route path="/books/:id/*" element={<BookDetail/>}/><Route path="/queue" element={<Queue/>}/><Route path="/video" element={<Video/>}/><Route path="/music" element={<MediaPage/>}/><Route path="/photos" element={<MediaPage/>}/><Route path="/voices" element={<MediaPage/>}/><Route path="/media" element={<MediaPage/>}/><Route path="/tools" element={<Tools/>}/><Route path="/youtube" element={<LegacyTool/>}/><Route path="/drive" element={<LegacyTool/>}/><Route path="/database-io" element={<LegacyTool/>}/><Route path="/flows" element={<LegacyTool/>}/><Route path="/logs" element={<LegacyTool/>}/><Route path="/effects" element={<LegacyTool/>}/><Route path="*" element={<><Header eyebrow="404" title="Không tìm thấy khu vực này"/><Link className="button" to="/">Về bàn làm việc</Link></>}/></Routes></Shell>}
+function App() {
+  return (
+    <Shell>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/books" element={<Books />} />
+        <Route path="/books/upload" element={<Upload />} />
+        <Route path="/upload" element={<Upload />} />
+        <Route path="/books/:id/*" element={<BookDetail />} />
+        <Route path="/queue" element={<Queue />} />
+        <Route path="/video" element={<Video />} />
+        <Route path="/music" element={<MediaPage />} />
+        <Route path="/photos" element={<MediaPage />} />
+        <Route path="/voices" element={<MediaPage />} />
+        <Route path="/media" element={<MediaPage />} />
+        <Route path="/tools" element={<Tools />} />
+        <Route path="/youtube" element={<LegacyTool />} />
+        <Route path="/drive" element={<LegacyTool />} />
+        <Route path="/database-io" element={<LegacyTool />} />
+        <Route path="/flows" element={<LegacyTool />} />
+        <Route path="/logs" element={<LegacyTool />} />
+        <Route path="/effects" element={<LegacyTool />} />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </Shell>
+  );
+}
+
 export default App;
