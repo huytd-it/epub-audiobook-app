@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, AudioLines, CheckCircle2, Download, Eye, ListChecks, Play } from "lucide-react";
-import { api, Chapter, Patch, postJson } from "@/api";
+import { api, Chapter, Patch, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/common/StatusBadge";
@@ -201,6 +201,7 @@ export function ConfigDialog({
 }) {
   const [videoConfig, setVideoConfig] = useState<VideoConfig>();
   const [backgrounds, setBackgrounds] = useState<BackgroundItem[]>([]);
+  const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
   const [music, setMusic] = useState<MusicSettings & { tracks: { id: number; name: string; duration_sec: number | null }[] }>();
   const [ytSettings, setYtSettings] = useState<YouTubeSettings>();
   const [ytPreview, setYtPreview] = useState<YouTubeMetadataPreview>();
@@ -220,11 +221,13 @@ export function ConfigDialog({
         api<MusicSettings & { tracks: { id: number; name: string; duration_sec: number | null }[] }>(
           `/books/${bookId}/music`
         ),
+        api<{ voices: VoiceItem[] }>("/api/ui/media"),
       ])
-        .then(([config, media, musicSettings]) => {
+        .then(([config, media, musicSettings, voiceMedia]) => {
           setVideoConfig(config);
           setBackgrounds(media.backgrounds || []);
           setMusic(musicSettings);
+          setIntroOutroVoices(voiceMedia.voices || []);
         })
         .catch((error) => onMessage(errorText(error)));
     }
@@ -637,6 +640,33 @@ export function ConfigDialog({
                 ) : (
                   <div className="text-xs text-muted-foreground">Thư viện chưa có background media.</div>
                 )}
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 rounded-md border border-border p-3 sm:grid-cols-2">
+                <Field label="Âm thanh intro" hint="Phát trước nội dung patch">
+                  <select
+                    className={selectClass}
+                    value={videoConfig.intro_voice}
+                    onChange={(event) => setVideoConfig({ ...videoConfig, intro_voice: event.target.value })}
+                  >
+                    <option value="">Không dùng intro</option>
+                    {introOutroVoices.map((voice) => (
+                      <option key={voice.name} value={voice.name}>{voice.name}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Âm thanh outro" hint="Phát sau nội dung patch">
+                  <select
+                    className={selectClass}
+                    value={videoConfig.outro_voice}
+                    onChange={(event) => setVideoConfig({ ...videoConfig, outro_voice: event.target.value })}
+                  >
+                    <option value="">Không dùng outro</option>
+                    {introOutroVoices.map((voice) => (
+                      <option key={voice.name} value={voice.name}>{voice.name}</option>
+                    ))}
+                  </select>
+                </Field>
               </div>
 
               {music && (

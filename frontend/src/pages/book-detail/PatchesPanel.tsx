@@ -49,6 +49,7 @@ type RowProps = {
   onOpenIssues: (patch: Patch) => void;
   onImportDrive: (patch: Patch) => void;
   onImportFiles: (patch: Patch, files: FileList | null) => void;
+  onUploadVideo: (patch: Patch) => void;
 };
 
 /** Memo hoá theo từng dòng: nhịp polling chỉ vẽ lại patch thực sự đổi. */
@@ -66,6 +67,7 @@ const PatchRow = React.memo(function PatchRow({
   onOpenIssues,
   onImportDrive,
   onImportFiles,
+  onUploadVideo,
 }: RowProps) {
   const percent = patch.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
   const rangeBad = rangeReport && rangeReport.severity !== "ok";
@@ -204,6 +206,21 @@ const PatchRow = React.memo(function PatchRow({
 
       <TableCell className="py-2.5 pr-4 text-right">
         <div className="flex items-center justify-end gap-1">
+          {pipeline?.video_status === "done" && pipeline.upload_state !== "published" && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px] text-red-700"
+              disabled={busy || pipeline.upload_state === "active" || pipeline.upload_state === "postprocessing"}
+              onClick={() => onUploadVideo(patch)}
+              title="Upload video lên YouTube"
+            >
+              <Video className="h-3 w-3" />
+              <span className="hidden lg:inline">
+                {pipeline.upload_state === "active" || pipeline.upload_state === "postprocessing" ? "Đang upload" : "YouTube"}
+              </span>
+            </Button>
+          )}
           <Button
             size="sm"
             variant="ghost"
@@ -430,6 +447,16 @@ export function PatchesPanel({
     [bookId, runImport]
   );
 
+  const uploadVideo = useCallback(
+    (patch: Patch) =>
+      runImport(
+        patch,
+        () => post(`/books/${bookId}/patches/${patch.id}/youtube-upload`),
+        `Đã đưa video patch ${patch.patch_index + 1} vào hàng đợi YouTube.`
+      ),
+    [bookId, runImport]
+  );
+
   return (
     <Card>
       <CardHeader className="gap-4 border-b border-border bg-muted/20">
@@ -532,6 +559,7 @@ export function PatchesPanel({
                     onOpenIssues={openIssues}
                     onImportDrive={importDrive}
                     onImportFiles={importFiles}
+                    onUploadVideo={uploadVideo}
                   />
                 ))}
               </TableBody>
