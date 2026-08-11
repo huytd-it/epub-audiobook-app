@@ -3,7 +3,7 @@ from pathlib import Path
 
 from app import repository
 from app.jobqueue.models import JobFatalError
-from app.jobqueue.handlers import patch_video, voxcpm_tts, youtube_upload
+from app.jobqueue.handlers import patch_video, audiobook_tts, youtube_upload
 from app.patch_publishing import run_patch_publish_stage, seed_patch_video
 
 
@@ -15,7 +15,7 @@ def audio(ctx):
         ctx.progress(1, 1, phase="existing")
         ctx.log(f"audio already exists -> {patch.audio_path}")
         return {"audio_path": patch.audio_path, "skipped": True}
-    return voxcpm_tts.handle(ctx)
+    return audiobook_tts.handle(ctx)
 
 
 def video(ctx):

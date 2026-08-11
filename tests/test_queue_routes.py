@@ -152,4 +152,4 @@ def test_requeue_stuck_reports_how_many_tts_jobs_it_queued(client):
 
     assert body["requeued"] == 1  # only the stuck 'processing' patch was flipped
     assert body["queued"] == 2  # ... but both it and the already-pending one got queued
-    assert len(store.list_jobs(conn, job_type="voxcpm_tts")) == 2
+    assert len(store.list_jobs(conn, job_type="audiobook_tts")) == 2

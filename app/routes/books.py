@@ -1147,7 +1147,7 @@ async def auto_build_patches(
             conn, book_id, tts_engine=tts_engine, voice=voice_id,
             max_chars=max_chars, with_effects=with_effects,
         )
-    logger.info("event=queue.start book_id=%s voxcpm_tts=%s", book_id, queued)
+    logger.info("event=queue.start book_id=%s audiobook_tts=%s", book_id, queued)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 

@@ -60,6 +60,20 @@ def handle(ctx) -> dict:
     voice = payload.get("voice") or None
     max_chars = int(payload.get("max_chars") or 0)
     with_effects = bool(payload.get("with_effects"))
+
+    # A retry can be claimed after synthesis succeeded but before the queue row was
+    # committed as done (process crash, DB lock, shutdown). The patch audio is the
+    # durable result, so never synthesize it a second time. Continue the downstream
+    # automation instead, which is idempotent through queue dedupe keys.
+    if patch.status in {"failed", "done"} and patch.audio_path and Path(patch.audio_path).is_file():
+        try:
+            info = sf.info(patch.audio_path)
+            if info.frames > 0 and info.samplerate > 0:
+                ctx.log(f"audio đã tồn tại, bỏ qua TTS -> {patch.audio_path}")
+                return _finish_audio_result(ctx, patch, patch.audio_path, payload, skipped=True)
+        except (OSError, RuntimeError):
+            ctx.log(f"audio result không đọc được, tạo lại -> {patch.audio_path}")
+
     if settings.tts_write_chunk_files:
         snapshot_dir = Path(settings.data_root) / "books" / str(patch.book_id) / "patches" / f"{patch.id}_chunks"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -86,27 +100,43 @@ def handle(ctx) -> dict:
         repository.mark_patch_failed(ctx.conn, patch_id, str(exc))
         raise
 
+    return _finish_audio_result(ctx, patch, audio_path, payload, chunk_count=chunk_count)
+
+
+def _finish_audio_result(ctx, patch, audio_path: str, payload: dict, *,
+                         chunk_count: int = 0, skipped: bool = False) -> dict:
+    """Persist a usable audio result and idempotently continue the media pipeline."""
     from app.patch_publishing import fetch_thumbnail_inputs, on_patch_audio_ready, warm_patch_thumbnail
-    thumbnail_inputs = fetch_thumbnail_inputs(ctx.conn, patch_id)
+    from app.youtube_metadata import get_book_youtube_config
+
+    thumbnail_inputs = fetch_thumbnail_inputs(ctx.conn, patch.id)
     warm_patch_thumbnail(thumbnail_inputs)
-    repository.mark_patch_done(ctx.conn, patch_id, audio_path)
-    on_patch_audio_ready(ctx.conn, patch_id)
+    repository.mark_patch_done(ctx.conn, patch.id, audio_path)
+    on_patch_audio_ready(ctx.conn, patch.id)
+
+    # Audio availability is the trigger for video creation. Upload intent implies
+    # video creation; the video handler validates the completed temporary render
+    # before atomically publishing and enqueueing the upload.
     auto_upload_youtube = bool(payload.get("auto_upload_youtube"))
-    if payload.get("auto_create_video") or auto_upload_youtube:
-        from app.jobqueue import store
-        from app.youtube_metadata import get_book_youtube_config
-        youtube_config = get_book_youtube_config(ctx.conn, patch.book_id)
+    youtube_config = get_book_youtube_config(ctx.conn, patch.book_id)
+    configured_auto_upload = bool(youtube_config.get("auto_upload"))
+    auto_create_video = bool(payload.get("auto_create_video")) or auto_upload_youtube or configured_auto_upload
+    if auto_create_video:
+        upload_youtube = auto_upload_youtube or configured_auto_upload
         store.enqueue(
             ctx.conn, "patch_video",
-            payload={"patch_id": patch_id, "upload_youtube": auto_upload_youtube,
+            payload={"patch_id": patch.id, "upload_youtube": upload_youtube,
                      "privacy": youtube_config.get("privacy_status", "private")},
-            book_id=patch.book_id, patch_id=patch_id,
-            dedupe_key=f"patch_video:patch={patch_id}",
+            book_id=patch.book_id, patch_id=patch.id,
+            dedupe_key=f"patch_video:patch={patch.id}",
         )
-    ctx.log(f"patch {patch_id} xong -> {audio_path}")
+
+    ctx.log(f"patch {patch.id} xong -> {audio_path}")
     final_path = finalize_book_if_ready(ctx, patch.book_id)
-    ctx.progress(chunk_count, chunk_count, phase="synthesizing")
-    return {"audio_path": audio_path, "chunks": chunk_count, "final_audio_path": final_path}
+    if chunk_count:
+        ctx.progress(chunk_count, chunk_count, phase="synthesizing")
+    return {"audio_path": audio_path, "chunks": chunk_count,
+            "final_audio_path": final_path, "skipped": skipped}
 
 
 def synthesize_patch(

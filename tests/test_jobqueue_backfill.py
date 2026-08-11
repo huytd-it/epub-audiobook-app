@@ -39,10 +39,10 @@ def test_pending_patches_become_voxcpm_jobs(tmp_path):
     patch_id = _patch(conn)
     _patch(conn, status="done", index=1)
     assert enqueue_pending_patch_jobs(conn) == 1
-    job = store.list_jobs(conn, job_type="voxcpm_tts")[0]
+    job = store.list_jobs(conn, job_type="audiobook_tts")[0]
     assert job.payload["patch_id"] == patch_id
     assert job.payload["tts_engine"] == "voxcpm2"
-    assert job.dedupe_key == f"voxcpm_tts:patch={patch_id}"
+    assert job.dedupe_key == f"audiobook_tts:patch={patch_id}"
     assert job.book_id == 1
 
 
@@ -52,8 +52,8 @@ def test_backfill_never_queues_tts_on_its_own(tmp_path):
     conn = _conn(tmp_path)
     _patch(conn)
     counts = backfill_pending_jobs(conn)
-    assert "voxcpm_tts" not in counts
-    assert store.list_jobs(conn, job_type="voxcpm_tts") == []
+    assert "audiobook_tts" not in counts
+    assert store.list_jobs(conn, job_type="audiobook_tts") == []
 
 
 def test_pending_patch_jobs_can_be_scoped_to_one_book(tmp_path):
@@ -70,7 +70,7 @@ def test_pending_patch_jobs_can_be_scoped_to_one_book(tmp_path):
            VALUES (2, 0, 0, 0, 'pending', 0, ?, ?)""", (now, now))
     conn.commit()
     assert enqueue_pending_patch_jobs(conn, book_id=1) == 1
-    jobs = store.list_jobs(conn, job_type="voxcpm_tts")
+    jobs = store.list_jobs(conn, job_type="audiobook_tts")
     assert [j.payload["patch_id"] for j in jobs] == [mine]
 
 
@@ -78,7 +78,7 @@ def test_pending_patch_jobs_snapshot_selected_tts_engine(tmp_path):
     conn = _conn(tmp_path)
     _patch(conn)
     assert enqueue_pending_patch_jobs(conn, tts_engine="vieneu-fast") == 1
-    assert store.list_jobs(conn, job_type="voxcpm_tts")[0].payload["tts_engine"] == "vieneu-fast"
+    assert store.list_jobs(conn, job_type="audiobook_tts")[0].payload["tts_engine"] == "vieneu-fast"
 
 
 def test_pending_book_jobs_become_video_jobs(tmp_path):
@@ -136,7 +136,7 @@ def test_finished_job_does_not_block_new_backfill(tmp_path):
     conn = _conn(tmp_path)
     _patch(conn)
     enqueue_pending_patch_jobs(conn)
-    job = store.list_jobs(conn, job_type="voxcpm_tts")[0]
+    job = store.list_jobs(conn, job_type="audiobook_tts")[0]
     store.finish(conn, job.id, None)
     assert enqueue_pending_patch_jobs(conn) == 1
 
@@ -144,11 +144,11 @@ def test_finished_job_does_not_block_new_backfill(tmp_path):
 def test_build_queue_registers_all_four_handlers(tmp_path):
     conn = _conn(tmp_path)
     queue = build_queue(lambda: db.connect(str(tmp_path / "a.db")))
-    assert queue.capacity("voxcpm_tts") == 1
+    assert queue.capacity("audiobook_tts") == 1
     assert queue.capacity("video") == 2
     assert queue.capacity("youtube_upload") == 1
     assert queue.capacity("light_tts") == 10
     assert {p["job_type"] for p in queue.pool_status()} == {
-        "voxcpm_tts", "video", "patch_video", "standalone_video",
+        "audiobook_tts", "video", "patch_video", "standalone_video",
         "youtube_upload", "light_tts", "flow_audio", "flow_video", "flow_youtube"
     }

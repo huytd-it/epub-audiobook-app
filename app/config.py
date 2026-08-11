@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     light_tts_chunk_retries: int = 3
     # Queue job chạy nền
     # Loại nào không liệt kê ở đây nhận queue_default_concurrency.
-    queue_concurrency: str = "voxcpm_tts=1,video=2,youtube_upload=1"
+    queue_concurrency: str = "audiobook_tts=1,video=2,youtube_upload=1"
     queue_default_concurrency: int = 10
     queue_log_retention_days: int = 7
     # Job 'running' im lặng quá lâu bị coi là chết và trả về 'pending'.

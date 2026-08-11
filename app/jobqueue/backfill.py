@@ -9,7 +9,7 @@ from typing import Callable
 
 from app.config import settings
 from app.jobqueue import store
-from app.jobqueue.handlers import flow_nodes, light_tts, patch_video, standalone_video, video, voxcpm_tts, youtube_upload
+from app.jobqueue.handlers import flow_nodes, light_tts, patch_video, standalone_video, video, audiobook_tts, youtube_upload
 from app.jobqueue.runner import JobQueue, parse_concurrency
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,10 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
         reap_after_seconds=settings.queue_reap_after_seconds,
         is_paused=repository.is_queue_paused,
     )
-    queue.register("voxcpm_tts", voxcpm_tts.handle)
+    queue.register("audiobook_tts", audiobook_tts.handle)
+    # Compatibility for queue rows created before the generic TTS rename. New jobs
+    # always use audiobook_tts; persisted voxcpm_tts rows can still finish safely.
+    queue.register("voxcpm_tts", audiobook_tts.handle)
     queue.register("video", video.handle)
     queue.register("patch_video", patch_video.handle)
     queue.register("standalone_video", standalone_video.handle)
@@ -47,7 +50,7 @@ def enqueue_pending_patch_jobs(
     auto_upload_youtube: bool = False, retry_count: int = 2,
     missing_audio_only: bool = False,
 ) -> int:
-    """Queue a voxcpm_tts job for every 'pending' patch, optionally of a single book.
+    """Queue a audiobook_tts job for every 'pending' patch, optionally of a single book.
 
     Deliberately NOT part of backfill_pending_jobs: synthesis is expensive and holds the
     GPU, so it only starts when an operator asks for it (Start queue / Retry failed /
@@ -106,11 +109,11 @@ def enqueue_pending_patch_jobs(
                 pass
         if store.enqueue(
             conn,
-            "voxcpm_tts",
+            "audiobook_tts",
             payload={"patch_id": row["id"], **request},
             book_id=row["book_id"],
             patch_id=row["id"],
-            dedupe_key=f"voxcpm_tts:patch={row['id']}",
+            dedupe_key=f"audiobook_tts:patch={row['id']}",
             max_attempts=max(1, min(11, int(retry_count) + 1)),
         ) is not None:
             queued += 1
@@ -120,7 +123,7 @@ def enqueue_pending_patch_jobs(
 def backfill_pending_jobs(conn: sqlite3.Connection) -> dict[str, int]:
     """Re-attach queue rows to legacy tables that already hold pending work. Runs at
     startup, so it covers only the cheap resumable job types - see
-    enqueue_pending_patch_jobs for why voxcpm_tts is excluded."""
+    enqueue_pending_patch_jobs for why audiobook_tts is excluded."""
     counts = {"video": 0, "youtube_upload": 0}
 
     conn.execute(

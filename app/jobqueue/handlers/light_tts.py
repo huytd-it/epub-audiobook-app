@@ -123,7 +123,7 @@ def handle(ctx) -> dict:
     chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
     audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
     _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects)
-    from app.jobqueue.handlers.voxcpm_tts import finalize_book_if_ready
+    from app.jobqueue.handlers.audiobook_tts import finalize_book_if_ready
     final_path = finalize_book_if_ready(ctx, book_id)
     ctx.emit({"type": "done", "saved": True, "complete": True, "ok": ok_count, "failed": 0})
     ctx.progress(total, total, phase="done")

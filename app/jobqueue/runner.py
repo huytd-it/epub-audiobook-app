@@ -177,8 +177,11 @@ class JobQueue:
     def pool_status(self):
         conn = self._conn_factory()
         try:
+            # voxcpm_tts is a read-only compatibility alias for persisted pre-rename
+            # jobs. Keep it executable without exposing it as a separate queue pool.
+            visible_types = (t for t in sorted(self._specs) if t != "voxcpm_tts")
             return [{"job_type": t, "running": sum(r.job.job_type == t for r in self._running.values()),
-                     "capacity": self.capacity(t), "pending": store.pending_count(conn, t)} for t in sorted(self._specs)]
+                     "capacity": self.capacity(t), "pending": store.pending_count(conn, t)} for t in visible_types]
         finally:
             conn.close()
 
@@ -186,20 +189,23 @@ class JobQueue:
     def state(self):
         return "paused" if self._paused else ("busy" if self._running else "idle")
 
-    def _vox(self):
-        return next((r for r in self._running.values() if r.job.job_type == "voxcpm_tts"), None)
+    def _audiobook_tts(self):
+        return next((
+            r for r in self._running.values()
+            if r.job.job_type in {"audiobook_tts", "voxcpm_tts"}
+        ), None)
 
     @property
     def current_patch_id(self):
-        tracker = self._vox()
+        tracker = self._audiobook_tts()
         return tracker.job.payload.get("patch_id") if tracker else None
 
     @property
     def current_chunk_index(self):
-        tracker = self._vox()
+        tracker = self._audiobook_tts()
         return tracker.current if tracker else 0
 
     @property
     def current_chunk_count(self):
-        tracker = self._vox()
+        tracker = self._audiobook_tts()
         return tracker.total if tracker else 0

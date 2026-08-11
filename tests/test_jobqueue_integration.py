@@ -41,7 +41,7 @@ async def _drain(conn, timeout=30.0):
 @pytest.mark.asyncio
 async def test_each_type_respects_its_own_cap(conn_factory):
     conn = conn_factory()
-    plan = {"voxcpm_tts": 4, "video": 6, "youtube_upload": 3, "light_tts": 30}
+    plan = {"audiobook_tts": 4, "video": 6, "youtube_upload": 3, "light_tts": 30}
     for job_type, count in plan.items():
         for _ in range(count):
             store.enqueue(conn, job_type)
@@ -61,7 +61,7 @@ async def test_each_type_respects_its_own_cap(conn_factory):
             return {}
         return handler
 
-    queue = JobQueue(conn_factory, concurrency={"voxcpm_tts": 1, "video": 2, "youtube_upload": 1},
+    queue = JobQueue(conn_factory, concurrency={"audiobook_tts": 1, "video": 2, "youtube_upload": 1},
                      default_concurrency=10, poll_interval=0.01, reap_after_seconds=120)
     for job_type in plan:
         queue.register(job_type, make(job_type))
@@ -69,7 +69,7 @@ async def test_each_type_respects_its_own_cap(conn_factory):
     await _drain(conn)
     await queue.stop(timeout=10)
 
-    assert peaks["voxcpm_tts"] == 1
+    assert peaks["audiobook_tts"] == 1
     assert peaks["video"] <= 2
     assert peaks["youtube_upload"] == 1
     assert peaks["light_tts"] <= 10

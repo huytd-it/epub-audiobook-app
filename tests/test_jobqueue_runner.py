@@ -39,7 +39,7 @@ async def drain(c, timeout=10):
 
 
 def test_parse_concurrency_reads_values():
-    assert parse_concurrency("voxcpm_tts=1,video=2,youtube_upload=1", default=10) == {"voxcpm_tts": 1, "video": 2, "youtube_upload": 1}
+    assert parse_concurrency("audiobook_tts=1,video=2,youtube_upload=1", default=10) == {"audiobook_tts": 1, "video": 2, "youtube_upload": 1}
 
 def test_parse_concurrency_ignores_whitespace_and_empty_entries():
     assert parse_concurrency(" video = 2 ,, ", default=10) == {"video": 2}
@@ -52,8 +52,8 @@ def test_parse_concurrency_empty_is_empty():
 
 
 def test_parse_concurrency_preserves_zero_as_disabled():
-    assert parse_concurrency("voxcpm_tts=0,video=2", default=10) == {
-        "voxcpm_tts": 0, "video": 2,
+    assert parse_concurrency("audiobook_tts=0,video=2", default=10) == {
+        "audiobook_tts": 0, "video": 2,
     }
 
 def test_capacity_uses_config_or_default():

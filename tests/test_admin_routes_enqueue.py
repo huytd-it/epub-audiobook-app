@@ -42,7 +42,7 @@ def test_admin_actions_enqueue_jobs(client):
     c, conn = client
     patch_id = _patch(conn, "processing")
     assert c.post("/queue/requeue-stuck").json()["requeued"] == 1
-    assert store.list_jobs(conn, job_type="voxcpm_tts")[0].payload["patch_id"] == patch_id
+    assert store.list_jobs(conn, job_type="audiobook_tts")[0].payload["patch_id"] == patch_id
     conn.execute("UPDATE patch SET status='failed' WHERE id=?", (patch_id,))
     conn.commit()
     c.post("/books/1/patches/retry-failed", follow_redirects=False)
@@ -66,7 +66,7 @@ def test_start_queue_enqueues_the_patches_it_builds(client):
         follow_redirects=False,
     )
     assert res.status_code == 303
-    jobs = store.list_jobs(conn, job_type="voxcpm_tts")
+    jobs = store.list_jobs(conn, job_type="audiobook_tts")
     assert len(jobs) == 2
     assert {j.book_id for j in jobs} == {1}
 
