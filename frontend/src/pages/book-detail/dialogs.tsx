@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, Download, Play } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, ListChecks, Play } from "lucide-react";
 import { api, Patch, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -17,13 +17,14 @@ import {
 import {
   AudioSettings,
   ConfigTab,
+  TitleNormalizePreview,
   TtsModel,
   VideoConfig,
   VoiceOption,
   YouTubeSettings,
   errorText,
 } from "./types";
-import { CheckField, Field, TabBar, fieldClass, selectClass } from "./parts";
+import { CheckField, Field, TabBar, checkboxClass, fieldClass, selectClass } from "./parts";
 
 export function PatchPreviewDialog({
   bookId,
@@ -493,6 +494,156 @@ export function ConfigDialog({
           ) : (
             <div className="py-8 text-center text-xs text-muted-foreground">Đang tải cấu hình YouTube...</div>
           ))}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function TitleNormalizeDialog({
+  bookId,
+  open,
+  onOpenChange,
+  onMessage,
+  onOpenChapter,
+  onApplied,
+}: {
+  bookId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onMessage: (message: string) => void;
+  onOpenChapter: (chapterIndex: number) => void;
+  onApplied: () => Promise<void> | void;
+}) {
+  const [plan, setPlan] = useState<TitleNormalizePreview>();
+  const [loading, setLoading] = useState(false);
+  const [checked, setChecked] = useState<Set<number>>(new Set());
+  const [applying, setApplying] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    api<TitleNormalizePreview>(`/books/${bookId}/chapters/title-normalize/preview`)
+      .then((data) => {
+        if (cancelled) return;
+        setPlan(data);
+        setChecked(new Set(data.items.map((item) => item.chapter_index)));
+      })
+      .catch((error) => !cancelled && onMessage(errorText(error)))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [open, bookId, onMessage]);
+
+  const toggle = (chapterIndex: number) => {
+    setChecked((current) => {
+      const next = new Set(current);
+      if (next.has(chapterIndex)) next.delete(chapterIndex);
+      else next.add(chapterIndex);
+      return next;
+    });
+  };
+
+  const apply = async () => {
+    if (!checked.size) return;
+    setApplying(true);
+    try {
+      const result = await postJson<{ updated: number; patches_recomputed: unknown[] }>(
+        `/books/${bookId}/chapters/title-normalize`,
+        { chapter_indices: Array.from(checked) }
+      );
+      onMessage(
+        `Đã chuẩn hoá ${result.updated} tiêu đề chương.` +
+          (result.patches_recomputed.length ? ` Đã tính lại chunk cho ${result.patches_recomputed.length} patch.` : "")
+      );
+      onOpenChange(false);
+      await onApplied();
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ListChecks className="h-4 w-4" /> Chuẩn hoá tiêu đề chương
+          </DialogTitle>
+          <DialogDescription>
+            Ghi lại tiêu đề về dạng "Chương N: Tên chương". Bỏ chọn dòng nào thì dòng đó giữ nguyên.
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading || !plan ? (
+          <div className="py-8 text-center text-xs text-muted-foreground">Đang tải danh sách...</div>
+        ) : (
+          <div className="space-y-4 text-xs">
+            {plan.items.length === 0 ? (
+              <div className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-700">
+                Không có tiêu đề nào cần chuẩn hoá tự động.
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-md border border-border">
+                <div className="max-h-64 overflow-auto">
+                  {plan.items.map((item) => (
+                    <label
+                      key={item.chapter_index}
+                      className="flex cursor-pointer items-start gap-2 border-b border-border px-3 py-2 last:border-0 hover:bg-muted/40"
+                    >
+                      <input
+                        type="checkbox"
+                        className={`${checkboxClass} mt-0.5`}
+                        checked={checked.has(item.chapter_index)}
+                        onChange={() => toggle(item.chapter_index)}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-muted-foreground line-through decoration-muted-foreground/40">
+                          {item.current}
+                        </div>
+                        <div className="truncate font-medium text-foreground">{item.suggested}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {plan.skipped_items.length > 0 && (
+              <div>
+                <div className="mb-1.5 flex items-center gap-1.5 font-medium text-amber-800">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Phải sửa tay: {plan.skipped_items.length} chương
+                </div>
+                <div className="max-h-40 overflow-auto rounded-md border border-border">
+                  {plan.skipped_items.map((item) => (
+                    <button
+                      key={item.chapter_index}
+                      onClick={() => {
+                        onOpenChange(false);
+                        onOpenChapter(item.chapter_index);
+                      }}
+                      className="flex w-full items-center justify-between gap-2 border-b border-border px-3 py-1.5 text-left last:border-0 hover:bg-muted/40"
+                    >
+                      <span className="truncate">{item.title || "(không có tiêu đề)"}</span>
+                      <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-800">
+                        {item.reason === "unknown" ? "Không có số" : "Thiếu tên"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button size="sm" onClick={apply} disabled={applying || !checked.size}>
+            {applying ? "Đang áp dụng..." : `Áp dụng cho ${checked.size} chương`}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

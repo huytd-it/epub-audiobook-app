@@ -23,6 +23,32 @@ def _split_paragraph_into_sentences(paragraph: str) -> list[str]:
     return [s.strip() for s in sentences if s.strip()]
 
 
+def _hard_split(piece: str, max_chars: int) -> list[str]:
+    """Last-resort split at word boundaries for a sentence longer than max_chars.
+
+    Without this a paragraph carrying no sentence-ending punctuation would leave the
+    chunker as one oversized chunk, and TTS backends reject it.
+    """
+    words = piece.split(" ")
+    parts: list[str] = []
+    buffer = ""
+    for word in words:
+        candidate = f"{buffer} {word}".strip()
+        if len(candidate) <= max_chars:
+            buffer = candidate
+            continue
+        if buffer:
+            parts.append(buffer)
+        # A single word longer than the limit still has to be cut somewhere.
+        while len(word) > max_chars:
+            parts.append(word[:max_chars])
+            word = word[max_chars:]
+        buffer = word
+    if buffer:
+        parts.append(buffer)
+    return parts
+
+
 def split_into_tts_chunks(text: str, max_chars: int = 400) -> list[str]:
     """Greedily pack paragraphs/sentences into chunks no longer than max_chars,
     never splitting mid-sentence."""
@@ -32,8 +58,12 @@ def split_into_tts_chunks(text: str, max_chars: int = 400) -> list[str]:
     for paragraph in paragraphs:
         if len(paragraph) <= max_chars:
             pieces.append(paragraph)
-        else:
-            pieces.extend(_split_paragraph_into_sentences(paragraph))
+            continue
+        for sentence in _split_paragraph_into_sentences(paragraph):
+            if len(sentence) <= max_chars:
+                pieces.append(sentence)
+            else:
+                pieces.extend(_hard_split(sentence, max_chars))
 
     chunks: list[str] = []
     buffer = ""

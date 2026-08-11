@@ -97,6 +97,154 @@ export type YouTubeSettings = {
 
 export type ConfigTab = "audio" | "video" | "youtube";
 
+// --- Chapter validation / analysis --------------------------------------------
+
+export type Severity = "ok" | "info" | "warning" | "error";
+export type TitleState = "canonical" | "fixable" | "no_name" | "unknown";
+export type NumberingFlag = "gap_before" | "duplicate" | "out_of_order" | "unnumbered" | null;
+
+export type Issue = { code: string; severity: Severity; message: string; count: number };
+
+export type ChapterReport = {
+  chapter_index: number;
+  title: string;
+  chapter_no: number | null;
+  char_count: number;
+  is_excluded: boolean;
+  severity: Severity;
+  is_valid: boolean;
+  issues: Issue[];
+  title_state: TitleState;
+  suggested_title: string | null;
+  numbering_flag?: NumberingFlag;
+};
+
+export type PatchReport = {
+  patch_id: number;
+  patch_index: number;
+  chapter_start: number;
+  chapter_end: number;
+  chunk_count: number;
+  total_chars: number;
+  max_chunk_chars: number;
+  oversized_chunks: number;
+  empty_chunks: number;
+  unspeakable_chunks: number;
+  chapter_count: number;
+  invalid_chapters: number[];
+  severity: Severity;
+  is_valid: boolean;
+  issues: Issue[];
+};
+
+export type Numbering = {
+  numbered_count: number;
+  unnumbered_count: number;
+  first_number: number | null;
+  last_number: number | null;
+  missing_numbers: number[];
+  missing_count: number;
+  duplicate_numbers: Record<string, number[]>;
+  duplicate_count: number;
+  out_of_order_indices: number[];
+  is_continuous: boolean;
+};
+
+export type TitleCounts = { canonical: number; fixable: number; no_name: number; unknown: number };
+
+export type ChaptersValidation = {
+  book_id: number;
+  max_chars: number;
+  summary: {
+    chapters_total: number;
+    chapters_error: number;
+    chapters_warning: number;
+    chapters_ok: number;
+    chapters_excluded: number;
+    issue_totals: Record<string, number>;
+  };
+  numbering: Numbering;
+  titles: TitleCounts;
+  chapters: ChapterReport[];
+};
+
+export type Span = { start: number; length: number; code: string; severity: Severity; label: string; excerpt: string };
+
+export type ChapterPatchSummary = {
+  patch_id: number;
+  patch_index: number;
+  name: string;
+  status: string;
+  has_clean_text: boolean;
+  chunk_count: number;
+};
+
+export type ChapterDetail = {
+  id: number;
+  chapter_index: number;
+  title: string;
+  text: string;
+  char_count: number;
+  is_excluded: boolean;
+  chapter_no: number | null;
+  title_state: TitleState;
+  suggested_title: string | null;
+  max_chars: number;
+  report: ChapterReport;
+  spans: Span[];
+  span_totals: Record<string, number>;
+  patches: ChapterPatchSummary[];
+};
+
+export type ChapterSaveResult = {
+  ok: boolean;
+  title: string;
+  text: string;
+  char_count: number;
+  is_excluded: boolean;
+  chapter_no: number | null;
+  title_state: TitleState;
+  suggested_title: string | null;
+  report: ChapterReport;
+  spans: Span[];
+  span_totals: Record<string, number>;
+  patches: ChapterPatchSummary[];
+  patches_recomputed: { patch_id: number; patch_index: number; chunk_count: number }[];
+};
+
+export type ChapterAnalyzeResult = {
+  report: ChapterReport;
+  spans: Span[];
+  span_totals: Record<string, number>;
+  title_state: TitleState;
+  suggested_title: string | null;
+};
+
+export type ReimportPlan = {
+  existing_count: number;
+  parsed_count: number;
+  matched_count: number;
+  changed: { chapter_index: number; chapter_no: number | null; title: string; old_char_count: number; new_char_count: number }[];
+  added: { chapter_no: number | null; title: string; char_count: number }[];
+  removed: { chapter_index: number; title: string }[];
+  next_chapter_index: number;
+};
+
+export type ExtendPlan = {
+  patches: { patch_index: number; chapter_start: number; chapter_end: number; name: string; chunk_count: number }[];
+  uncovered_chapters: number;
+};
+
+export type TitleNormalizeItem = { chapter_index: number; current: string; suggested: string; chapter_no: number | null };
+export type TitleNormalizeSkipped = { chapter_index: number; title: string; reason: TitleState };
+export type TitleNormalizePreview = {
+  total: number;
+  fixable: number;
+  skipped: number;
+  items: TitleNormalizeItem[];
+  skipped_items: TitleNormalizeSkipped[];
+};
+
 /** Thiết lập TTS dùng chung cho export, tạo audio và hộp thoại cấu hình. */
 export type AudioSettings = {
   modelId: string;

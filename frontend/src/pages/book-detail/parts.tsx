@@ -3,6 +3,7 @@ import { Pause, Play, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { Severity } from "./types";
 
 export const fieldClass =
   "h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15";
@@ -124,6 +125,46 @@ export function TabBar<T extends string>({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+export const SEVERITY_STYLE: Record<Severity, string> = {
+  error: "bg-red-50 text-red-700",
+  warning: "bg-amber-50 text-amber-800",
+  info: "bg-muted text-muted-foreground",
+  ok: "bg-emerald-50 text-emerald-700",
+};
+
+export const SEVERITY_LABEL: Record<Severity, string> = {
+  error: "Lỗi",
+  warning: "Cảnh báo",
+  info: "Ghi chú",
+  ok: "Đạt",
+};
+
+export function SeverityTag({ value }: { value: Severity }) {
+  return (
+    <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium", SEVERITY_STYLE[value])}>
+      {SEVERITY_LABEL[value]}
+    </span>
+  );
+}
+
+export function Tile({ label, value, tone }: { label: string; value: number | string; tone?: "danger" | "warn" | "good" }) {
+  return (
+    <div className="rounded-md border border-border bg-card p-3">
+      <div
+        className={cn(
+          "font-mono text-lg font-bold leading-none",
+          tone === "danger" && "text-red-600",
+          tone === "warn" && "text-amber-600",
+          tone === "good" && "text-emerald-600"
+        )}
+      >
+        {value}
+      </div>
+      <div className="mt-1 text-[11px] text-muted-foreground">{label}</div>
     </div>
   );
 }

@@ -33,7 +33,9 @@ _DIGIT_WORDS = [
 
 DEFAULT_JUNK_TOKENS = ["OO@@", "@@", "##", "**"]
 
-_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+")
+# Ideographs + CJK punctuation (\uff0c\u3002\u300c\u300d\u2026) and fullwidth forms. B\u1ecf s\u00f3t d\u1ea5u c\u00e2u CJK s\u1ebd \u0111\u1ec3 l\u1ea1i
+# nh\u1eefng \u0111o\u1ea1n ch\u1ec9 c\u00f2n d\u1ea5u, v\u00e0 TTS tr\u1ea3 v\u1ec1 l\u1ed7i "No audio was received".
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3000-\u303f\ufe30-\ufe4f\uff01-\uff65]+")
 
 # Currency: requires either a prefix symbol/code ($/₫/đ/VND/USD/EUR)
 # or a suffix symbol/code.
@@ -165,6 +167,19 @@ def remove_cjk(text: str) -> str:
     return _CJK_RE.sub("", text)
 
 
+_SPEAKABLE_RE = re.compile(r"[^\W_]", re.UNICODE)
+
+
+def drop_unspeakable_lines(text: str) -> str:
+    """Xóa các dòng không còn chữ/số nào (chỉ còn dấu câu).
+
+    Sau khi bóc CJK, một dòng gốc tiếng Trung thường chỉ còn lại dấu câu. TTS đọc dòng đó
+    sẽ trả về audio rỗng ("No audio was received"), làm hỏng cả patch.
+    """
+    lines = [line for line in text.split("\n") if not line.strip() or _SPEAKABLE_RE.search(line)]
+    return "\n".join(lines)
+
+
 def clean_junk_tokens(text: str, tokens: list[str] | None = None) -> str:
     """Xóa token rác/định dạng khỏi văn bản."""
     tokens = tokens or DEFAULT_JUNK_TOKENS
@@ -224,6 +239,7 @@ def normalize_text(text: str, opts: NormalizationOptions | None = None) -> str:
     if opts.junk:
         text = clean_junk_tokens(text, opts.junk_extra_tokens)
     text = remove_cjk(text)
+    text = drop_unspeakable_lines(text)
     if opts.spellcheck:
         text = remove_dots_in_vietnamese_words(text)
     if opts.numbers:
@@ -252,6 +268,16 @@ _CHAPTER_TITLE_PATTERNS = [
     re.compile(r"^(\d{1,3})(\s*[.:\-–—]\s*)$", re.MULTILINE),
 ]
 
+# A title line that already carries a name after the number, e.g. "Chương 12: Bão" —
+# the plain _CHAPTER_TITLE_PATTERNS above only match a bare "Chương 12" with nothing
+# after it, so a canonical "Chương N: Tên" title used to skip spoken-number conversion
+# and the TTS breathing pause entirely. Handled separately because the name must be
+# kept (not swallowed) after the number is converted.
+_CHAPTER_TITLE_WITH_NAME_RE = re.compile(
+    r"^((?:Chương|Phần|Hồi|Quyển|Tập|Chapter|Part|Volume|Book)\s+)(\d{1,5})(\s*[:\-–—]\s*)(\S.*?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 _ORDINAL_MAP_VI = {
     "1": "một", "2": "hai", "3": "ba", "4": "bốn", "5": "năm",
     "6": "sáu", "7": "bảy", "8": "tám", "9": "chín", "10": "mười",
@@ -274,6 +300,12 @@ def _normalize_chapter_number(num_str: str) -> str:
 
 def normalize_chapter_titles(text: str) -> str:
     """Normalize chapter titles for TTS: add pauses, normalize numbers."""
+    def _replace_title_with_name(m: re.Match) -> str:
+        prefix = m.group(1)
+        spoken_num = _normalize_chapter_number(m.group(2))
+        name = m.group(4).strip()
+        return f"{prefix}{spoken_num}... {name}.\n\n"
+
     def _replace_title(m: re.Match) -> str:
         title = m.group(1).strip()
         # Extract number from title
@@ -284,6 +316,9 @@ def normalize_chapter_titles(text: str) -> str:
         # Add pause after title for TTS breathing
         return f"{title}...\n\n"
 
+    # Titles that already carry a name (e.g. "Chương 12: Bão") first, so the plain
+    # number-only patterns below don't get a second, name-less crack at the same line.
+    text = _CHAPTER_TITLE_WITH_NAME_RE.sub(_replace_title_with_name, text)
     for pattern in _CHAPTER_TITLE_PATTERNS:
         text = pattern.sub(_replace_title, text)
     return text

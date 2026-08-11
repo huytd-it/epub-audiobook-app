@@ -13,6 +13,8 @@ from app.chunker import group_into_patches, split_into_tts_chunks
 from app.epub_parser import ParsedChapter
 from app.models import Book, BookJob, Chapter, Music, Patch, PatchExport, TextReplaceRule
 from app.normalization import NormalizationOptions, normalize_chapter_titles, normalize_text
+from app.text_analysis import text_hash
+from app.validation import detect_chapter_number
 from app.youtube_metadata import format_chapter_range, resolve_patch_chapter_range
 
 logger = logging.getLogger(__name__)
@@ -134,10 +136,13 @@ def create_book(
     book_id = cur.lastrowid
 
     conn.executemany(
-        """INSERT INTO chapter (book_id, chapter_index, title, text, char_count)
-           VALUES (?, ?, ?, ?, ?)""",
+        """INSERT INTO chapter (book_id, chapter_index, title, text, char_count, chapter_no, text_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         [
-            (book_id, idx, ch.title, ch.text, ch.char_count)
+            (
+                book_id, idx, ch.title, ch.text, ch.char_count,
+                detect_chapter_number(ch.title), text_hash(ch.text),
+            )
             for idx, ch in enumerate(chapters)
         ],
     )
@@ -203,6 +208,84 @@ def get_chapter_text(
         (book_id, chapter_index),
     ).fetchone()
     return row["text"] if row else None
+
+
+def get_chapter(conn: sqlite3.Connection, book_id: int, chapter_index: int) -> Chapter | None:
+    row = conn.execute(
+        "SELECT * FROM chapter WHERE book_id = ? AND chapter_index = ?",
+        (book_id, chapter_index),
+    ).fetchone()
+    return _chapter_from_row(row) if row else None
+
+
+def update_chapter(
+    conn: sqlite3.Connection,
+    book_id: int,
+    chapter_index: int,
+    *,
+    title: str | None = None,
+    text: str | None = None,
+    is_excluded: bool | None = None,
+) -> bool:
+    """Write only the fields that were passed, recomputing every derived column so the
+    row stays consistent with what ``diff_chapters_against_epub`` and the numbering
+    checks expect. ``None`` means "field not supplied" — an omitted ``is_excluded``
+    never clobbers the existing flag.
+    """
+    sets: list[str] = []
+    values: list = []
+    if title is not None:
+        sets.append("title = ?")
+        values.append(title)
+        sets.append("chapter_no = ?")
+        values.append(detect_chapter_number(title))
+    if text is not None:
+        sets.append("text = ?")
+        values.append(text)
+        sets.append("char_count = ?")
+        values.append(len(text))
+        sets.append("text_hash = ?")
+        values.append(text_hash(text))
+    if is_excluded is not None:
+        sets.append("is_excluded = ?")
+        values.append(1 if is_excluded else 0)
+
+    if not sets:
+        return get_chapter(conn, book_id, chapter_index) is not None
+
+    values.extend([book_id, chapter_index])
+    cur = conn.execute(
+        f"UPDATE chapter SET {', '.join(sets)} WHERE book_id = ? AND chapter_index = ?",
+        values,
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def set_chapter_titles(conn: sqlite3.Connection, book_id: int, updates: list[tuple[int, str]]) -> int:
+    """Bulk title rewrite for the "chuẩn hoá tiêu đề" action. ``updates`` is a list of
+    (chapter_index, new_title) pairs; chapter_no is recomputed for each."""
+    if not updates:
+        return 0
+    rows = [
+        (title, detect_chapter_number(title), book_id, chapter_index)
+        for chapter_index, title in updates
+    ]
+    cur = conn.executemany(
+        "UPDATE chapter SET title = ?, chapter_no = ? WHERE book_id = ? AND chapter_index = ?",
+        rows,
+    )
+    conn.commit()
+    return cur.rowcount if cur.rowcount is not None else len(updates)
+
+
+def list_patches_covering_chapter(conn: sqlite3.Connection, book_id: int, chapter_index: int) -> list[Patch]:
+    rows = conn.execute(
+        """SELECT * FROM patch WHERE book_id = ? AND ? BETWEEN chapter_start AND chapter_end
+           ORDER BY patch_index""",
+        (book_id, chapter_index),
+    ).fetchall()
+    return [_patch_from_row(r) for r in rows]
 
 
 def list_patches(conn: sqlite3.Connection, book_id: int) -> list[Patch]:
@@ -1067,6 +1150,263 @@ def preview_auto_build(
             "chunk_count": chunk_count,
         })
     return result
+
+
+def backfill_chapter_metadata(conn: sqlite3.Connection, book_id: int) -> int:
+    """Fill chapter_no/text_hash for books imported before those columns existed."""
+    rows = conn.execute(
+        """SELECT id, title, text FROM chapter
+           WHERE book_id = ? AND (text_hash IS NULL OR (chapter_no IS NULL AND title IS NOT NULL))""",
+        (book_id,),
+    ).fetchall()
+    updates = [
+        (detect_chapter_number(row["title"]), text_hash(row["text"] or ""), row["id"])
+        for row in rows
+    ]
+    if updates:
+        conn.executemany("UPDATE chapter SET chapter_no = ?, text_hash = ? WHERE id = ?", updates)
+        conn.commit()
+    return len(updates)
+
+
+def diff_chapters_against_epub(
+    conn: sqlite3.Connection, book_id: int, parsed: list[ParsedChapter]
+) -> dict:
+    """Compare a freshly parsed EPUB against the chapters already stored.
+
+    Matching is by content hash first, then by detected chapter number — a chapter that
+    only had a typo fixed still matches by number, so its patch (and its audio) survives.
+    Returns a plan; nothing is written.
+    """
+    existing = list_chapters(conn, book_id)
+    by_hash = {chapter.text_hash: chapter for chapter in existing if chapter.text_hash}
+    by_number: dict[int, Chapter] = {}
+    for chapter in existing:
+        if chapter.chapter_no is not None:
+            by_number.setdefault(chapter.chapter_no, chapter)
+
+    matched: list[dict] = []
+    changed: list[dict] = []
+    added: list[dict] = []
+    used_ids: set[int] = set()
+
+    for parsed_index, parsed_chapter in enumerate(parsed):
+        digest = text_hash(parsed_chapter.text)
+        number = detect_chapter_number(parsed_chapter.title)
+        current = by_hash.get(digest)
+        if current is not None and current.id not in used_ids:
+            used_ids.add(current.id)
+            matched.append({"chapter_index": current.chapter_index, "title": current.title})
+            continue
+
+        current = by_number.get(number) if number is not None else None
+        if current is not None and current.id not in used_ids:
+            used_ids.add(current.id)
+            changed.append(
+                {
+                    "parsed_index": parsed_index,
+                    "chapter_index": current.chapter_index,
+                    "chapter_no": number,
+                    "title": parsed_chapter.title,
+                    "old_char_count": current.char_count,
+                    "new_char_count": parsed_chapter.char_count,
+                }
+            )
+            continue
+
+        added.append(
+            {
+                "parsed_index": parsed_index,
+                "chapter_no": number,
+                "title": parsed_chapter.title,
+                "char_count": parsed_chapter.char_count,
+            }
+        )
+
+    removed = [
+        {"chapter_index": chapter.chapter_index, "title": chapter.title, "chapter_no": chapter.chapter_no}
+        for chapter in existing
+        if chapter.id not in used_ids
+    ]
+
+    return {
+        "existing_count": len(existing),
+        "parsed_count": len(parsed),
+        "matched_count": len(matched),
+        "changed": changed,
+        "added": added,
+        "removed": removed,
+        "next_chapter_index": (max((c.chapter_index for c in existing), default=-1) + 1),
+    }
+
+
+def append_new_chapters(
+    conn: sqlite3.Connection,
+    book_id: int,
+    parsed: list[ParsedChapter],
+    *,
+    update_changed: bool = False,
+) -> dict:
+    """Apply a re-import: append chapters the book does not have yet.
+
+    Existing chapters keep their chapter_index, so every patch range — and therefore every
+    audio file already produced — stays valid. Changed chapters are only rewritten when
+    update_changed is set, and then only for chapters no completed patch depends on.
+    """
+    plan = diff_chapters_against_epub(conn, book_id, parsed)
+    now = _now()
+    next_index = plan["next_chapter_index"]
+
+    updated = 0
+    if update_changed and plan["changed"]:
+        protected = _chapter_indices_with_done_audio(conn, book_id)
+        for entry in plan["changed"]:
+            if entry["chapter_index"] in protected:
+                continue
+            source = parsed[entry["parsed_index"]]
+            conn.execute(
+                """UPDATE chapter SET title = ?, text = ?, char_count = ?, chapter_no = ?, text_hash = ?
+                   WHERE book_id = ? AND chapter_index = ?""",
+                (
+                    source.title, source.text, source.char_count,
+                    entry["chapter_no"], text_hash(source.text),
+                    book_id, entry["chapter_index"],
+                ),
+            )
+            updated += 1
+
+    inserted = 0
+    for entry in plan["added"]:
+        parsed_chapter = parsed[entry["parsed_index"]]
+        conn.execute(
+            """INSERT INTO chapter (book_id, chapter_index, title, text, char_count, chapter_no, text_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                book_id, next_index, parsed_chapter.title, parsed_chapter.text,
+                parsed_chapter.char_count, detect_chapter_number(parsed_chapter.title),
+                text_hash(parsed_chapter.text),
+            ),
+        )
+        next_index += 1
+        inserted += 1
+
+    if inserted or updated:
+        conn.execute("UPDATE book SET updated_at = ? WHERE id = ?", (now, book_id))
+        conn.commit()
+
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "skipped_changed": len(plan["changed"]) - updated,
+        "removed_count": len(plan["removed"]),
+        "first_new_chapter_index": plan["next_chapter_index"] if inserted else None,
+    }
+
+
+def _chapter_indices_with_done_audio(conn: sqlite3.Connection, book_id: int) -> set[int]:
+    covered: set[int] = set()
+    for row in conn.execute(
+        "SELECT chapter_start, chapter_end FROM patch WHERE book_id = ? AND status = 'done'",
+        (book_id,),
+    ):
+        covered.update(range(row["chapter_start"], row["chapter_end"] + 1))
+    return covered
+
+
+def uncovered_chapter_indices(conn: sqlite3.Connection, book_id: int) -> list[int]:
+    """Included chapters that no patch range covers yet."""
+    covered: set[int] = set()
+    for row in conn.execute(
+        "SELECT chapter_start, chapter_end FROM patch WHERE book_id = ?", (book_id,)
+    ):
+        covered.update(range(row["chapter_start"], row["chapter_end"] + 1))
+    rows = conn.execute(
+        """SELECT chapter_index FROM chapter
+           WHERE book_id = ? AND is_excluded = 0 ORDER BY chapter_index""",
+        (book_id,),
+    ).fetchall()
+    return [row["chapter_index"] for row in rows if row["chapter_index"] not in covered]
+
+
+def preview_extend_patches(
+    conn: sqlite3.Connection, book_id: int, patch_size: int | None = None
+) -> list[dict]:
+    """Plan the patches that would be appended for chapters no patch covers yet."""
+    book = get_book(conn, book_id)
+    if book is None:
+        raise ValueError(f"book {book_id} not found")
+    if patch_size is None:
+        patch_size = book.patch_size
+    if patch_size < 1:
+        raise ValueError("patch_size must be >= 1")
+
+    pending = uncovered_chapter_indices(conn, book_id)
+    if not pending:
+        return []
+
+    next_patch_index = (
+        conn.execute(
+            "SELECT COALESCE(MAX(patch_index), -1) AS m FROM patch WHERE book_id = ?", (book_id,)
+        ).fetchone()["m"]
+        + 1
+    )
+
+    planned: list[dict] = []
+    for offset in range(0, len(pending), patch_size):
+        group = pending[offset : offset + patch_size]
+        start, end = group[0], group[-1]
+        row = conn.execute(
+            "SELECT title FROM chapter WHERE book_id = ? AND chapter_index = ?", (book_id, start)
+        ).fetchone()
+        total_chars = conn.execute(
+            """SELECT COALESCE(SUM(char_count), 0) AS c FROM chapter
+               WHERE book_id = ? AND chapter_index BETWEEN ? AND ?""",
+            (book_id, start, end),
+        ).fetchone()["c"]
+        planned.append(
+            {
+                "patch_index": next_patch_index + len(planned),
+                "chapter_start": start,
+                "chapter_end": end,
+                "name": row["title"] if row else "",
+                "chunk_count": max(1, math.ceil(total_chars / _TTS_MAX_CHARS)),
+            }
+        )
+    return planned
+
+
+def extend_patches(
+    conn: sqlite3.Connection, book_id: int, patch_size: int | None = None
+) -> list[Patch]:
+    """Append patches for uncovered chapters. Existing patches and their audio are untouched.
+
+    This is the incremental counterpart of auto_build_patches, which deletes everything
+    and starts over.
+    """
+    planned = preview_extend_patches(conn, book_id, patch_size)
+    if not planned:
+        return []
+
+    now = _now()
+    conn.executemany(
+        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, name,
+                              chunk_count, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+        [
+            (
+                book_id, entry["patch_index"], entry["chapter_start"], entry["chapter_end"],
+                entry["name"], entry["chunk_count"], now, now,
+            )
+            for entry in planned
+        ],
+    )
+    conn.execute(
+        "UPDATE book SET final_audio_path = NULL, final_video_path = NULL, status = 'ready', updated_at = ? WHERE id = ?",
+        (now, book_id),
+    )
+    conn.commit()
+    created_indices = {entry["patch_index"] for entry in planned}
+    return [patch for patch in list_patches(conn, book_id) if patch.patch_index in created_indices]
 
 
 def auto_build_patches(

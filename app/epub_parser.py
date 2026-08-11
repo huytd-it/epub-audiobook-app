@@ -25,7 +25,9 @@ _MIN_CHAPTER_CHARS = 50  # below this, treat the spine doc as cover/nav, not a c
 _SPLIT_MARKER = "\x00CHAPTER_SPLIT\x00"
 _WHITESPACE_RE = re.compile(r"[ \t]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
-_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+")
+# Ideographs plus CJK punctuation/fullwidth forms \u2014 stripping only the ideographs leaves
+# behind lines of bare \uff0c\u3002\u300c\u300d that TTS cannot speak.
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3000-\u303f\ufe30-\ufe4f\uff01-\uff65]+")
 _OPF_NS = "http://www.idpf.org/2007/opf"
 _CONTAINER_NS = "{urn:oasis:names:tc:opendocument:xmlns:container}"
 

@@ -9,7 +9,9 @@ _APP_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
+    # extra="ignore": .env is shared with other tooling, so an unknown key there must not
+    # take the whole app (and the test suite) down at import time.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     data_root: str = str(_APP_ROOT / "data")
     db_path: str = str(_APP_ROOT / "data" / "app.db")

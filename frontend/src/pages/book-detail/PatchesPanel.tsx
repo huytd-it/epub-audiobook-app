@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, CloudDownload, FileAudio2, Film, Layers, Upload, Video } from "lucide-react";
-import { Patch, post, postForm } from "@/api";
+import { AlertTriangle, CloudDownload, FileAudio2, FileSearch, Film, Layers, Upload, Video } from "lucide-react";
+import { api, Patch, post, postForm } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/Header";
@@ -9,7 +9,7 @@ import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { PipelineInfo, errorText } from "./types";
+import { PatchReport, PipelineInfo, errorText } from "./types";
 import { SectionHead, TabBar, checkboxClass } from "./parts";
 
 type Filter = "all" | "processing" | "done" | "failed";
@@ -17,6 +17,7 @@ type Filter = "all" | "processing" | "done" | "failed";
 type RowProps = {
   patch: Patch;
   pipeline?: PipelineInfo;
+  chunkReport?: PatchReport;
   selected: boolean;
   busy: boolean;
   onToggle: (patchId: number) => void;
@@ -29,6 +30,7 @@ type RowProps = {
 const PatchRow = React.memo(function PatchRow({
   patch,
   pipeline,
+  chunkReport,
   selected,
   busy,
   onToggle,
@@ -105,6 +107,17 @@ const PatchRow = React.memo(function PatchRow({
             </span>
           )}
           {!pipeline && patch.status !== "done" && <span className="text-[10px] text-muted-foreground">—</span>}
+          {chunkReport && chunkReport.severity !== "ok" && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                chunkReport.severity === "error" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-800"
+              )}
+              title={`${chunkReport.chunk_count} chunk · ${chunkReport.total_chars} ký tự · quá dài ${chunkReport.oversized_chunks} · rỗng ${chunkReport.empty_chunks} · không đọc được ${chunkReport.unspeakable_chunks}`}
+            >
+              <FileSearch className="h-2.5 w-2.5" /> {chunkReport.severity === "error" ? "Lỗi chunk" : "Cảnh báo chunk"}
+            </span>
+          )}
         </div>
       </TableCell>
 
@@ -173,6 +186,22 @@ export function PatchesPanel({
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [importingId, setImportingId] = useState<number>();
+  const [chunkReports, setChunkReports] = useState<Record<number, PatchReport>>();
+  const [checkingChunks, setCheckingChunks] = useState(false);
+
+  const checkChunks = useCallback(async () => {
+    setCheckingChunks(true);
+    try {
+      const result = await api<{ patches: PatchReport[] }>(`/books/${bookId}/validation`);
+      const byId: Record<number, PatchReport> = {};
+      for (const item of result.patches) byId[item.patch_id] = item;
+      setChunkReports(byId);
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setCheckingChunks(false);
+    }
+  }, [bookId, onMessage]);
 
   const counts = useMemo(
     () => ({
@@ -259,9 +288,14 @@ export function PatchesPanel({
           title={`Patches (${patches.length})`}
           detail="Chọn patch để chạy hành động hàng loạt ở thanh dưới màn hình."
           action={
-            <Link to="/queue" className="shrink-0 text-xs text-primary hover:underline">
-              Hàng đợi →
-            </Link>
+            <div className="flex shrink-0 items-center gap-3">
+              <Button size="sm" variant="outline" onClick={checkChunks} disabled={checkingChunks}>
+                <FileSearch className={cn("h-3.5 w-3.5", checkingChunks && "animate-pulse")} /> Soát chunk
+              </Button>
+              <Link to="/queue" className="text-xs text-primary hover:underline">
+                Hàng đợi →
+              </Link>
+            </div>
           }
         />
         <TabBar<Filter>
@@ -307,6 +341,7 @@ export function PatchesPanel({
                     key={patch.id}
                     patch={patch}
                     pipeline={pipelines[String(patch.id)]}
+                    chunkReport={chunkReports?.[patch.id]}
                     selected={selectedIds.includes(patch.id)}
                     busy={importingId === patch.id}
                     onToggle={toggle}

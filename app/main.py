@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import db, repository
 from app.config import settings
-from app.routes import books, database_io, downloads, drive, effects, flows, local_bridge, logs, music, patches, photos, queue, text_studio, ui_api, video, video_api, voices, youtube
+from app.routes import books, database_io, downloads, drive, effects, flows, local_bridge, logs, music, patches, photos, queue, text_studio, ui_api, validation, video, video_api, voices, youtube
 import asyncio
 
 from app.jobqueue import joblog
@@ -126,6 +126,7 @@ app.include_router(database_io.router)
 app.include_router(effects.router)
 app.include_router(flows.router)
 app.include_router(local_bridge.router)
+app.include_router(validation.router)
 app.include_router(ui_api.router)
 
 

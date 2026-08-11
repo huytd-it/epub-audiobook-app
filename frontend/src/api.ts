@@ -1,6 +1,13 @@
 export type Book = { id: number; title: string; status: string; original_filename: string; created_at: string; patches?: { total: number; done: number; active: number; failed: number } };
 export type Patch = { id: number; book_id: number; patch_index: number; chapter_start: number; chapter_end: number; name: string; status: string; chunk_count: number; next_chunk_index: number; error_message: string | null; audio_path?: string | null };
-export type Chapter = { id: number; chapter_index: number; title: string; char_count: number; is_excluded: boolean };
+export type Chapter = {
+  id: number;
+  chapter_index: number;
+  title: string;
+  char_count: number;
+  is_excluded: boolean;
+  chapter_no?: number | null;
+};
 export type Job = { id: number; job_type: string; status: string; phase: string; percent: number; book_id: number | null; error_message: string | null; created_at: string };
 export type Media = { music: Array<{ id: number; name: string; duration_sec: number | null; description?: string; license?: string }>; photos: Array<{ name: string; size: number; is_video: boolean }>; voices: Array<{ name: string; size: number; description?: string }> };
 
@@ -138,6 +145,12 @@ export const postJson = <T>(url: string, data: any) =>
 export const patchJson = <T>(url: string, data: any) =>
   api<T>(url, {
     method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+export const put = <T>(url: string, data: any) =>
+  api<T>(url, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });

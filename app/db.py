@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS chapter (
     title           TEXT,
     text            TEXT NOT NULL,
     char_count      INTEGER NOT NULL,
+    chapter_no      INTEGER,
+    text_hash       TEXT,
     UNIQUE(book_id, chapter_index)
 );
 
@@ -506,6 +508,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     chapter_existing = {row["name"] for row in conn.execute("PRAGMA table_info(chapter)")}
     if "is_excluded" not in chapter_existing:
         conn.execute("ALTER TABLE chapter ADD COLUMN is_excluded INTEGER NOT NULL DEFAULT 0")
+    # chapter_no + text_hash let a re-imported EPUB be matched against the chapters already
+    # stored, so new chapters are appended instead of rebuilding the whole book.
+    if "chapter_no" not in chapter_existing:
+        conn.execute("ALTER TABLE chapter ADD COLUMN chapter_no INTEGER")
+    if "text_hash" not in chapter_existing:
+        conn.execute("ALTER TABLE chapter ADD COLUMN text_hash TEXT")
     patch_existing = {row["name"] for row in conn.execute("PRAGMA table_info(patch)")}
     if "image_path" not in patch_existing:
         conn.execute("ALTER TABLE patch ADD COLUMN image_path TEXT")

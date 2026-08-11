@@ -51,6 +51,8 @@ class Chapter:
     text: str
     char_count: int
     is_excluded: bool = False
+    chapter_no: int | None = None  # số chương đọc được từ tiêu đề ("Chương 12" -> 12)
+    text_hash: str | None = None  # dùng để so khớp khi re-import EPUB
 
 
 @dataclass

@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, VoiceItem } from "@/api";
-import { BookStatus, Detail, ExportContext, OnlineVoice, TtsModel, VoiceOption, errorText } from "./types";
+import {
+  BookStatus,
+  ChaptersValidation,
+  Detail,
+  ExportContext,
+  OnlineVoice,
+  TtsModel,
+  VoiceOption,
+  errorText,
+} from "./types";
 
 const POLL_MS = 5000;
 
@@ -109,6 +118,35 @@ export function useBookDetail(id: string | undefined, paused: boolean): BookDeta
   }, [id, live, refresh]);
 
   return { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh };
+}
+
+/**
+ * Kiểm tra chương (định dạng tiêu đề + đánh số + lỗi TTS) cho toàn sách.
+ * Không polling — chỉ tải khi mount và khi `reload()` được gọi sau một thao tác ghi,
+ * vì soát toàn bộ chương là chi phí không nhỏ trên sách nhiều chương và dữ liệu chỉ
+ * đổi khi có ghi, không đổi theo nhịp 5s như phần còn lại của trang.
+ */
+export function useChapterValidation(id: string | undefined) {
+  const [report, setReport] = useState<ChaptersValidation>();
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    if (!id) return;
+    setLoading(true);
+    try {
+      setReport(await api<ChaptersValidation>(`/books/${id}/chapters/validation`));
+    } catch {
+      // im lặng: phần này chỉ bổ trợ, không nên chặn phần còn lại của trang
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  return { report, loading, reload };
 }
 
 export type TtsOptions = {

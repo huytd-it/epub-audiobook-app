@@ -20,15 +20,16 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { cn } from "@/lib/utils";
 import { AudioSettings, ConfigTab, errorText } from "./book-detail/types";
-import { useBookDetail, useTtsOptions } from "./book-detail/useBookDetail";
+import { useBookDetail, useChapterValidation, useTtsOptions } from "./book-detail/useBookDetail";
 import { LiveIndicator, TabBar } from "./book-detail/parts";
 import { PatchesPanel } from "./book-detail/PatchesPanel";
 import { BuildPanel } from "./book-detail/BuildPanel";
 import { ExportPanel } from "./book-detail/ExportPanel";
 import { ChaptersPanel } from "./book-detail/ChaptersPanel";
-import { ConfigDialog, PatchPreviewDialog } from "./book-detail/dialogs";
+import { ChapterDialog } from "./book-detail/ChapterDialog";
+import { ConfigDialog, PatchPreviewDialog, TitleNormalizeDialog } from "./book-detail/dialogs";
 
-type MainTab = "patches" | "build" | "export" | "chapters";
+type MainTab = "patches" | "build" | "chapters";
 
 export function BookDetail() {
   const { id } = useParams();
@@ -41,6 +42,9 @@ export function BookDetail() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [configTab, setConfigTab] = useState<ConfigTab>("audio");
+  const [chapterOpen, setChapterOpen] = useState(false);
+  const [chapterIndex, setChapterIndex] = useState<number>();
+  const [normalizeOpen, setNormalizeOpen] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
   const [running, setRunning] = useState<"audio" | "video" | "youtube">();
   const [settings, setSettings] = useState<AudioSettings>({
@@ -56,12 +60,13 @@ export function BookDetail() {
   );
 
   // Dừng polling khi đang mở dialog hoặc đang chạy thao tác: tránh ghi đè state giữa chừng.
-  const paused = previewOpen || configOpen || busyCount > 0;
+  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || busyCount > 0;
   const { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh } = useBookDetail(
     bookId,
     paused
   );
   const { ttsModels, voiceOptions, currentVoiceName } = useTtsOptions(data, settings.modelId);
+  const chapterVal = useChapterValidation(bookId);
 
   const updateSettings = useCallback(
     (patch: Partial<AudioSettings>) => setSettings((current) => ({ ...current, ...patch })),
@@ -179,6 +184,18 @@ export function BookDetail() {
     setConfigOpen(true);
   }, []);
 
+  const openChapter = useCallback((index: number) => {
+    setChapterIndex(index);
+    setChapterOpen(true);
+  }, []);
+
+  // Sau khi ghi chương (sửa nội dung hoặc chuẩn hoá tiêu đề): làm mới báo cáo kiểm tra
+  // trước (không bị inFlight-guard chặn), rồi làm mới data chính — best-effort.
+  const onChapterSaved = useCallback(async () => {
+    await chapterVal.reload();
+    await refresh();
+  }, [chapterVal, refresh]);
+
   if (loading && !data) return <LoadingState text={`Đang mở hồ sơ sách #${bookId}...`} />;
   if (!data)
     return (
@@ -248,7 +265,30 @@ export function BookDetail() {
       </Button>
 
       <Header
-        title={data.book.title}
+        title={
+          <span className="flex flex-wrap items-center gap-2">
+            {data.book.title}
+            {chapterVal.report && !chapterVal.report.numbering.is_continuous && (
+              <button
+                onClick={() => setTab("chapters")}
+                title={`Thiếu ${chapterVal.report.numbering.missing_count} số · trùng ${chapterVal.report.numbering.duplicate_count} số`}
+                className="inline-flex items-center gap-1 rounded-md bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-200"
+              >
+                <AlertTriangle className="h-3.5 w-3.5" /> Chương không liên tục
+              </button>
+            )}
+            {chapterVal.report &&
+              chapterVal.report.titles.fixable + chapterVal.report.titles.no_name + chapterVal.report.titles.unknown > 0 && (
+                <button
+                  onClick={() => setTab("chapters")}
+                  className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                >
+                  {chapterVal.report.titles.fixable + chapterVal.report.titles.no_name + chapterVal.report.titles.unknown}{" "}
+                  tiêu đề sai định dạng
+                </button>
+              )}
+          </span>
+        }
         subtitle={`#${bookId} · ${data.book.original_filename} · ${new Date(data.book.created_at).toLocaleDateString("vi-VN")}`}
         action={
           <div className="flex items-center gap-2">
@@ -355,25 +395,40 @@ export function BookDetail() {
         value={tab}
         onChange={setTab}
         tabs={[
-          { value: "patches", label: "Patches", badge: patches.length },
+          { value: "patches", label: "Patches & Export", badge: patches.length },
           { value: "build", label: "Xây dựng" },
-          { value: "export", label: "Export & Drive" },
           { value: "chapters", label: "Mục lục", badge: data.chapters.length },
         ]}
       />
 
       {tab === "patches" && (
-        <PatchesPanel
-          bookId={bookId}
-          patches={patches}
-          pipelines={pipeline?.pipelines || {}}
-          selectedIds={selectedIds}
-          onSelectionChange={setSelectedIds}
-          onOpenPatch={openPatch}
-          onMessage={setMessage}
-          onRefresh={refresh}
-          onBusyChange={setBusy}
-        />
+        <div className="space-y-5">
+          <PatchesPanel
+            bookId={bookId}
+            patches={patches}
+            pipelines={pipeline?.pipelines || {}}
+            selectedIds={selectedIds}
+            onSelectionChange={setSelectedIds}
+            onOpenPatch={openPatch}
+            onMessage={setMessage}
+            onRefresh={refresh}
+            onBusyChange={setBusy}
+          />
+          <ExportPanel
+            bookId={bookId}
+            patches={patches}
+            selectedIds={selectedIds}
+            accounts={exports.accounts}
+            syncTargets={exports.sync_targets}
+            settings={settings}
+            onSettingsChange={updateSettings}
+            ttsModels={ttsModels}
+            voiceOptions={voiceOptions}
+            onMessage={setMessage}
+            onRefresh={refresh}
+            onBusyChange={setBusy}
+          />
+        </div>
       )}
 
       {tab === "build" && (
@@ -387,23 +442,16 @@ export function BookDetail() {
         />
       )}
 
-      {tab === "export" && (
-        <ExportPanel
-          bookId={bookId}
-          patches={patches}
-          accounts={exports.accounts}
-          syncTargets={exports.sync_targets}
-          settings={settings}
-          onSettingsChange={updateSettings}
-          ttsModels={ttsModels}
-          voiceOptions={voiceOptions}
-          onMessage={setMessage}
-          onRefresh={refresh}
-          onBusyChange={setBusy}
+      {tab === "chapters" && (
+        <ChaptersPanel
+          chapters={data.chapters}
+          report={chapterVal.report}
+          loading={chapterVal.loading}
+          onAnalyze={chapterVal.reload}
+          onOpenChapter={openChapter}
+          onOpenNormalize={() => setNormalizeOpen(true)}
         />
       )}
-
-      {tab === "chapters" && <ChaptersPanel chapters={data.chapters} />}
 
       {/* Thanh hành động theo lựa chọn: chỉ hiện khi có patch được chọn. */}
       {selectedIds.length > 0 && (
@@ -448,6 +496,26 @@ export function BookDetail() {
         voiceOptions={voiceOptions}
         voiceClipPath={data.book.voice_clip_path}
         onMessage={setMessage}
+      />
+
+      <ChapterDialog
+        bookId={bookId}
+        chapterIndex={chapterIndex}
+        chapterCount={data.chapters.length}
+        open={chapterOpen}
+        onOpenChange={setChapterOpen}
+        onChapterIndexChange={setChapterIndex}
+        onMessage={setMessage}
+        onSaved={onChapterSaved}
+      />
+
+      <TitleNormalizeDialog
+        bookId={bookId}
+        open={normalizeOpen}
+        onOpenChange={setNormalizeOpen}
+        onMessage={setMessage}
+        onOpenChapter={openChapter}
+        onApplied={onChapterSaved}
       />
     </div>
   );
