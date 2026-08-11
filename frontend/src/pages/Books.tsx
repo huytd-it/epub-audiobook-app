@@ -21,6 +21,8 @@ export function Books() {
 
   if (loading || !data) return <LoadingState text="Đang tải danh sách sách..." />;
 
+  const books: Book[] = data.items || [];
+
   const deleteBook = (e: React.MouseEvent, bookId: number) => {
     e.preventDefault();
     if (!confirm("Bạn có chắc chắn muốn xóa sách này? Hành động này không thể hoàn tác.")) return;
