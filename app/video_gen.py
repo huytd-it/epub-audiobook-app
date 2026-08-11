@@ -102,6 +102,22 @@ def _build_zoompan_filter(image_type: str, width: int, height: int, fps: int, du
         )
 
 
+def _waveform_chains(config: dict, width: int, audio_input: int, video_label: str) -> tuple[list[str], str, str]:
+    """Build a transparent waveform overlay and preserve narration for output mixing."""
+    height = int(config.get("waveform_height", 120))
+    style = config.get("waveform_style", "line")
+    color = str(config.get("waveform_color", "#ffffff")).lstrip("#")
+    opacity = float(config.get("waveform_opacity", 0.85))
+    position = config.get("waveform_position", "bottom")
+    y = {"top": "40", "center": "(H-h)/2", "bottom": "H-h-40"}.get(position, "H-h-40")
+    chains = [
+        f"[{audio_input}:a]asplit=2[narration][waveaudio]",
+        f"[waveaudio]showwaves=s={width}x{height}:mode={style}:colors=0x{color},format=rgba,colorchannelmixer=aa={opacity}[wave]",
+        f"{video_label}[wave]overlay=x=(W-w)/2:y={y}:shortest=1[vout]",
+    ]
+    return chains, "[vout]", "[narration]"
+
+
 def generate_segment(
     image_path: str,
     audio_path: str,
@@ -119,6 +135,7 @@ def generate_segment(
     quality: int = 23,
     marquee_path: str | None = None,
     marquee_meta: str | None = None,
+    waveform_config: dict | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a single video segment from image + audio.
@@ -197,23 +214,30 @@ def generate_segment(
         )
         base_vf = f"{zp_filter},format=yuv420p"
 
+    waveform = waveform_config if waveform_config and waveform_config.get("waveform_enabled") else None
     audio_chains: list[str] = []
+    narration_label = "[1:a]"
+    video_map_label = "[vout]"
+    video_chains: list[str] = []
+    if waveform:
+        waveform_chains, video_map_label, narration_label = _waveform_chains(waveform, width, 1, "[vbase]")
+        video_chains = [f"[0:v]{base_vf}[vbase]", *waveform_chains]
     if music_idx is not None:
         audio_chains.append(f"[{music_idx}:a]volume={music_volume}[music]")
-        audio_chains.append("[1:a][music]amix=inputs=2:duration=first:normalize=0[aout]")
+        audio_chains.append(f"{narration_label}[music]amix=inputs=2:duration=first:normalize=0[aout]")
         audio_map_label = "[aout]"
     else:
-        audio_map_label = "1:a"
+        audio_map_label = narration_label
 
-    if music_idx is not None:
+    if music_idx is not None or waveform:
         # Label the video chain: ffmpeg 5+ rejects mapping raw 0:v once it is
         # consumed by the complex filtergraph.
-        chains = audio_chains + [f"[0:v]{base_vf}[vout]"]
+        chains = video_chains + audio_chains if waveform else audio_chains + [f"[0:v]{base_vf}[vout]"]
         cmd = [
             settings.get_ffmpeg_path(), "-y",
             *inputs,
             "-filter_complex", ";".join(chains),
-            "-map", "[vout]",
+            "-map", video_map_label,
             "-map", audio_map_label,
             "-c:v", video_codec,
             *tune_args,
@@ -422,6 +446,7 @@ def generate_background_sequence(
     start_index: int = 0,
     crossfade: bool = False, crossfade_seconds: float = 1,
     ken_burns: bool = False, progress_bar: bool = False,
+    waveform_config: dict | None = None,
 ) -> None:
     """Render rotating silent backgrounds, then mux narration/music once."""
     duration = _probe_duration(audio_path)
@@ -476,14 +501,19 @@ def generate_background_sequence(
         inputs = [settings.get_ffmpeg_path(), "-y", "-i", visual, "-i", audio_path]
         chains = []
         audio_map = "1:a"
+        video_map = "0:v:0"
+        waveform = waveform_config if waveform_config and waveform_config.get("waveform_enabled") else None
+        if waveform:
+            waveform_chains, video_map, audio_map = _waveform_chains(waveform, width, 1, "[0:v]")
+            chains.extend(waveform_chains)
         if music_path:
             inputs += ["-stream_loop", "-1", "-i", music_path]
-            chains = ["[2:a]volume=" + str(music_volume) + "[music]", "[1:a][music]amix=inputs=2:duration=first:normalize=0[aout]"]
+            chains.extend(["[2:a]volume=" + str(music_volume) + "[music]", f"{audio_map}[music]amix=inputs=2:duration=first:normalize=0[aout]"])
             audio_map = "[aout]"
         cmd = inputs
         if chains:
             cmd += ["-filter_complex", ";".join(chains)]
-        cmd += ["-map", "0:v:0", "-map", audio_map, "-c:v", "copy",
+        cmd += ["-map", video_map, "-map", audio_map, "-c:v", video_codec if waveform else "copy",
                 "-c:a", "aac", "-b:a", audio_bitrate,
                 "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
                 "-shortest", out_path]
@@ -608,6 +638,7 @@ def generate_full_video(
                     crossfade_seconds=float((video_config or {}).get("crossfade_seconds", 1)),
                     ken_burns=bool((video_config or {}).get("ken_burns_enabled")),
                     progress_bar=bool((video_config or {}).get("progress_bar_enabled")),
+                    waveform_config=video_config,
                 )
                 if raw_for_greeting and outro_audio:
                     outro_path = str(tmp_dir / f"outro_{i:04d}.mp4")
@@ -644,6 +675,7 @@ def generate_full_video(
                 codec=codec,
                 quality=quality,
                 audio_bitrate=audio_bitrate,
+                waveform_config=video_config,
                 on_progress=_seg_progress,
             )
             segment_paths.extend(greeting_paths[:1])

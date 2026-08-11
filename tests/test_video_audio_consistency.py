@@ -109,6 +109,22 @@ def test_segment_with_music_normalizes_audio(still, tmp_path):
 
 
 @requires_ffmpeg
+def test_segment_with_waveform_preserves_audio(still, tmp_path):
+    narration = _tone(tmp_path / "wave.wav", rate=24000, channels=1, seconds=2)
+    out = tmp_path / "waveform.mp4"
+    video_gen.generate_segment(
+        still, narration, str(out), resolution=(160, 120), fps=30,
+        waveform_config={
+            "waveform_enabled": True, "waveform_style": "cline",
+            "waveform_color": "#22d3ee", "waveform_position": "center",
+            "waveform_height": 40, "waveform_opacity": 0.9,
+        },
+    )
+
+    assert _audio_format(str(out))[1:] == (video_gen.AUDIO_SAMPLE_RATE, video_gen.AUDIO_CHANNELS)
+
+
+@requires_ffmpeg
 def test_concat_of_greeting_and_narration_decodes_cleanly(still, tmp_path):
     """The production shape that produced `decode_failed` on a real upload.
 

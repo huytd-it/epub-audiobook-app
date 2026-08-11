@@ -13,13 +13,13 @@ import {
   Video,
   X,
 } from "lucide-react";
-import { Patch, post, postJson } from "@/api";
+import { api, Patch, post, postJson } from "@/api";
 import { Header, LoadingState } from "@/components/common/Header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { cn } from "@/lib/utils";
-import { AudioSettings, ConfigTab, errorText } from "./book-detail/types";
+import { AudioSettings, ConfigTab, NormalizationSettings, errorText } from "./book-detail/types";
 import { useBookDetail, useChapterValidation, useTtsOptions } from "./book-detail/useBookDetail";
 import { LiveIndicator, TabBar } from "./book-detail/parts";
 import { PatchesPanel } from "./book-detail/PatchesPanel";
@@ -28,8 +28,9 @@ import { ExportPanel } from "./book-detail/ExportPanel";
 import { ChaptersPanel } from "./book-detail/ChaptersPanel";
 import { ChapterDialog } from "./book-detail/ChapterDialog";
 import { ConfigDialog, PatchPreviewDialog, TitleNormalizeDialog } from "./book-detail/dialogs";
+import { OverlayEditor } from "./book-detail/OverlayEditor";
 
-type MainTab = "patches" | "build" | "chapters";
+type MainTab = "patches" | "build" | "chapters" | "thumbnail";
 
 export function BookDetail() {
   const { id } = useParams();
@@ -46,12 +47,19 @@ export function BookDetail() {
   const [chapterIndex, setChapterIndex] = useState<number>();
   const [normalizeOpen, setNormalizeOpen] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
-  const [running, setRunning] = useState<"audio" | "video" | "youtube">();
+  const [running, setRunning] = useState<"audio" | "video" | "youtube" | "thumbnail">();
   const [settings, setSettings] = useState<AudioSettings>({
     modelId: "voxcpm2",
     voiceId: "",
     maxChars: "",
     withEffects: false,
+  });
+  const [normalization, setNormalization] = useState<NormalizationSettings>({
+    numbers: true,
+    junk: true,
+    spellcheck: true,
+    dictionary: false,
+    transliteration: false,
   });
 
   const setBusy = useCallback(
@@ -67,6 +75,45 @@ export function BookDetail() {
   );
   const { ttsModels, voiceOptions, currentVoiceName } = useTtsOptions(data, settings.modelId);
   const chapterVal = useChapterValidation(bookId);
+
+  useEffect(() => {
+    if (!data) return;
+    let cancelled = false;
+    api<{ model_id: string; voice_id: string; max_chars: number; with_effects: boolean }>(
+      `/books/${bookId}/audio-settings`
+    )
+      .then((saved) => {
+        if (cancelled) return;
+        setSettings({
+          modelId: saved.model_id,
+          voiceId: saved.voice_id || "",
+          maxChars: saved.max_chars ? String(saved.max_chars) : "",
+          withEffects: saved.with_effects,
+        });
+      })
+      .catch((err) => !cancelled && setMessage(errorText(err)));
+    return () => {
+      cancelled = true;
+    };
+  }, [bookId, Boolean(data)]);
+
+  useEffect(() => {
+    if (!data) return;
+    setNormalization({
+      numbers: Boolean(data.book.normalize_numbers_enabled),
+      junk: Boolean(data.book.normalize_junk_enabled),
+      spellcheck: Boolean(data.book.normalize_spellcheck_enabled),
+      dictionary: Boolean(data.book.normalize_dictionary_enabled),
+      transliteration: Boolean(data.book.normalize_transliteration_enabled),
+    });
+  }, [
+    data?.book.id,
+    data?.book.normalize_numbers_enabled,
+    data?.book.normalize_junk_enabled,
+    data?.book.normalize_spellcheck_enabled,
+    data?.book.normalize_dictionary_enabled,
+    data?.book.normalize_transliteration_enabled,
+  ]);
 
   const updateSettings = useCallback(
     (patch: Partial<AudioSettings>) => setSettings((current) => ({ ...current, ...patch })),
@@ -118,6 +165,38 @@ export function BookDetail() {
       hasYoutube: uploads > 0,
     };
   }, [patches, pipeline, data?.book.final_video_path]);
+
+  const runBatchThumbnail = useCallback(
+    async () => {
+      const targets = selectedIds.length ? selectedIds : patches.map((patch) => patch.id);
+      if (!targets.length) {
+        setMessage("Không có patch để cập nhật thumbnails.");
+        return;
+      }
+      setRunning("thumbnail");
+      setBusy(true);
+      try {
+        const result = await postJson<{
+          generated: number[];
+          failed: { patch_id: number; error: string }[];
+          invalid_ids: number[];
+        }>(`/books/${bookId}/thumbnails/regenerate`, { patch_ids: targets });
+        const issues = result.failed.length + result.invalid_ids.length;
+        setMessage(
+          issues
+            ? `Đã tạo ${result.generated.length}/${targets.length} thumbnail; ${issues} mục lỗi hoặc không hợp lệ.`
+            : `Đã tạo lại ${result.generated.length} thumbnail YouTube.`
+        );
+        await refresh();
+      } catch (err) {
+        setMessage(errorText(err));
+      } finally {
+        setRunning(undefined);
+        setBusy(false);
+      }
+    },
+    [bookId, patches, selectedIds, refresh, setBusy]
+  );
 
   const runBatch = useCallback(
     async (kind: "audio" | "video" | "youtube") => {
@@ -398,6 +477,7 @@ export function BookDetail() {
           { value: "patches", label: "Patches & Export", badge: patches.length },
           { value: "build", label: "Xây dựng" },
           { value: "chapters", label: "Mục lục", badge: data.chapters.length },
+          { value: "thumbnail", label: "Thumbnail" },
         ]}
       />
 
@@ -454,6 +534,10 @@ export function BookDetail() {
         />
       )}
 
+      {tab === "thumbnail" && (
+        <OverlayEditor bookId={bookId} patchIds={patchIds} onMessage={setMessage} onSaved={refresh} />
+      )}
+
       {/* Thanh hành động theo lựa chọn: chỉ hiện khi có patch được chọn. */}
       {selectedIds.length > 0 && (
         <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 backdrop-blur-sm md:left-64">
@@ -468,6 +552,9 @@ export function BookDetail() {
               </Button>
               <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => runBatch("video")}>
                 <Film className="h-3.5 w-3.5" /> Video
+              </Button>
+              <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => runBatchThumbnail()}>
+                <Film className="h-3.5 w-3.5" /> Thumbnails
               </Button>
               <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => runBatch("youtube")}>
                 <Video className="h-3.5 w-3.5" /> YouTube
@@ -494,11 +581,17 @@ export function BookDetail() {
         onTabChange={setConfigTab}
         settings={settings}
         onSettingsChange={updateSettings}
+        normalization={normalization}
+        onNormalizationChange={(patch) => setNormalization((current) => ({ ...current, ...patch }))}
+        onNormalizationSaved={refresh}
+        chapterCount={data.chapters.length}
         ttsModels={ttsModels}
         voiceOptions={voiceOptions}
-        voiceClipPath={data.book.voice_clip_path}
-        onMessage={setMessage}
-      />
+         voiceClipPath={data.book.voice_clip_path}
+         onMessage={setMessage}
+         patchIds={patchIds}
+         onSaved={refresh}
+       />
 
       <ChapterDialog
         bookId={bookId}

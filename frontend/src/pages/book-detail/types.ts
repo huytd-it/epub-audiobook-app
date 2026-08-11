@@ -79,6 +79,12 @@ export type VideoConfig = {
   crossfade_seconds: number;
   ken_burns_enabled: boolean;
   progress_bar_enabled: boolean;
+  waveform_enabled: boolean;
+  waveform_style: "line" | "cline" | "p2p" | "point";
+  waveform_color: string;
+  waveform_position: "top" | "center" | "bottom";
+  waveform_height: number;
+  waveform_opacity: number;
 };
 
 export type YouTubeConfig = {
@@ -105,9 +111,82 @@ export type YouTubeMetadataPreview = {
   youtube: { mode: string; playlist_id: string };
 };
 
-export type ConfigTab = "audio" | "video" | "youtube";
+export type ConfigTab = "audio" | "normalization" | "video" | "youtube";
 
-// --- Chapter validation / analysis --------------------------------------------
+export type NormalizationSettings = {
+  numbers: boolean;
+  junk: boolean;
+  spellcheck: boolean;
+  dictionary: boolean;
+  transliteration: boolean;
+};
+
+export type OverlayShadow = {
+  enabled: boolean;
+  color: string;
+  offset: number;
+};
+
+export type OverlayBox = {
+  enabled: boolean;
+  color: string;
+  opacity: number;
+  padding_x: number;
+  padding_y: number;
+  radius: number;
+};
+
+export type OverlayLayer = {
+  text: string;
+  position: "top" | "center" | "bottom";
+  alignment: "left" | "center" | "right";
+  font_size: number;
+  font_path: string;
+  text_transform: "none" | "uppercase" | "lowercase" | "titlecase";
+  line_spacing: number;
+  max_width: number;
+  stroke_width: number;
+  stroke_color: string;
+  text_color: string;
+  margin: number;
+  offset_x: number;
+  offset_y: number;
+  shadow: OverlayShadow;
+  box: OverlayBox;
+};
+
+export type OverlayConfig = {
+  text: string;
+  position: "top" | "center" | "bottom";
+  alignment: "left" | "center" | "right";
+  font_size: number;
+  font_path: string;
+  text_transform: "none" | "uppercase" | "lowercase" | "titlecase";
+  line_spacing: number;
+  max_width: number;
+  stroke_width: number;
+  stroke_color: string;
+  text_color: string;
+  shadow: OverlayShadow;
+  box: OverlayBox;
+  margin: number;
+  offset_x: number;
+  offset_y: number;
+  overlays: OverlayLayer[];
+};
+
+export type FontDetail = {
+  name: string;
+  path: string;
+};
+
+export type OverlayConfigResponse = {
+  config: OverlayConfig;
+  fonts: FontDetail[];
+  backgrounds: BackgroundItem[];
+  background_path?: string | null;
+  placeholders: { key: string; label: string }[];
+};
 
 export type Severity = "ok" | "info" | "warning" | "error";
 export type TitleState = "canonical" | "fixable" | "no_name" | "unknown";
@@ -326,6 +405,10 @@ export type AudioSettings = {
   maxChars: string;
   withEffects: boolean;
 };
+
+export type BackgroundItem = { name: string; path: string; is_video: boolean; is_default?: boolean };
+export type AudioSettingsResponse = AudioSettings;
+export type MusicSettings = { music_id: number | null; music_volume: number };
 
 export function errorText(error: unknown) {
   return error instanceof Error ? error.message : "Đã xảy ra lỗi không xác định.";

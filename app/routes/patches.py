@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -1173,10 +1174,20 @@ async def import_patch_from_upload(
 # (plus a matching .timeline.json), so the leading number is the only part that
 # identifies the patch - the name half is free text the user may have renamed around.
 _RESULT_INDEX_RE = re.compile(r"^\s*(\d{1,4})(?!\d)")
+_RESULT_BOOK_EPISODE_RE = re.compile(r"^\s*(\d+)_(\d{1,4})(?!\d)")
 
 
-def _result_patch_index(filename: str) -> int | None:
-    match = _RESULT_INDEX_RE.match(Path(filename).name)
+def _result_patch_index(filename: str, book_id: int | None = None) -> int | None:
+    """Resolve a zero-based patch index from either legacy ``NNN - name`` files or
+    the canonical ``<book_id>_<episode>`` name (episode is one-based)."""
+    name = Path(filename).name
+    canonical = _RESULT_BOOK_EPISODE_RE.match(name)
+    if canonical:
+        if book_id is not None and int(canonical.group(1)) != book_id:
+            return None
+        episode = int(canonical.group(2))
+        return episode - 1 if episode > 0 else None
+    match = _RESULT_INDEX_RE.match(name)
     return int(match.group(1)) if match else None
 
 
@@ -1286,6 +1297,97 @@ def _discard_stale_patch_video(conn, book_id: int, patch_id: int) -> None:
     conn.commit()
 
 
+def _result_inbox(book_id: int) -> Path:
+    # Mỗi ebook dùng chính data/books/<book_id> làm nơi nhận file lớn để toàn bộ
+    # EPUB, WAV, timeline và artefact liên quan nằm chung một hồ sơ dễ quản lý.
+    folder = Path(settings.data_root) / "books" / str(book_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+@router.get("/books/{book_id}/patches/result-inbox")
+def result_inbox_status(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+    folder = _result_inbox(book_id)
+    files = sorted(
+        path.name for path in folder.iterdir()
+        if path.is_file() and (path.name.lower().endswith(".wav") or path.name.lower().endswith(".timeline.json"))
+    )
+    return {"path": str(folder.resolve()), "files": files, "count": len(files)}
+
+
+@router.post("/books/{book_id}/patches/result-inbox/open")
+def open_result_inbox(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+    folder = _result_inbox(book_id).resolve()
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(folder))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Không mở được folder: {exc}") from exc
+    return {"ok": True, "path": str(folder)}
+
+
+@router.post("/books/{book_id}/patches/result-inbox/process")
+async def process_result_inbox(request: Request, book_id: int):
+    """Process local large files without sending them through HTTP multipart.
+
+    Legacy ``NNN - name`` inputs are renamed to ``<book_id>_<episode:03d>`` before
+    being installed, while already-canonical files are accepted unchanged.
+    """
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        patches = {patch.patch_index: patch for patch in repository.list_patches(conn, book_id)}
+    folder = _result_inbox(book_id)
+    candidates = sorted(
+        path for path in folder.iterdir()
+        if path.is_file() and (path.name.lower().endswith(".wav") or path.name.lower().endswith(".timeline.json"))
+    )
+    renamed: list[dict] = []
+    ready: list[Path] = []
+    occupied: set[Path] = set()
+    for source in candidates:
+        index = _result_patch_index(source.name, book_id)
+        if index is None or index not in patches:
+            ready.append(source)
+            continue
+        suffix = ".timeline.json" if source.name.lower().endswith(".timeline.json") else ".wav"
+        target = folder / f"{book_id}_{index + 1:03d}{suffix}"
+        if source != target:
+            if target.exists() or target in occupied:
+                ready.append(source)
+                continue
+            source.rename(target)
+            renamed.append({"from": source.name, "to": target.name})
+        occupied.add(target)
+        ready.append(target)
+    if not ready:
+        return {"ok": True, "installed": 0, "renamed": [], "results": [], "path": str(folder.resolve())}
+    handles = []
+    uploads = []
+    try:
+        for path in ready:
+            handle = open(path, "rb")
+            handles.append(handle)
+            uploads.append(UploadFile(filename=path.name, file=handle))
+        result = await upload_batch_results(request, book_id, uploads)
+    finally:
+        for handle in handles:
+            handle.close()
+    result["renamed"] = renamed
+    result["path"] = str(folder.resolve())
+    return result
+
+
 @router.post("/books/{book_id}/patches/upload-results")
 async def upload_batch_results(
     request: Request,
@@ -1312,7 +1414,7 @@ async def upload_batch_results(
         name = Path(upload.filename or "").name
         lower = name.lower()
         kind = "timeline" if lower.endswith(".timeline.json") else "audio" if lower.endswith(".wav") else None
-        index = _result_patch_index(name)
+        index = _result_patch_index(name, book_id)
         if kind is None:
             reason = "chỉ nhận .wav và .timeline.json"
         elif index is None or index not in patches:

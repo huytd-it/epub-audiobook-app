@@ -507,6 +507,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN voice_transcript TEXT")
     if "automation_config" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN automation_config TEXT")
+    if "tts_model" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN tts_model TEXT")
+    if "tts_max_chars" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN tts_max_chars INTEGER")
+    if "tts_with_effects" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN tts_with_effects INTEGER NOT NULL DEFAULT 0")
+    if "tts_voice_id" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN tts_voice_id TEXT")
     # book_job and app_state are CREATE TABLE IF NOT EXISTS, so they're picked up by
     # init_schema on a fresh DB and are a no-op on an existing DB; no per-column migration
     # is needed for them.

@@ -180,20 +180,70 @@ def test_overlay_config_post_clamps_offsets(client, tmp_path):
     assert cfg["offset_y"] == -4000
 
 
-# ---------------------------------------------------------------------------
-# Studio page + patch overlay rendering
-# ---------------------------------------------------------------------------
 
-
-def test_book_detail_page_renders_studio(client, tmp_path):
-    _seed_book(client, tmp_path)
-    resp = client.get("/books/1")
+def test_get_overlay_config(client, tmp_path):
+    bg = _seed_book(client, tmp_path)
+    resp = client.get("/books/1/overlay-config")
     assert resp.status_code == 200
-    assert 'id="studio-modal"' in resp.text
-    assert 'id="drag-rect" tabindex="0" role="button"' in resp.text
-    assert 'id="mix-play"' in resp.text
-    assert "shadow.enabled" in resp.text
-    assert "box.opacity" in resp.text
+    data = resp.json()
+    assert "config" in data
+    assert "fonts" in data
+    assert "placeholders" in data
+    assert "backgrounds" in data
+    assert data["background_path"] == str(bg)
+
+
+def test_overlay_config_persists_selected_background(client, tmp_path):
+    _seed_book(client, tmp_path)
+    selected = _make_png(tmp_path / "backgrounds" / "selected.png")
+
+    resp = client.post(
+        "/books/1/overlay-config",
+        data={"overlays_json": "[]", "background_path": str(selected)},
+    )
+
+    assert resp.status_code == 200
+    conn = _db(client)
+    saved = conn.execute("SELECT background_image_path FROM book WHERE id = 1").fetchone()[0]
+    conn.close()
+    assert saved == str(selected)
+
+
+def test_overlay_config_invalidation(client, tmp_path):
+    from app import image_overlay
+    _seed_book(client, tmp_path)
+    # 1. Setup sample patch pipeline state
+    conn = _db(client)
+    patch_id = conn.execute("SELECT id FROM patch WHERE book_id = 1").fetchone()[0]
+    conn.execute(
+        "INSERT INTO patch_pipeline "
+        "(patch_id, thumbnail_status, config_snapshot, media_snapshot, created_at, updated_at) "
+        "VALUES (?, 'done', '{}', '{}', ?, ?)",
+        (patch_id, datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+    # 2. Mock a thumbnail PNG
+    overlay_path = image_overlay.get_patch_overlay_path(1, 0)
+    assert overlay_path.name == "1_001.png"
+    overlay_path.parent.mkdir(parents=True, exist_ok=True)
+    overlay_path.write_text("dummy-png-data")
+    assert overlay_path.exists()
+
+    # 3. Post new config
+    resp = client.post(
+        "/books/1/overlay-config", data={"text": "new text"}, follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    # 4. Check invalidation
+    conn = _db(client)
+    status = conn.execute(f"SELECT thumbnail_status FROM patch_pipeline WHERE patch_id = {patch_id}").fetchone()[0]
+    conn.close()
+    assert status == 'pending'
+
+    assert not overlay_path.exists()
 
 
 
@@ -322,7 +372,7 @@ def test_expand_overlay_text_uses_patch_placeholders():
         "{book_title}|{patch_name}|{episode}|{chapter}|{chapter_start}|{chapter_end}",
         book, patch,
     )
-    assert text == "My Book|Opening|3|4-7|4|7"
+    assert text == "My Book|Opening|003|4-7|4|7"
 
 
 def test_overlay_config_accepts_multiple_layers():
@@ -366,3 +416,24 @@ def test_overlay_config_accepts_advanced_layer_settings():
         "padding_y": 17,
         "radius": 22,
     }
+
+
+def test_overlay_config_accepts_typography_settings():
+    from app import image_overlay
+
+    cfg = image_overlay.overlay_cfg_from_values({
+        "overlays_json": json.dumps([{
+            "text": "Hello",
+            "text_transform": "uppercase",
+            "line_spacing": 16,
+            "max_width": 72,
+            "stroke_width": 4,
+            "stroke_color": "#123456",
+        }])
+    })
+    layer = cfg["overlays"][0]
+    assert layer["text_transform"] == "uppercase"
+    assert layer["line_spacing"] == 16
+    assert layer["max_width"] == 72
+    assert layer["stroke_width"] == 4
+    assert layer["stroke_color"] == "#123456"

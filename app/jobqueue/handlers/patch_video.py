@@ -106,12 +106,14 @@ def handle(ctx) -> dict:
                     crossfade_seconds=float(config.get("crossfade_seconds", 1)),
                     ken_burns=bool(config.get("ken_burns_enabled")),
                     progress_bar=bool(config.get("progress_bar_enabled")), **common,
+                    waveform_config=config,
                 )
             else:
                 video_gen.generate_segment(
                     image, patch.audio_path, target, image_type=image_type,
                     use_nvenc=settings.use_nvenc, music_path=music_path,
                     music_volume=book.music_volume, **common,
+                    waveform_config=config,
                 )
 
         def render(target: str) -> None:

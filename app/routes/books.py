@@ -439,7 +439,64 @@ def trigger_video(request: Request, book_id: int):
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
-@router.post("/books/{book_id}/music")
+@router.get("/books/{book_id}/audio-settings")
+def get_audio_settings(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        return {
+            "model_id": book.tts_model or settings.tts_engine,
+            "voice_id": book.tts_voice_id or "",
+            "max_chars": book.tts_max_chars or 0,
+            "with_effects": bool(book.tts_with_effects),
+        }
+
+
+@router.post("/books/{book_id}/audio-settings")
+async def save_audio_settings(request: Request, book_id: int):
+    data = await request.json()
+    model_id = str(data.get("model_id") or settings.tts_engine).strip()
+    voice_id = str(data.get("voice_id") or "").strip()
+    try:
+        max_chars = max(0, int(data.get("max_chars") or 0))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "max_chars không hợp lệ") from exc
+    with_effects = bool(data.get("with_effects", False))
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(404, "book not found")
+        conn.execute("UPDATE book SET tts_model=?, tts_voice_id=?, tts_max_chars=?, tts_with_effects=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (model_id, voice_id or None, max_chars or None, int(with_effects), book_id))
+        conn.commit()
+    return {"model_id": model_id, "voice_id": voice_id, "max_chars": max_chars, "with_effects": with_effects}
+
+
+@router.get("/books/{book_id}/music", name="get_book_music_legacy")
+def get_book_music(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        return {"music_id": book.music_id, "music_volume": round((book.music_volume or 0) * 100), "tracks": [dict(row) for row in conn.execute("SELECT id, name, duration_sec FROM music ORDER BY name")]}
+
+
+@router.post("/books/{book_id}/music-json")
+async def save_book_music_json(request: Request, book_id: int):
+    data = await request.json()
+    music_id = data.get("music_id")
+    volume = max(0, min(100, int(data.get("music_volume", 15))))
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(404, "book not found")
+        if music_id is not None and conn.execute("SELECT 1 FROM music WHERE id=?", (music_id,)).fetchone() is None:
+            raise HTTPException(400, "music track not found")
+        repository.set_book_music(conn, book_id, int(music_id) if music_id is not None else None, volume / 100)
+        book = repository.get_book(conn, book_id)
+    return {"music_id": book.music_id, "music_volume": round((book.music_volume or 0) * 100)}
+
+
+
+@router.post("/books/{book_id}/music", name="update_book_music_legacy")
 def update_book_music(
     request: Request,
     book_id: int,
@@ -482,6 +539,33 @@ def rename_book(request: Request, book_id: int, title: str = Form(...)):
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
+@router.get("/books/{book_id}/overlay-config")
+def get_overlay_config(request: Request, book_id: int):
+    from app import image_overlay
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+
+    config = image_overlay.parse_overlay_config(book.overlay_config)
+
+    return {
+        "config": config,
+        "fonts": image_overlay.list_overlay_fonts(),
+        "backgrounds": _list_backgrounds(),
+        "background_path": book.background_image_path,
+        "placeholders": [
+            {"key": "book_title", "label": "Book Title"},
+            {"key": "patch_name", "label": "Patch Name"},
+            {"key": "patch_index", "label": "Patch Index"},
+            {"key": "episode", "label": "Episode"},
+            {"key": "chapter", "label": "Chapter Range"},
+            {"key": "chapter_start", "label": "Start Chapter"},
+            {"key": "chapter_end", "label": "End Chapter"},
+        ]
+    }
+
+
 @router.post("/books/{book_id}/overlay-config")
 async def update_overlay_config(request: Request, book_id: int):
     from app import image_overlay
@@ -493,13 +577,38 @@ async def update_overlay_config(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
+
+        # Save config and the image selected in the live preview. Previously the
+        # preview background was sent only to overlay-preview, so pressing Save lost it.
+        background_path = str(values.get("background_path") or "").strip()
+        if background_path:
+            allowed = {item["path"] for item in _list_backgrounds() if not item.get("is_video")}
+            if background_path not in allowed or not Path(background_path).is_file():
+                raise HTTPException(status_code=400, detail="Background preview không hợp lệ")
         conn.execute(
-            "UPDATE book SET overlay_config = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(cfg, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), book_id),
+            "UPDATE book SET overlay_config = ?, background_image_path = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(cfg, ensure_ascii=False), background_path or book.background_image_path,
+             datetime.now(timezone.utc).isoformat(), book_id),
         )
+
+        # Invalidate thumbnail pipeline
+        patches = repository.list_patches(conn, book_id)
+        if patches:
+            patch_ids = [p.id for p in patches]
+            conn.execute(
+                f"UPDATE patch_pipeline SET thumbnail_status='pending' WHERE patch_id IN ({','.join(['?']*len(patch_ids))})",
+                patch_ids
+            )
+
+            # Clear old PNGs
+            for patch in patches:
+                path = image_overlay.get_patch_overlay_path(book_id, patch.patch_index)
+                if path.exists():
+                    path.unlink()
+
         conn.commit()
-        book = repository.get_book(conn, book_id)
-    if request.headers.get("X-Requested-With") == "autosave":
+
+    if request.headers.get("X-Requested-With") == "autosave" or "overlays_json" in values:
         return {"status": "ok"}
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
@@ -1146,6 +1255,53 @@ def get_youtube_description(request: Request, book_id: int):
             raise HTTPException(status_code=404, detail="book not found")
         result = repository.build_youtube_description(conn, book_id)
     return JSONResponse(result)
+
+
+@router.post("/books/{book_id}/thumbnails/regenerate")
+async def regenerate_thumbnails(request: Request, book_id: int):
+    body = await request.json()
+    patch_ids = body.get("patch_ids", [])
+    if not patch_ids:
+        raise HTTPException(400, "patch_ids is required")
+
+    from app import image_overlay
+    font_path = settings.default_font_path or None
+
+    # Step 1: Gather data outside the lock
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        # Validate all patches exist
+        all_patches = repository.list_patches(conn, book_id)
+        patch_map = {p.id: p for p in all_patches}
+        target_patches = [patch_map[pid] for pid in patch_ids if pid in patch_map]
+        invalid_ids = [pid for pid in patch_ids if pid not in patch_map]
+
+    # Step 2: Render outside the lock
+    generated = []
+    failed = []
+    for patch in target_patches:
+        try:
+            output = image_overlay.ensure_patch_overlay(book, patch, font_path, force=True)
+            if not output or not Path(output).is_file():
+                raise RuntimeError("Không thể tạo file thumbnail")
+            generated.append(patch.id)
+        except Exception as e:
+            logger.error("Failed to regenerate thumbnail for patch %s: %s", patch.id, e)
+            failed.append({"patch_id": patch.id, "error": str(e)})
+
+    # Step 3: Update DB briefly inside lock
+    if generated:
+        with locked_conn(request) as conn:
+            conn.execute(
+                f"UPDATE patch_pipeline SET thumbnail_status='pending' WHERE patch_id IN ({','.join(['?'] * len(generated))})",
+                generated,
+            )
+            conn.commit()
+
+    return {"status": "ok", "generated": generated, "failed": failed, "invalid_ids": invalid_ids}
+
 
 
 

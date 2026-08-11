@@ -21,12 +21,23 @@ VIDEO_DEFAULTS = {
     "crossfade_seconds": 1,
     "ken_burns_enabled": False,
     "progress_bar_enabled": False,
+    "waveform_enabled": False,
+    "waveform_style": "line",
+    "waveform_color": "#ffffff",
+    "waveform_position": "bottom",
+    "waveform_height": 120,
+    "waveform_opacity": 0.85,
+    "resolution": "1920x1080",
+    "fps": 30,
+    "image_animation": "none",
 }
 
 _RESOLUTIONS = {"1920x1080", "1280x720", "854x480"}
+VALID_FPS = {24, 30, 60}
 _CODECS = {"libx264", "h264_nvenc"}
 _BITRATES = {"128k", "192k", "256k", "320k"}
 _ANIMATIONS = {"none", "static", "zoom-in", "zoom-out", "pan-left", "pan-right"}
+_WAVEFORM_STYLES = {"line", "cline", "p2p", "point"}
 
 
 def _json_object(value) -> dict:
@@ -53,38 +64,68 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("image duration must be 1-600 seconds")
     if result["codec"] not in _CODECS:
         raise ValueError("invalid codec")
+    if result["resolution"] not in _RESOLUTIONS:
+        raise ValueError("invalid resolution")
+    if result["fps"] not in VALID_FPS:
+        raise ValueError("invalid fps")
+    if result["image_animation"] not in _ANIMATIONS:
+        raise ValueError("invalid animation")
     if result["audio_bitrate"] not in _BITRATES:
         raise ValueError("invalid audio bitrate")
     if not isinstance(result["quality"], int) or not 18 <= result["quality"] <= 28:
         raise ValueError("quality must be 18-28")
     if not isinstance(result["concurrency"], int) or result["concurrency"] not in {1, 2, 3, 4, 6, 8}:
         raise ValueError("invalid concurrency")
-    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool):
+    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool) or not isinstance(result["waveform_enabled"], bool):
         raise ValueError("enhancement flags must be boolean")
     if not isinstance(result["crossfade_seconds"], (int, float)) or not 0 <= result["crossfade_seconds"] <= 3:
         raise ValueError("crossfade must be 0-3 seconds")
     for field in ("intro_voice", "outro_voice"):
         if not isinstance(result[field], str):
             raise ValueError(f"{field} must be a string")
+    if result["waveform_style"] not in _WAVEFORM_STYLES:
+        raise ValueError("invalid waveform style")
+    if result["waveform_position"] not in {"top", "center", "bottom"}:
+        raise ValueError("invalid waveform position")
+    color = result["waveform_color"]
+    if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
+        raise ValueError("invalid waveform color")
+    try:
+        int(color[1:], 16)
+    except ValueError as exc:
+        raise ValueError("invalid waveform color") from exc
+    if not isinstance(result["waveform_height"], int) or not 40 <= result["waveform_height"] <= 400:
+        raise ValueError("waveform height must be 40-400")
+    if not isinstance(result["waveform_opacity"], (int, float)) or not 0.1 <= result["waveform_opacity"] <= 1:
+        raise ValueError("waveform opacity must be 0.1-1")
     return result
 
 
 def get_book_video_config(conn, book) -> dict:
     raw = _json_object(book.automation_config)
     video = validate_video_config(raw.get("video", {}))
-    video["resolution"] = book.video_resolution or "1920x1080"
-    video["fps"] = book.video_fps or 30
-    video["image_animation"] = book.default_image_animation or "none"
+    # Fill from book table columns as they are the source of truth
+    video["resolution"] = book.video_resolution if book.video_resolution in _RESOLUTIONS else "1920x1080"
+    video["fps"] = book.video_fps if book.video_fps in VALID_FPS else 30
+    video["image_animation"] = book.default_image_animation if book.default_image_animation in _ANIMATIONS else "none"
     return video
 
 
 def save_book_video_config(conn, book_id: int, config: dict) -> dict:
     video = validate_video_config(config)
+    row = conn.execute("SELECT video_resolution, video_fps, default_image_animation FROM book WHERE id = ?", (book_id,)).fetchone()
+    video["resolution"] = config.get("resolution") or (row[0] if row else "1920x1080")
+    video["fps"] = config.get("fps") or (row[1] if row else 30)
+    video["image_animation"] = config.get("image_animation") or (row[2] if row else "none")
     row = conn.execute("SELECT automation_config FROM book WHERE id = ?", (book_id,)).fetchone()
     raw = _json_object(row[0] if row else None)
     stored = {key: value for key, value in video.items() if key not in {"resolution", "fps", "image_animation"}}
     raw["video"] = stored
-    conn.execute("UPDATE book SET automation_config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(raw), book_id))
+    conn.execute(
+        """UPDATE book SET automation_config = ?, video_resolution = ?, video_fps = ?,
+           default_image_animation = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+        (json.dumps(raw), video["resolution"], video["fps"], video["image_animation"], book_id),
+    )
     conn.commit()
     return video
 

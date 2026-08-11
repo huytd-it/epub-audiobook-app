@@ -26,9 +26,14 @@ DEFAULT_OVERLAY_CONFIG: dict[str, Any] = {
     "text": "",                # empty = book title + patch name
     "position": "top",        # top | center | bottom
     "alignment": "center",    # left | center | right
-    "font_size": 52,
+    "font_size": 100,
     "font_path": "",          # empty = use fallback chain
     "text_color": "#FFFFFF",
+    "text_transform": "none",
+    "line_spacing": 8,
+    "max_width": 90,          # percentage of image width
+    "stroke_width": 0,
+    "stroke_color": "#000000",
     "shadow": {
         "enabled": True,
         "color": "#000000",
@@ -107,8 +112,16 @@ def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     return ImageColor.getrgb(hex_color or "#FFFFFF")[:3]
 
 
-def get_patch_overlay_path(book_id: int, patch_id: int) -> Path:
-    return Path(settings.data_root) / "books" / str(book_id) / "patch_overlays" / f"{patch_id}.png"
+def get_patch_overlay_path(book_id: int, patch_index: int) -> Path:
+    """Stable thumbnail path: ``<book_id>_<episode 3 digits>.png``."""
+    episode_number = patch_index + 1
+    return (
+        Path(settings.data_root)
+        / "books"
+        / str(book_id)
+        / "patch_overlays"
+        / f"{book_id}_{episode_number:03d}.png"
+    )
 
 
 def _resolve_background(book: Book, background_path: str | None = None) -> Path | None:
@@ -226,7 +239,7 @@ def _wrap_lines(draw, text: str, font, max_width: int) -> list[str]:
     return lines or [text]
 
 
-def _measure_lines(draw, lines: list[str], font) -> tuple[int, int]:
+def _measure_lines(draw, lines: list[str], font, line_spacing: int = 8) -> tuple[int, int]:
     """Return (max_line_width, total_height) for the given lines."""
     max_w = 0
     for line in lines:
@@ -237,21 +250,23 @@ def _measure_lines(draw, lines: list[str], font) -> tuple[int, int]:
         if w > max_w:
             max_w = w
     try:
-        line_height = draw.textbbox((0, 0), "Ag", font=font)[3] + 8
+        line_height = draw.textbbox((0, 0), "Ag", font=font)[3] + line_spacing
     except AttributeError:
         line_height = 60
     return int(max_w), len(lines) * line_height
 
 
-def _draw_with_shadow(draw, xy: tuple[float, float], text: str, font, fill, shadow_cfg: dict):
+def _draw_with_shadow(draw, xy: tuple[float, float], text: str, font, fill, shadow_cfg: dict,
+                      stroke_width: int = 0, stroke_fill=None):
     if shadow_cfg.get("enabled", True):
         color = _hex_to_rgb(shadow_cfg.get("color", "#000000"))
         offset = int(shadow_cfg.get("offset", 3))
         for dx in range(-offset, offset + 1):
             for dy in range(-offset, offset + 1):
                 if dx != 0 or dy != 0:
-                    draw.text((xy[0] + dx, xy[1] + dy), text, font=font, fill=color)
-    draw.text(xy, text, font=font, fill=fill)
+                    draw.text((xy[0] + dx, xy[1] + dy), text, font=font, fill=color,
+                              stroke_width=stroke_width, stroke_fill=stroke_fill)
+    draw.text(xy, text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
 
 
 def _draw_text_block(img, draw, lines: list[str], cfg: dict, text_color) -> tuple[int, int, int, int]:
@@ -261,7 +276,8 @@ def _draw_text_block(img, draw, lines: list[str], cfg: dict, text_color) -> tupl
     font = _load_font(cfg.get("font_path") or settings.default_font_path or None, font_size)
 
     margin = int(cfg.get("margin", 40))
-    max_w, block_h = _measure_lines(draw, lines, font)
+    line_spacing = int(cfg.get("line_spacing", 8))
+    max_w, block_h = _measure_lines(draw, lines, font, line_spacing)
 
     box_cfg = cfg.get("box", {})
     pad_x = int(box_cfg.get("padding_x", 24)) if box_cfg.get("enabled") else 0
@@ -314,7 +330,7 @@ def _draw_text_block(img, draw, lines: list[str], cfg: dict, text_color) -> tupl
         draw = ImageDraw.Draw(img)
 
     try:
-        line_height = draw.textbbox((0, 0), "Ag", font=font)[3] + 8
+        line_height = draw.textbbox((0, 0), "Ag", font=font)[3] + line_spacing
     except AttributeError:
         line_height = font_size + 8
 
@@ -330,7 +346,10 @@ def _draw_text_block(img, draw, lines: list[str], cfg: dict, text_color) -> tupl
             lx = x0 + box_w - pad_x - lw
         else:
             lx = x0 + (box_w - lw) / 2
-        _draw_with_shadow(draw, (lx, y), line, font, text_color, cfg.get("shadow", {}))
+        stroke_width = int(cfg.get("stroke_width", 0))
+        stroke_color = _hex_to_rgb(cfg.get("stroke_color", "#000000"))
+        _draw_with_shadow(draw, (lx, y), line, font, text_color, cfg.get("shadow", {}),
+                          stroke_width, stroke_color)
         y += line_height
 
     return int(x0), int(y0), int(box_w), int(box_h)
@@ -357,9 +376,15 @@ def overlay_cfg_from_values(values) -> dict:
     alignment = values.get("alignment") or "center"
     cfg["position"] = position if position in ("top", "center", "bottom") else "top"
     cfg["alignment"] = alignment if alignment in ("left", "center", "right") else "center"
-    cfg["font_size"] = _int("font_size", 52, 12, 200)
+    cfg["font_size"] = _int("font_size", 100, 12, 200)
     cfg["text"] = str(values.get("text") or "").strip()[:500]
     cfg["text_color"] = values.get("text_color") or "#FFFFFF"
+    transform = values.get("text_transform") or "none"
+    cfg["text_transform"] = transform if transform in ("none", "uppercase", "lowercase", "titlecase") else "none"
+    cfg["line_spacing"] = _int("line_spacing", 8, 0, 100)
+    cfg["max_width"] = _int("max_width", 90, 20, 100)
+    cfg["stroke_width"] = _int("stroke_width", 0, 0, 20)
+    cfg["stroke_color"] = values.get("stroke_color") or "#000000"
     cfg["margin"] = _int("margin", 40, 0, 200)
     cfg["offset_x"] = _int("offset_x", 0, -4000, 4000)
     cfg["offset_y"] = _int("offset_y", 0, -4000, 4000)
@@ -416,7 +441,7 @@ def expand_overlay_text(template: str, book: Book, patch: Patch) -> str:
         "book_title": book.title,
         "patch_name": patch_name,
         "patch_index": patch.patch_index,
-        "episode": patch.patch_index + 1,
+        "episode": f"{patch.patch_index + 1:03d}",
         "chapter": f"{patch.chapter_start}-{patch.chapter_end}",
         "chapter_start": patch.chapter_start,
         "chapter_end": patch.chapter_end,
@@ -433,7 +458,15 @@ def build_overlay_lines(image: "Image.Image", text: str, cfg: dict) -> list[str]
     draw = ImageDraw.Draw(image)
     font_size = int(cfg.get("font_size", 52))
     font = _load_font(cfg.get("font_path") or settings.default_font_path or None, font_size)
-    return _wrap_lines(draw, text, font, image.size[0] - 80)
+    transform = cfg.get("text_transform", "none")
+    if transform == "uppercase":
+        text = text.upper()
+    elif transform == "lowercase":
+        text = text.lower()
+    elif transform == "titlecase":
+        text = text.title()
+    max_width = image.size[0] * int(cfg.get("max_width", 90)) // 100
+    return [line for paragraph in text.splitlines() or [""] for line in _wrap_lines(draw, paragraph, font, max_width)]
 
 
 def render_overlay_with_rect(
@@ -477,7 +510,7 @@ def render_patch_overlay(
     if bg is None:
         raise ValueError(f"no background image available for book {book.id}")
     if out_path is None:
-        out_path = str(get_patch_overlay_path(book.id, patch.id))
+        out_path = str(get_patch_overlay_path(book.id, patch.patch_index))
 
     from PIL import Image, ImageDraw
     img = Image.open(str(bg)).convert("RGB")
@@ -516,7 +549,7 @@ def ensure_patch_overlay(
                 overlay["font_path"] = font_path
     if _resolve_background(book, background_path) is None:
         return None
-    output = Path(out_path) if out_path else get_patch_overlay_path(book.id, patch.id)
+    output = Path(out_path) if out_path else get_patch_overlay_path(book.id, patch.patch_index)
     if force or background_path or needs_rerender(book, patch, output):
         try:
             render_patch_overlay(book, patch, cfg, str(output), background_path)

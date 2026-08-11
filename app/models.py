@@ -41,6 +41,10 @@ class Book:
     text_box_padding: int = 12
     text_box_radius: int = 12
     automation_config: str | None = None
+    tts_model: str | None = None
+    tts_max_chars: int | None = None
+    tts_with_effects: int = 0
+    tts_voice_id: str | None = None
 
 @dataclass
 class Chapter:

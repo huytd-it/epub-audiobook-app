@@ -165,15 +165,13 @@ def folder_name_for_batch(book_title: str, patches: list[Patch]) -> str:
 
 
 def result_wav_name(patch: Patch) -> str:
-    """Filename of the merged per-patch wav the batch notebook writes into result/."""
-    label = _sanitize_name(patch.name or str(patch.patch_index)) or "patch"
-    return f"{patch.patch_index:03d} - {label}.wav"
+    """Tên WAV ổn định, dễ đối chiếu: ``<book id>_<episode 3 số>.wav``."""
+    return f"{patch.book_id}_{patch.patch_index + 1:03d}.wav"
 
 
 def result_mp4_name(patch: Patch) -> str:
-    """Filename of the rendered per-patch MP4 the batch notebook writes into result/."""
-    label = _sanitize_name(patch.name or str(patch.patch_index)) or "patch"
-    return f"{patch.patch_index:03d} - {label}.mp4"
+    """Tên MP4 dùng cùng book/episode key với WAV kết quả."""
+    return f"{patch.book_id}_{patch.patch_index + 1:03d}.mp4"
 
 
 def build_batch_export_package(

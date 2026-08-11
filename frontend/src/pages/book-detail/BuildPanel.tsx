@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, Eye, ListPlus, RefreshCw, RotateCcw, Upload, Trash2 } from "lucide-react";
+import { AlertTriangle, Eye, FolderOpen, ListPlus, Play, RefreshCw, RotateCcw, Upload, Trash2 } from "lucide-react";
 import { api, post, postForm } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -31,6 +31,8 @@ export function BuildPanel({
   const [rangeCheck, setRangeCheck] = useState<PlannedRangeCheck>();
   const [building, setBuilding] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [inbox, setInbox] = useState<{ path: string; files: string[]; count: number }>();
+  const [processingInbox, setProcessingInbox] = useState(false);
 
   const [reimportPlan, setReimportPlan] = useState<ReimportPlan>();
   const [extendPlan, setExtendPlan] = useState<ExtendPlan>();
@@ -50,9 +52,50 @@ export function BuildPanel({
     }
   }, [bookId, onMessage]);
 
+  const loadInbox = useCallback(async () => {
+    try {
+      setInbox(await api<{ path: string; files: string[]; count: number }>(`/books/${bookId}/patches/result-inbox`));
+    } catch (error) {
+      onMessage(errorText(error));
+    }
+  }, [bookId, onMessage]);
+
   useEffect(() => {
     loadPlans();
-  }, [loadPlans]);
+    loadInbox();
+  }, [loadPlans, loadInbox]);
+
+  const openInbox = async () => {
+    try {
+      const result = await post(`/books/${bookId}/patches/result-inbox/open`) as { path: string };
+      setInbox((current) => ({ path: result.path, files: current?.files || [], count: current?.count || 0 }));
+      onMessage(`Đã mở folder nhận kết quả: ${result.path}`);
+    } catch (error) {
+      onMessage(errorText(error));
+    }
+  };
+
+  const processInbox = async () => {
+    setProcessingInbox(true);
+    onBusyChange(true);
+    try {
+      const result = await post(`/books/${bookId}/patches/result-inbox/process`) as {
+        installed: number;
+        renamed: { from: string; to: string }[];
+        results: UploadResult[];
+      };
+      const problems = result.results
+        .filter((item) => item.status === "error" || item.status === "skipped")
+        .map((item) => `${item.filename}: ${item.detail || item.status}`);
+      onMessage(`Đã xử lý ${result.installed} audio, đổi tên ${result.renamed.length} file.${problems.length ? ` ${problems.join("; ")}` : ""}`);
+      await Promise.all([loadInbox(), onRefresh()]);
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setProcessingInbox(false);
+      onBusyChange(false);
+    }
+  };
 
   const runIncremental = async (action: () => Promise<string>) => {
     setWorking(true);
@@ -341,28 +384,48 @@ export function BuildPanel({
       <Card>
         <CardHeader className="border-b border-border bg-muted/20">
           <SectionHead
-            icon={Upload}
-            title="Nhận kết quả từ bên ngoài"
-            detail="Tải lên WAV hoặc file timeline.json đã tổng hợp ở Colab / Kaggle."
+            icon={FolderOpen}
+            title="Nhận kết quả trong folder ebook"
+            detail="Chép WAV/timeline vào data/books/{bookId}, sau đó nhấn Xử lý — không upload file lớn qua trình duyệt."
           />
         </CardHeader>
-        <CardContent className="pt-5">
-          <label className="inline-flex">
-            <input
-              className="hidden"
-              type="file"
-              multiple
-              accept=".wav,.json"
-              onChange={(event) => {
-                uploadResults(event.target.files);
-                event.currentTarget.value = "";
-              }}
-            />
-            <span className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-input px-3 text-xs font-medium hover:bg-muted">
-              <Upload className="h-4 w-4" />
-              {uploading ? "Đang upload..." : "Chọn WAV / timeline"}
-            </span>
-          </label>
+        <CardContent className="space-y-4 pt-5">
+          <div className="rounded-md border border-border bg-muted/20 px-3 py-2.5">
+            <div className="break-all font-mono text-[11px] text-foreground">{inbox?.path || "Đang tạo folder..."}</div>
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              {inbox?.count || 0} file chờ · tên chuẩn: {bookId}_001.wav và {bookId}_001.timeline.json
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={openInbox}>
+              <FolderOpen className="h-4 w-4" /> Mở folder
+            </Button>
+            <Button size="sm" onClick={processInbox} disabled={processingInbox || !inbox?.count}>
+              <Play className="h-4 w-4" /> {processingInbox ? "Đang xử lý..." : "Xử lý file trong folder"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={loadInbox} disabled={processingInbox}>
+              <RefreshCw className="h-4 w-4" /> Quét lại
+            </Button>
+          </div>
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer font-medium text-foreground">Upload trực tiếp (dự phòng)</summary>
+            <label className="mt-3 inline-flex">
+              <input
+                className="hidden"
+                type="file"
+                multiple
+                accept=".wav,.json"
+                onChange={(event) => {
+                  uploadResults(event.target.files);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <span className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-input px-3 text-xs font-medium hover:bg-muted">
+                <Upload className="h-4 w-4" />
+                {uploading ? "Đang upload..." : "Chọn WAV / timeline"}
+              </span>
+            </label>
+          </details>
         </CardContent>
       </Card>
 

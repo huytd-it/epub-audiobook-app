@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, Download, Eye, ListChecks, Play } from "lucide-react";
+import { AlertTriangle, AudioLines, CheckCircle2, Download, Eye, ListChecks, Play } from "lucide-react";
 import { api, Chapter, Patch, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -16,7 +17,10 @@ import {
 } from "@/components/ui/dialog";
 import {
   AudioSettings,
+  BackgroundItem,
   ConfigTab,
+  MusicSettings,
+  NormalizationSettings,
   TitleNormalizePreview,
   TtsModel,
   VideoConfig,
@@ -27,6 +31,15 @@ import {
   errorText,
 } from "./types";
 import { CheckField, Field, TabBar, checkboxClass, fieldClass, selectClass } from "./parts";
+
+const WAVEFORM_TEMPLATES = [
+  { id: "minimal", name: "Tối giản", description: "Nét mảnh ở đáy", style: "line", color: "#ffffff", position: "bottom", height: 80, opacity: 0.8 },
+  { id: "studio", name: "Studio", description: "Đối xứng ở giữa", style: "cline", color: "#22d3ee", position: "center", height: 160, opacity: 0.9 },
+  { id: "pulse", name: "Nhịp sáng", description: "Điểm nhịp nổi bật", style: "point", color: "#facc15", position: "bottom", height: 120, opacity: 1 },
+  { id: "cinema", name: "Điện ảnh", description: "Dải sóng rộng phía dưới", style: "p2p", color: "#fb7185", position: "bottom", height: 180, opacity: 0.75 },
+] as const;
+
+const WAVEFORM_BARS = [18, 38, 24, 58, 34, 72, 42, 86, 48, 64, 30, 76, 44, 92, 54, 70, 36, 80, 46, 62, 28, 52, 34, 20];
 
 export function PatchPreviewDialog({
   bookId,
@@ -157,10 +170,16 @@ export function ConfigDialog({
   onTabChange,
   settings,
   onSettingsChange,
+  normalization,
+  onNormalizationChange,
+  onNormalizationSaved,
+  chapterCount,
   ttsModels,
   voiceOptions,
   voiceClipPath,
   onMessage,
+  patchIds,
+  onSaved,
 }: {
   bookId: string;
   open: boolean;
@@ -169,22 +188,45 @@ export function ConfigDialog({
   onTabChange: (tab: ConfigTab) => void;
   settings: AudioSettings;
   onSettingsChange: (patch: Partial<AudioSettings>) => void;
+  normalization: NormalizationSettings;
+  onNormalizationChange: (patch: Partial<NormalizationSettings>) => void;
+  onNormalizationSaved: () => Promise<void>;
+  chapterCount: number;
   ttsModels: TtsModel[];
   voiceOptions: VoiceOption[];
   voiceClipPath?: string | null;
   onMessage: (message: string) => void;
+  patchIds: number[];
+  onSaved: () => Promise<void>;
 }) {
   const [videoConfig, setVideoConfig] = useState<VideoConfig>();
+  const [backgrounds, setBackgrounds] = useState<BackgroundItem[]>([]);
+  const [music, setMusic] = useState<MusicSettings & { tracks: { id: number; name: string; duration_sec: number | null }[] }>();
   const [ytSettings, setYtSettings] = useState<YouTubeSettings>();
   const [ytPreview, setYtPreview] = useState<YouTubeMetadataPreview>();
   const [ytPreviewLoading, setYtPreviewLoading] = useState(false);
   const [ytPreviewError, setYtPreviewError] = useState("");
+  const [normalizationPreview, setNormalizationPreview] = useState("");
+  const [previewChapter, setPreviewChapter] = useState(0);
+  const [normalizationPreviewLoading, setNormalizationPreviewLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     if (tab === "video" && !videoConfig) {
-      api<VideoConfig>(`/books/${bookId}/video-config`).then(setVideoConfig).catch((error) => onMessage(errorText(error)));
+      Promise.all([
+        api<VideoConfig>(`/books/${bookId}/video-config`),
+        api<{ backgrounds: BackgroundItem[] }>("/video/backgrounds"),
+        api<MusicSettings & { tracks: { id: number; name: string; duration_sec: number | null }[] }>(
+          `/books/${bookId}/music`
+        ),
+      ])
+        .then(([config, media, musicSettings]) => {
+          setVideoConfig(config);
+          setBackgrounds(media.backgrounds || []);
+          setMusic(musicSettings);
+        })
+        .catch((error) => onMessage(errorText(error)));
     }
     if (tab === "youtube" && !ytSettings) {
       api<YouTubeSettings>(`/books/${bookId}/youtube-settings`).then(setYtSettings).catch((error) => onMessage(errorText(error)));
@@ -216,12 +258,64 @@ export function ConfigDialog({
     };
   }, [tab, bookId, ytConfig]);
 
-  const saveVideo = async () => {
-    if (!videoConfig) return;
+  const saveAudio = async () => {
     setSaving(true);
     try {
-      await postJson(`/books/${bookId}/video-config`, videoConfig);
-      onMessage("Đã lưu cấu hình video.");
+      await postJson(`/books/${bookId}/audio-settings`, { model_id: settings.modelId, voice_id: settings.voiceId, max_chars: settings.maxChars ? Number(settings.maxChars) : 0, with_effects: settings.withEffects });
+      onMessage("Đã lưu cấu hình âm thanh.");
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveNormalization = async () => {
+    setSaving(true);
+    try {
+      const form = new FormData();
+      (Object.entries(normalization) as [keyof NormalizationSettings, boolean][]).forEach(([key, enabled]) => {
+        if (enabled) form.append(key, "on");
+      });
+      await api(`/books/${bookId}/normalization`, {
+        method: "POST",
+        headers: { "X-Requested-With": "autosave" },
+        body: form,
+      });
+      onMessage("Đã lưu cấu hình chuẩn hóa TTS. Các patch audio đã hoàn thành sẽ cần tạo lại.");
+      await onNormalizationSaved();
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const previewNormalization = async () => {
+    setNormalizationPreviewLoading(true);
+    try {
+      setNormalizationPreview(
+        await api<string>(`/books/${bookId}/normalization/preview?chapter_index=${previewChapter}`)
+      );
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setNormalizationPreviewLoading(false);
+    }
+  };
+
+  const saveVideo = async () => {
+    if (!videoConfig || !music) return;
+    setSaving(true);
+    try {
+      await Promise.all([
+        postJson(`/books/${bookId}/video-config`, videoConfig),
+        postJson(`/books/${bookId}/music-json`, {
+          music_id: music.music_id,
+          music_volume: music.music_volume,
+        }),
+      ]);
+      onMessage("Đã lưu cấu hình video, background media và mix nhạc.");
     } catch (error) {
       onMessage(errorText(error));
     } finally {
@@ -257,6 +351,7 @@ export function ConfigDialog({
           onChange={onTabChange}
           tabs={[
             { value: "audio", label: "Âm thanh" },
+            { value: "normalization", label: "Chuẩn hóa TTS" },
             { value: "video", label: "Video" },
             { value: "youtube", label: "YouTube" },
           ]}
@@ -320,6 +415,77 @@ export function ConfigDialog({
               Voice clip:{" "}
               {voiceClipName ? <span className="font-medium text-foreground">{voiceClipName}</span> : "Chưa thiết lập"}
             </div>
+            <DialogFooter>
+              <Button onClick={saveAudio} disabled={saving}>
+                {saving ? "Đang lưu..." : "Lưu cấu hình âm thanh"}
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
+
+        {tab === "normalization" && (
+          <div className="space-y-4">
+            <div className="space-y-3 rounded-md border border-border p-4">
+              <CheckField
+                checked={normalization.numbers}
+                onChange={(value) => onNormalizationChange({ numbers: value })}
+                label="Chuyển số, ngày giờ và đơn vị thành chữ"
+              />
+              <CheckField
+                checked={normalization.junk}
+                onChange={(value) => onNormalizationChange({ junk: value })}
+                label="Xóa token rác từ EPUB"
+              />
+              <CheckField
+                checked={normalization.spellcheck}
+                onChange={(value) => onNormalizationChange({ spellcheck: value })}
+                label="Sửa dấu chấm bị chèn trong từ tiếng Việt"
+              />
+              <CheckField
+                checked={normalization.dictionary}
+                onChange={(value) => onNormalizationChange({ dictionary: value })}
+                label="Áp dụng từ điển tiếng Việt"
+              />
+              <CheckField
+                checked={normalization.transliteration}
+                onChange={(value) => onNormalizationChange({ transliteration: value })}
+                label="Phiên âm từ nước ngoài"
+              />
+            </div>
+
+            <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+              Lưu cấu hình sẽ reset các patch audio đã hoàn thành để TTS chạy lại. Nội dung đã sửa thủ công trong
+              Text Studio vẫn được giữ nguyên và không normalize lại.
+            </div>
+
+            <div className="space-y-3 rounded-md border border-border p-3">
+              <div className="flex flex-wrap items-end gap-2">
+                <Field label="Chương xem trước">
+                  <input
+                    className={fieldClass}
+                    type="number"
+                    min="0"
+                    max={Math.max(0, chapterCount - 1)}
+                    value={previewChapter}
+                    onChange={(event) => setPreviewChapter(Number(event.target.value))}
+                  />
+                </Field>
+                <Button variant="outline" onClick={previewNormalization} disabled={normalizationPreviewLoading || !chapterCount}>
+                  {normalizationPreviewLoading ? "Đang tải..." : "Xem kết quả đã lưu"}
+                </Button>
+              </div>
+              {normalizationPreview && (
+                <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/30 p-3 text-[11px] leading-5 text-muted-foreground">
+                  {normalizationPreview}
+                </pre>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button onClick={saveNormalization} disabled={saving}>
+                {saving ? "Đang lưu..." : "Lưu cấu hình chuẩn hóa"}
+              </Button>
+            </DialogFooter>
           </div>
         )}
 
@@ -422,6 +588,87 @@ export function ConfigDialog({
                 </Field>
               </div>
 
+              <div className="space-y-3 rounded-md border border-border p-3">
+                <div className="flex flex-wrap items-end gap-3">
+                  <Field label="Thứ tự background media">
+                    <select
+                      className={selectClass}
+                      value={videoConfig.background_mode}
+                      onChange={(event) => setVideoConfig({ ...videoConfig, background_mode: event.target.value })}
+                    >
+                      <option value="sequential">Theo thứ tự</option>
+                      <option value="random">Ngẫu nhiên</option>
+                    </select>
+                  </Field>
+                  <span className="pb-2 text-[11px] text-muted-foreground">
+                    Đã chọn {videoConfig.backgrounds.length} file ảnh/video
+                  </span>
+                </div>
+                {backgrounds.length ? (
+                  <div className="grid max-h-52 grid-cols-1 gap-2 overflow-auto sm:grid-cols-2">
+                    {backgrounds.map((item) => {
+                      const checked = videoConfig.backgrounds.includes(item.path);
+                      return (
+                        <label
+                          key={item.path}
+                          className="flex cursor-pointer items-center gap-2 rounded-md border border-border px-3 py-2 text-xs hover:bg-muted/40"
+                        >
+                          <input
+                            type="checkbox"
+                            className={checkboxClass}
+                            checked={checked}
+                            onChange={() =>
+                              setVideoConfig({
+                                ...videoConfig,
+                                backgrounds: checked
+                                  ? videoConfig.backgrounds.filter((path) => path !== item.path)
+                                  : [...videoConfig.backgrounds, item.path],
+                              })
+                            }
+                          />
+                          <span className="min-w-0 flex-1 truncate">{item.is_default ? "Mặc định" : item.name}</span>
+                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {item.is_video ? "Video" : "Ảnh"}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground">Thư viện chưa có background media.</div>
+                )}
+              </div>
+
+              {music && (
+                <div className="grid grid-cols-1 gap-4 rounded-md border border-border p-3 sm:grid-cols-2">
+                  <Field label="Mix nhạc nền">
+                    <select
+                      className={selectClass}
+                      value={music.music_id ?? ""}
+                      onChange={(event) =>
+                        setMusic({ ...music, music_id: event.target.value ? Number(event.target.value) : null })
+                      }
+                    >
+                      <option value="">Không dùng nhạc</option>
+                      {music.tracks.map((track) => (
+                        <option key={track.id} value={track.id}>{track.name}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label={`Âm lượng nhạc: ${music.music_volume}%`}>
+                    <input
+                      className="w-full accent-primary"
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={music.music_volume}
+                      disabled={music.music_id == null}
+                      onChange={(event) => setMusic({ ...music, music_volume: Number(event.target.value) })}
+                    />
+                  </Field>
+                </div>
+              )}
+
               <div className="flex flex-wrap gap-4 rounded-md bg-muted/30 p-3">
                 <CheckField
                   checked={videoConfig.crossfade_enabled}
@@ -439,6 +686,75 @@ export function ConfigDialog({
                   label="Progress bar"
                 />
               </div>
+
+              <section className="space-y-3 rounded-md border border-border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-xs font-semibold">
+                      <AudioLines className="h-4 w-4 text-primary" /> Waveform theo giọng đọc
+                    </div>
+                    <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                      Tạo dải sóng chuyển động trực tiếp từ audio narration.
+                    </p>
+                  </div>
+                  <CheckField
+                    checked={videoConfig.waveform_enabled}
+                    onChange={(value) => setVideoConfig({ ...videoConfig, waveform_enabled: value })}
+                    label="Bật"
+                  />
+                </div>
+
+                <div className={videoConfig.waveform_enabled ? "space-y-4" : "pointer-events-none space-y-4 opacity-45"}>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {WAVEFORM_TEMPLATES.map((template) => {
+                      const selected = videoConfig.waveform_style === template.style && videoConfig.waveform_color === template.color && videoConfig.waveform_position === template.position && videoConfig.waveform_height === template.height;
+                      return (
+                        <button
+                          key={template.id}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => setVideoConfig({ ...videoConfig, waveform_enabled: true, waveform_style: template.style, waveform_color: template.color, waveform_position: template.position, waveform_height: template.height, waveform_opacity: template.opacity })}
+                          className={cn("group overflow-hidden rounded-md border bg-background text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary ring-1 ring-primary" : "border-border hover:border-primary/50")}
+                        >
+                          <div className="relative flex h-16 items-center overflow-hidden bg-slate-950 px-2">
+                            <div className={cn("absolute inset-x-2 flex items-center justify-center gap-[2px]", template.position === "center" ? "top-1/2 -translate-y-1/2" : "bottom-2")}>
+                              {WAVEFORM_BARS.map((bar, index) => (
+                                <span key={index} className="w-[2px] rounded-full" style={{ height: `${Math.max(2, bar * (template.height / 180) * 0.48)}px`, backgroundColor: template.color, opacity: template.opacity }} />
+                              ))}
+                            </div>
+                          </div>
+                          <div className="px-2 py-2">
+                            <div className="text-[11px] font-semibold">{template.name}</div>
+                            <div className="truncate text-[10px] text-muted-foreground">{template.description}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <Field label="Kiểu sóng">
+                      <select className={selectClass} value={videoConfig.waveform_style} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_style: event.target.value as VideoConfig["waveform_style"] })}>
+                        <option value="line">Line</option><option value="cline">Center line</option><option value="p2p">Point to point</option><option value="point">Point</option>
+                      </select>
+                    </Field>
+                    <Field label="Vị trí">
+                      <select className={selectClass} value={videoConfig.waveform_position} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_position: event.target.value as VideoConfig["waveform_position"] })}>
+                        <option value="top">Trên</option><option value="center">Giữa</option><option value="bottom">Dưới</option>
+                      </select>
+                    </Field>
+                    <Field label="Màu">
+                      <input className="h-9 w-full cursor-pointer rounded-md border border-border bg-background p-1" type="color" value={videoConfig.waveform_color} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_color: event.target.value })} />
+                    </Field>
+                    <Field label={`Chiều cao: ${videoConfig.waveform_height}px`}>
+                      <input className="w-full accent-primary" type="range" min="40" max="400" step="10" value={videoConfig.waveform_height} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_height: Number(event.target.value) })} />
+                    </Field>
+                  </div>
+                  <Field label={`Độ trong suốt: ${Math.round(videoConfig.waveform_opacity * 100)}%`}>
+                    <input className="w-full accent-primary" type="range" min="10" max="100" step="5" value={videoConfig.waveform_opacity * 100} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_opacity: Number(event.target.value) / 100 })} />
+                  </Field>
+                </div>
+              </section>
 
               <DialogFooter>
                 <Button onClick={saveVideo} disabled={saving}>
