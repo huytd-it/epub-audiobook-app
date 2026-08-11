@@ -4,6 +4,8 @@ export type PlannedPatch = {
   patch_index: number;
   chapter_start: number;
   chapter_end: number;
+  chapter_no_start?: number | null;
+  chapter_no_end?: number | null;
   name: string;
   chunk_count: number;
 };
@@ -93,6 +95,14 @@ export type YouTubeSettings = {
   connected: boolean;
   channel_name: string | null;
   playlists: { id: string; title: string }[];
+};
+
+export type YouTubeMetadataPreview = {
+  title: string;
+  description: string;
+  tags: string[];
+  privacy_status: string;
+  youtube: { mode: string; playlist_id: string };
 };
 
 export type ConfigTab = "audio" | "video" | "youtube";
@@ -233,6 +243,70 @@ export type ReimportPlan = {
 export type ExtendPlan = {
   patches: { patch_index: number; chapter_start: number; chapter_end: number; name: string; chunk_count: number }[];
   uncovered_chapters: number;
+};
+
+// --- Patch range + text quality ------------------------------------------------
+
+export type PatchRangeReport = {
+  patch_id: number;
+  patch_index: number;
+  name: string;
+  status: string;
+  chapter_start: number;
+  chapter_end: number;
+  chapter_count: number;
+  stored_no_start: number | null;
+  stored_no_end: number | null;
+  actual_no_start: number | null;
+  actual_no_end: number | null;
+  unnumbered_count: number;
+  severity: Severity;
+  is_valid: boolean;
+  issues: Issue[];
+};
+
+export type PatchRangesReport = {
+  book_id: number;
+  summary: {
+    patches_total: number;
+    patches_error: number;
+    patches_warning: number;
+    patches_ok: number;
+    needs_resync: number;
+    issue_totals: Record<string, number>;
+  };
+  patches: PatchRangeReport[];
+};
+
+export type TextWarning = {
+  kind: string;
+  position: number;
+  length: number;
+  original: string;
+  suggestion: string;
+  context: string;
+  context_offset: number;
+};
+
+export type PatchTextCheck = {
+  patch_id: number;
+  patch_index: number;
+  name: string;
+  chars: number;
+  totals: Record<string, number>;
+  total: number;
+  items: TextWarning[];
+};
+
+export type PatchTextCheckSummary = {
+  book_id: number;
+  patches: { patch_id: number; patch_index: number; totals: Record<string, number>; total: number }[];
+};
+
+export type PlannedRangeCheck = {
+  planned: number;
+  issues: Issue[];
+  has_error: boolean;
 };
 
 export type TitleNormalizeItem = { chapter_index: number; current: string; suggested: string; chapter_no: number | null };

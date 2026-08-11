@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS patch (
     patch_index     INTEGER NOT NULL,
     chapter_start   INTEGER NOT NULL,
     chapter_end     INTEGER NOT NULL,
+    -- Số chương đọc từ tiêu đề (không phải chỉ số vị trí). Đây mới là danh tính ổn
+    -- định của patch: khi re-import EPUB làm chỉ số chương xê dịch, cặp số này cho
+    -- phép căn lại chapter_start/chapter_end về đúng khoảng chương ban đầu.
+    chapter_no_start INTEGER,
+    chapter_no_end   INTEGER,
     name            TEXT,
     chunk_count     INTEGER NOT NULL DEFAULT 0,
     chunk_count_exact INTEGER NOT NULL DEFAULT 0,
@@ -521,6 +526,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE patch ADD COLUMN image_type TEXT NOT NULL DEFAULT 'static'")
     if "name" not in patch_existing:
         conn.execute("ALTER TABLE patch ADD COLUMN name TEXT")
+    # Khoảng số chương của patch — nguồn để căn lại chỉ số sau khi re-import EPUB.
+    if "chapter_no_start" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN chapter_no_start INTEGER")
+    if "chapter_no_end" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN chapter_no_end INTEGER")
     if "chunk_count" not in patch_existing:
         conn.execute("ALTER TABLE patch ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0")
     if "next_chunk_index" not in patch_existing:

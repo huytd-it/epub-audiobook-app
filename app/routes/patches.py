@@ -977,6 +977,36 @@ def youtube_metadata_preview(request: Request, book_id: int, patch_id: int | Non
             repository.build_patch_metadata_context(conn, book, patch))
 
 
+@router.post("/books/{book_id}/youtube-metadata-preview")
+async def youtube_metadata_preview_draft(request: Request, book_id: int):
+    """Resolve the rendered title/description/tags from a draft config without saving it."""
+    data = await request.json()
+    config = data.get("config")
+    patch_id = data.get("patch_id")
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        patch = repository.get_patch(conn, patch_id) if patch_id else next(iter(repository.list_patches(conn, book_id)), None)
+        if not patch or patch.book_id != book_id:
+            last_patch = next(iter(repository.list_patches(conn, book_id)), None)
+            if not last_patch:
+                raise HTTPException(400, "book has no patches to preview against")
+            patch = last_patch
+        try:
+            validated = validate_book_youtube_config(config) if config is not None else None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if validated is None:
+            validated = get_book_youtube_config(conn, book_id)
+        try:
+            return resolve_patch_youtube_metadata(
+                book, patch, get_patch_youtube_override(conn, patch.id),
+                repository.build_patch_metadata_context(conn, book, patch), config=validated)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/books/{book_id}/patches/{patch_id}/youtube-metadata")
 def get_youtube_metadata(request: Request, book_id: int, patch_id: int):
     with locked_conn(request) as conn:

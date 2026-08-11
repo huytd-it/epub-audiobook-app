@@ -22,6 +22,8 @@ from app.validation import (
     validate_chapter_text,
     validate_chapters,
     validate_patch_plan,
+    validate_patch_ranges,
+    validate_planned_ranges,
 )
 
 
@@ -248,6 +250,11 @@ def test_changed_chapter_is_not_rewritten_under_a_done_patch():
 
 def test_canonical_title_is_accepted():
     assert check_title_format("Chương 12: Kỳ vật") == ("canonical", 12, "Kỳ vật")
+    assert check_title_format("Chương 45 Quái vật trong đầm lầy") == (
+        "canonical",
+        45,
+        "Quái vật trong đầm lầy",
+    )
 
 
 @pytest.mark.parametrize(
@@ -408,3 +415,234 @@ def test_normalize_chapter_titles_handles_canonical_titles():
     assert "mười hai" in normalized
     assert "Bão" in normalized
     assert "Chương 12:" not in normalized
+
+
+# --- patch range validation ------------------------------------------------------
+
+
+def _shift_chapter_indices(conn, book_id: int, offset: int) -> None:
+    """Dời chỉ số chương đi `offset`, đi vòng qua dải tạm để không đụng UNIQUE."""
+    conn.execute(
+        "UPDATE chapter SET chapter_index = chapter_index + 100000 WHERE book_id = ?", (book_id,)
+    )
+    conn.execute(
+        "UPDATE chapter SET chapter_index = chapter_index - ? WHERE book_id = ?",
+        (100000 - offset, book_id),
+    )
+    conn.commit()
+
+
+class _FakePatch:
+    def __init__(self, index, start, end, no_start=None, no_end=None, status="pending"):
+        self.id = index + 1
+        self.patch_index = index
+        self.name = f"Patch {index + 1}"
+        self.status = status
+        self.chapter_start = start
+        self.chapter_end = end
+        self.chapter_no_start = no_start
+        self.chapter_no_end = no_end
+
+
+class _FakeChapter:
+    def __init__(self, index, number):
+        self.chapter_index = index
+        self.chapter_no = number
+
+
+def _numbered_chapters(count, *, first_number=1):
+    return [_FakeChapter(index, first_number + index) for index in range(count)]
+
+
+def test_contiguous_patch_ranges_are_clean():
+    patches = [_FakePatch(0, 0, 9, 1, 10), _FakePatch(1, 10, 19, 11, 20)]
+    reports = validate_patch_ranges(patches, _numbered_chapters(20))
+
+    assert [report.severity for report in reports] == ["ok", "ok"]
+
+
+def test_patch_range_gap_is_an_error():
+    """Ch. 1-10 rồi Ch. 12-21: hở mất chương 11."""
+    patches = [_FakePatch(0, 0, 9, 1, 10), _FakePatch(1, 11, 20, 12, 21)]
+    reports = validate_patch_ranges(patches, _numbered_chapters(21))
+
+    codes = [issue.code for issue in reports[1].issues]
+    assert "range_gap" in codes
+    assert reports[1].severity == "error"
+
+
+def test_patch_range_overlap_is_an_error():
+    patches = [_FakePatch(0, 0, 9, 1, 10), _FakePatch(1, 8, 17, 9, 18)]
+    reports = validate_patch_ranges(patches, _numbered_chapters(18))
+
+    assert "range_overlap" in [issue.code for issue in reports[1].issues]
+    assert reports[1].severity == "error"
+
+
+def test_patch_size_drift_is_flagged():
+    """Patch giữa ôm 11 chương trong khi phần còn lại ôm 10."""
+    patches = [
+        _FakePatch(0, 0, 9, 1, 10),
+        _FakePatch(1, 10, 20, 11, 21),
+        _FakePatch(2, 21, 30, 22, 31),
+        _FakePatch(3, 31, 40, 32, 41),
+    ]
+    reports = validate_patch_ranges(patches, _numbered_chapters(41))
+
+    assert "range_size_drift" in [issue.code for issue in reports[1].issues]
+
+
+def test_stored_chapter_numbers_desync_after_shift():
+    """Chèn chương vào giữa sách làm patch trỏ sang khoảng số chương khác."""
+    # Patch được lưu cho chương số 11–20, nhưng chỉ số 10–19 giờ chứa chương số 12–21.
+    patches = [_FakePatch(0, 10, 19, 11, 20)]
+    chapters = _numbered_chapters(30, first_number=2)  # mọi chương lệch lên 1
+    reports = validate_patch_ranges(patches, chapters)
+
+    codes = [issue.code for issue in reports[0].issues]
+    assert "chapter_no_desync" in codes
+    assert reports[0].severity == "error"
+    assert reports[0].stored_no_start == 11
+    assert reports[0].actual_no_start == 12
+
+
+def test_chapters_without_numbers_are_flagged_not_fatal():
+    chapters = _numbered_chapters(10)
+    chapters[3].chapter_no = None
+    reports = validate_patch_ranges([_FakePatch(0, 0, 9, 1, 10)], chapters)
+
+    assert "chapter_no_missing" in [issue.code for issue in reports[0].issues]
+    assert reports[0].unnumbered_count == 1
+    assert reports[0].severity == "warning"
+
+
+def test_validate_planned_ranges_catches_gaps_before_creation():
+    planned = [
+        {"patch_index": 0, "chapter_start": 0, "chapter_end": 9, "chapter_no_start": 1, "chapter_no_end": 10},
+        {"patch_index": 1, "chapter_start": 11, "chapter_end": 20, "chapter_no_start": 12, "chapter_no_end": 21},
+    ]
+    codes = [issue.code for issue in validate_planned_ranges(planned)]
+    assert "range_gap" in codes
+
+
+# --- persisted chapter-number ranges ---------------------------------------------
+
+
+def test_patches_store_their_chapter_number_range():
+    conn = _conn()
+    book = _book_with_patches(conn, chapter_count=20, patch_size=10)
+
+    patches = repository.list_patches(conn, book.id)
+    assert (patches[0].chapter_no_start, patches[0].chapter_no_end) == (1, 10)
+    assert (patches[1].chapter_no_start, patches[1].chapter_no_end) == (11, 20)
+
+
+def test_resync_realigns_patches_after_chapters_shift():
+    """Chèn một chương vào đầu sách rồi căn lại: patch phải bám đúng số chương cũ."""
+    conn = _conn()
+    book = _book_with_patches(conn, chapter_count=20, patch_size=10)
+
+    # Đẩy mọi chương xuống 1 chỉ số rồi chèn chương mới vào vị trí 0. Phải đi vòng qua
+    # một dải tạm vì UNIQUE(book_id, chapter_index) được kiểm theo từng dòng.
+    _shift_chapter_indices(conn, book.id, 1)
+    conn.execute(
+        """INSERT INTO chapter (book_id, chapter_index, title, text, char_count, chapter_no, text_hash)
+           VALUES (?, 0, 'Lời tựa', 'Mở đầu.', 8, NULL, 'x')""",
+        (book.id,),
+    )
+    conn.commit()
+
+    before = repository.list_patches(conn, book.id)
+    assert before[0].chapter_start == 0  # vẫn trỏ vào chỉ số cũ -> đang lệch
+
+    changes = repository.resync_patch_ranges_from_chapter_numbers(conn, book.id)
+    after = repository.list_patches(conn, book.id)
+
+    assert len(changes) == 2
+    assert (after[0].chapter_start, after[0].chapter_end) == (1, 10)
+    assert (after[1].chapter_start, after[1].chapter_end) == (11, 20)
+    # Số chương neo trên patch không đổi — đó mới là danh tính.
+    assert (after[0].chapter_no_start, after[0].chapter_no_end) == (1, 10)
+
+
+def test_resync_is_a_noop_when_nothing_is_desynced():
+    """Sách bình thường: không patch nào bị đụng tới, kể cả khi có chương không đánh số.
+
+    Chương không có số ở đầu/cuối patch từng khiến resync co khoảng chương lại và bỏ rơi
+    chúng — đó là mất dữ liệu, không phải sửa lệch.
+    """
+    conn = _conn()
+    book = _book_with_patches(conn, chapter_count=20, patch_size=10)
+    conn.execute(
+        "UPDATE chapter SET title = 'Lời bạt', chapter_no = NULL WHERE book_id = ? AND chapter_index = 0",
+        (book.id,),
+    )
+    conn.commit()
+
+    assert repository.resync_patch_ranges_from_chapter_numbers(conn, book.id) == []
+    patches = repository.list_patches(conn, book.id)
+    assert (patches[0].chapter_start, patches[0].chapter_end) == (0, 9)
+
+
+def test_resync_skips_processing_patches():
+    conn = _conn()
+    book = _book_with_patches(conn, chapter_count=20, patch_size=10)
+    conn.execute("UPDATE patch SET status = 'processing' WHERE book_id = ?", (book.id,))
+    _shift_chapter_indices(conn, book.id, 5)
+
+    assert repository.resync_patch_ranges_from_chapter_numbers(conn, book.id) == []
+
+
+def test_backfill_fills_chapter_numbers_on_legacy_patches():
+    conn = _conn()
+    book = _book_with_patches(conn, chapter_count=20, patch_size=10)
+    conn.execute("UPDATE patch SET chapter_no_start = NULL, chapter_no_end = NULL WHERE book_id = ?", (book.id,))
+    conn.commit()
+
+    assert repository.backfill_patch_chapter_numbers(conn, book.id) == 2
+    patches = repository.list_patches(conn, book.id)
+    assert (patches[0].chapter_no_start, patches[0].chapter_no_end) == (1, 10)
+
+
+# --- abbreviations that make TTS read wrong ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Anh ấy sống ở TP.HCM từ nhỏ.", "TP.HCM"),
+        ("Theo UBND thành phố thì việc này ổn.", "UBND"),
+        ("Trích trong sách, tr. 42 có nói rõ.", "tr."),
+        ("Rất nhiều thứ khác v.v. rồi kết thúc.", "v.v."),
+    ],
+)
+def test_abbreviations_are_detected(text, expected):
+    hits = [w for w in text_analysis.analyze_text(text) if w["kind"] == "abbreviation"]
+    assert expected in [w["original"] for w in hits]
+
+
+def test_abbreviation_positions_are_exact():
+    text = "Anh ấy sống ở TP.HCM từ nhỏ."
+    hit = next(w for w in text_analysis.analyze_text(text) if w["kind"] == "abbreviation")
+    assert text[hit["position"] : hit["position"] + hit["length"]] == "TP.HCM"
+
+
+def test_overlapping_abbreviation_patterns_report_once():
+    """"GS." khớp cả danh sách viết tắt lẫn mẫu acronym chung — chỉ được đếm một lần."""
+    hits = [w for w in text_analysis.analyze_text("Theo GS. Nam ở TP.HCM.") if w["kind"] == "abbreviation"]
+    assert [w["original"] for w in hits] == ["GS.", "TP.HCM"]
+
+    spans = [(w["position"], w["position"] + w["length"]) for w in hits]
+    for (a_start, a_end), (b_start, b_end) in zip(spans, spans[1:]):
+        assert a_end <= b_start
+
+
+def test_roman_numerals_are_not_reported_as_abbreviations():
+    """Số La Mã đã có bộ chuẩn hoá riêng — báo ở đây chỉ là nhiễu."""
+    hits = [w for w in text_analysis.analyze_text("Thế chiến II kết thúc.") if w["kind"] == "abbreviation"]
+    assert hits == []
+
+
+def test_abbreviations_show_up_as_highlight_spans():
+    spans = analyze_chapter_spans("Anh ấy sống ở TP.HCM từ nhỏ.")
+    assert any(span.code == "abbreviation" and span.severity == "warning" for span in spans)

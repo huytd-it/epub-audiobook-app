@@ -344,9 +344,9 @@ def _timeline_description(patch) -> str:
         return ""
 
 
-def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: dict | None = None) -> dict:
+def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: dict | None = None, config: dict | None = None) -> dict:
     raw = _json_object(book.automation_config, {})
-    config = validate_book_youtube_config(raw.get("youtube", {}))
+    config = validate_book_youtube_config(config if config is not None else raw.get("youtube", {}))
     override = _validate_override({k: v for k, v in _json_object(override, {}).items() if k in OVERRIDE_FIELDS})
     genre_value = override.get("genre_tags") or override.get("tags") or config["genre_tags"]
     if isinstance(genre_value, list):

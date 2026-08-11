@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, Download, ListChecks, Play } from "lucide-react";
-import { api, Patch, postJson } from "@/api";
+import { AlertTriangle, CheckCircle2, Download, Eye, ListChecks, Play } from "lucide-react";
+import { api, Chapter, Patch, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/common/StatusBadge";
@@ -21,6 +21,8 @@ import {
   TtsModel,
   VideoConfig,
   VoiceOption,
+  YouTubeConfig,
+  YouTubeMetadataPreview,
   YouTubeSettings,
   errorText,
 } from "./types";
@@ -29,34 +31,50 @@ import { CheckField, Field, TabBar, checkboxClass, fieldClass, selectClass } fro
 export function PatchPreviewDialog({
   bookId,
   patch,
+  chapters,
   open,
   onOpenChange,
   onMessage,
 }: {
   bookId: string;
   patch?: Patch;
+  chapters: Chapter[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onMessage: (message: string) => void;
 }) {
-  const [text, setText] = useState("");
+  const [chapterTexts, setChapterTexts] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!open || !patch) return;
     let cancelled = false;
-    setText("");
+    setChapterTexts({});
     setLoading(true);
-    api<string>(`/books/${bookId}/patches/${patch.id}/text`)
-      .then((value) => !cancelled && setText(value))
+    const patchChapters = chapters.filter(
+      (chapter) => chapter.chapter_index >= patch.chapter_start && chapter.chapter_index <= patch.chapter_end
+    );
+    Promise.all(
+      patchChapters.map(async (chapter) => [
+        chapter.chapter_index,
+        await api<string>(`/books/${bookId}/chapters/${chapter.chapter_index}/text`),
+      ] as const)
+    )
+      .then((items) => !cancelled && setChapterTexts(Object.fromEntries(items)))
       .catch((error) => !cancelled && onMessage(errorText(error)))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [open, patch, bookId, onMessage]);
+  }, [open, patch, chapters, bookId, onMessage]);
 
   const percent = patch?.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
+  const patchChapters = patch
+    ? chapters.filter(
+        (chapter) => chapter.chapter_index >= patch.chapter_start && chapter.chapter_index <= patch.chapter_end
+      )
+    : [];
+  const numberedChapters = patchChapters.filter((chapter) => chapter.chapter_no != null);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -69,19 +87,45 @@ export function PatchPreviewDialog({
             <StatusBadge value={patch?.status} />
           </DialogTitle>
           <DialogDescription>
-            Chương {patch ? `${patch.chapter_start + 1}–${patch.chapter_end + 1}` : "—"} ·{" "}
+            {patchChapters.length
+              ? `${patchChapters.length} chương · ${numberedChapters.length ? `chương ${numberedChapters[0].chapter_no}–${numberedChapters[numberedChapters.length - 1].chapter_no}` : `mục ${patch!.chapter_start + 1}–${patch!.chapter_end + 1}`}`
+              : "Không có chương"} ·{" "}
             {patch?.next_chunk_index}/{patch?.chunk_count} chunk
           </DialogDescription>
         </DialogHeader>
 
         <Progress value={percent} className="h-1.5" />
 
-        <Textarea
-          className="min-h-[280px] font-mono text-xs"
-          value={text}
-          readOnly
-          placeholder={loading ? "Đang tải nội dung patch..." : "Không có nội dung."}
-        />
+        {patchChapters.length > 0 && (
+          <nav aria-label="Đi tới chương" className="flex gap-1 overflow-x-auto border-b border-border pb-2">
+            {patchChapters.map((chapter) => (
+              <a
+                key={chapter.id}
+                href={`#patch-chapter-${chapter.chapter_index}`}
+                className="shrink-0 rounded-md border border-border bg-background px-2.5 py-1.5 text-[11px] font-medium hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {chapter.chapter_no != null ? `Chương ${chapter.chapter_no}` : `Mục ${chapter.chapter_index + 1}`}
+              </a>
+            ))}
+          </nav>
+        )}
+
+        <div className="min-h-[280px] space-y-5 overflow-auto rounded-md border border-border p-4 text-xs leading-5">
+          {loading ? (
+            <div className="py-20 text-center text-muted-foreground">Đang tải nội dung từng chương...</div>
+          ) : patchChapters.length ? (
+            patchChapters.map((chapter) => (
+              <section key={chapter.id} id={`patch-chapter-${chapter.chapter_index}`} className="scroll-mt-4">
+                <h3 className="mb-2 font-semibold text-foreground">{chapter.title || `Chương ${chapter.chapter_no ?? chapter.chapter_index + 1}`}</h3>
+                <div className="whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
+                  {chapterTexts[chapter.chapter_index] || "Chương không có nội dung."}
+                </div>
+              </section>
+            ))
+          ) : (
+            <div className="py-20 text-center text-muted-foreground">Không có chương nào trong patch.</div>
+          )}
+        </div>
 
         {patch?.status === "done" && (
           <div className="space-y-3">
@@ -132,6 +176,9 @@ export function ConfigDialog({
 }) {
   const [videoConfig, setVideoConfig] = useState<VideoConfig>();
   const [ytSettings, setYtSettings] = useState<YouTubeSettings>();
+  const [ytPreview, setYtPreview] = useState<YouTubeMetadataPreview>();
+  const [ytPreviewLoading, setYtPreviewLoading] = useState(false);
+  const [ytPreviewError, setYtPreviewError] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -143,6 +190,31 @@ export function ConfigDialog({
       api<YouTubeSettings>(`/books/${bookId}/youtube-settings`).then(setYtSettings).catch((error) => onMessage(errorText(error)));
     }
   }, [open, tab, bookId, videoConfig, ytSettings, onMessage]);
+
+  const ytConfig = ytSettings?.config;
+  // Preview metadata live nhưng debounce để không gửi request theo từng ký tự.
+  useEffect(() => {
+    if (tab !== "youtube" || !ytConfig) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setYtPreviewLoading(true);
+      setYtPreviewError("");
+      postJson<YouTubeMetadataPreview>(`/books/${bookId}/youtube-metadata-preview`, { config: ytConfig })
+        .then((result) => {
+          if (!cancelled) setYtPreview(result);
+        })
+        .catch((error) => {
+          if (!cancelled) setYtPreviewError(errorText(error));
+        })
+        .finally(() => {
+          if (!cancelled) setYtPreviewLoading(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [tab, bookId, ytConfig]);
 
   const saveVideo = async () => {
     if (!videoConfig) return;
@@ -483,6 +555,47 @@ export function ConfigDialog({
                     </select>
                   </Field>
                 </div>
+              </div>
+
+              <div className="rounded-md border border-border">
+                <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/20 px-3 py-2">
+                  <span className="flex items-center gap-1.5 text-xs font-semibold">
+                    <Eye className="h-3.5 w-3.5 text-primary" /> Xem trước metadata
+                  </span>
+                  {ytPreviewLoading && <span className="text-[10px] text-muted-foreground">Đang cập nhật...</span>}
+                </div>
+                {ytPreviewError ? (
+                  <div className="px-3 py-2 text-xs text-red-700">{ytPreviewError}</div>
+                ) : ytPreview ? (
+                  <div className="space-y-3 px-3 py-3 text-xs">
+                    <div className="space-y-1">
+                      <div className="font-semibold leading-snug">{ytPreview.title || "—"}</div>
+                      <div className="flex flex-wrap gap-1">
+                        {ytPreview.tags.map((tag) => (
+                          <span key={tag} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {tag}
+                          </span>
+                        ))}
+                        {!ytPreview.tags.length && (
+                          <span className="text-[10px] text-muted-foreground">(không có tags)</span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {ytPreview.privacy_status === "public"
+                          ? "Công khai"
+                          : ytPreview.privacy_status === "unlisted"
+                            ? "Không công khai"
+                            : "Riêng tư"}{" "}
+                        · {ytPreview.youtube.mode === "existing" ? "vào playlist" : "không vào playlist"}
+                      </div>
+                    </div>
+                    <div className="whitespace-pre-wrap break-words rounded-md bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                      {ytPreview.description || "—"}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="px-3 py-2 text-[11px] text-muted-foreground">Chưa có preview.</div>
+                )}
               </div>
 
               <DialogFooter>

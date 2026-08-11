@@ -14,7 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from app import repository
+from app import repository, text_analysis
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
@@ -26,10 +26,13 @@ from app.validation import (
     check_title_format,
     numbering_flags,
     summarize,
+    summarize_patch_ranges,
     summarize_spans,
     validate_chapter_text,
     validate_chapters,
     validate_patch_plan,
+    validate_patch_ranges,
+    validate_planned_ranges,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +77,11 @@ async def _recompute_covering_patches(request: Request, book_id: int, chapter_in
                 repository.update_patch_chunk_count(conn, item["patch_id"], item["chunk_count"])
 
     return results
+
+
+def _plan_text(plan: list[dict]) -> str:
+    """Nối các chunk lại thành đúng văn bản TTS sẽ đọc cho patch này."""
+    return "\n\n".join((chunk.get("text") or "") for chunk in plan)
 
 
 def _chapter_patch_summaries(conn, book_id: int, chapter_index: int) -> list[dict]:
@@ -540,5 +548,153 @@ async def title_normalize_apply(request: Request, book_id: int):
             "updated": len(updates),
             "chapters": [{"chapter_index": index, "title": title} for index, title in updates],
             "patches_recomputed": patches_recomputed,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Patch range validation + text quality check — powers the Patches tab alerts.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/books/{book_id}/patches/ranges")
+async def patch_ranges(request: Request, book_id: int):
+    """Soát khoảng chương của mọi patch: đứt gãy, chồng lấn, lệch số chương.
+
+    Rẻ (không dựng chunk plan) nên gọi được ngay khi mở tab Patches.
+    """
+    with locked_conn(request) as conn:
+        _require_book(conn, book_id)
+        repository.backfill_chapter_metadata(conn, book_id)
+        repository.backfill_patch_chapter_numbers(conn, book_id)
+        patches = repository.list_patches(conn, book_id)
+        chapters = repository.list_chapters(conn, book_id)
+
+    reports = await asyncio.to_thread(validate_patch_ranges, patches, chapters)
+    return JSONResponse(
+        {
+            "book_id": book_id,
+            "summary": summarize_patch_ranges(reports),
+            "patches": [report.as_dict() for report in reports],
+        }
+    )
+
+
+@router.post("/books/{book_id}/patches/resync-ranges")
+def patch_resync_ranges(request: Request, book_id: int):
+    """Căn lại chapter_start/chapter_end theo khoảng số chương đã lưu trên từng patch.
+
+    Đây là cách sửa "lệch" sau khi re-import EPUB thêm chương vào giữa sách.
+    """
+    with locked_conn(request) as conn:
+        _require_book(conn, book_id)
+        repository.backfill_chapter_metadata(conn, book_id)
+        repository.backfill_patch_chapter_numbers(conn, book_id)
+        changes = repository.resync_patch_ranges_from_chapter_numbers(conn, book_id)
+    return JSONResponse({"updated": len(changes), "changes": changes})
+
+
+@router.get("/books/{book_id}/patches/text-check")
+async def patches_text_check(request: Request, book_id: int):
+    """Đếm lỗi chính tả / ký tự rác / viết tắt cho từng patch, để gắn cảnh báo lên hàng.
+
+    Chỉ trả về số đếm theo nhóm — chi tiết kèm vị trí nằm ở endpoint từng patch.
+    """
+    with locked_conn(request) as conn:
+        _require_book(conn, book_id)
+        patches = repository.list_patches(conn, book_id)
+        limit = settings.tts_max_chars
+        inputs = {patch.id: repository.fetch_patch_chunk_inputs(conn, patch, limit) for patch in patches}
+
+    def _analyze() -> list[dict]:
+        results = []
+        for patch in patches:
+            # Soát trên text đã chuẩn hoá — đúng thứ TTS sẽ đọc, nên không báo nhầm
+            # những ký tự rác mà bước chuẩn hoá vốn đã bỏ đi.
+            text = _plan_text(repository.build_chunk_plan_from_inputs(inputs[patch.id]))
+            totals: dict[str, int] = {}
+            for warning in text_analysis.analyze_text(text):
+                kind = warning["kind"]
+                totals[kind] = totals.get(kind, 0) + 1
+            results.append(
+                {
+                    "patch_id": patch.id,
+                    "patch_index": patch.patch_index,
+                    "totals": totals,
+                    "total": sum(totals.values()),
+                }
+            )
+        return results
+
+    return JSONResponse({"book_id": book_id, "patches": await asyncio.to_thread(_analyze)})
+
+
+@router.get("/books/{book_id}/patches/{patch_id}/text-check")
+async def patch_text_check(request: Request, book_id: int, patch_id: int):
+    """Chi tiết lỗi chữ của một patch: từng lỗi kèm vị trí, đoạn văn quanh nó và gợi ý."""
+    with locked_conn(request) as conn:
+        _require_book(conn, book_id)
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="Không tìm thấy patch.")
+        inputs = repository.fetch_patch_chunk_inputs(conn, patch, patch.max_chars or settings.tts_max_chars)
+
+    text = await asyncio.to_thread(
+        lambda: _plan_text(repository.build_chunk_plan_from_inputs(inputs))
+    )
+    warnings = await asyncio.to_thread(text_analysis.analyze_text, text)
+
+    totals: dict[str, int] = {}
+    items = []
+    for warning in warnings:
+        kind = warning["kind"]
+        totals[kind] = totals.get(kind, 0) + 1
+        if len(items) < 500:
+            start = warning["position"]
+            end = start + warning["length"]
+            items.append(
+                {
+                    **warning,
+                    "context": text[max(0, start - 60) : min(len(text), end + 60)],
+                    "context_offset": start - max(0, start - 60),
+                }
+            )
+
+    return JSONResponse(
+        {
+            "patch_id": patch.id,
+            "patch_index": patch.patch_index,
+            "name": patch.name,
+            "chars": len(text),
+            "totals": totals,
+            "total": len(warnings),
+            "items": items,
+        }
+    )
+
+
+@router.get("/books/{book_id}/patches/auto-build/range-check")
+def auto_build_range_check(
+    request: Request,
+    book_id: int,
+    start_chapter: int = 0,
+    end_chapter: int | None = None,
+    patch_size: int | None = None,
+):
+    """Cảnh báo khoảng chương ngay ở bước xem trước, trước khi patch được tạo."""
+    with locked_conn(request) as conn:
+        _require_book(conn, book_id)
+        repository.backfill_chapter_metadata(conn, book_id)
+        try:
+            planned = repository.preview_auto_build(conn, book_id, start_chapter, end_chapter, patch_size)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+    issues = validate_planned_ranges(planned)
+    return JSONResponse(
+        {
+            "planned": len(planned),
+            "issues": [issue.as_dict() for issue in issues],
+            "has_error": any(issue.severity == "error" for issue in issues),
         }
     )

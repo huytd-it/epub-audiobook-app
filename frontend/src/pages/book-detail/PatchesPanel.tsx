@@ -1,7 +1,18 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, CloudDownload, FileAudio2, FileSearch, Film, Layers, Upload, Video } from "lucide-react";
-import { api, Patch, post, postForm } from "@/api";
+import {
+  AlertTriangle,
+  CloudDownload,
+  FileAudio2,
+  FileSearch,
+  Film,
+  Layers,
+  ScanText,
+  Upload,
+  Video,
+  Wrench,
+} from "lucide-react";
+import { api, Chapter, Patch, post, postForm } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/Header";
@@ -9,19 +20,33 @@ import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { PatchReport, PipelineInfo, errorText } from "./types";
+import {
+  PatchRangeReport,
+  PatchRangesReport,
+  PatchReport,
+  PatchTextCheckSummary,
+  PipelineInfo,
+  errorText,
+} from "./types";
 import { SectionHead, TabBar, checkboxClass } from "./parts";
+import { PatchIssuesDialog } from "./PatchIssuesDialog";
 
 type Filter = "all" | "processing" | "done" | "failed";
 
+type TextTotals = { totals: Record<string, number>; total: number };
+
 type RowProps = {
   patch: Patch;
+  chapters: Chapter[];
   pipeline?: PipelineInfo;
   chunkReport?: PatchReport;
+  rangeReport?: PatchRangeReport;
+  textTotals?: TextTotals;
   selected: boolean;
   busy: boolean;
   onToggle: (patchId: number) => void;
   onOpen: (patch: Patch) => void;
+  onOpenIssues: (patch: Patch) => void;
   onImportDrive: (patch: Patch) => void;
   onImportFiles: (patch: Patch, files: FileList | null) => void;
 };
@@ -29,19 +54,30 @@ type RowProps = {
 /** Memo hoá theo từng dòng: nhịp polling chỉ vẽ lại patch thực sự đổi. */
 const PatchRow = React.memo(function PatchRow({
   patch,
+  chapters,
   pipeline,
   chunkReport,
+  rangeReport,
+  textTotals,
   selected,
   busy,
   onToggle,
   onOpen,
+  onOpenIssues,
   onImportDrive,
   onImportFiles,
 }: RowProps) {
   const percent = patch.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
+  const rangeBad = rangeReport && rangeReport.severity !== "ok";
+  const patchChapters = chapters.filter(
+    (chapter) => chapter.chapter_index >= patch.chapter_start && chapter.chapter_index <= patch.chapter_end
+  );
+  const numberedChapters = patchChapters.map((chapter) => chapter.chapter_no).filter((value) => value != null);
+  const actualStart = numberedChapters[0];
+  const actualEnd = numberedChapters[numberedChapters.length - 1];
 
   return (
-    <TableRow className={cn(selected && "bg-primary/5")}>
+    <TableRow className={cn(selected && "bg-primary/5", rangeReport?.severity === "error" && "bg-red-50/40")}>
       <TableCell className="w-8 py-2.5 pl-4 pr-0">
         <input
           type="checkbox"
@@ -58,9 +94,50 @@ const PatchRow = React.memo(function PatchRow({
             #{patch.patch_index + 1} · {patch.name || `Patch ${patch.patch_index + 1}`}
           </span>
           <span className="mt-0.5 block font-mono text-[10px] text-muted-foreground">
-            Chương {patch.chapter_start + 1}–{patch.chapter_end + 1}
+             {actualStart != null
+               ? `Chương ${actualStart}${actualEnd !== actualStart ? `–${actualEnd}` : ""}`
+               : `Mục ${patch.chapter_start + 1}–${patch.chapter_end + 1}`}
+             <span className="ml-2 text-muted-foreground">({patchChapters.length} chương)</span>
           </span>
         </button>
+
+        {(rangeBad || textTotals?.total) && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {rangeBad && (
+              <button
+                onClick={() => onOpenIssues(patch)}
+                title={rangeReport!.issues.map((issue) => issue.message).join("\n")}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                  rangeReport!.severity === "error"
+                    ? "bg-red-100 text-red-800 hover:bg-red-200"
+                    : "bg-amber-100 text-amber-800 hover:bg-amber-200"
+                )}
+              >
+                <AlertTriangle className="h-2.5 w-2.5" />
+                {rangeReport!.issues.some((issue) => issue.code === "chapter_no_desync")
+                  ? "Lệch khoảng chương"
+                  : rangeReport!.issues.some((issue) => issue.code === "range_gap")
+                  ? "Hở khoảng chương"
+                  : rangeReport!.issues.some((issue) => issue.code === "range_overlap")
+                  ? "Chồng khoảng chương"
+                  : "Khoảng chương bất thường"}
+              </button>
+            )}
+            {Boolean(textTotals?.total) && (
+              <button
+                onClick={() => onOpenIssues(patch)}
+                title={Object.entries(textTotals!.totals)
+                  .map(([kind, count]) => `${kind}: ${count}`)
+                  .join("\n")}
+                className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 hover:bg-amber-100"
+              >
+                <Wrench className="h-2.5 w-2.5" /> {textTotals!.total} lỗi chữ
+              </button>
+            )}
+          </div>
+        )}
+
         {patch.error_message && (
           <div className="mt-1 flex max-w-xs items-start gap-1 text-[10px] text-red-600">
             <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
@@ -166,6 +243,7 @@ const PatchRow = React.memo(function PatchRow({
 export function PatchesPanel({
   bookId,
   patches,
+  chapters,
   pipelines,
   selectedIds,
   onSelectionChange,
@@ -176,6 +254,7 @@ export function PatchesPanel({
 }: {
   bookId: string;
   patches: Patch[];
+  chapters: Chapter[];
   pipelines: Record<string, PipelineInfo>;
   selectedIds: number[];
   onSelectionChange: (ids: number[]) => void;
@@ -188,6 +267,10 @@ export function PatchesPanel({
   const [importingId, setImportingId] = useState<number>();
   const [chunkReports, setChunkReports] = useState<Record<number, PatchReport>>();
   const [checkingChunks, setCheckingChunks] = useState(false);
+  const [ranges, setRanges] = useState<PatchRangesReport>();
+  const [textChecks, setTextChecks] = useState<Record<number, TextTotals>>();
+  const [checkingText, setCheckingText] = useState(false);
+  const [resyncing, setResyncing] = useState(false);
 
   const checkChunks = useCallback(async () => {
     setCheckingChunks(true);
@@ -203,6 +286,59 @@ export function PatchesPanel({
     }
   }, [bookId, onMessage]);
 
+  // Soát khoảng chương rẻ (không dựng chunk plan) nên chạy ngay khi mở tab.
+  const loadRanges = useCallback(async () => {
+    try {
+      setRanges(await api<PatchRangesReport>(`/books/${bookId}/patches/ranges`));
+    } catch {
+      // bổ trợ thôi — hỏng thì bảng patch vẫn dùng được như cũ
+    }
+  }, [bookId]);
+
+  useEffect(() => {
+    loadRanges();
+  }, [loadRanges]);
+
+  const checkText = useCallback(async () => {
+    setCheckingText(true);
+    try {
+      const result = await api<PatchTextCheckSummary>(`/books/${bookId}/patches/text-check`);
+      const byId: Record<number, TextTotals> = {};
+      for (const item of result.patches) byId[item.patch_id] = { totals: item.totals, total: item.total };
+      setTextChecks(byId);
+      const flagged = result.patches.filter((item) => item.total > 0).length;
+      onMessage(
+        flagged
+          ? `${flagged}/${result.patches.length} patch có lỗi chữ ảnh hưởng TTS — bấm vào cảnh báo ở từng dòng để xem chi tiết.`
+          : "Không phát hiện lỗi chữ nào ảnh hưởng TTS."
+      );
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setCheckingText(false);
+    }
+  }, [bookId, onMessage]);
+
+  const resyncRanges = useCallback(async () => {
+    setResyncing(true);
+    onBusyChange(true);
+    try {
+      const result = await post(`/books/${bookId}/patches/resync-ranges`);
+      const updated = (result as { updated: number }).updated;
+      onMessage(
+        updated
+          ? `Đã căn lại khoảng chương cho ${updated} patch theo số chương đã neo.`
+          : "Mọi patch đã bám đúng khoảng chương — không cần căn lại."
+      );
+      await Promise.all([loadRanges(), onRefresh()]);
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setResyncing(false);
+      onBusyChange(false);
+    }
+  }, [bookId, loadRanges, onMessage, onRefresh, onBusyChange]);
+
   const counts = useMemo(
     () => ({
       all: patches.length,
@@ -212,6 +348,20 @@ export function PatchesPanel({
     }),
     [patches]
   );
+
+  const rangeSummary = ranges?.summary;
+  const rangeByPatchId = useMemo(() => {
+    const map: Record<number, PatchRangeReport> = {};
+    for (const item of ranges?.patches || []) map[item.patch_id] = item;
+    return map;
+  }, [ranges]);
+
+  const [issuesPatch, setIssuesPatch] = useState<Patch>();
+  const [issuesOpen, setIssuesOpen] = useState(false);
+  const openIssues = useCallback((patch: Patch) => {
+    setIssuesPatch(patch);
+    setIssuesOpen(true);
+  }, []);
 
   const visible = useMemo(
     () => (filter === "all" ? patches : patches.filter((patch) => patch.status === filter)),
@@ -288,7 +438,10 @@ export function PatchesPanel({
           title={`Patches (${patches.length})`}
           detail="Chọn patch để chạy hành động hàng loạt ở thanh dưới màn hình."
           action={
-            <div className="flex shrink-0 items-center gap-3">
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <Button size="sm" variant="outline" onClick={checkText} disabled={checkingText}>
+                <ScanText className={cn("h-3.5 w-3.5", checkingText && "animate-pulse")} /> Kiểm tra chính tả / từ rác
+              </Button>
               <Button size="sm" variant="outline" onClick={checkChunks} disabled={checkingChunks}>
                 <FileSearch className={cn("h-3.5 w-3.5", checkingChunks && "animate-pulse")} /> Soát chunk
               </Button>
@@ -298,6 +451,33 @@ export function PatchesPanel({
             </div>
           }
         />
+
+        {rangeSummary && rangeSummary.patches_error + rangeSummary.patches_warning > 0 && (
+          <div
+            className={cn(
+              "flex flex-wrap items-center gap-2 rounded-md px-3 py-2 text-xs",
+              rangeSummary.patches_error ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-900"
+            )}
+          >
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              Khoảng chương bất thường ở{" "}
+              {[
+                rangeSummary.patches_error && `${rangeSummary.patches_error} patch lỗi`,
+                rangeSummary.patches_warning && `${rangeSummary.patches_warning} patch cảnh báo`,
+              ]
+                .filter(Boolean)
+                .join(" và ")}
+              . Bấm vào cảnh báo trên từng dòng để xem chi tiết.
+            </span>
+            {rangeSummary.needs_resync > 0 && (
+              <Button size="sm" variant="outline" className="ml-auto" onClick={resyncRanges} disabled={resyncing}>
+                <Wrench className={cn("h-3.5 w-3.5", resyncing && "animate-pulse")} /> Căn lại{" "}
+                {rangeSummary.needs_resync} patch theo số chương
+              </Button>
+            )}
+          </div>
+        )}
         <TabBar<Filter>
           value={filter}
           onChange={setFilter}
@@ -340,12 +520,16 @@ export function PatchesPanel({
                   <PatchRow
                     key={patch.id}
                     patch={patch}
+                    chapters={chapters}
                     pipeline={pipelines[String(patch.id)]}
                     chunkReport={chunkReports?.[patch.id]}
+                    rangeReport={rangeByPatchId[patch.id]}
+                    textTotals={textChecks?.[patch.id]}
                     selected={selectedIds.includes(patch.id)}
                     busy={importingId === patch.id}
                     onToggle={toggle}
                     onOpen={onOpenPatch}
+                    onOpenIssues={openIssues}
                     onImportDrive={importDrive}
                     onImportFiles={importFiles}
                   />
@@ -355,6 +539,23 @@ export function PatchesPanel({
           </div>
         )}
       </CardContent>
+
+      <PatchIssuesDialog
+        bookId={bookId}
+        patchId={issuesPatch?.id}
+        rangeReport={issuesPatch ? rangeByPatchId[issuesPatch.id] : undefined}
+        chapters={
+          issuesPatch
+            ? chapters.filter(
+                (chapter) =>
+                  chapter.chapter_index >= issuesPatch.chapter_start && chapter.chapter_index <= issuesPatch.chapter_end
+              )
+            : []
+        }
+        open={issuesOpen}
+        onOpenChange={setIssuesOpen}
+        onMessage={onMessage}
+      />
     </Card>
   );
 }

@@ -406,6 +406,7 @@ export function BookDetail() {
           <PatchesPanel
             bookId={bookId}
             patches={patches}
+            chapters={data.chapters}
             pipelines={pipeline?.pipelines || {}}
             selectedIds={selectedIds}
             onSelectionChange={setSelectedIds}
@@ -479,6 +480,7 @@ export function BookDetail() {
       <PatchPreviewDialog
         bookId={bookId}
         patch={previewPatch}
+        chapters={data.chapters}
         open={previewOpen}
         onOpenChange={setPreviewOpen}
         onMessage={setMessage}

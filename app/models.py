@@ -70,6 +70,10 @@ class Patch:
     updated_at: str
     image_path: str | None = None
     image_type: str = "static"
+    # Khoảng số chương đọc từ tiêu đề (vd 1–10). Ổn định qua các lần re-import, khác
+    # với chapter_start/chapter_end vốn là chỉ số vị trí và sẽ xê dịch khi thêm chương.
+    chapter_no_start: int | None = None
+    chapter_no_end: int | None = None
     name: str = ""
     chunk_count: int = 0
     chunk_count_exact: int = 0  # 1 once chunk_count is the real split count, not the estimate

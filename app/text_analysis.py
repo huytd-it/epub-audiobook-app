@@ -64,6 +64,118 @@ _JUNK_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]+"), "CJK"),
 ]
 
+# --- Abbreviations / acronyms (TTS đọc sai hoặc đánh vần từng chữ) ---
+
+# Viết tắt phổ biến kèm cách đọc mong muốn. TTS gặp "TP.HCM" sẽ đánh vần từng chữ
+# cái hoặc đọc dấu chấm thành "chấm", nên đây là nhóm lỗi phát âm rõ rệt nhất.
+_ABBREVIATION_EXPANSIONS: dict[str, str] = {
+    "tp.hcm": "Thành phố Hồ Chí Minh",
+    "tphcm": "Thành phố Hồ Chí Minh",
+    "tp.": "Thành phố",
+    "q.": "Quận",
+    "p.": "Phường",
+    "tt.": "Thị trấn",
+    "h.": "Huyện",
+    "ubnd": "Ủy ban nhân dân",
+    "hđnd": "Hội đồng nhân dân",
+    "thpt": "Trung học phổ thông",
+    "thcs": "Trung học cơ sở",
+    "đh": "Đại học",
+    "cđ": "Cao đẳng",
+    "tnhh": "trách nhiệm hữu hạn",
+    "cty": "Công ty",
+    "clb": "Câu lạc bộ",
+    "hlv": "huấn luyện viên",
+    "vđv": "vận động viên",
+    "gs.": "Giáo sư",
+    "pgs.": "Phó giáo sư",
+    "ts.": "Tiến sĩ",
+    "ths.": "Thạc sĩ",
+    "bs.": "Bác sĩ",
+    "ks.": "Kỹ sư",
+    "nxb": "Nhà xuất bản",
+    "v.v.": "vân vân",
+    "vd:": "ví dụ:",
+    "vd.": "ví dụ.",
+    "tr.": "trang",
+    "etc.": "et cetera",
+    "i.e.": "tức là",
+    "e.g.": "ví dụ",
+    "vs.": "đấu với",
+    "mr.": "Ông",
+    "mrs.": "Bà",
+    "dr.": "Bác sĩ",
+}
+
+# Khớp đúng các viết tắt trên (dài trước ngắn để "tp.hcm" không bị "tp." nuốt mất).
+_ABBREVIATION_RE = re.compile(
+    r"(?<![\w.])(?:"
+    + "|".join(
+        re.escape(key)
+        for key in sorted(_ABBREVIATION_EXPANSIONS, key=len, reverse=True)
+    )
+    + r")(?![\w])",
+    re.IGNORECASE,
+)
+
+# Từ viết hoa toàn bộ 2–6 chữ cái không dấu, không nằm trong danh sách trên: gần như
+# luôn là acronym và TTS sẽ đọc như một từ thay vì đánh vần (hoặc ngược lại).
+_ACRONYM_RE = re.compile(r"(?<![\w.])[A-Z]{2,6}(?![\w])")
+
+# Viết tắt kiểu chữ-chấm-chữ ("N.A.S.A", "T.P") — luôn đọc sai.
+_DOTTED_ACRONYM_RE = re.compile(r"(?<![\w.])(?:[A-ZĐ]\.){2,}[A-ZĐ]?(?![\w])")
+
+# Không cảnh báo với các "acronym" thực ra là chữ số La Mã, đã có bộ chuẩn hoá riêng.
+_ROMAN_NUMERAL_RE = re.compile(r"^[IVXLCDM]+$")
+
+
+def _check_abbreviations(text: str) -> list[dict]:
+    """Phát hiện viết tắt/acronym — nhóm khiến TTS đọc sai nhiều nhất sau ký tự rác.
+
+    Các mẫu chồng lên nhau ("GS." khớp cả danh sách viết tắt lẫn mẫu acronym chung,
+    "TP.HCM" chứa "TP"), nên phải khử theo *vùng giao nhau* chứ không theo vị trí khớp
+    chính xác — nếu không cùng một chỗ sẽ bị đếm hai lần.
+    """
+    warnings: list[dict] = []
+    occupied: list[tuple[int, int]] = []
+
+    def _claim(start: int, end: int) -> bool:
+        if any(start < taken_end and taken_start < end for taken_start, taken_end in occupied):
+            return False
+        occupied.append((start, end))
+        return True
+
+    # Danh sách viết tắt đã biết đi trước: chúng mang được cách đọc gợi ý.
+    for m in _ABBREVIATION_RE.finditer(text):
+        if not _claim(m.start(), m.end()):
+            continue
+        warnings.append({
+            "kind": "abbreviation",
+            "position": m.start(),
+            "length": len(m.group()),
+            "original": m.group(),
+            "suggestion": _ABBREVIATION_EXPANSIONS.get(m.group().lower(), ""),
+        })
+
+    # Rồi mới tới acronym chung — dạng có dấu chấm trước vì nó dài hơn.
+    for pattern in (_DOTTED_ACRONYM_RE, _ACRONYM_RE):
+        for m in pattern.finditer(text):
+            word = m.group()
+            if _ROMAN_NUMERAL_RE.match(word.replace(".", "")):
+                continue
+            if not _claim(m.start(), m.end()):
+                continue
+            warnings.append({
+                "kind": "abbreviation",
+                "position": m.start(),
+                "length": len(word),
+                "original": word,
+                "suggestion": "",
+            })
+
+    return warnings
+
+
 # --- Vietnamese spell check ---
 
 _VIETNAMESE_VOWELS = "aeiouàáảãạăắằẳẵặâấầẩẫậđéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵ"
@@ -189,6 +301,7 @@ def analyze_text(text: str) -> list[dict]:
     warnings.extend(_check_junk(text))
     warnings.extend(_check_vietnamese_spelling(text))
     warnings.extend(_check_english_spelling(text))
+    warnings.extend(_check_abbreviations(text))
     warnings.extend(_check_effect_markers(text))
     warnings.extend(_check_sound_descriptions(text))
     warnings.sort(key=lambda w: w["position"])

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, BookOpen, Layers, ArrowRight } from "lucide-react";
+import { Plus, BookOpen, Layers, ArrowRight, Trash2 } from "lucide-react";
 import { api, Book } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -21,7 +21,14 @@ export function Books() {
 
   if (loading || !data) return <LoadingState text="Đang tải danh sách sách..." />;
 
-  const books: Book[] = data.items || [];
+  const deleteBook = (e: React.MouseEvent, bookId: number) => {
+    e.preventDefault();
+    if (!confirm("Bạn có chắc chắn muốn xóa sách này? Hành động này không thể hoàn tác.")) return;
+
+    fetch(`/books/${bookId}/delete`, { method: "POST" })
+      .then(() => window.location.reload())
+      .catch((err) => console.error(err));
+  };
 
   return (
     <div className="space-y-6">
@@ -59,9 +66,26 @@ export function Books() {
                     </span>
                     <StatusBadge value={b.status} />
                   </div>
-                  <CardTitle className="text-base font-bold text-foreground group-hover:text-primary transition-colors line-clamp-2">
-                    {b.title}
-                  </CardTitle>
+                  <div className="flex items-start justify-between gap-2">
+                    <CardTitle className="min-w-0 flex-1">
+                      <Link
+                        to={`/books/${b.id}`}
+                        className="text-base font-bold text-foreground hover:text-primary transition-colors line-clamp-2"
+                      >
+                        {b.title}
+                      </Link>
+                    </CardTitle>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 shrink-0 text-muted-foreground hover:bg-red-50 hover:text-red-600"
+                      title="Xóa sách"
+                      onClick={(e) => deleteBook(e, b.id)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                   <p className="text-xs text-muted-foreground font-mono truncate mt-1">
                     {b.original_filename}
                   </p>

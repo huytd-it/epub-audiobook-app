@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Eye, ListPlus, RefreshCw, RotateCcw, Upload } from "lucide-react";
+import { AlertTriangle, Eye, ListPlus, RefreshCw, RotateCcw, Upload, Trash2 } from "lucide-react";
 import { api, post, postForm } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { ExtendPlan, PlannedPatch, ReimportPlan, UploadResult, errorText } from "./types";
+import { ExtendPlan, PlannedPatch, PlannedRangeCheck, ReimportPlan, UploadResult, errorText } from "./types";
 import { CheckField, Field, SectionHead, Tile, fieldClass } from "./parts";
 
 export function BuildPanel({
@@ -28,6 +28,7 @@ export function BuildPanel({
   const [endChapter, setEndChapter] = useState("");
   const [patchSize, setPatchSize] = useState("");
   const [planned, setPlanned] = useState<PlannedPatch[]>([]);
+  const [rangeCheck, setRangeCheck] = useState<PlannedRangeCheck>();
   const [building, setBuilding] = useState(false);
   const [uploading, setUploading] = useState(false);
 
@@ -86,8 +87,10 @@ export function BuildPanel({
       const form = new FormData();
       form.set("epub_file", files[0]);
       form.set("update_changed", updateChanged ? "true" : "false");
-      const result = await postForm<{ inserted: number; updated: number }>(`/books/${bookId}/reimport`, form);
-      return `Đã nạp EPUB mới: thêm ${result.inserted} chương, cập nhật ${result.updated} chương.`;
+      const result = await postForm<{ inserted: number; updated: number; skipped_changed: number }>(`/books/${bookId}/reimport`, form);
+      return `Đã nạp EPUB mới: thêm ${result.inserted} chương, cập nhật ${result.updated} chương${
+        result.skipped_changed ? `, bỏ qua ${result.skipped_changed} chương đã có audio` : ""
+      }.`;
     });
   };
 
@@ -107,14 +110,21 @@ export function BuildPanel({
 
   const preview = async () => {
     try {
-      const result = await api<{ patches: PlannedPatch[] }>(
-        `/books/${bookId}/patches/auto-build/preview?${params()}`
-      );
+      // Xem trước và soát khoảng chương cùng lúc: cảnh báo phải hiện ngay lúc thêm mới,
+      // chứ không phải đợi patch được tạo rồi mới biết là lệch.
+      const [result, check] = await Promise.all([
+        api<{ patches: PlannedPatch[] }>(`/books/${bookId}/patches/auto-build/preview?${params()}`),
+        api<PlannedRangeCheck>(`/books/${bookId}/patches/auto-build/range-check?${params()}`).catch(
+          () => undefined
+        ),
+      ]);
       setPlanned(result.patches);
+      setRangeCheck(check);
       if (!result.patches.length) onMessage("Không có chương nào khớp khoảng đã chọn.");
     } catch (error) {
       onMessage(errorText(error));
       setPlanned([]);
+      setRangeCheck(undefined);
     }
   };
 
@@ -175,8 +185,31 @@ export function BuildPanel({
     }
   };
 
+  const deleteBook = () => {
+    if (!confirm("Bạn có chắc chắn muốn xóa sách này? Hành động này không thể hoàn tác.")) return;
+
+    post(`/books/${bookId}/delete`)
+      .then(() => (window.location.href = "/books"))
+      .catch((err) => onMessage(errorText(err)));
+  };
+
   return (
     <div className="space-y-5">
+      <Card className="border-red-200">
+        <CardHeader className="border-b border-red-100 bg-red-50/50">
+          <SectionHead
+            icon={Trash2}
+            title="Xóa sách"
+            detail="Hành động này không thể hoàn tác."
+          />
+        </CardHeader>
+        <CardContent className="pt-5">
+          <Button variant="destructive" onClick={deleteBook}>
+            Xóa sách "#{bookId}" và toàn bộ dữ liệu liên quan
+          </Button>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="border-b border-border bg-muted/20">
           <SectionHead
@@ -248,12 +281,30 @@ export function BuildPanel({
                   Ẩn
                 </button>
               </div>
+
+              {rangeCheck && rangeCheck.issues.length > 0 && (
+                <div
+                  className={cn(
+                    "space-y-1 border-b border-border px-3 py-2 text-xs",
+                    rangeCheck.has_error ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-900"
+                  )}
+                >
+                  {rangeCheck.issues.map((issue, index) => (
+                    <div key={`${issue.code}-${index}`} className="flex items-start gap-1.5">
+                      <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                      <span>{issue.message}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div className="max-h-64 overflow-auto">
                 <Table>
                   <TableHeader className="sticky top-0 bg-card">
                     <TableRow>
                       <TableHead>#</TableHead>
                       <TableHead>Chương</TableHead>
+                      <TableHead>Số chương</TableHead>
                       <TableHead>Tên</TableHead>
                       <TableHead className="text-right">Chunk</TableHead>
                     </TableRow>
@@ -264,6 +315,16 @@ export function BuildPanel({
                         <TableCell className="py-2 font-mono text-xs">#{item.patch_index + 1}</TableCell>
                         <TableCell className="py-2 text-xs">
                           {item.chapter_start + 1}–{item.chapter_end + 1}
+                        </TableCell>
+                        <TableCell
+                          className={cn(
+                            "py-2 font-mono text-xs",
+                            item.chapter_no_start == null ? "text-amber-700" : "text-muted-foreground"
+                          )}
+                        >
+                          {item.chapter_no_start == null
+                            ? "—"
+                            : `${item.chapter_no_start}–${item.chapter_no_end}`}
                         </TableCell>
                         <TableCell className="py-2 text-xs">{item.name}</TableCell>
                         <TableCell className="py-2 text-right font-mono text-xs">{item.chunk_count}</TableCell>

@@ -43,8 +43,8 @@ _CHAPTER_NUMBER_PATTERNS = [
     re.compile(r"^\s*(\d{1,5})\s*(?:[.:\-–—]|$)"),
 ]
 
-# Canonical shape the user wants every chapter title to have: "Chương N: Tên chương".
-CANONICAL_TITLE_RE = re.compile(r"^Chương\s+(\d{1,5}):\s+(\S.*?)\s*$")
+# Hai dạng tiêu đề tiếng Việt hợp lệ: "Chương N: Tên" và "Chương N Tên".
+CANONICAL_TITLE_RE = re.compile(r"^Chương\s+(\d{1,5})(?::\s+|\s+(?![:\-–—]))(\S.*?)\s*$")
 
 TITLE_CANONICAL = "canonical"  # already "Chương N: Tên"
 TITLE_FIXABLE = "fixable"      # number + name present, wrong shape -> can auto-rewrite
@@ -111,7 +111,7 @@ def canonical_chapter_title(number: int, name: str) -> str:
 
 
 def check_title_format(title: str | None) -> tuple[str, int | None, str]:
-    """Classify a chapter title against the canonical "Chương N: Tên" shape.
+    """Classify a chapter title against the valid Vietnamese chapter-title shapes.
 
     Returns (state, chapter_no, name) where state is one of the TITLE_* constants.
     """
@@ -476,11 +476,309 @@ def summarize(chapter_reports: list[ChapterReport], patch_reports: list[PatchRep
 
 
 # ---------------------------------------------------------------------------
+# Patch range validation — "patch nào ôm sai khoảng chương".
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PatchRangeReport:
+    patch_id: int
+    patch_index: int
+    name: str
+    status: str
+    chapter_start: int
+    chapter_end: int
+    chapter_count: int
+    # Khoảng số chương đã lưu trên patch (danh tính ổn định).
+    stored_no_start: int | None
+    stored_no_end: int | None
+    # Khoảng số chương thực tế đọc được từ tiêu đề tại các chỉ số hiện tại.
+    actual_no_start: int | None
+    actual_no_end: int | None
+    unnumbered_count: int
+    issues: list[Issue] = field(default_factory=list)
+
+    @property
+    def severity(self) -> str:
+        return _worst(self.issues)
+
+    @property
+    def is_valid(self) -> bool:
+        return self.severity != ERROR
+
+    def as_dict(self) -> dict:
+        return {
+            "patch_id": self.patch_id,
+            "patch_index": self.patch_index,
+            "name": self.name,
+            "status": self.status,
+            "chapter_start": self.chapter_start,
+            "chapter_end": self.chapter_end,
+            "chapter_count": self.chapter_count,
+            "stored_no_start": self.stored_no_start,
+            "stored_no_end": self.stored_no_end,
+            "actual_no_start": self.actual_no_start,
+            "actual_no_end": self.actual_no_end,
+            "unnumbered_count": self.unnumbered_count,
+            "severity": self.severity,
+            "is_valid": self.is_valid,
+            "issues": [issue.as_dict() for issue in self.issues],
+        }
+
+
+def _expected_patch_size(patches) -> int | None:
+    """Kích thước patch coi là "chuẩn": mode của số chương mỗi patch, bỏ qua patch cuối.
+
+    Dùng mode chứ không dùng book.patch_size vì sách có thể đã được build với kích
+    thước khác; cái ta muốn phát hiện là patch *lệch khỏi phần còn lại*.
+    """
+    if len(patches) < 2:
+        return None
+    sizes: dict[int, int] = {}
+    for patch in patches[:-1]:
+        size = patch.chapter_end - patch.chapter_start + 1
+        sizes[size] = sizes.get(size, 0) + 1
+    if not sizes:
+        return None
+    return max(sizes.items(), key=lambda item: item[1])[0]
+
+
+def validate_patch_ranges(patches, chapters) -> list[PatchRangeReport]:
+    """Soát khoảng chương của từng patch: đứt gãy, chồng lấn, lệch số chương.
+
+    ``patches`` duck-typed trên id/patch_index/name/status/chapter_start/chapter_end/
+    chapter_no_start/chapter_no_end; ``chapters`` trên chapter_index/chapter_no.
+
+    Ba nhóm lỗi khác nhau và đều quan trọng:
+
+    * chỉ số: patch phải lát kín liên tiếp (Ch. 1-10, 11-20...), không hở không đè;
+    * kích thước: một patch ôm nhiều/ít chương hơn hẳn phần còn lại là dấu hiệu
+      khoảng chương bị trượt đi khi build;
+    * số chương: khoảng số chương đã lưu phải khớp với số chương thực tế đang nằm ở
+      các chỉ số đó — không khớp nghĩa là re-import đã làm patch trỏ sai chỗ.
+    """
+    ordered = sorted(patches, key=lambda patch: patch.patch_index)
+    numbers = {
+        chapter.chapter_index: chapter.chapter_no
+        for chapter in chapters
+        if getattr(chapter, "chapter_no", None) is not None
+    }
+    all_indices = {chapter.chapter_index for chapter in chapters}
+    expected_size = _expected_patch_size(ordered)
+
+    reports: list[PatchRangeReport] = []
+    for position, patch in enumerate(ordered):
+        issues: list[Issue] = []
+        span = list(range(patch.chapter_start, patch.chapter_end + 1))
+        present = [index for index in span if index in all_indices]
+        in_range = [numbers[index] for index in span if index in numbers]
+        actual_start = min(in_range) if in_range else None
+        actual_end = max(in_range) if in_range else None
+        unnumbered = len(present) - len(in_range)
+
+        if patch.chapter_start > patch.chapter_end:
+            issues.append(
+                Issue("range_inverted", ERROR, f"Khoảng chương đảo ngược: {patch.chapter_start + 1} > {patch.chapter_end + 1}.")
+            )
+
+        missing_rows = len(span) - len(present)
+        if missing_rows:
+            issues.append(
+                Issue("range_out_of_bounds", ERROR, f"{missing_rows} chỉ số chương trong khoảng không còn tồn tại trong sách.", missing_rows)
+            )
+
+        # Liên tiếp với patch liền trước.
+        if position > 0:
+            previous = ordered[position - 1]
+            gap = patch.chapter_start - previous.chapter_end - 1
+            if gap > 0:
+                issues.append(
+                    Issue(
+                        "range_gap",
+                        ERROR,
+                        f"Hở {gap} chương giữa patch #{previous.patch_index + 1} (hết ở chương {previous.chapter_end + 1}) "
+                        f"và patch #{patch.patch_index + 1} (bắt đầu ở chương {patch.chapter_start + 1}).",
+                        gap,
+                    )
+                )
+            elif gap < 0:
+                issues.append(
+                    Issue(
+                        "range_overlap",
+                        ERROR,
+                        f"Chồng lấn {-gap} chương với patch #{previous.patch_index + 1} "
+                        f"(Ch. {previous.chapter_start + 1}–{previous.chapter_end + 1}).",
+                        -gap,
+                    )
+                )
+        elif patch.chapter_start != 0:
+            issues.append(
+                Issue(
+                    "range_not_from_start",
+                    WARNING,
+                    f"Patch đầu tiên bắt đầu từ chương {patch.chapter_start + 1} chứ không phải chương 1.",
+                )
+            )
+
+        # Kích thước lệch khỏi phần còn lại (patch cuối được phép ngắn hơn).
+        size = patch.chapter_end - patch.chapter_start + 1
+        is_last = position == len(ordered) - 1
+        if expected_size and not is_last and size != expected_size:
+            issues.append(
+                Issue(
+                    "range_size_drift",
+                    WARNING,
+                    f"Patch ôm {size} chương trong khi các patch khác ôm {expected_size} chương.",
+                )
+            )
+
+        # Số chương đã lưu vs số chương thực tế đang nằm ở các chỉ số này.
+        stored_start = getattr(patch, "chapter_no_start", None)
+        stored_end = getattr(patch, "chapter_no_end", None)
+        if stored_start is not None and actual_start is not None and stored_start != actual_start:
+            issues.append(
+                Issue(
+                    "chapter_no_desync",
+                    ERROR,
+                    f'Patch được lưu cho chương số {stored_start}–{stored_end} nhưng vị trí hiện tại đang là '
+                    f"chương số {actual_start}–{actual_end}. Nội dung đã trượt đi — cần căn lại khoảng chương.",
+                )
+            )
+        elif stored_end is not None and actual_end is not None and stored_end != actual_end:
+            issues.append(
+                Issue(
+                    "chapter_no_desync",
+                    ERROR,
+                    f'Patch được lưu cho chương số {stored_start}–{stored_end} nhưng vị trí hiện tại đang là '
+                    f"chương số {actual_start}–{actual_end}. Nội dung đã trượt đi — cần căn lại khoảng chương.",
+                )
+            )
+
+        # Số chương bên trong patch phải liên tiếp.
+        if len(in_range) > 1:
+            ordered_numbers = sorted(in_range)
+            holes = [
+                number
+                for number in range(ordered_numbers[0], ordered_numbers[-1] + 1)
+                if number not in set(ordered_numbers)
+            ]
+            if holes:
+                preview = ", ".join(str(number) for number in holes[:10])
+                issues.append(
+                    Issue(
+                        "chapter_no_gap",
+                        WARNING,
+                        f"Thiếu {len(holes)} số chương bên trong patch: {preview}"
+                        + ("…" if len(holes) > 10 else "")
+                        + ".",
+                        len(holes),
+                    )
+                )
+
+        if unnumbered:
+            issues.append(
+                Issue(
+                    "chapter_no_missing",
+                    WARNING,
+                    f"{unnumbered} chương trong patch không đọc được số chương từ tiêu đề.",
+                    unnumbered,
+                )
+            )
+
+        reports.append(
+            PatchRangeReport(
+                patch_id=patch.id,
+                patch_index=patch.patch_index,
+                name=getattr(patch, "name", "") or "",
+                status=getattr(patch, "status", "") or "",
+                chapter_start=patch.chapter_start,
+                chapter_end=patch.chapter_end,
+                chapter_count=len(present),
+                stored_no_start=stored_start,
+                stored_no_end=stored_end,
+                actual_no_start=actual_start,
+                actual_no_end=actual_end,
+                unnumbered_count=unnumbered,
+                issues=issues,
+            )
+        )
+
+    return reports
+
+
+def summarize_patch_ranges(reports: list[PatchRangeReport]) -> dict:
+    issue_totals: dict[str, int] = {}
+    for report in reports:
+        for issue in report.issues:
+            issue_totals[issue.code] = issue_totals.get(issue.code, 0) + 1
+    return {
+        "patches_total": len(reports),
+        "patches_error": sum(1 for report in reports if report.severity == ERROR),
+        "patches_warning": sum(1 for report in reports if report.severity == WARNING),
+        "patches_ok": sum(1 for report in reports if report.severity == "ok"),
+        "needs_resync": sum(
+            1 for report in reports if any(issue.code == "chapter_no_desync" for issue in report.issues)
+        ),
+        "issue_totals": issue_totals,
+    }
+
+
+def validate_planned_ranges(planned: list[dict]) -> list[Issue]:
+    """Soát khoảng chương của các patch *sắp* tạo, để cảnh báo ngay ở bước xem trước."""
+    issues: list[Issue] = []
+    ordered = sorted(planned, key=lambda entry: entry.get("patch_index", 0))
+    for previous, current in zip(ordered, ordered[1:]):
+        gap = current["chapter_start"] - previous["chapter_end"] - 1
+        if gap > 0:
+            issues.append(
+                Issue(
+                    "range_gap",
+                    ERROR,
+                    f"Hở {gap} chương giữa patch #{previous['patch_index'] + 1} và #{current['patch_index'] + 1}.",
+                    gap,
+                )
+            )
+        elif gap < 0:
+            issues.append(
+                Issue(
+                    "range_overlap",
+                    ERROR,
+                    f"Chồng lấn {-gap} chương giữa patch #{previous['patch_index'] + 1} và #{current['patch_index'] + 1}.",
+                    -gap,
+                )
+            )
+
+    sizes = [entry["chapter_end"] - entry["chapter_start"] + 1 for entry in ordered[:-1]]
+    if len(set(sizes)) > 1:
+        issues.append(
+            Issue(
+                "range_size_drift",
+                WARNING,
+                f"Các patch không đều nhau: {sorted(set(sizes))} chương/patch.",
+            )
+        )
+
+    unnumbered = [entry for entry in ordered if entry.get("chapter_no_start") is None]
+    if unnumbered:
+        issues.append(
+            Issue(
+                "chapter_no_missing",
+                WARNING,
+                f"{len(unnumbered)} patch không neo được theo số chương (chương trong patch không có số ở tiêu đề).",
+                len(unnumbered),
+            )
+        )
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Positional spans — the source for the "highlight the exact bad text" view.
 # ---------------------------------------------------------------------------
 
 _SOFT_SPAN_META = {
     "junk": (WARNING, "Ký tự rác"),
+    "abbreviation": (WARNING, "Từ viết tắt"),
     "spell_vi": (INFO, "Từ nghi sai chính tả"),
     "effect_marker": (INFO, "Đánh dấu hiệu ứng"),
     "sound_desc": (INFO, "Mô tả âm thanh"),

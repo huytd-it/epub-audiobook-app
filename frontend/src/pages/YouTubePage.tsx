@@ -59,7 +59,11 @@ export function YouTubePage() {
   const [playlists, setPlaylists] = useState<PlaylistItem[]>([]);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string>("");
   const [playlistItems, setPlaylistItems] = useState<PlaylistItemDetail[]>([]);
+  const [manualOrders, setManualOrders] = useState<Record<string, string>>({});
   const [loadingPlaylistItems, setLoadingPlaylistItems] = useState(false);
+  const [previewingSort, setPreviewingSort] = useState(false);
+  const [savingOrder, setSavingOrder] = useState(false);
+  const [hasPendingOrder, setHasPendingOrder] = useState(false);
   const [channelVideos, setChannelVideos] = useState<ChannelVideo[]>([]);
   const [showAddVideosModal, setShowAddVideosModal] = useState(false);
   const [selectedAddVideoIds, setSelectedAddVideoIds] = useState<string[]>([]);
@@ -94,7 +98,12 @@ export function YouTubePage() {
     if (!selectedPlaylistId) return;
     setLoadingPlaylistItems(true);
     api<{ items: PlaylistItemDetail[] }>(`/youtube/api/playlists/${selectedPlaylistId}/items?fetch_all=true`)
-      .then((res) => setPlaylistItems(res.items || []))
+      .then((res) => {
+        const items = res.items || [];
+        setPlaylistItems(items);
+        setManualOrders(Object.fromEntries(items.map((item, index) => [item.playlist_item_id, String(index + 1)])));
+        setHasPendingOrder(false);
+      })
       .catch((err) => console.error("Lỗi tải mục trong playlist:", err))
       .finally(() => setLoadingPlaylistItems(false));
   }, [selectedPlaylistId]);
@@ -228,20 +237,68 @@ export function YouTubePage() {
     }
   };
 
-  const handleApplySort = async () => {
+  const handleManualOrderChange = (itemId: string, value: string) => {
+    setManualOrders((prev) => ({ ...prev, [itemId]: value }));
+  };
+
+  const handlePreviewManualSort = (itemId: string) => {
+    const enteredOrder = Number.parseInt(manualOrders[itemId], 10);
+    const currentIndex = playlistItems.findIndex((item) => item.playlist_item_id === itemId);
+    if (currentIndex < 0) return;
+    if (Number.isNaN(enteredOrder)) {
+      setManualOrders((prev) => ({
+        ...prev,
+        [itemId]: String(currentIndex + 1),
+      }));
+      return;
+    }
+    const normalizedOrder = Math.max(1, Math.min(enteredOrder, playlistItems.length));
+    const reordered = [...playlistItems];
+    const [movedItem] = reordered.splice(currentIndex, 1);
+    reordered.splice(normalizedOrder - 1, 0, movedItem);
+    setPlaylistItems(reordered);
+    setManualOrders(Object.fromEntries(reordered.map((item, index) => [item.playlist_item_id, String(index + 1)])));
+    setHasPendingOrder(true);
+  };
+
+  const handleSaveOrder = async () => {
     if (!selectedPlaylistId) return;
+    setSavingOrder(true);
     try {
-      await postJson(`/youtube/api/playlists/${selectedPlaylistId}/sort/apply`, {
-        direction: sortDirection,
-        mode: sortMode,
+      await postJson(`/youtube/api/playlists/${selectedPlaylistId}/reorder-all`, {
+        item_ids: playlistItems.map((item) => item.playlist_item_id),
       });
-      alert("Đã sắp xếp lại danh sách phát!");
+      alert("Đã lưu thứ tự danh sách phát!");
       const res = await api<{ items: PlaylistItemDetail[] }>(
         `/youtube/api/playlists/${selectedPlaylistId}/items?fetch_all=true`
       );
-      setPlaylistItems(res.items || []);
+      const items = res.items || [];
+      setPlaylistItems(items);
+      setManualOrders(Object.fromEntries(items.map((item, index) => [item.playlist_item_id, String(index + 1)])));
+      setHasPendingOrder(false);
     } catch (err: any) {
-      alert(`Sắp xếp danh sách phát thất bại: ${err.message}`);
+      alert(`Lưu thứ tự danh sách phát thất bại: ${err.message}`);
+    } finally {
+      setSavingOrder(false);
+    }
+  };
+
+  const handlePreviewSort = async () => {
+    if (!selectedPlaylistId) return;
+    setPreviewingSort(true);
+    try {
+      const res = await postJson<{ items: Array<PlaylistItemDetail & { new_position: number }> }>(
+        `/youtube/api/playlists/${selectedPlaylistId}/sort/preview`,
+        { direction: sortDirection, mode: sortMode }
+      );
+      const items = [...(res.items || [])].sort((a, b) => a.new_position - b.new_position);
+      setPlaylistItems(items);
+      setManualOrders(Object.fromEntries(items.map((item, index) => [item.playlist_item_id, String(index + 1)])));
+      setHasPendingOrder(true);
+    } catch (err: any) {
+      alert(`Xem trước sắp xếp thất bại: ${err.message}`);
+    } finally {
+      setPreviewingSort(false);
     }
   };
 
@@ -587,30 +644,54 @@ export function YouTubePage() {
             <CardContent className="p-4 space-y-4">
               {/* Sort Controls */}
               {selectedPlaylistId && (
-                <div className="flex items-center justify-between gap-3 p-3 bg-muted/30 rounded border border-border text-xs">
-                  <div className="flex items-center gap-2">
-                    <ArrowUpDown className="h-3.5 w-3.5 text-primary" />
-                    <span className="font-semibold">Sắp xếp:</span>
-                    <select
-                      value={sortDirection}
-                      onChange={(e) => setSortDirection(e.target.value as any)}
-                      className="h-7 rounded border border-input bg-background px-2 text-xs"
+                <div className="space-y-3 p-3 bg-muted/30 rounded border border-border text-xs">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <ArrowUpDown className="h-3.5 w-3.5 text-primary" />
+                      <span className="font-semibold">Sắp xếp tự động:</span>
+                      <select
+                        value={sortDirection}
+                        onChange={(e) => setSortDirection(e.target.value as any)}
+                        className="h-7 rounded border border-input bg-background px-2 text-xs"
+                      >
+                        <option value="asc">Tăng dần (A-Z)</option>
+                        <option value="desc">Giảm dần (Z-A)</option>
+                      </select>
+                      <select
+                        value={sortMode}
+                        onChange={(e) => setSortMode(e.target.value as any)}
+                        className="h-7 rounded border border-input bg-background px-2 text-xs"
+                      >
+                        <option value="natural">Số tự nhiên</option>
+                        <option value="episode">Theo tập (Episode)</option>
+                      </select>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={handlePreviewSort}
+                      disabled={previewingSort}
                     >
-                      <option value="asc">Tăng dần (A-Z)</option>
-                      <option value="desc">Giảm dần (Z-A)</option>
-                    </select>
-                    <select
-                      value={sortMode}
-                      onChange={(e) => setSortMode(e.target.value as any)}
-                      className="h-7 rounded border border-input bg-background px-2 text-xs"
-                    >
-                      <option value="natural">Số tự nhiên</option>
-                      <option value="episode">Theo tập (Episode)</option>
-                    </select>
+                      {previewingSort ? "Đang preview..." : "Xem trước sắp xếp"}
+                    </Button>
                   </div>
-                  <Button variant="secondary" size="sm" className="h-7 text-xs" onClick={handleApplySort}>
-                    Áp dụng sắp xếp
-                  </Button>
+                  <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/50">
+                    <span className="font-semibold">
+                      {hasPendingOrder ? "Thứ tự preview chưa được lưu" : "Nhập vị trí rồi nhấn Enter để preview"}
+                    </span>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="default"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={handleSaveOrder}
+                        disabled={!hasPendingOrder || savingOrder}
+                      >
+                        {savingOrder ? "Đang lưu..." : "Lưu thứ tự"}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -620,34 +701,48 @@ export function YouTubePage() {
                 <EmptyState text="Playlist này chưa có video nào." />
               ) : (
                 <div className="divide-y divide-border border border-border rounded-md overflow-hidden">
-                  {playlistItems.map((item, idx) => (
-                    <div key={item.playlist_item_id} className="p-3 flex items-center justify-between gap-3 text-xs hover:bg-muted/20">
-                      <span className="font-mono text-muted-foreground font-bold w-6 shrink-0 text-center">
-                        #{idx + 1}
-                      </span>
-                      {item.thumbnail ? (
-                        <img src={item.thumbnail} alt="" className="w-16 h-10 object-cover rounded shrink-0 border border-border" />
-                      ) : (
-                        <div className="w-16 h-10 bg-zinc-900 rounded shrink-0 flex items-center justify-center text-muted-foreground">
-                          <FileVideo className="h-4 w-4" />
+                  {playlistItems.map((item, idx) => {
+                    const currentOrder = manualOrders[item.playlist_item_id] ?? (idx + 1);
+                    return (
+                        <div key={item.playlist_item_id} className="p-3 flex items-center justify-between gap-3 text-xs hover:bg-muted/20">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={currentOrder}
+                            onChange={(e) => handleManualOrderChange(item.playlist_item_id, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                handlePreviewManualSort(item.playlist_item_id);
+                              }
+                            }}
+                            aria-label={`Vị trí của ${item.title}`}
+                            className="w-12 h-7 rounded border border-input bg-background/50 text-center text-xs font-mono font-bold"
+                          />
+                          {item.thumbnail ? (
+                            <img src={item.thumbnail} alt="" className="w-16 h-10 object-cover rounded shrink-0 border border-border" />
+                          ) : (
+                            <div className="w-16 h-10 bg-zinc-900 rounded shrink-0 flex items-center justify-center text-muted-foreground">
+                              <FileVideo className="h-4 w-4" />
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="font-semibold text-foreground truncate">{item.title}</div>
+                            <div className="text-[10px] font-mono text-muted-foreground">
+                              ID: {item.video_id}
+                            </div>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-destructive hover:text-destructive shrink-0"
+                            onClick={() => handleRemovePlaylistItem(item.playlist_item_id)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-foreground truncate">{item.title}</div>
-                        <div className="text-[10px] font-mono text-muted-foreground">
-                          ID: {item.video_id}
-                        </div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-destructive hover:text-destructive shrink-0"
-                        onClick={() => handleRemovePlaylistItem(item.playlist_item_id)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  ))}
+                    );
+                })}
                 </div>
               )}
             </CardContent>

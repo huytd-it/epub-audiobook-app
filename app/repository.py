@@ -279,6 +279,105 @@ def set_chapter_titles(conn: sqlite3.Connection, book_id: int, updates: list[tup
     return cur.rowcount if cur.rowcount is not None else len(updates)
 
 
+def chapter_no_range(
+    conn: sqlite3.Connection, book_id: int, chapter_start: int, chapter_end: int
+) -> tuple[int | None, int | None]:
+    """Số chương nhỏ nhất/lớn nhất đọc được từ tiêu đề trong khoảng chỉ số này.
+
+    Trả về (None, None) khi không chương nào trong khoảng có số — patch vẫn hợp lệ,
+    chỉ là không neo được theo số chương.
+    """
+    row = conn.execute(
+        """SELECT MIN(chapter_no) AS lo, MAX(chapter_no) AS hi FROM chapter
+           WHERE book_id = ? AND chapter_index BETWEEN ? AND ? AND chapter_no IS NOT NULL""",
+        (book_id, chapter_start, chapter_end),
+    ).fetchone()
+    return (row["lo"], row["hi"]) if row else (None, None)
+
+
+def backfill_patch_chapter_numbers(conn: sqlite3.Connection, book_id: int) -> int:
+    """Điền chapter_no_start/chapter_no_end cho patch tạo trước khi có hai cột này."""
+    rows = conn.execute(
+        """SELECT id, chapter_start, chapter_end FROM patch
+           WHERE book_id = ? AND (chapter_no_start IS NULL OR chapter_no_end IS NULL)""",
+        (book_id,),
+    ).fetchall()
+    updates = []
+    for row in rows:
+        lo, hi = chapter_no_range(conn, book_id, row["chapter_start"], row["chapter_end"])
+        if lo is not None or hi is not None:
+            updates.append((lo, hi, row["id"]))
+    if updates:
+        conn.executemany(
+            "UPDATE patch SET chapter_no_start = ?, chapter_no_end = ? WHERE id = ?", updates
+        )
+        conn.commit()
+    return len(updates)
+
+
+def resync_patch_ranges_from_chapter_numbers(conn: sqlite3.Connection, book_id: int) -> list[dict]:
+    """Căn lại chapter_start/chapter_end của từng patch theo khoảng số chương đã lưu.
+
+    Đây là cách sửa "lệch" sau khi re-import EPUB: chỉ số chương xê dịch khi có chương
+    mới chèn vào, nhưng số chương trong tiêu đề thì không đổi — nên số chương mới là
+    thứ dùng để tìm lại đúng vùng chỉ số của patch. Patch đang tổng hợp dở
+    (``processing``) được bỏ qua vì worker đang bám theo chỉ số hiện tại.
+    """
+    numbers_by_index: dict[int, int] = {}
+    first_index: dict[int, int] = {}
+    last_index: dict[int, int] = {}
+    for row in conn.execute(
+        """SELECT chapter_index, chapter_no FROM chapter
+           WHERE book_id = ? AND chapter_no IS NOT NULL ORDER BY chapter_index""",
+        (book_id,),
+    ):
+        numbers_by_index[row["chapter_index"]] = row["chapter_no"]
+        first_index.setdefault(row["chapter_no"], row["chapter_index"])
+        last_index[row["chapter_no"]] = row["chapter_index"]
+
+    changes: list[dict] = []
+    for patch in list_patches(conn, book_id):
+        if patch.status == "processing":
+            continue
+        if patch.chapter_no_start is None or patch.chapter_no_end is None:
+            continue
+
+        # Chỉ đụng vào patch thực sự lệch. Một patch mà số chương đã neo vẫn khớp với
+        # số chương đang nằm trong khoảng chỉ số của nó thì không có gì để sửa — căn
+        # lại lúc đó chỉ tổ cắt mất các chương không đánh số ở hai đầu patch.
+        in_range = [
+            numbers_by_index[index]
+            for index in range(patch.chapter_start, patch.chapter_end + 1)
+            if index in numbers_by_index
+        ]
+        if in_range and (min(in_range), max(in_range)) == (patch.chapter_no_start, patch.chapter_no_end):
+            continue
+
+        start = first_index.get(patch.chapter_no_start)
+        end = last_index.get(patch.chapter_no_end)
+        if start is None or end is None or start > end:
+            continue
+        if start == patch.chapter_start and end == patch.chapter_end:
+            continue
+        conn.execute(
+            "UPDATE patch SET chapter_start = ?, chapter_end = ?, updated_at = ? WHERE id = ?",
+            (start, end, _now(), patch.id),
+        )
+        changes.append(
+            {
+                "patch_id": patch.id,
+                "patch_index": patch.patch_index,
+                "chapter_no_start": patch.chapter_no_start,
+                "chapter_no_end": patch.chapter_no_end,
+                "old_range": [patch.chapter_start, patch.chapter_end],
+                "new_range": [start, end],
+            }
+        )
+    if changes:
+        conn.commit()
+    return changes
+
+
 def list_patches_covering_chapter(conn: sqlite3.Connection, book_id: int, chapter_index: int) -> list[Patch]:
     rows = conn.execute(
         """SELECT * FROM patch WHERE book_id = ? AND ? BETWEEN chapter_start AND chapter_end
@@ -937,11 +1036,13 @@ def rebuild_patches(
             (book_id, start, end),
         ).fetchone()["c"]
         chunk_count = max(1, math.ceil(total_chars / _TTS_MAX_CHARS))
-        patch_rows.append((book_id, idx, start, end, name, chunk_count, now, now))
+        no_start, no_end = chapter_no_range(conn, book_id, start, end)
+        patch_rows.append((book_id, idx, start, end, no_start, no_end, name, chunk_count, now, now))
     conn.executemany(
-        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, name,
+        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end,
+                               chapter_no_start, chapter_no_end, name,
                                chunk_count, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
         patch_rows,
     )
     conn.execute(
@@ -1142,10 +1243,13 @@ def preview_auto_build(
             (book_id, start, end),
         ).fetchone()["c"]
         chunk_count = max(1, math.ceil(total_chars / _TTS_MAX_CHARS))
+        no_start, no_end = chapter_no_range(conn, book_id, start, end)
         result.append({
             "patch_index": idx,
             "chapter_start": start,
             "chapter_end": end,
+            "chapter_no_start": no_start,
+            "chapter_no_end": no_end,
             "name": name,
             "chunk_count": chunk_count,
         })
@@ -1363,11 +1467,14 @@ def preview_extend_patches(
                WHERE book_id = ? AND chapter_index BETWEEN ? AND ?""",
             (book_id, start, end),
         ).fetchone()["c"]
+        no_start, no_end = chapter_no_range(conn, book_id, start, end)
         planned.append(
             {
                 "patch_index": next_patch_index + len(planned),
                 "chapter_start": start,
                 "chapter_end": end,
+                "chapter_no_start": no_start,
+                "chapter_no_end": no_end,
                 "name": row["title"] if row else "",
                 "chunk_count": max(1, math.ceil(total_chars / _TTS_MAX_CHARS)),
             }
@@ -1389,12 +1496,14 @@ def extend_patches(
 
     now = _now()
     conn.executemany(
-        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, name,
+        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end,
+                              chapter_no_start, chapter_no_end, name,
                               chunk_count, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
         [
             (
                 book_id, entry["patch_index"], entry["chapter_start"], entry["chapter_end"],
+                entry["chapter_no_start"], entry["chapter_no_end"],
                 entry["name"], entry["chunk_count"], now, now,
             )
             for entry in planned
