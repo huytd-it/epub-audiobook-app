@@ -480,6 +480,16 @@ def generate_background_sequence(
         raise ValueError("No valid backgrounds for sequence")
     width, height = resolution
     video_codec = "h264_nvenc" if codec == "h264_nvenc" else "libx264"
+    fade = 0.0
+    if crossfade and len(plan) > 1:
+        fade = min(float(crossfade_seconds), min(length for _, length in plan) / 2)
+        # plan_background_segments lays the pieces end to end to cover the
+        # narration, but every xfade overlaps its two pieces, so the crossfaded
+        # visual comes out (n-1)*fade shorter than the audio and the final mux's
+        # -shortest clips that much off the tail of the narration. Lengthen each
+        # piece after the first to pay for the overlap it is about to lose.
+        plan = [(background, length + fade if index else length)
+                for index, (background, length) in enumerate(plan)]
     with tempfile.TemporaryDirectory(prefix="video_backgrounds_") as temp:
         pieces = []
         for index, (background, length) in enumerate(plan):
@@ -504,7 +514,6 @@ def generate_background_sequence(
             pieces.append(piece)
         visual = str(Path(temp) / "visual.mp4")
         if crossfade and len(pieces) > 1:
-            fade = min(float(crossfade_seconds), min(length for _, length in plan) / 2)
             graph = []
             for i in range(len(pieces)):
                 graph.append(f"[{i}:v]settb=AVTB[v{i}]")
@@ -512,14 +521,23 @@ def generate_background_sequence(
             elapsed = plan[0][1]
             for i in range(1, len(pieces)):
                 out = f"[x{i}]"
-                graph.append(f"{current}[{i}:v]xfade=transition=fade:duration={fade}:offset={max(0, elapsed - fade)}{out}")
+                graph.append(f"{current}[v{i}]xfade=transition=fade:duration={fade}:offset={max(0, elapsed - fade)}{out}")
                 current = out
                 elapsed += plan[i][1] - fade
+            # Windows caps a command line at 32767 characters, and both the xfade
+            # graph and the -i list grow with the piece count: a long patch (one
+            # piece per image_duration seconds) overflowed the cap and died in
+            # CreateProcess with WinError 206 before ffmpeg ever started. Keep the
+            # graph in a script file and pass the pieces as bare filenames
+            # relative to their own directory.
+            script = Path(temp) / "xfade.txt"
+            script.write_text(";".join(graph), encoding="utf-8")
             cmd = [settings.get_ffmpeg_path(), "-y"]
             for piece in pieces:
-                cmd += ["-i", piece]
-            cmd += ["-filter_complex", ";".join(graph), "-map", current, "-an", "-c:v", video_codec, "-pix_fmt", "yuv420p", "-r", str(fps), visual]
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+                cmd += ["-i", Path(piece).name]
+            cmd += ["-filter_complex_script", script.name, "-map", current, "-an", "-c:v", video_codec,
+                    "-pix_fmt", "yuv420p", "-r", str(fps), Path(visual).name]
+            subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=temp)
         else:
             concat_segments(pieces, visual)
         inputs = [settings.get_ffmpeg_path(), "-y", "-i", visual, "-i", audio_path]

@@ -153,9 +153,15 @@ def test_background_sequence_crossfade_uses_xfade(tmp_path, monkeypatch):
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"audio")
     commands = []
+    graphs = []
 
     def run(cmd, **kwargs):
         commands.append(cmd)
+        if "-filter_complex_script" in cmd:
+            # The script lives in a TemporaryDirectory that is gone by the time
+            # the assertions run, so read it while ffmpeg would have.
+            script = Path(kwargs["cwd"]) / cmd[cmd.index("-filter_complex_script") + 1]
+            graphs.append(script.read_text(encoding="utf-8"))
         class Result:
             stdout = "20"
         return Result()
@@ -169,4 +175,76 @@ def test_background_sequence_crossfade_uses_xfade(tmp_path, monkeypatch):
         resolution=(1280, 720), fps=30, image_duration=15,
         crossfade=True, crossfade_seconds=1,
     )
-    assert "xfade" in " ".join(str(cmd) for cmd in commands)
+    assert graphs, "crossfade did not build an xfade graph"
+    graph = graphs[0]
+    assert "xfade" in graph
+    # Every settb output must be consumed by the xfade chain: an unconnected
+    # filter output makes ffmpeg abort before encoding anything.
+    labels = {f"[v{i}]" for i in range(graph.count("settb"))}
+    assert all(graph.count(label) == 2 for label in labels), graph
+
+
+def test_background_sequence_crossfade_command_fits_windows_limit(tmp_path, monkeypatch):
+    """A long patch makes hundreds of pieces; the ffmpeg argv must stay runnable.
+
+    Windows CreateProcess rejects command lines over 32767 characters, which is
+    how this path used to fail (WinError 206) instead of rendering.
+    """
+    images = []
+    for name in ("a.jpg", "b.jpg"):
+        path = tmp_path / name
+        path.write_bytes(b"bg")
+        images.append(str(path))
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    commands = []
+
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        class Result:
+            stdout = "9000"  # 2.5 hours -> 600 pieces at 15s each
+        return Result()
+
+    monkeypatch.setattr(video_gen.subprocess, "run", run)
+    monkeypatch.setattr(video_gen, "concat_segments", lambda *args, **kwargs: None)
+    video_gen.generate_background_sequence(
+        images, str(audio), str(tmp_path / "out.mp4"),
+        resolution=(1280, 720), fps=30, image_duration=15,
+        crossfade=True, crossfade_seconds=1,
+    )
+    xfade_cmd = next(cmd for cmd in commands if "-filter_complex_script" in cmd)
+    assert len(" ".join(xfade_cmd)) < 32000, len(" ".join(xfade_cmd))
+
+
+def test_background_sequence_crossfade_still_covers_the_narration(tmp_path, monkeypatch):
+    """Overlapping pieces must not shorten the visual below the audio duration.
+
+    Each xfade eats `fade` seconds of the timeline, so pieces planned end to end
+    leave the final mux's -shortest clipping the tail off the narration.
+    """
+    images = []
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        path = tmp_path / name
+        path.write_bytes(b"bg")
+        images.append(str(path))
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    commands = []
+
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        class Result:
+            stdout = "45"
+        return Result()
+
+    monkeypatch.setattr(video_gen.subprocess, "run", run)
+    monkeypatch.setattr(video_gen, "concat_segments", lambda *args, **kwargs: None)
+    video_gen.generate_background_sequence(
+        images, str(audio), str(tmp_path / "out.mp4"),
+        resolution=(1280, 720), fps=30, image_duration=15,
+        crossfade=True, crossfade_seconds=1,
+    )
+    lengths = [float(cmd[cmd.index("-t") + 1]) for cmd in commands if "-t" in cmd]
+    assert len(lengths) == 3
+    fade = 1.0
+    assert sum(lengths) - fade * (len(lengths) - 1) == 45
