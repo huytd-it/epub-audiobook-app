@@ -302,6 +302,12 @@ export function ExportPanel({
                   <span className="text-[11px] text-muted-foreground">Chọn Drive account ở khối bên trên.</span>
                 )}
               </div>
+              <p className="text-[11px] text-muted-foreground">
+                Export qua API đã nhúng sẵn credentials của account đã chọn vào notebook (biến{" "}
+                <code>GDRIVE_CREDS</code> ở Cell 4), nên không cần tạo Kaggle secret nữa. Chỉ lấy JSON ở
+                đây khi muốn dùng secret thay vì để credentials nằm trong file .ipynb — notebook có
+                credentials phải giữ ở chế độ private.
+              </p>
               {credentials && (
                 <Textarea className="min-h-24 bg-muted/30 font-mono text-[11px]" value={credentials} readOnly />
               )}

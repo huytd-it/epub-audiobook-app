@@ -179,6 +179,7 @@ def build_batch_export_package(
     patches: list[Patch],
     drive_folder_name: str | None = None,
     hf_token: str | None = None,
+    gdrive_creds: dict | None = None,
     model_id: str = "voxcpm2",
     voice_id: str | None = None,
     max_chars: int = 0,
@@ -266,6 +267,16 @@ def build_batch_export_package(
         "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]
     )
     notebook_src = notebook_src.replace("__HF_TOKEN__", (hf_token or settings.hf_token) or "")
+    # Drive credentials for the notebook's Kaggle mode, baked straight into the copy we
+    # hand out so the user does not have to create a Kaggle secret. json.dumps twice:
+    # the inner call escapes the payload for the Python string literal in Cell 4, the
+    # outer one escapes THAT for the .ipynb's own JSON. Empty when no account was given,
+    # which leaves the notebook on its GDRIVE_CREDS-secret path.
+    creds_literal = ""
+    if gdrive_creds:
+        creds_literal = json.dumps(json.dumps(gdrive_creds, separators=(",", ":")))[1:-1]
+        creds_literal = json.dumps(creds_literal)[1:-1]
+    notebook_src = notebook_src.replace("__GDRIVE_CREDS__", creds_literal)
     (package_dir / "colab_kaggle_batch_tts_template.ipynb").write_text(notebook_src, encoding="utf-8")
 
     return package_dir, batch_manifest

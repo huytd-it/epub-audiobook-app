@@ -153,12 +153,16 @@ def backfill_pending_jobs(conn: sqlite3.Connection) -> dict[str, int]:
             counts["video"] += 1
 
     for row in conn.execute(
-        "SELECT id FROM youtube_uploads WHERE status='pending' ORDER BY id"
+        """SELECT u.id AS id, p.patch_id AS patch_id
+           FROM youtube_uploads u
+           LEFT JOIN patch_pipeline p ON p.youtube_upload_id = u.id
+           WHERE u.status='pending' ORDER BY u.id"""
     ).fetchall():
         if store.enqueue(
             conn,
             "youtube_upload",
             payload={"upload_id": row["id"]},
+            patch_id=row["patch_id"],
             dedupe_key=f"youtube_upload:upload={row['id']}",
         ) is not None:
             counts["youtube_upload"] += 1

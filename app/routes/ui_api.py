@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app import repository
+from app import repository, voice_taxonomy
 from app.config import settings
 from app.deps import locked_conn
 from app.jobqueue import store
@@ -85,8 +85,13 @@ def media(request: Request):
         for path in sorted(voices.iterdir()):
             if path.is_file() and path.suffix.lower() in {".wav", ".mp3", ".m4a", ".ogg"}:
                 meta = repository.get_voice_meta(conn, path.name)
-                voice_items.append({"name": path.name, "size": path.stat().st_size,
-                                    "description": meta["description"] if meta else ""})
+                voice_items.append({
+                    "name": path.name,
+                    "size": path.stat().st_size,
+                    "description": meta["description"] if meta else "",
+                    "gender": meta["gender"] if meta else "",
+                    "genre": voice_taxonomy.split_genres(meta["genre"] if meta else ""),
+                })
     photos = [{"name": path.name, "size": path.stat().st_size,
                "is_video": path.suffix.lower() in {".mp4", ".webm", ".mov"}}
               for path in sorted(backgrounds.iterdir()) if path.is_file()]

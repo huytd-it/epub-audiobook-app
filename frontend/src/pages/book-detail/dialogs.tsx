@@ -502,9 +502,26 @@ export function ConfigDialog({
                     value={videoConfig.resolution}
                     onChange={(event) => setVideoConfig({ ...videoConfig, resolution: event.target.value })}
                   >
-                    <option value="1920x1080">1920×1080</option>
-                    <option value="1280x720">1280×720</option>
-                    <option value="854x480">854×480</option>
+                    <option value="1920x1080">1920×1080 (16:9)</option>
+                    <option value="1280x720">1280×720 (16:9)</option>
+                    <option value="854x480">854×480 (16:9)</option>
+                    <option value="1080x1920">1080×1920 (9:16 — Shorts/Reels)</option>
+                    <option value="1080x1080">1080×1080 (1:1 — vuông)</option>
+                  </select>
+                </Field>
+                <Field
+                  label="Khung hình nền"
+                  hint="Auto: tự chọn cách hiển thị nền ngang trong khung dọc"
+                >
+                  <select
+                    className={selectClass}
+                    value={videoConfig.fit_mode || "auto"}
+                    onChange={(event) => setVideoConfig({ ...videoConfig, fit_mode: event.target.value as VideoConfig["fit_mode"] })}
+                  >
+                    <option value="auto">Tự động</option>
+                    <option value="contain">Giữ nguyên tỉ lệ (viền đen)</option>
+                    <option value="cover">Lấp đầy khung (cắt viền)</option>
+                    <option value="blur">Nền mờ phóng to + ảnh giữa</option>
                   </select>
                 </Field>
                 <Field label="FPS">

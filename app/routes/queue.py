@@ -38,12 +38,43 @@ def _job_dict(job) -> dict:
     return data
 
 
+def _patch_ids_by_upload(conn, upload_ids: set[int]) -> dict[int, int]:
+    """youtube_upload job chỉ mang upload_id trong payload, không có patch_id — tra ngược
+    qua patch_pipeline để job vẫn hiện tên sản xuất (15_019) thay vì "Sách 15"."""
+    if not upload_ids:
+        return {}
+    placeholders = ",".join("?" for _ in upload_ids)
+    rows = conn.execute(
+        f"SELECT patch_id, youtube_upload_id FROM patch_pipeline "
+        f"WHERE youtube_upload_id IN ({placeholders})",
+        tuple(upload_ids),
+    ).fetchall()
+    return {row["youtube_upload_id"]: row["patch_id"] for row in rows}
+
+
+def _job_patch_id(job, by_upload: dict[int, int]) -> int | None:
+    patch_id = job.patch_id or job.payload.get("patch_id")
+    if patch_id is not None:
+        return patch_id
+    upload_id = job.payload.get("upload_id")
+    return by_upload.get(upload_id) if upload_id is not None else None
+
+
 def _production_names(conn, jobs) -> dict[int, str]:
-    patch_ids = {
-        patch_id
+    """job.id -> tên sản xuất "<book_id>_<patch_index+1:03d>"."""
+    upload_ids = {
+        upload_id
         for job in jobs
-        if (patch_id := job.patch_id or job.payload.get("patch_id")) is not None
+        if job.patch_id is None and job.payload.get("patch_id") is None
+        and (upload_id := job.payload.get("upload_id")) is not None
     }
+    by_upload = _patch_ids_by_upload(conn, upload_ids)
+    patch_by_job = {
+        job.id: patch_id
+        for job in jobs
+        if (patch_id := _job_patch_id(job, by_upload)) is not None
+    }
+    patch_ids = set(patch_by_job.values())
     if not patch_ids:
         return {}
     placeholders = ",".join("?" for _ in patch_ids)
@@ -51,9 +82,14 @@ def _production_names(conn, jobs) -> dict[int, str]:
         f"SELECT id, book_id, patch_index FROM patch WHERE id IN ({placeholders})",
         tuple(patch_ids),
     ).fetchall()
-    return {
+    names = {
         row["id"]: f"{row['book_id']}_{row['patch_index'] + 1:03d}"
         for row in rows
+    }
+    return {
+        job_id: names[patch_id]
+        for job_id, patch_id in patch_by_job.items()
+        if patch_id in names
     }
 
 
@@ -163,8 +199,7 @@ def list_jobs(request: Request, type: str = "", status: str = "",
     result = []
     for job in jobs:
         data = _job_dict(job)
-        patch_id = job.patch_id or job.payload.get("patch_id")
-        data["production_name"] = production_names.get(patch_id)
+        data["production_name"] = production_names.get(job.id)
         result.append(data)
     return {"jobs": result}
 

@@ -225,7 +225,7 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
     render_config = media.get("render_config")
     if not isinstance(render_config, dict):
         render_config = {"resolution": book.video_resolution or "1920x1080",
-                         "fps": book.video_fps or 30, "codec": "libx264",
+                         "fps": book.video_fps or 30, "fit_mode": "auto", "codec": "libx264",
                          "crf": 23, "audio_bitrate": "192k"}
     sequence, backgrounds, raw_bg, image, image_type = _resolve_sequence_inputs(book, patch, config)
     if not raw_bg:
@@ -349,6 +349,7 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
     render_config = {
         "resolution": video_config["resolution"],
         "fps": video_config["fps"],
+        "fit_mode": video_config["fit_mode"],
         "image_type": video_config["image_animation"],
         "codec": video_config["codec"],
         "crf": video_config["quality"],

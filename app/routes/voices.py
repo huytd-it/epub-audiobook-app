@@ -1,23 +1,26 @@
-"""Voice (reference clip) library routes: page, upload, rename, delete, serve.
+"""Voice (reference clip) library routes: page, upload, classify, edit, serve.
 
 The library is the data/voices directory. Books reference voice clips by
 absolute path in book.voice_clip_path, so renaming/deleting a voice clip also
 updates the books that pointed at it - mirroring the photo manager
 (app/routes/photos.py) for the backgrounds directory.
+
+On top of the file management, clips carry a classification (gender + story
+genres, see app/voice_taxonomy.py) so the library can be filtered, and can be
+trimmed/cleaned in place through app/audio_process.py.
 """
 from __future__ import annotations
 
-import math
 import re
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 
-from app import repository
+from app import audio_process, repository, voice_taxonomy
 from app.config import settings
 from app.deps import locked_conn
 
@@ -55,6 +58,35 @@ def _clean_new_name(new_name: str, suffix: str) -> str:
     return cleaned
 
 
+
+
+def _meta_payload(name: str, meta: dict | None) -> dict:
+    """Shape one clip's metadata for the API (genre as a list, not a raw column)."""
+    return {
+        "name": name,
+        "description": (meta or {}).get("description", ""),
+        "gender": (meta or {}).get("gender", ""),
+        "genre": voice_taxonomy.split_genres((meta or {}).get("genre", "")),
+    }
+
+
+def _unique_dest(dest_dir: Path, name: str) -> Path:
+    """First free path for `name` in dest_dir, suffixing _1, _2, ... on clash."""
+    candidate = dest_dir / name
+    if not candidate.exists():
+        return candidate
+    stem, suffix = Path(name).stem, Path(name).suffix
+    for index in range(1, 1000):
+        candidate = dest_dir / f"{stem}_{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise HTTPException(status_code=400, detail="Không tìm được tên file khả dụng")
+
+
+@router.get("/voices/taxonomy")
+def voice_taxonomy_options():
+    """Gender/genre vocabulary for the classification pickers and filters."""
+    return {"genders": voice_taxonomy.GENDERS, "genres": voice_taxonomy.GENRES}
 
 
 @router.get("/voices/file/{name}")
@@ -121,6 +153,103 @@ async def update_voice_description(name: str, request: Request):
     with locked_conn(request) as conn:
         repository.set_voice_meta(conn, name, description)
     return {"status": "ok"}
+
+
+@router.post("/voices/{name}/meta")
+async def update_voice_meta(name: str, request: Request):
+    """Save description + classification in one call.
+
+    Every field is optional and an omitted one is left untouched, so the editor
+    can save just the tags without resending the description.
+    """
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Dữ liệu không hợp lệ")
+    p = _safe_voice_path(name)
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy voice")
+
+    try:
+        gender = (
+            voice_taxonomy.normalize_gender(body["gender"]) if "gender" in body else None
+        )
+        genre = (
+            voice_taxonomy.normalize_genres(body["genre"]) if "genre" in body else None
+        )
+    except voice_taxonomy.InvalidTag as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    description = body.get("description")
+    if description is not None:
+        description = str(description).strip()
+
+    with locked_conn(request) as conn:
+        repository.set_voice_meta(conn, name, description, gender, genre)
+        meta = repository.get_voice_meta(conn, name)
+    return {"status": "ok", **_meta_payload(name, meta)}
+
+
+@router.get("/voices/{name}/info")
+def voice_info(name: str, request: Request):
+    """Technical details + metadata for one clip, for the audio editor."""
+    p = _safe_voice_path(name)
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy voice")
+    with locked_conn(request) as conn:
+        meta = repository.get_voice_meta(conn, name)
+    # stat() last: it is always right, while probe's size is absent when ffprobe
+    # is unavailable.
+    return {**_meta_payload(name, meta), **audio_process.probe(p), "size": p.stat().st_size}
+
+
+@router.post("/voices/{name}/process")
+async def process_voice(name: str, request: Request):
+    """Trim/clean a clip, either in place or into a new file.
+
+    Overwriting keeps the path stable, so every book already pointing at the
+    clip picks up the cleaned audio with no reference rewriting. Saving a copy
+    inherits the original's classification (repository.copy_voice_meta) so a
+    cleaned clip does not land back in the library untagged.
+    """
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Dữ liệu không hợp lệ")
+    src = _safe_voice_path(name)
+    if not src.exists() or not src.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy voice")
+
+    info = audio_process.probe(src)
+    try:
+        ops = audio_process.parse_ops(body.get("ops"), info.get("duration_sec"))
+    except audio_process.InvalidOps as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if ops.is_empty():
+        raise HTTPException(status_code=400, detail="Chưa chọn thao tác xử lý nào")
+
+    save_as_copy = body.get("save_as") == "copy"
+    if save_as_copy:
+        requested = str(body.get("new_name") or "").strip()
+        base = _clean_new_name(requested, src.suffix) if requested else f"{src.stem}_edited{src.suffix}"
+        dest = _unique_dest(_voices_dir(), base)
+    else:
+        dest = src
+
+    try:
+        audio_process.process(src, dest, ops, info.get("sample_rate"))
+    except audio_process.AudioProcessError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    with locked_conn(request) as conn:
+        if save_as_copy:
+            repository.copy_voice_meta(conn, name, dest.name)
+        meta = repository.get_voice_meta(conn, dest.name)
+    return {
+        "status": "ok",
+        "applied": ops.summary(),
+        **_meta_payload(dest.name, meta),
+        **audio_process.probe(dest),
+        "size": dest.stat().st_size,
+    }
 
 
 @router.post("/voices/delete")

@@ -70,6 +70,21 @@ def test_list_detail_log_cancel_retry_and_filters(client):
     assert c.post(f"/queue/jobs/{job_id}/retry").json()["retried"] is True
 
 
+def test_youtube_upload_job_shows_the_production_name(client):
+    """Job youtube_upload chỉ mang upload_id, nhưng hàng đợi vẫn phải hiện "15_019"
+    thay vì rơi về nhãn "Sách 15" của frontend."""
+    c, conn, _ = client
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,created_at,updated_at) VALUES (15,'B','b','b',1,'done',?,?)", (now, now))
+    conn.execute("INSERT INTO patch (id,book_id,patch_index,chapter_start,chapter_end,status,created_at,updated_at) VALUES (3,15,18,0,0,'done',?,?)", (now, now))
+    conn.execute("INSERT INTO youtube_uploads (id,video_path,title,description,status,created_at) VALUES (9,'v.mp4','t','d','pending',?)", (now,))
+    conn.execute("INSERT INTO patch_pipeline (patch_id,youtube_upload_id,config_snapshot,media_snapshot,created_at,updated_at) VALUES (3,9,'{}','{}',?,?)", (now, now))
+    conn.commit()
+    store.enqueue(conn, "youtube_upload", payload={"upload_id": 9}, book_id=15)
+    jobs = c.get("/queue/jobs?type=youtube_upload").json()["jobs"]
+    assert [job["production_name"] for job in jobs] == ["15_019"]
+
+
 def test_health_preserves_legacy_keys_and_adds_pools(client):
     body = client[0].get("/health").json()
     assert {"status", "worker_state", "current_patch_id", "current_chunk_index",

@@ -311,6 +311,10 @@ CREATE INDEX IF NOT EXISTS idx_patch_export_patch ON patch_export(patch_id, id D
 CREATE TABLE IF NOT EXISTS voice_meta (
     filename    TEXT PRIMARY KEY,
     description TEXT NOT NULL DEFAULT '',
+    -- Classification slugs from app/voice_taxonomy.py: one gender, and genre as
+    -- a comma-separated list (a voice usually suits several story genres).
+    gender      TEXT NOT NULL DEFAULT '',
+    genre       TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -620,6 +624,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN music_volume REAL NOT NULL DEFAULT 0.15")
     if "overlay_config" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN overlay_config TEXT")
+    voice_meta_existing = {row["name"] for row in conn.execute("PRAGMA table_info(voice_meta)")}
+    if "gender" not in voice_meta_existing:
+        conn.execute("ALTER TABLE voice_meta ADD COLUMN gender TEXT NOT NULL DEFAULT ''")
+    if "genre" not in voice_meta_existing:
+        conn.execute("ALTER TABLE voice_meta ADD COLUMN genre TEXT NOT NULL DEFAULT ''")
     music_existing = {row["name"] for row in conn.execute("PRAGMA table_info(music)")}
     if "description" not in music_existing:
         conn.execute("ALTER TABLE music ADD COLUMN description TEXT NOT NULL DEFAULT ''")

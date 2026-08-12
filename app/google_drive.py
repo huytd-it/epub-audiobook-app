@@ -207,6 +207,22 @@ def _resolve_client_creds(conn: sqlite3.Connection, creds_row: dict) -> tuple[st
     return settings.google_drive_client_id, settings.google_drive_client_secret
 
 
+def kaggle_credentials(conn: sqlite3.Connection, account_id: int) -> dict | None:
+    """The GDRIVE_CREDS payload for one account: what the batch notebook needs to talk
+    to Drive on its own (same OAuth client and drive.file scope as the app). Returns
+    None when the account is unknown or has no refresh token - without one the notebook
+    cannot mint an access token, so there is nothing usable to hand it."""
+    row = get_account(conn, account_id)
+    if row is None or not row.get("refresh_token"):
+        return None
+    client_id, client_secret = _resolve_client_creds(conn, row)
+    return {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": row["refresh_token"],
+    }
+
+
 def _build_credentials(row: dict, client_id: str | None = None, client_secret: str | None = None) -> Credentials:
     _require_google_imports()
     return Credentials(

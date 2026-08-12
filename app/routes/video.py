@@ -78,11 +78,12 @@ _BACKGROUND_MIME_MAP = {
     ".mov": "video/quicktime",
 }
 
-VALID_RESOLUTIONS = {"1920x1080", "1280x720", "854x480"}
+VALID_RESOLUTIONS = {"1920x1080", "1280x720", "854x480", "1080x1920", "1080x1080"}
 VALID_FPS = {24, 30, 60}
 VALID_CODECS = {"libx264", "h264_nvenc"}
 VALID_AUDIO_BITRATES = {"128k", "192k", "256k", "320k"}
 VALID_IMAGE_TYPES = {"none", "zoom-in", "zoom-out", "pan-left", "pan-right"}
+VALID_FIT_MODES = {"auto", "contain", "cover", "blur"}
 
 
 def _cleanup_old_tmp_files(max_age_seconds: int = 3600) -> None:
@@ -105,6 +106,7 @@ def _cleanup_old_tmp_files(max_age_seconds: int = 3600) -> None:
 def _validate_config(
     resolution: str, fps: int, codec: str,
     audio_bitrate: str, image_type: str, crf: int,
+    fit_mode: str = "auto",
 ) -> dict:
     return {
         "resolution": resolution if resolution in VALID_RESOLUTIONS else "1920x1080",
@@ -113,6 +115,7 @@ def _validate_config(
         "audio_bitrate": audio_bitrate if audio_bitrate in VALID_AUDIO_BITRATES else "192k",
         "image_type": image_type if image_type in VALID_IMAGE_TYPES else "none",
         "crf": crf if 18 <= crf <= 28 else 23,
+        "fit_mode": fit_mode if fit_mode in VALID_FIT_MODES else "auto",
     }
 
 
@@ -260,6 +263,7 @@ async def generate_video(
     audio_bitrate: str = Form(default="192k"),
     image_type: str = Form(default="none"),
     crf: int = Form(default=23),
+    fit_mode: str = Form(default="auto"),
 ):
     audio_ext = Path(audio.filename or "").suffix.lower()
     if audio_ext not in ALLOWED_AUDIO_EXTENSIONS:
@@ -289,7 +293,7 @@ async def generate_video(
             audio_path.unlink(missing_ok=True)
             raise HTTPException(400, "Please upload an image or configure a default background image")
 
-    cfg = _validate_config(resolution, fps, codec, audio_bitrate, image_type, crf)
+    cfg = _validate_config(resolution, fps, codec, audio_bitrate, image_type, crf, fit_mode)
     tmp_out = _TMP_DIR / f"{job_id}.mp4"
 
     progress_cb = _make_progress_logger(
@@ -447,6 +451,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
         raw_cfg.get("audio_bitrate", "192k"),
         raw_cfg.get("image_type", "none"),
         raw_cfg.get("crf", 23),
+        raw_cfg.get("fit_mode", "auto"),
     )
 
     # Music: resolve library id -> file path (batch-wide, optional)

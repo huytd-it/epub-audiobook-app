@@ -108,6 +108,7 @@ export type VideoConfig = {
   resolution: string;
   fps: number;
   image_animation: string;
+  fit_mode: "auto" | "contain" | "cover" | "blur";
   codec: string;
   audio_bitrate: string;
   quality: number;

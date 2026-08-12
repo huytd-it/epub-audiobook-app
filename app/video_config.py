@@ -33,13 +33,18 @@ VIDEO_DEFAULTS = {
     "resolution": "1920x1080",
     "fps": 30,
     "image_animation": "none",
+    "fit_mode": "auto",
 }
 
-_RESOLUTIONS = {"1920x1080", "1280x720", "854x480"}
+_RESOLUTIONS = {"1920x1080", "1280x720", "854x480", "1080x1920", "1080x1080"}
 VALID_FPS = {24, 30, 60}
 _CODECS = {"libx264", "h264_nvenc"}
 _BITRATES = {"128k", "192k", "256k", "320k"}
 _ANIMATIONS = {"none", "static", "zoom-in", "zoom-out", "pan-left", "pan-right"}
+# How a background that does not match the frame aspect is fitted. "auto" picks
+# "blur" for portrait/square frames and "contain" for landscape ones, so a book
+# switched to 9:16 stops rendering two thirds black without any extra setting.
+_FIT_MODES = {"auto", "contain", "cover", "blur"}
 _WAVEFORM_STYLES = {"line", "cline", "p2p", "point"}
 
 
@@ -73,6 +78,8 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("invalid fps")
     if result["image_animation"] not in _ANIMATIONS:
         raise ValueError("invalid animation")
+    if result["fit_mode"] not in _FIT_MODES:
+        raise ValueError("invalid fit mode")
     if result["audio_bitrate"] not in _BITRATES:
         raise ValueError("invalid audio bitrate")
     if not isinstance(result["quality"], int) or not 18 <= result["quality"] <= 28:

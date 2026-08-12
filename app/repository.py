@@ -2196,7 +2196,7 @@ def set_book_voice_clip(
 
 
 # ---------------------------------------------------------------------------
-# Voice meta (description for voice clips)
+# Voice meta (description + classification for voice clips)
 # ---------------------------------------------------------------------------
 
 
@@ -2204,18 +2204,58 @@ def get_voice_meta(conn: sqlite3.Connection, filename: str) -> dict | None:
     row = conn.execute("SELECT * FROM voice_meta WHERE filename = ?", (filename,)).fetchone()
     if row is None:
         return None
-    return {"filename": row["filename"], "description": row["description"]}
+    return {
+        "filename": row["filename"],
+        "description": row["description"],
+        "gender": row["gender"],
+        "genre": row["genre"],
+    }
 
 
-def set_voice_meta(conn: sqlite3.Connection, filename: str, description: str) -> None:
-    now = _now()
+def set_voice_meta(
+    conn: sqlite3.Connection,
+    filename: str,
+    description: str | None = None,
+    gender: str | None = None,
+    genre: str | None = None,
+) -> None:
+    """Upsert one voice clip's metadata; a None field is left as it was.
+
+    Named parameters (rather than ``excluded.*``) so the COALESCE in the UPDATE
+    branch sees the caller's raw None, not the '' the INSERT branch defaults to.
+    """
     conn.execute(
-        """INSERT INTO voice_meta (filename, description, created_at, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(filename) DO UPDATE SET description = excluded.description, updated_at = excluded.updated_at""",
-        (filename, description, now, now),
+        """INSERT INTO voice_meta (filename, description, gender, genre, created_at, updated_at)
+           VALUES (:filename, COALESCE(:description, ''), COALESCE(:gender, ''),
+                   COALESCE(:genre, ''), :now, :now)
+           ON CONFLICT(filename) DO UPDATE SET
+               description = COALESCE(:description, description),
+               gender      = COALESCE(:gender, gender),
+               genre       = COALESCE(:genre, genre),
+               updated_at  = :now""",
+        {
+            "filename": filename,
+            "description": description,
+            "gender": gender,
+            "genre": genre,
+            "now": _now(),
+        },
     )
     conn.commit()
+
+
+def copy_voice_meta(conn: sqlite3.Connection, src_filename: str, dest_filename: str) -> None:
+    """Carry a clip's classification onto a derived file (e.g. a processed copy)."""
+    meta = get_voice_meta(conn, src_filename)
+    if meta is None:
+        return
+    set_voice_meta(
+        conn,
+        dest_filename,
+        description=meta["description"],
+        gender=meta["gender"],
+        genre=meta["genre"],
+    )
 
 
 def rename_voice_meta(conn: sqlite3.Connection, old_filename: str, new_filename: str) -> None:

@@ -66,6 +66,54 @@ def _probe_audio_seconds(path: str) -> float | None:
     return seconds if seconds > 0 else None
 
 
+def _resolve_fit_mode(mode: str, width: int, height: int) -> str:
+    """Resolve 'auto' against the frame shape; pass any explicit mode through."""
+    if mode != "auto":
+        return mode
+    return "blur" if height >= width else "contain"
+
+
+def _build_fit_filter(width: int, height: int, mode: str = "contain") -> str:
+    """Build the filter chain that fits an arbitrary source into width x height.
+
+    'contain' letterboxes the source inside the frame (the original behaviour,
+    and the only sensible choice while both source and target are 16:9).
+    'cover' fills the frame and crops the overflow. 'blur' fills the frame with
+    a blurred, cropped copy of the source and centres the untouched image on
+    top - the standard treatment for portrait output, where the background
+    library is landscape and 'contain' would leave two thirds of the frame
+    black.
+
+    'auto' resolves to 'blur' as soon as the frame stops being landscape, and
+    to 'contain' otherwise. Resolving here rather than at the call sites keeps
+    every caller free to pass the stored config value straight through.
+
+    'blur' returns a multi-chain graph (chains separated by ';') with one
+    implicit input and one implicit output. That composes both as a bare '-vf'
+    argument and as the body of a labelled '[0:v]...[out]' filter_complex
+    chain, so callers do not have to special-case it. Labels are prefixed with
+    'fit' to stay clear of the waveform graph's labels.
+    """
+    mode = _resolve_fit_mode(mode, width, height)
+    if mode == "cover":
+        return (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height}"
+        )
+    if mode == "blur":
+        return (
+            "split=2[fitbg][fitfg];"
+            f"[fitbg]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},gblur=sigma=25[fitbgb];"
+            f"[fitfg]scale={width}:{height}:force_original_aspect_ratio=decrease[fitfgs];"
+            "[fitbgb][fitfgs]overlay=(W-w)/2:(H-h)/2"
+        )
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+    )
+
+
 def _build_zoompan_filter(image_type: str, width: int, height: int, fps: int, duration: float) -> str:
     """Build ffmpeg zoompan filter string for Ken Burns effects."""
     total_frames = int(duration * fps)
@@ -150,6 +198,7 @@ def generate_segment(
     image_type: str = "none",
     resolution: tuple[int, int] = (1920, 1080),
     fps: int = 30,
+    fit_mode: str = "contain",
     audio_bitrate: str = "192k",
     crf: int = 23,
     use_nvenc: bool = False,
@@ -170,6 +219,8 @@ def generate_segment(
     audio track is dropped (only narration + optional music are kept).
 
     image_type: 'none' (static), 'zoom-in', 'zoom-out', 'pan-left', 'pan-right'
+    fit_mode: 'contain' (letterbox), 'cover' (crop to fill), 'blur' (blurred
+        backdrop + centred image). See _build_fit_filter.
     music_path: optional background music file (looped, mixed at music_volume ratio)
 
     on_progress: optional callback(event: str, fields: dict) for progress logging.
@@ -228,15 +279,20 @@ def generate_segment(
         # 'fps' must be pinned explicitly: '-loop 1' on a still image defaults to
         # 25fps and a video background inherits its own rate. Segments that
         # disagree get time-stretched by concat_segments' stream copy.
-        base_vf = (
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}"
-        )
+        base_vf = f"{_build_fit_filter(width, height, fit_mode)},fps={fps}"
     else:
         zp_filter = _build_zoompan_filter(
             image_type, width, height, fps, narration_seconds or 10.0
         )
-        base_vf = f"{zp_filter},format=yuv420p"
+        # zoompan's 's=' only sets the output size, it does not preserve the
+        # source aspect, so a landscape still fed straight into a portrait frame
+        # comes out stretched. Fitting first fixes that - but it also downscales
+        # the source to the frame size before the zoom, which costs sharpness at
+        # full zoom. Only pay that price when the caller actually asked to
+        # reframe; 'contain' keeps the original full-resolution behaviour.
+        resolved = _resolve_fit_mode(fit_mode, width, height)
+        prefix = "" if resolved == "contain" else f"{_build_fit_filter(width, height, resolved)},"
+        base_vf = f"{prefix}{zp_filter},format=yuv420p"
 
     waveform = waveform_config if waveform_config and waveform_config.get("waveform_enabled") else None
     audio_chains: list[str] = []
@@ -464,6 +520,7 @@ def _probe_duration(path: str) -> float:
 def generate_background_sequence(
     backgrounds: list[str], audio_path: str, out_path: str, *,
     resolution: tuple[int, int], fps: int, image_duration: float,
+    fit_mode: str = "contain",
     mode: str = "sequential", seed: str = "", music_path: str | None = None,
     music_volume: float = 0.15, codec: str = "libx264", quality: int = 23,
     audio_bitrate: str = "192k", on_progress: ProgressCallback | None = None,
@@ -498,7 +555,7 @@ def generate_background_sequence(
                 inputs = [settings.get_ffmpeg_path(), "-y", "-stream_loop", "-1", "-i", background]
             else:
                 inputs = [settings.get_ffmpeg_path(), "-y", "-loop", "1", "-i", background]
-            filters = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+            filters = _build_fit_filter(width, height, fit_mode)
             if ken_burns and not is_video_background(background):
                 filters += f",zoompan=z='min(zoom+0.0005,1.15)':d={max(1, int(length * fps))}:s={width}x{height}:fps={fps}"
             if progress_bar:
@@ -637,6 +694,7 @@ def generate_full_video(
     resolution = (int(w), int(h))
     fps = book.video_fps or 30
     default_anim = book.default_image_animation or "none"
+    fit_mode = (video_config or {}).get("fit_mode") or "auto"
 
     eligible = [p for p in patches if p.audio_path]
     _emit(on_progress, "video.start", path=out_path, total_patches=len(patches),
@@ -665,11 +723,12 @@ def generate_full_video(
             greeting_paths = []
             if raw_for_greeting and intro_audio:
                 intro_path = str(tmp_dir / f"intro_{i:04d}.mp4")
-                generate_segment(raw_for_greeting, intro_audio, intro_path, image_type="none", resolution=resolution, fps=fps, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
+                generate_segment(raw_for_greeting, intro_audio, intro_path, image_type="none", resolution=resolution, fps=fps, fit_mode=fit_mode, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
                 greeting_paths.append(intro_path)
             if len(shared) > 1 and not (getattr(patch, "image_path", None) and Path(patch.image_path).exists()):
                 generate_background_sequence(
                     shared, patch.audio_path, seg_path, resolution=resolution, fps=fps,
+                    fit_mode=fit_mode,
                     image_duration=float((video_config or {}).get("image_duration_seconds", 15)),
                     mode=(video_config or {}).get("background_mode", "sequential"),
                     seed=f"{getattr(book, 'id', '')}-{patch.id}", music_path=music_path,
@@ -684,7 +743,7 @@ def generate_full_video(
                 )
                 if raw_for_greeting and outro_audio:
                     outro_path = str(tmp_dir / f"outro_{i:04d}.mp4")
-                    generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
+                    generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, fit_mode=fit_mode, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
                     greeting_paths.append(outro_path)
                 segment_paths.extend(greeting_paths[:1])
                 segment_paths.append(seg_path)
@@ -711,6 +770,7 @@ def generate_full_video(
                 image_type=anim,
                 resolution=resolution,
                 fps=fps,
+                fit_mode=fit_mode,
                 use_nvenc=use_nvenc,
                 music_path=music_path,
                 music_volume=music_volume,
@@ -724,7 +784,7 @@ def generate_full_video(
             segment_paths.append(seg_path)
             if raw_for_greeting and outro_audio:
                 outro_path = str(tmp_dir / f"outro_{i:04d}.mp4")
-                generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
+                generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, fit_mode=fit_mode, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
                 segment_paths.append(outro_path)
             _emit(on_progress, "video.segment_done",
                   patch_index=patch.patch_index, patch_id=patch.id,
@@ -760,6 +820,7 @@ def generate_standalone_video(
     *,
     resolution: str = "1920x1080",
     fps: int = 30,
+    fit_mode: str = "auto",
     codec: str = "libx264",
     audio_bitrate: str = "192k",
     image_type: str = "none",
@@ -777,7 +838,7 @@ def generate_standalone_video(
     if not intro_audio and not outro_audio:
         generate_segment(
             image_path, audio_path, out_path, image_type=image_type, resolution=res,
-            fps=fps, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
+            fps=fps, fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
             music_path=music_path, music_volume=music_volume, on_progress=on_progress,
         )
         return
@@ -787,18 +848,20 @@ def generate_standalone_video(
         if intro_audio:
             intro_path = str(Path(tmp) / "intro.mp4")
             generate_segment(image_path, intro_audio, intro_path, resolution=res, fps=fps,
-                             audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc)
+                             fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf,
+                             use_nvenc=use_nvenc)
             segments.append(intro_path)
         main_path = str(Path(tmp) / "main.mp4")
         generate_segment(
             image_path, audio_path, main_path, image_type=image_type, resolution=res,
-            fps=fps, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
+            fps=fps, fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
             music_path=music_path, music_volume=music_volume, on_progress=on_progress,
         )
         segments.append(main_path)
         if outro_audio:
             outro_path = str(Path(tmp) / "outro.mp4")
             generate_segment(image_path, outro_audio, outro_path, resolution=res, fps=fps,
-                             audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc)
+                             fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf,
+                             use_nvenc=use_nvenc)
             segments.append(outro_path)
         concat_segments(segments, out_path, on_progress=on_progress)

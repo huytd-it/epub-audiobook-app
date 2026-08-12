@@ -31,7 +31,8 @@ from app.patch_publishing import (confirm_patch_republish, discard_stale_patch_v
                                   enqueue_patch_publish, enqueue_patch_video,
                                   evaluate_patch_preflight, fetch_thumbnail_inputs,
                                   on_patch_audio_ready, resolve_automation_policy,
-                                  run_patch_publish_stage, warm_patch_thumbnail)
+                                  run_patch_publish_stage, seed_patch_video,
+                                  warm_patch_thumbnail)
 from app.youtube_metadata import get_book_youtube_config, get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_book_youtube_config, validate_timeline
 from app.video_config import get_book_video_config
 from app.video_integrity import validate_video
@@ -194,7 +195,7 @@ async def upload_patch_video(
 
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
-        video_repository.upsert_patch_video(
+        record = video_repository.upsert_patch_video(
             conn, book_id=book_id, patch_id=patch_id,
             file_path=str(video_path), resolution=(book.video_resolution if book else None) or "1920x1080",
             filename=f"patch_{book_id}_{patch_id}.mp4",
@@ -203,6 +204,12 @@ async def upload_patch_video(
             batch_id=f"patch:{book_id}",
             background_path=patch.image_path,
         )
+        # Badge "Video" ở bảng Patches đọc patch_pipeline.video_status, nên video nhập
+        # từ ngoài (Colab/Kaggle) cũng phải seed pipeline ngay, đừng đợi tới lúc upload.
+        try:
+            seed_patch_video(conn, patch_id, record["id"], str(video_path))
+        except Exception:
+            logger.warning("không seed được patch_pipeline cho patch %s", patch_id, exc_info=True)
 
     return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
 
@@ -541,7 +548,6 @@ def upload_patch_video_to_youtube(
         video_db_id = _register_patch_video(conn, book, patch, video_path)
 
     with locked_conn(request) as conn:
-        from app.patch_publishing import seed_patch_video
         if force_new:
             enqueue_patch_publish(conn, patch_id, force_new=True)
         seed_patch_video(conn, patch_id, video_db_id, str(video_path))
@@ -738,9 +744,13 @@ def export_batch_to_drive_api(
             raise HTTPException(status_code=400, detail="Google Drive account not found")
 
         folder_name = drive_export.folder_name_for_batch(book.title, patches)
+        # The notebook runs on Kaggle with THIS account's credentials baked in, so there
+        # is no GDRIVE_CREDS secret to set up by hand. It has to be the same account that
+        # receives the upload below - drive.file lets it see nothing else anyway.
         package_dir, batch_manifest = _build_or_400(
             drive_export.build_batch_export_package,
             conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token,
+            gdrive_creds=google_drive.kaggle_credentials(conn, account_id),
             model_id=model_id, voice_id=voice_id or None, max_chars=max_chars,
             with_effects=bool(with_effects),
         )

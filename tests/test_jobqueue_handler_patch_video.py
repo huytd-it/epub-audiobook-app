@@ -31,6 +31,10 @@ def test_manual_patch_job_renders_without_pipeline(tmp_path, monkeypatch):
     assert seen["kw"]["resolution"] == (1280, 720)
     assert conn.execute("SELECT patch_id FROM videos WHERE file_path=?", (str(output),)).fetchone()[0] == 2
     assert conn.execute("SELECT phase FROM job WHERE id=?", (job_id,)).fetchone()[0] == "done"
+    # Badge "Video" ở bảng Patches đọc patch_pipeline: render xong là hiện ngay, không
+    # phải đợi tới lúc bấm upload YouTube.
+    pipeline = conn.execute("SELECT stage, video_status, video_path FROM patch_pipeline WHERE patch_id=2").fetchone()
+    assert (pipeline["stage"], pipeline["video_status"], pipeline["video_path"]) == ("upload", "done", str(output))
 
 
 def test_manual_patch_job_ignores_stale_pipeline_snapshot(tmp_path, monkeypatch):

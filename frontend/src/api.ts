@@ -41,7 +41,47 @@ export type Media = { music: Array<{ id: number; name: string; duration_sec: num
 
 export type MusicItem = { id: number; name: string; duration_sec: number | null; description?: string; license?: string };
 export type PhotoItem = { name: string; size: number; size_kb?: number; is_video: boolean };
-export type VoiceItem = { name: string; size: number; size_kb?: number; description?: string };
+export type VoiceItem = {
+  name: string;
+  size: number;
+  size_kb?: number;
+  description?: string;
+  /** Gender slug from /voices/taxonomy; "" when unclassified. */
+  gender?: string;
+  /** Story-genre slugs from /voices/taxonomy. */
+  genre?: string[];
+};
+
+/** One selectable {slug, label} pair from GET /voices/taxonomy. */
+export type VoiceTag = { value: string; label: string };
+export type VoiceTaxonomy = { genders: VoiceTag[]; genres: VoiceTag[] };
+
+/** GET /voices/{name}/info — metadata plus what ffprobe could read. */
+export type VoiceInfo = VoiceItem & {
+  duration_sec?: number | null;
+  sample_rate?: number | null;
+  channels?: number | null;
+  codec?: string | null;
+  bit_rate?: number | null;
+};
+
+/** Body of POST /voices/{name}/process. Omitted fields mean "leave alone". */
+export type VoiceAudioOps = {
+  trim_start?: number;
+  trim_end?: number | null;
+  highpass?: boolean;
+  lowpass?: boolean;
+  denoise?: boolean;
+  trim_silence?: boolean;
+  normalize?: boolean;
+  gain_db?: number;
+  fade_in?: number;
+  fade_out?: number;
+  mono?: boolean;
+  sample_rate?: number | null;
+};
+
+export type VoiceProcessResult = VoiceInfo & { applied: string[] };
 export type EffectItem = { id: number; marker: string; file_path: string; description: string };
 
 export type YouTubeUploadItem = {

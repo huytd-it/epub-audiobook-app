@@ -4,6 +4,7 @@ from __future__ import annotations
 from functools import partial
 from pathlib import Path
 import json
+import logging
 import tempfile
 
 import soundfile as sf
@@ -12,7 +13,8 @@ from app import image_overlay, repository, video_gen
 from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
-from app.patch_publishing import MAX_PATCH_RENDER_ATTEMPTS, audio_fingerprint
+from app.patch_publishing import (MAX_PATCH_RENDER_ATTEMPTS, audio_fingerprint,
+                                  enqueue_patch_publish, seed_patch_video)
 from app.video_config import get_book_video_config
 from app.video_integrity import (VideoExpectation, validate_video,
                                  validation_report_json)
@@ -64,6 +66,30 @@ def _persist_validation_report(ctx, patch_id: int, result,
     ctx.conn.execute(
         "UPDATE patch_pipeline SET validation_report_json=?, updated_at=CURRENT_TIMESTAMP WHERE patch_id=?",
         (validation_report_json(result, expected), patch_id),
+    )
+    ctx.conn.commit()
+
+
+def _mark_pipeline_video_done(ctx, patch_id: int, video_id: int, video_path: str) -> None:
+    """patch_pipeline là nguồn duy nhất cho badge "Video" ở bảng Patches, nên mọi nhánh
+    render xong đều phải ghi video_status='done' — kể cả khi không upload YouTube. Trước
+    đây chỉ nhánh recovery/snapshot và nhánh upload mới ghi, nên video render thường chỉ
+    hiện badge sau khi bấm "Upload YouTube"."""
+    if ctx.conn.execute(
+        "SELECT 1 FROM patch_pipeline WHERE patch_id=?", (patch_id,)
+    ).fetchone() is None:
+        try:
+            enqueue_patch_publish(ctx.conn, patch_id)
+        except Exception as exc:  # snapshot metadata hỏng: render vẫn tính là thành công
+            ctx.log(f"không tạo được patch_pipeline sau render: {exc}", level=logging.WARNING)
+            return
+    # stage='published' được giữ nguyên: render lại một patch đã đăng không được đẩy nó
+    # ngược về bước upload.
+    ctx.conn.execute(
+        """UPDATE patch_pipeline SET video_status='done', video_id=?, video_path=?,
+           stage=CASE WHEN stage='published' THEN stage ELSE 'upload' END,
+           last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE patch_id=?""",
+        (video_id, video_path, patch_id),
     )
     ctx.conn.commit()
 
@@ -139,6 +165,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     common = {
         "resolution": (int(width), int(height)),
         "fps": int(render_config.get("fps") or 30),
+        "fit_mode": render_config.get("fit_mode") or "auto",
         "codec": render_config.get("codec") or "libx264",
         "quality": int(render_config.get("crf") or 23),
         "audio_bitrate": render_config.get("audio_bitrate") or "192k",
@@ -235,12 +262,7 @@ def handle(ctx) -> dict:
         ctx.progress(4, 6, phase="registering")
         video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                    file_path=output, resolution=book.video_resolution)
-        ctx.conn.execute(
-            """UPDATE patch_pipeline SET stage='upload', video_status='done', video_path=?,
-               video_id=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE patch_id=?""",
-            (output, video["id"], patch_id),
-        )
-        ctx.conn.commit()
+        _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
     else:
         output = (recovery_pipeline["video_path"] if recovery_pipeline else None) or str(
             Path(settings.data_root) / "books" / str(book.id) / "patch_videos" / f"{patch_id}.mp4"
@@ -259,6 +281,7 @@ def handle(ctx) -> dict:
             render_config = render_config or {
                 "resolution": book.video_resolution or "1920x1080",
                 "fps": book.video_fps or 30,
+                "fit_mode": "auto",
             }
             for key in ("music_path", "intro_audio", "outro_audio"):
                 value = render_config.get(key)
@@ -309,6 +332,7 @@ def handle(ctx) -> dict:
             width, height = (book.video_resolution or "1920x1080").split("x")
             common = {
                 "resolution": (int(width), int(height)), "fps": book.video_fps or 30,
+                "fit_mode": config.get("fit_mode") or "auto",
                 "codec": config["codec"], "quality": config["quality"],
                 "audio_bitrate": config["audio_bitrate"],
             }
@@ -369,19 +393,13 @@ def handle(ctx) -> dict:
         ctx.progress(4, 6, phase="registering")
         video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                    file_path=output, resolution=book.video_resolution)
-        if recovery_pipeline:
-            ctx.conn.execute(
-                """UPDATE patch_pipeline SET stage='upload', video_status='done', video_path=?,
-                   video_id=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE patch_id=?""",
-                (output, video["id"], patch_id),
-            )
-        ctx.conn.commit()
+        _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
 
     youtube_status = None
     if recovery_upload_id is not None:
         resume_upload_after_render(ctx.conn, recovery_upload_id)
     elif ctx.job.payload.get("upload_youtube"):
-        from app.patch_publishing import run_patch_publish_stage, seed_patch_video
+        from app.patch_publishing import run_patch_publish_stage
         ctx.progress(5, 6, phase="publishing")
         seed_patch_video(ctx.conn, patch_id, video["id"], output)
         youtube_status = run_patch_publish_stage(ctx.conn, patch_id)
@@ -396,7 +414,8 @@ def handle(ctx) -> dict:
                 ctx.conn.commit()
             store.enqueue(
                 ctx.conn, "youtube_upload", payload={"upload_id": upload_id},
-                book_id=book.id, dedupe_key=f"youtube_upload:upload={upload_id}",
+                book_id=book.id, patch_id=patch_id,
+                dedupe_key=f"youtube_upload:upload={upload_id}",
             )
     ctx.progress(6, 6, phase="done")
     ctx.log(f"video xong -> {output}")
