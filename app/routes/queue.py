@@ -9,8 +9,7 @@ import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from app import repository
 from app.deps import locked_conn
@@ -22,7 +21,6 @@ from app.jobqueue.models import TERMINAL_STATUSES
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 _JOB_FIELDS = ("id", "job_type", "status", "priority", "book_id", "phase",
                "progress_current", "progress_total", "error_message", "attempt_count",
@@ -134,14 +132,6 @@ def queue_stats(request: Request):
         return stats
 
 
-@router.get("/queue", response_class=HTMLResponse)
-def queue_page(request: Request):
-    queue = getattr(request.app.state, "job_queue", None)
-    with locked_conn(request) as conn:
-        jobs = [_job_dict(job) for job in store.list_jobs(conn, limit=200)]
-    return templates.TemplateResponse(request, "queue.html", {
-        "jobs": jobs, "pools": _pools(queue),
-    })
 
 
 @router.get("/queue/jobs")

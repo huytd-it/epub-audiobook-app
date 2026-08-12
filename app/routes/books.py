@@ -10,8 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from app import google_drive, repository, video_gen
 from app.config import settings
@@ -28,7 +27,6 @@ ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_BACKGROUND_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | video_gen.VIDEO_BACKGROUND_EXTENSIONS
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 logger = logging.getLogger(__name__)
 
 
@@ -40,32 +38,8 @@ def _list_youtube_playlists():
         api_conn.close()
 
 
-@router.get("/books", response_class=HTMLResponse)
-def list_books(request: Request, page: int = Query(default=1, ge=1)):
-    per_page = settings.default_page_size
-    with locked_conn(request) as conn:
-        books, total, total_pages = repository.list_books(conn, page=page, per_page=per_page)
-        patch_counts = {
-            b.id: {
-                "total": len(repository.list_patches(conn, b.id)),
-                "done": sum(1 for p in repository.list_patches(conn, b.id) if p.status == "done"),
-                "pending": sum(1 for p in repository.list_patches(conn, b.id) if p.status == "pending"),
-            }
-            for b in books
-        }
-    return templates.TemplateResponse(
-        request, "book_list.html", {
-            "books": books,
-            "patch_counts": patch_counts,
-            "page": page,
-            "total_pages": total_pages,
-        }
-    )
 
 
-@router.get("/books/upload", response_class=HTMLResponse)
-def upload_form(request: Request):
-    return templates.TemplateResponse(request, "upload.html", {})
 
 
 @router.post("/books/parse-epub")
@@ -139,98 +113,6 @@ async def upload_book(
     return RedirectResponse(url=f"/books/{book.id}", status_code=303)
 
 
-@router.get("/books/{book_id}", response_class=HTMLResponse)
-def book_detail(request: Request, book_id: int):
-    with locked_conn(request) as conn:
-        book = repository.get_book(conn, book_id)
-        if book is None:
-            raise HTTPException(404, "Book not found")
-        patch_list = repository.list_patches(conn, book_id)
-        rules = repository.list_replace_rules(conn, book_id)
-        chapters = repository.list_chapters(conn, book_id)
-        last_error = repository.get_last_error_for_book(conn, book_id)
-        sync_targets = repository.list_drive_sync_targets(conn)
-        drive_accounts = google_drive.list_accounts(conn)
-        music_list = repository.list_music(conn)
-        current_music = repository.get_music(conn, book.music_id) if book and book.music_id else None
-        youtube_config = get_book_youtube_config(conn, book_id)
-        video_config = get_book_video_config(conn, book)
-        youtube_creds = youtube.get_creds_from_db(conn)
-        # youtube_video_id comes from the linked upload row, not the stage:
-        # rows exist with stage='published' but no upload at all, so the stage
-        # alone cannot tell "actually on YouTube" from "claims it finished".
-        pipeline_rows = {
-            row["patch_id"]: dict(row)
-            for row in conn.execute(
-                """SELECT pp.*, yu.youtube_video_id
-                   FROM patch_pipeline pp
-                   LEFT JOIN youtube_uploads yu ON yu.id = pp.youtube_upload_id
-                   WHERE pp.patch_id IN ({})""".format(
-                    ",".join("?" for _ in patch_list)
-                ), [p.id for p in patch_list]
-            )
-        } if patch_list else {}
-    youtube_playlists = []
-    if youtube_creds:
-        try:
-            youtube_playlists = _list_youtube_playlists()
-        except Exception:
-            youtube_playlists = []
-    has_active_patches = any(p.status in ("pending", "processing") for p in patch_list)
-
-    # Which patches already have a rendered MP4 on disk (server-side or uploaded
-    # from Colab/Kaggle) — so the row shows video-ready state on first load.
-    patch_videos_dir = Path(settings.data_root) / "books" / str(book_id) / "patch_videos"
-    patch_video_ids = {
-        p.id for p in patch_list
-        if (patch_videos_dir / f"{p.id}.mp4").exists()
-    }
-
-    youtube_configured = youtube.is_configured()
-
-    from app import image_overlay
-    overlay_cfg = image_overlay.parse_overlay_config(book.overlay_config) if book else image_overlay.get_default_overlay_config()
-
-    from app.routes.voices import ALLOWED_AUDIO_EXTENSIONS as _voice_exts, _voices_dir
-    voices = [
-        f.name for f in sorted(_voices_dir().iterdir())
-        if f.is_file() and f.suffix.lower() in _voice_exts
-    ]
-    current_voice_name = Path(book.voice_clip_path).name if book and book.voice_clip_path else None
-    from app.tts_engine import list_tts_models
-
-    return templates.TemplateResponse(
-        request, "book_detail.html", {
-            "book": book,
-            "patches": patch_list,
-            "rules": rules,
-            "chapters": chapters,
-            "last_error": last_error,
-            "has_active_patches": has_active_patches,
-            "sync_targets": sync_targets,
-            "drive_accounts": drive_accounts,
-            "music_list": music_list,
-            "current_music": current_music,
-            "backgrounds": _list_backgrounds(),
-            "overlay_cfg": overlay_cfg,
-            "overlay_fonts": image_overlay.list_overlay_fonts(),
-            "voices": voices,
-            "current_voice_name": current_voice_name,
-            "default_max_chars": settings.tts_max_chars,
-            "tts_models": list_tts_models(),
-            "default_tts_engine": settings.tts_engine,
-            "patch_video_ids": patch_video_ids,
-            "youtube_configured": youtube_configured,
-            "youtube_auto_upload": settings.youtube_auto_upload,
-            "youtube_default_privacy": settings.youtube_default_privacy,
-            "youtube_config": youtube_config,
-            "video_config": video_config,
-            "youtube_connected": bool(youtube_creds),
-            "youtube_channel_name": youtube_creds.get("channel_name") if youtube_creds else None,
-            "youtube_playlists": youtube_playlists,
-            "pipeline_rows": pipeline_rows,
-        }
-    )
 
 
 @router.post("/books/{book_id}/video-settings")
@@ -863,56 +745,6 @@ def get_chapter_text(request: Request, book_id: int, chapter_index: int):
     return PlainTextResponse(text)
 
 
-@router.get("/books/{book_id}/chapters/preview-ui", response_class=HTMLResponse)
-def preview_chapters_ui(
-    request: Request,
-    book_id: int,
-    ids: str | None = Query(default=None),
-    range_start: int | None = Query(default=None),
-    range_end: int | None = Query(default=None),
-):
-    """Server-rendered preview page. Selection sources, in priority order:
-    1. `ids` (comma-separated chapter_index values, possibly with a range to expand)
-    2. `range_start` + `range_end` (inclusive indices)
-    3. Individual checkboxes submitted as repeated `ids` values
-    """
-    with locked_conn(request) as conn:
-        book = repository.get_book(conn, book_id)
-        if book is None:
-            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
-        all_chapters = repository.list_chapters(conn, book_id)
-
-    requested: list[int] = []
-    if ids:
-        requested.extend(_parse_ids(ids))
-    if range_start is not None and range_end is not None and range_end >= range_start:
-        requested.extend(range(range_start, range_end + 1))
-
-    seen: set[int] = set()
-    selected_indices: list[int] = []
-    for idx in requested:
-        if idx not in seen:
-            seen.add(idx)
-            selected_indices.append(idx)
-    selected_indices.sort()
-
-    previewed: list = []
-    if selected_indices:
-        with locked_conn(request) as conn:
-            previewed = repository.get_chapters_by_indices(conn, book_id, selected_indices)
-
-    return templates.TemplateResponse(
-        request,
-        "chapter_preview.html",
-        {
-            "book": book,
-            "all_chapters": all_chapters,
-            "previewed": previewed,
-            "selected_indices": selected_indices,
-            "range_start": range_start,
-            "range_end": range_end,
-        },
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1195,22 +1027,6 @@ def get_patch_audio(request: Request, book_id: int, patch_id: int):
     return FileResponse(path, media_type="audio/wav")
 
 
-@router.get("/books/{book_id}/patches/build", response_class=HTMLResponse)
-def patch_builder_page(request: Request, book_id: int):
-    with locked_conn(request) as conn:
-        book = repository.get_book(conn, book_id)
-        if book is None:
-            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
-        chapters = repository.list_chapters(conn, book_id)
-        patches = repository.list_patches(conn, book_id)
-        patch_video_ids = {
-            p.id for p in patches
-            if (Path(settings.data_root) / "books" / str(book_id) / "patch_videos" / f"{p.id}.mp4").exists()
-        }
-    return templates.TemplateResponse(
-        request, "patch_builder.html",
-        {"book": book, "chapters": chapters, "patches": patches, "patch_video_ids": patch_video_ids},
-    )
 
 
 @router.post("/books/{book_id}/patches/build")

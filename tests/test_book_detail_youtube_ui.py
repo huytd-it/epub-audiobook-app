@@ -32,143 +32,20 @@ def seeded_book(tmp_path):
     return type("BookRef", (), {"id": 1})()
 
 
-def test_book_detail_has_youtube_settings_and_no_whole_book_audio(client, seeded_book):
-    html = client.get(f"/books/{seeded_book.id}").text
-    assert 'data-open-dialog="youtube-settings-modal"' in html
-    assert 'id="patch-youtube-modal"' in html
-    assert f'href="/books/{seeded_book.id}/download/audio"' not in html
+
+def test_ui_routes_serve_the_react_spa(client, seeded_book):
+    for path in ("/books", "/books/upload", "/books/1", "/queue", "/youtube"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert '<div id="root"></div>' in response.text
+        assert "text/html" in response.headers["content-type"]
 
 
-def test_missing_book_detail_returns_404(client):
-    response = client.get("/books/999999")
-    assert response.status_code == 404
+def test_legacy_template_directories_are_removed():
+    from pathlib import Path
 
-
-def test_patch_row_exposes_pipeline_stage(client, seeded_book):
-    conn = db.connect(settings.db_path)
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO patch (id,book_id,patch_index,chapter_start,chapter_end,status,
-           audio_path,created_at,updated_at) VALUES (1,1,0,0,1,'done','/tmp/a.wav',?,?)""",
-        (now, now),
-    )
-    conn.execute(
-        """INSERT INTO patch_pipeline (patch_id,stage,config_snapshot,media_snapshot,created_at,updated_at)
-           VALUES (1,'published','{}','{}',?,?)""",
-        (now, now),
-    )
-    conn.commit()
-    conn.close()
-    html = client.get(f"/books/{seeded_book.id}").text
-    assert "Published" in html
-    assert '<th>Pipeline</th>' not in html
-    assert 'class="btn-outline btn-sm pv-icon-btn patch-audio-open"' in html
-    assert 'class="patch-audio-player"' not in html
-    assert "player.removeAttribute('src')" in html
-
-
-def test_patch_media_modal_has_only_audio_and_video_uploads(client, seeded_book):
-    conn = db.connect(settings.db_path)
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO patch (id,book_id,patch_index,chapter_start,chapter_end,status,created_at,updated_at)
-           VALUES (1,1,0,0,1,'pending',?,?)""",
-        (now, now),
-    )
-    conn.commit()
-    conn.close()
-
-    html = client.get(f"/books/{seeded_book.id}").text
-
-    assert ">Media</button>" in html
-    assert ">More</button>" not in html
-    assert 'id="pm-audio-file"' in html
-    assert 'id="pm-video-file"' in html
-    assert 'id="patch-audio-modal"' in html
-    assert 'class="btn-outline btn-sm pv-icon-btn patch-audio-open"' not in html
-    assert 'id="pm-bg-select"' not in html
-    assert "patch-bg-select" not in html
-    assert "patch-bg-save-btn" not in html
-
-
-def test_book_detail_youtube_controls_use_exact_settings_shape(client, seeded_book):
-    html = client.get(f"/books/{seeded_book.id}").text
-    for field in ("privacy_status", "auto_upload", "genre_tags", "title_template", "description_template"):
-        assert f'name="{field}"' in html
-    assert 'name="playlist_id"' in html
-    assert 'id="youtube-connection-state"' in html
-    assert 'id="youtube-preview"' in html
-    assert 'class="ui-modal-body youtube-settings-body"' in html
-    assert 'class="ui-modal-footer"' in html
-    assert "renderYoutubePreview" in html
-    assert "copy.dataset.copyYoutubePreview" in html
-    assert "navigator.clipboard.writeText(value)" in html
-
-
-def test_video_config_uses_media_library_background_checkboxes(client, seeded_book):
-    media_dir = __import__("pathlib").Path(settings.data_root) / "backgrounds"
-    media_dir.mkdir(parents=True, exist_ok=True)
-    (media_dir / "a.png").write_bytes(b"image")
-    (media_dir / "b.mp4").write_bytes(b"video")
-    html = client.get(f"/books/{seeded_book.id}").text
-    assert html.count('class="vc-background-check"') >= 2
-    assert "a.png" in html and "b.mp4" in html
-    assert '<video src="/video/backgrounds/preview?' in html
-    assert '<img src="/video/backgrounds/preview?' in html
-    assert "selectedBackgroundOrder.slice()" in html
-    assert "selectedBackgroundOrder.push(e.target.value)" in html
-    assert '<textarea id="vc-backgrounds"' not in html
-
-
-def test_patch_youtube_modal_renders_override_controls_and_metadata_flow(client, seeded_book):
-    html = client.get(f"/books/{seeded_book.id}").text
-    for field in ("title", "description", "genre_tags", "privacy_status"):
-        assert f'id="patch-{field}"' in html
-    assert '<textarea id="patch-description"' in html
-    assert "Use book default" in html
-    assert "/youtube-metadata" in html
-    assert "response.ok" in html
-    assert "force_new" in html
-    assert "action === 'new' && !window.confirm" in html
-    assert "Video YouTube cũ sẽ KHÔNG bị thay thế hoặc xóa" in html
-    assert "modal.querySelector('[data-patch-publish-action=\"new\"]').hidden = true" in html
-    assert "join(', ')" in html
-    assert "PATCH_INHERITED = new Set" in html
-    assert "delete fields.playlist" in html
-    assert "settingsForm.privacy_status.value" in html
-    assert "youtube-metadata`" in html
-    assert "action === 'retry'" in html
-    assert "action.disabled = true" in html
-    assert "loadPatchMetadata(button.dataset.patchYoutubeId).then" in html
-    assert "patch-status-detail" in html
-    assert 'id="patch-pipeline-' not in html
-    assert "if (!statusResponse.ok)" in html
-    assert "Patch queued; status refresh failed" in html
-    assert "return true" in html
-    assert "catch (error)" in html
-    assert "if (loaded) actions.forEach(action => action.disabled = false)" in html
-    assert "refreshYoutubeSettings" in html
-    assert "youtube-settings-error" in html
-    assert "pv-pipeline-state" in html
-    assert "video.textContent" not in html
-    assert "if (action === 'save')" in html
-    assert "showToast('Metadata saved', 'success')" in html
-    assert "return;" in html
-    assert "try {" in html
-    assert "Metadata load failed" in html
-    assert "finally" in html
-    assert "clickedAction.disabled = false" in html
-    assert "yts-preview-error" in html
-    assert "Preview failed" in html
-    assert "/books/${BOOK_ID}/patches/${patchId}/overlay-image" in html
-    assert "/books/${BOOK_ID}/patches/${PATCH_ID}/" not in html
-
-
-def test_save_branch_precedes_publish_url_selection(client, seeded_book):
-    html = client.get(f"/books/{seeded_book.id}").text
-    save_pos = html.index("if (action === 'save')")
-    publish_url_pos = html.index("const url = action === 'retry'")
-    assert save_pos < publish_url_pos
+    assert not Path("app/templates").exists()
+    assert not Path("app/static").exists()
 
 
 def test_patch_metadata_endpoint_includes_pipeline_payload(client, seeded_book):

@@ -8,8 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app import db as app_db
@@ -27,7 +26,6 @@ except ModuleNotFoundError:
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 
 def _enqueue(request: Request, video_path: str, title: str, description: str, tags: str, privacy_status: str, playlist_id: str = "") -> dict:
@@ -248,29 +246,6 @@ def _mark_partial(result):
     return result
 
 
-@router.get("/youtube", response_class=HTMLResponse)
-def youtube_page(request: Request):
-    with locked_conn(request) as conn:
-        creds = youtube.get_creds_from_db(conn)
-        connected = creds is not None and bool(creds.get("channel_name"))
-        uploads = youtube.list_uploads(conn, limit=30)
-    if connected:
-        try:
-            with _youtube_api_conn(request) as api_conn:
-                playlists = youtube.list_playlists(api_conn)
-        except Exception:
-            playlists = []
-    else:
-        playlists = []
-    return templates.TemplateResponse(request, "youtube.html", {
-        "request": request,
-        "connected": connected,
-        "channel_name": creds.get("channel_name") if creds else None,
-        "uploads": uploads,
-        "configured": youtube.is_configured(),
-        "auto_upload": settings.youtube_auto_upload,
-        "playlists": playlists,
-    })
 
 
 @router.get("/youtube/connect")

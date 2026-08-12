@@ -15,8 +15,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse
 from starlette.responses import FileResponse, Response, StreamingResponse
 
 from app import audio_merge, repository, text_analysis
@@ -27,7 +26,6 @@ from app.light_tts import _BACKENDS, LightTTSEngine, _check_backend, list_voices
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 # Same inter-chunk gap the worker merges with, so LightTTS audio (and the chapter
 # timeline derived from it) lines up with worker-produced patches.
@@ -135,32 +133,6 @@ def _synth_chunk_with_retries(engine: LightTTSEngine, chunk_text: str, voice: st
 # ---------------------------------------------------------------------------
 
 
-@router.get("/books/{book_id}/text-studio", response_class=HTMLResponse)
-def text_studio_page(request: Request, book_id: int, patch_id: int | None = None):
-    with locked_conn(request) as conn:
-        book = repository.get_book(conn, book_id)
-        if book is None:
-            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
-        patches = repository.list_patches(conn, book_id)
-        if patch_id is not None and not any(p.id == patch_id for p in patches):
-            raise HTTPException(status_code=404, detail="patch not found")
-        if patch_id is None and patches:
-            patch_id = patches[0].id
-        patch = repository.get_patch(conn, patch_id) if patch_id else None
-        warnings = repository.list_patch_warnings(conn, patch_id) if patch_id else []
-        clean_text = repository.get_effective_patch_text(conn, patch) if patch else None
-    return templates.TemplateResponse(
-        request,
-        "text_studio.html",
-        {
-            "book": book,
-            "patches": patches,
-            "patch": patch,
-            "clean_text": clean_text,
-            "warnings": warnings,
-            "default_max_chars": settings.tts_max_chars,
-        },
-    )
 
 
 @router.get("/books/{book_id}/text-studio/patches/{patch_id}")

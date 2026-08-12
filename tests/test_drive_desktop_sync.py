@@ -108,21 +108,6 @@ def client(tmp_path, monkeypatch):
         yield test_client
 
 
-def test_target_routes_create_edit_delete(client, tmp_path):
-    folder = tmp_path / "drive"
-    folder.mkdir()
-    response = client.post("/drive/targets", data={
-        "name": "Personal", "account_email": "a@example.com", "folder_path": str(folder),
-    }, follow_redirects=False)
-    assert response.status_code == 303
-    assert "Personal" in client.get("/drive").text
-
-    response = client.post("/drive/targets/1/edit", data={
-        "name": "Work", "account_email": "b@example.com", "folder_path": str(folder),
-    }, follow_redirects=False)
-    assert response.status_code == 303
-    assert "Work" in client.get("/drive").text
-    assert client.post("/drive/targets/1/delete", follow_redirects=False).status_code == 303
 
 
 def test_target_route_rejects_invalid_folder(client, tmp_path):
@@ -240,12 +225,6 @@ def test_sync_all_only_targets_with_remote(client, tmp_path, monkeypatch):
     assert body["results"][0]["name"] == "codex5"
 
 
-def test_drive_page_explains_setup_and_folder_picker(client):
-    response = client.get("/drive")
-    assert response.status_code == 200
-    assert "Cài Drive for desktop" in response.text
-    assert "Chọn folder" in response.text
-    assert "/drive/pick-folder" in response.text
 
 
 def test_pick_folder_route_returns_native_selection(client, monkeypatch):

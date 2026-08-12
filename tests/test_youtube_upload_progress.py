@@ -200,20 +200,8 @@ def test_lifespan_starts_the_job_queue(tmp_path, monkeypatch):
         assert app.state.job_queue is not None
 
 
-def test_youtube_page_polls_for_progress():
-    source = (Path(__file__).parents[1] / "app" / "templates" / "youtube.html").read_text(encoding="utf-8")
-    assert "fetch('/youtube/uploads')" in source
-    assert "yt-progress-fill" in source
-    # Polling must be conditional, otherwise an idle page reloads itself forever.
-    assert "if (activeRowCount() > 0) setTimeout(poll, POLL_MS);" in source
 
 
-def test_youtube_upload_form_hands_off_to_the_queue():
-    source = (Path(__file__).parents[1] / "app" / "templates" / "youtube.html").read_text(encoding="utf-8")
-    handler = source[source.index("fetch('/youtube/upload-file'"):]
-    handler = handler[:handler.index("</script>")]
-    assert "location.reload()" in handler
-    assert "Upload thành công" not in handler
 
 
 def test_standalone_upload_keeps_description_and_playlist(db_conn):
@@ -233,9 +221,3 @@ def test_standalone_upload_keeps_description_and_playlist(db_conn):
         "playlist_mode": "existing",
         "playlist_id": "PL123",
     }
-
-
-def test_youtube_upload_form_sends_playlist():
-    source = (Path(__file__).parents[1] / "app" / "templates" / "youtube.html").read_text(encoding="utf-8")
-    assert 'id="yt-playlist"' in source
-    assert "fd.append('playlist_id', playlist)" in source

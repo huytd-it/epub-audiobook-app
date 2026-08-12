@@ -55,11 +55,6 @@ def _seed_book_with_voice(client, voice_path: Path) -> None:
     db.close()
 
 
-def test_voices_page_lists_files(client):
-    _seed_voice(client, "narrator.wav")
-    resp = client.get("/voices")
-    assert resp.status_code == 200
-    assert "narrator.wav" in resp.text
 
 
 def test_voice_upload_creates_file(client, tmp_path):

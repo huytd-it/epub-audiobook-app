@@ -381,25 +381,8 @@ def test_connect_with_valid_client_redirects_to_google(client):
     assert "accounts.google.com" in location or "google.com/o/oauth2" in location
 
 
-def test_drive_page_has_desktop_targets(client):
-    resp = client.get("/drive")
-    assert resp.status_code == 200
-    assert b"Google Drive Desktop" in resp.content
 
 
-def test_drive_page_shows_kaggle_copy_button_when_account_connected(client):
-    """A connected Drive API account surfaces the GDRIVE_CREDS copy button so the
-    Kaggle notebook's one-time secret setup still works (regression: it was dropped
-    when the page was refactored to the desktop-sync UI)."""
-    google_drive.save_credentials(
-        app.state.conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
-        account_email="kaggle@example.com", oauth_client_id=None,
-    )
-    resp = client.get("/drive")
-    assert resp.status_code == 200
-    assert b"GDRIVE_CREDS" in resp.content
-    assert b"copyKaggleCreds" in resp.content
-    assert b"kaggle@example.com" in resp.content
 
 
 # ---------------------------------------------------------------------------
@@ -503,20 +486,6 @@ def test_export_batch_api_uploads_and_records(client, monkeypatch, tmp_path):
     assert exports[0].exported_chunk_count == 3
 
 
-def test_book_detail_shows_kaggle_api_export_when_account_connected(client):
-    """A connected Drive account surfaces the account picker + 'Export lên Drive
-    (Kaggle)' button that posts to the API export route."""
-    conn = app.state.conn
-    _insert_book_and_patch_on(conn)
-    google_drive.save_credentials(
-        conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
-        account_email="kaggle@example.com",
-    )
-    resp = client.get("/books/1")
-    assert resp.status_code == 200
-    assert "export-batch-api" in resp.text
-    assert "batch-drive-api-btn" in resp.text
-    assert "kaggle@example.com" in resp.text
 
 
 def test_book_detail_no_api_export_without_account(client):

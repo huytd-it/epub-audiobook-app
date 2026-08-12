@@ -54,11 +54,6 @@ def _seed_photo(client, name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_photos_page_lists_files(client):
-    _seed_photo(client, "cover.png")
-    resp = client.get("/photos")
-    assert resp.status_code == 200
-    assert "cover.png" in resp.text
 
 
 def test_photo_upload_creates_file(client, tmp_path):
@@ -75,14 +70,6 @@ def test_photo_upload_creates_file(client, tmp_path):
     assert any(n.endswith("up.png") for n in names)
 
 
-def test_media_upload_and_preview_video(client):
-    resp = client.post("/photos/upload", files={"files": ("loop.mp4", b"video", "video/mp4")}, follow_redirects=False)
-    assert resp.status_code == 303
-    assert (_bg_dir(client) / "loop.mp4").exists()
-    preview = client.get("/photos/file/loop.mp4")
-    assert preview.status_code == 200
-    assert preview.headers["content-type"] == "video/mp4"
-    assert "<video" in client.get("/photos").text
 
 
 def test_photo_upload_rejects_bad_extension(client, tmp_path):

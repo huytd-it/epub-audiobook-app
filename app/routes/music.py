@@ -7,8 +7,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from app import repository
 from app.config import settings
@@ -16,7 +15,6 @@ from app.deps import locked_conn
 
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 _MUSIC_DIR = Path(settings.data_root) / "music"
 _ALLOWED_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a"}
@@ -36,18 +34,6 @@ def _probe_duration(file_path: str) -> float | None:
         return None
 
 
-@router.get("/music", response_class=HTMLResponse)
-def music_page(request: Request, page: int = Query(default=1, ge=1)):
-    per_page = settings.default_page_size
-    with locked_conn(request) as conn:
-        music_list, total, total_pages = repository.list_music_paginated(conn, page=page, per_page=per_page)
-    return templates.TemplateResponse(request, "music.html", {
-        "request": request,
-        "music_list": music_list,
-        "settings": settings,
-        "page": page,
-        "total_pages": total_pages,
-    })
 
 
 @router.get("/music/list")

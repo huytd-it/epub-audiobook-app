@@ -9,8 +9,7 @@ import sys
 from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app import drive_export, google_drive, repository
 from app.config import settings
@@ -19,7 +18,6 @@ from app.deps import locked_conn
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 # rclone's own Google Drive OAuth client (fixes the "shared client_id will stop working
 # during 2026" warning). Stored per-DB in app_state and passed as --drive-client-id /
@@ -101,25 +99,6 @@ def open_folder(path: str):
     return {"status": "ok"}
 
 
-@router.get("/drive", response_class=HTMLResponse)
-def drive_page(request: Request):
-    with locked_conn(request) as conn:
-        targets = repository.list_drive_sync_targets(conn)
-        exports = repository.list_all_patch_exports(conn, limit=30)
-        rclone_client_id = repository.get_app_state(conn, _RCLONE_CLIENT_ID_KEY) or ""
-        rclone_client_secret = repository.get_app_state(conn, _RCLONE_CLIENT_SECRET_KEY) or ""
-        # Drive API accounts (refresh tokens) power the Kaggle GDRIVE_CREDS secret the
-        # batch notebook reads to talk to Drive directly - separate from the desktop /
-        # rclone sync targets above. The copy button below is the only place this is used.
-        accounts = google_drive.list_accounts(conn)
-    return templates.TemplateResponse(request, "drive.html", {
-        "request": request,
-        "targets": targets,
-        "exports": exports,
-        "rclone_client_id": rclone_client_id,
-        "rclone_client_secret": rclone_client_secret,
-        "accounts": accounts,
-    })
 
 
 def _target_fields(name: str, account_email: str, folder_path: str, rclone_remote: str) -> tuple[str, str, str, str | None]:

@@ -119,22 +119,8 @@ def test_patch_audio_not_available(client, tmp_path):
     assert resp.status_code == 404
 
 
-def test_patch_builder_page(client, tmp_path):
-    book_id = _upload_book(client, tmp_path)
-    resp = client.get(f"/books/{book_id}/patches/build")
-    assert resp.status_code == 200
-    assert "Patch Builder" in resp.text
-    assert "Chapter" in resp.text
 
 
-def test_book_detail_shows_preview_link(client, tmp_path):
-    book_id = _upload_book(client, tmp_path)
-    resp = client.get(f"/books/{book_id}")
-    assert resp.status_code == 200
-    assert ">Preview<" in resp.text
-    assert "Auto-build Patches" in resp.text
-    assert "Text Replace Rules" in resp.text
-    assert "Auto-build" in resp.text
 
 
 def test_auto_build_success_redirect(client, tmp_path):

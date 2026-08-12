@@ -30,10 +30,6 @@ def _upload_effect(client, marker="[test]", desc="test effect"):
 
 
 class TestEffectsRoutes:
-    def test_page_loads(self, client):
-        resp = client.get("/effects")
-        assert resp.status_code == 200
-        assert "hiệu ứng" in resp.text.lower() or "effect" in resp.text.lower()
 
     def test_add_effect(self, client):
         resp = _upload_effect(client)

@@ -7,8 +7,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse, JSONResponse
 
 from app import repository
 from app.config import settings
@@ -17,17 +16,11 @@ from app.deps import locked_conn
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 _EFFECTS_DIR = Path(settings.data_root) / "effects"
 _MIME_MAP = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg"}
 
 
-@router.get("/effects", response_class=HTMLResponse)
-def effects_page(request: Request):
-    with locked_conn(request) as conn:
-        effects = repository.list_sound_effects(conn)
-    return templates.TemplateResponse(request, "effects.html", {"effects": effects})
 
 
 @router.get("/effects/list")

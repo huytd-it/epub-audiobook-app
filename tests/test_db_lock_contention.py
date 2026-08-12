@@ -106,48 +106,6 @@ def test_worker_auto_upload_does_not_hold_db_lock_over_the_network(tmp_path, mon
     assert rows[0]["status"] == "pending"
 
 
-def test_youtube_page_does_not_list_playlists_under_the_db_lock(tmp_path, monkeypatch):
-    """GET /youtube called youtube.list_playlists() inside locked_conn. That pages through
-    every playlist on the channel over the network, so merely opening the page froze the
-    app for as long as the YouTube API took to answer."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from app.routes import youtube as youtube_routes
-    import app.youtube as youtube_module
-
-    conn = _make_conn(tmp_path)
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO youtube_credentials
-           (access_token, refresh_token, token_expiry, channel_id, channel_name, created_at, updated_at)
-           VALUES ('a', 'r', ?, 'chan', 'My Channel', ?, ?)""",
-        (now, now, now),
-    )
-    conn.commit()
-
-    app = FastAPI()
-    app.include_router(youtube_routes.router)
-    lock = threading.Lock()
-    app.state.conn = conn
-    app.state.db_lock = lock
-
-    probe = _LockProbe(lock)
-
-    def _fake_list_playlists(api_conn, *args, **kwargs):
-        probe.observe()
-        return []
-
-    monkeypatch.setattr(youtube_module, "list_playlists", _fake_list_playlists)
-    monkeypatch.setattr(youtube_routes.youtube, "list_playlists", _fake_list_playlists)
-
-    with TestClient(app) as client:
-        response = client.get("/youtube")
-
-    assert response.status_code == 200
-    assert probe.held_during_call is False, (
-        "db_lock was held while listing YouTube playlists over the network"
-    )
 
 
 def test_patch_publish_stage_runs_off_the_shared_connection(tmp_path, monkeypatch):

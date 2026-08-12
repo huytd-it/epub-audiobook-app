@@ -15,15 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse, RedirectResponse
 
 from app import repository
 from app.config import settings
 from app.deps import locked_conn
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg"}
 _MIME_MAP = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg"}
@@ -57,27 +55,6 @@ def _clean_new_name(new_name: str, suffix: str) -> str:
     return cleaned
 
 
-@router.get("/voices", response_class=HTMLResponse)
-def voices_page(request: Request, page: int = Query(default=1, ge=1)):
-    per_page = 20
-    all_voices = []
-    for f in sorted(_voices_dir().iterdir()):
-        if f.is_file() and f.suffix.lower() in ALLOWED_AUDIO_EXTENSIONS:
-            all_voices.append({"name": f.name, "size_kb": max(1, f.stat().st_size // 1024)})
-    with locked_conn(request) as conn:
-        for v in all_voices:
-            meta = repository.get_voice_meta(conn, v["name"])
-            v["description"] = meta["description"] if meta else ""
-    total = len(all_voices)
-    total_pages = max(1, math.ceil(total / per_page))
-    offset = (page - 1) * per_page
-    voices = all_voices[offset:offset + per_page]
-    return templates.TemplateResponse(request, "voices.html", {
-        "request": request,
-        "voices": voices,
-        "page": page,
-        "total_pages": total_pages,
-    })
 
 
 @router.get("/voices/file/{name}")

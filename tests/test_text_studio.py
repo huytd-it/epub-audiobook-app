@@ -119,24 +119,10 @@ def synchronous_light_tts(monkeypatch, fake_engine):
 # ---------------------------------------------------------------------------
 
 
-def test_text_studio_page_renders_patch_text(client, book_and_patch):
-    book, patch = book_and_patch
-    response = client.get(f"/books/{book.id}/text-studio?patch_id={patch.id}")
-    assert response.status_code == 200
-    assert "Text Studio" in response.text
-    assert "Chương một" in response.text
 
 
-def test_text_studio_page_rejects_patch_from_another_book(client, book_and_patch):
-    book, _ = book_and_patch
-    assert client.get(f"/books/{book.id}/text-studio?patch_id=9999").status_code == 404
 
 
-def test_book_detail_preview_button_opens_text_studio(client, book_and_patch):
-    book, patch = book_and_patch
-    response = client.get(f"/books/{book.id}")
-    assert response.status_code == 200
-    assert f'/books/{book.id}/text-studio?patch_id={patch.id}' in response.text
 
 
 # ---------------------------------------------------------------------------

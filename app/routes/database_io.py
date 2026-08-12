@@ -6,8 +6,7 @@ import logging
 import sqlite3
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import Response
 
 from app.database_io import export_json, export_sql, import_json, import_sql, user_table_names
 from app.deps import locked_conn
@@ -79,16 +78,3 @@ def db_import(
             raise HTTPException(status_code=status, detail=str(exc))
 
     return {"status": "ok", "mode": mode}
-
-
-templates = Jinja2Templates(directory="app/templates")
-
-
-@router.get("/database-io", response_class=HTMLResponse)
-def database_io_page(request: Request):
-    with locked_conn(request) as conn:
-        tables = user_table_names(conn)
-    return templates.TemplateResponse(request, "database_io.html", {
-        "request": request,
-        "tables": tables,
-    })

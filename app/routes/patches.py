@@ -19,8 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from app import audio_merge, drive_export, google_drive, image_overlay, repository, video_gen, video_repository, youtube
 from app import db as app_db
@@ -37,7 +36,6 @@ from app.video_publish import publish_validated_video
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4"}
@@ -589,25 +587,6 @@ def get_patch_video(request: Request, book_id: int, patch_id: int):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/books/{book_id}/patches/{patch_id}/chunks", response_class=HTMLResponse)
-def chunk_manager_page(request: Request, book_id: int, patch_id: int):
-    with locked_conn(request) as conn:
-        patch = repository.get_patch(conn, patch_id)
-        if patch is None or patch.book_id != book_id:
-            raise HTTPException(status_code=404, detail="patch not found")
-        book = repository.get_book(conn, book_id)
-        worker = request.app.state.worker
-        chunks = repository.get_patch_chunk_view(conn, patch, worker)
-        exports = repository.list_patch_exports(conn, patch_id)
-        sync_targets = repository.list_drive_sync_targets(conn)
-    return templates.TemplateResponse(request, "chunk_manager.html", {
-        "request": request,
-        "book": book,
-        "patch": patch,
-        "chunks": chunks,
-        "exports": exports,
-        "sync_targets": sync_targets,
-    })
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/max_chars")

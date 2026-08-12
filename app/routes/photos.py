@@ -15,15 +15,13 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse, RedirectResponse
 
 from app import media_library
 from app.config import settings
 from app.deps import locked_conn
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov"}
@@ -59,23 +57,6 @@ def _clean_new_name(new_name: str, suffix: str) -> str:
     return cleaned
 
 
-@router.get("/photos", response_class=HTMLResponse)
-def photos_page(request: Request, page: int = Query(default=1, ge=1)):
-    per_page = 20
-    all_photos = []
-    for f in sorted(_backgrounds_dir().iterdir()):
-        if f.is_file() and f.suffix.lower() in ALLOWED_MEDIA_EXTENSIONS:
-            all_photos.append({"name": f.name, "size_kb": max(1, f.stat().st_size // 1024), "is_video": f.suffix.lower() in ALLOWED_VIDEO_EXTENSIONS})
-    total = len(all_photos)
-    total_pages = max(1, math.ceil(total / per_page))
-    offset = (page - 1) * per_page
-    photos = all_photos[offset:offset + per_page]
-    return templates.TemplateResponse(request, "photos.html", {
-        "request": request,
-        "photos": photos,
-        "page": page,
-        "total_pages": total_pages,
-    })
 
 
 @router.get("/photos/file/{name}")

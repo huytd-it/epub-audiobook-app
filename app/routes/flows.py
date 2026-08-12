@@ -4,8 +4,6 @@ import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from app import repository
@@ -13,7 +11,6 @@ from app.deps import locked_conn
 from app.jobqueue import store
 
 router = APIRouter(prefix="/flows")
-templates = Jinja2Templates(directory="app/templates")
 NODE_TYPES = {"audio": "flow_audio", "video": "flow_video", "youtube": "flow_youtube"}
 
 
@@ -37,13 +34,6 @@ def _flow(row) -> dict:
             "nodes": json.loads(row["definition_json"])["nodes"]}
 
 
-@router.get("", response_class=HTMLResponse)
-def page(request: Request):
-    with locked_conn(request) as conn:
-        flows = [_flow(row) for row in conn.execute(
-            "SELECT * FROM flow_definition ORDER BY id DESC").fetchall()]
-        books = conn.execute("SELECT id, title FROM book ORDER BY id DESC").fetchall()
-    return templates.TemplateResponse(request, "flows.html", {"flows": flows, "books": books})
 
 
 @router.get("/api")

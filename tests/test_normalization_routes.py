@@ -51,12 +51,6 @@ def _upload_book(client: TestClient, tmp_path: Path) -> int:
     return int(resp.headers["location"].rstrip("/").split("/")[-1])
 
 
-def test_book_detail_shows_normalization_section(client, tmp_path):
-    book_id = _upload_book(client, tmp_path)
-    resp = client.get(f"/books/{book_id}")
-    assert resp.status_code == 200
-    assert "Chuẩn hóa TTS" in resp.text
-    assert "Chuyển số" in resp.text
 
 
 def test_normalization_preview_endpoint(client, tmp_path):
@@ -65,16 +59,3 @@ def test_normalization_preview_endpoint(client, tmp_path):
     assert resp.status_code == 200
     # Preview text is plain text and contains the chapter body.
     assert len(resp.text) > 0
-
-
-def test_update_normalization_toggles(client, tmp_path):
-    book_id = _upload_book(client, tmp_path)
-    resp = client.post(
-        f"/books/{book_id}/normalization",
-        data={"numbers": "on", "dictionary": "on", "transliteration": "on"},
-        follow_redirects=False,
-    )
-    assert resp.status_code == 303
-    detail = client.get(f"/books/{book_id}")
-    assert 'name="dictionary" checked' in detail.text
-    assert 'name="transliteration" checked' in detail.text

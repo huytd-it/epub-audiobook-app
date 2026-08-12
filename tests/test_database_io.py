@@ -259,10 +259,3 @@ def test_import_invalid_file_returns_400(client):
         "file": ("dump.txt", b"invalid", "text/plain"),
     }, data={"format": "sql", "mode": "overwrite"})
     assert resp.status_code == 400
-
-
-def test_database_io_page(client):
-    resp = client.get("/database-io")
-    assert resp.status_code == 200
-    assert b"Export" in resp.content
-    assert b"Import" in resp.content

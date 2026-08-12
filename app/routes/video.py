@@ -12,15 +12,13 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse, JSONResponse
 
 from app import image_overlay, media_library, repository, video_gen
 from app.config import settings
 from app.deps import locked_conn
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 logger = logging.getLogger(__name__)
 
 # In-memory step progress for debug UI, keyed by "{batch_id}:{idx}" or job_id.
@@ -249,14 +247,6 @@ def _get_recent_videos(limit: int = 20) -> list[dict]:
 # Original single-file endpoints (kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
-@router.get("/video", response_class=HTMLResponse)
-def video_creator_page(request: Request):
-    _cleanup_old_tmp_files()
-    return templates.TemplateResponse(request, "video_creator.html", {
-        "request": request,
-        "video_url": None,
-        "error": None,
-    })
 
 
 @router.post("/video/generate")

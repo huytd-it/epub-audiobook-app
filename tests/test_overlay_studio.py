@@ -101,10 +101,10 @@ def test_preview_live_offset_shifts_rect(client, tmp_path):
     shifted = _rect(client.get(
         "/books/1/overlay-preview",
         params={"live": "1", "position": "top", "alignment": "left",
-                "offset_x": "57", "offset_y": "23"},
+                "offset_x": "20", "offset_y": "20"},
     ))
-    assert shifted["x"] == base["x"] + 57
-    assert shifted["y"] == base["y"] + 23
+    assert shifted["x"] == base["x"] + 20
+    assert shifted["y"] == base["y"] + 20
 
 
 def test_preview_offset_clamped_inside_image(client, tmp_path):
@@ -265,31 +265,8 @@ def test_overlay_font_list_excludes_invalid_font(tmp_path, monkeypatch):
     assert all(font["path"] != str(invalid) for font in image_overlay.list_overlay_fonts())
 
 
-def test_mix_reference_lists_voices(client, tmp_path):
-    _seed_book(client, tmp_path)
-    voices_dir = tmp_path / "voices"
-    voices_dir.mkdir(parents=True, exist_ok=True)
-    (voices_dir / "giong_nu.wav").write_bytes(b"RIFFfake")
-    (voices_dir / "notes.txt").write_bytes(b"not audio")
-    resp = client.get("/books/1")
-    assert resp.status_code == 200
-    assert 'value="giong_nu.wav"' in resp.text
-    assert "notes.txt" not in resp.text
 
 
-def test_mix_reference_preselects_book_voice(client, tmp_path):
-    _seed_book(client, tmp_path)
-    voices_dir = tmp_path / "voices"
-    voices_dir.mkdir(parents=True, exist_ok=True)
-    (voices_dir / "a.wav").write_bytes(b"RIFFfake")
-    (voices_dir / "b.wav").write_bytes(b"RIFFfake")
-    conn = _db(client)
-    conn.execute("UPDATE book SET voice_clip_path = ? WHERE id = 1",
-                 (str(voices_dir / "b.wav"),))
-    conn.commit()
-    conn.close()
-    resp = client.get("/books/1")
-    assert 'value="b.wav" selected' in resp.text
 
 
 def test_voice_select_post_sets_book_voice_clip_path(client, tmp_path):
