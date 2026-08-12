@@ -197,6 +197,14 @@ export function Queue() {
                             • {job.error_message}
                           </span>
                         )}
+                        {job.status === "failed" && job.attempt_count != null && (
+                          <span
+                            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                            title={`Số lần đã thử / tổng lần thử tối đa của job này`}
+                          >
+                            thử {job.attempt_count}/{job.max_attempts ?? job.attempt_count}
+                          </span>
+                        )}
                       </div>
                     </TableCell>
 

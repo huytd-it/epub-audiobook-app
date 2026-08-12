@@ -20,7 +20,23 @@ export type Chapter = {
   is_excluded: boolean;
   chapter_no?: number | null;
 };
-export type Job = { id: number; job_type: string; status: string; phase: string; percent: number; book_id: number | null; production_name: string | null; error_message: string | null; created_at: string };
+export type Job = {
+  id: number;
+  job_type: string;
+  status: string;
+  phase: string;
+  percent: number;
+  book_id: number | null;
+  production_name: string | null;
+  error_message: string | null;
+  created_at: string;
+  attempt_count?: number;
+  max_attempts?: number;
+  patch_id?: number | null;
+  flow_run_id?: number | null;
+  payload?: Record<string, unknown>;
+  result?: Record<string, unknown> | null;
+};
 export type Media = { music: Array<{ id: number; name: string; duration_sec: number | null; description?: string; license?: string }>; photos: Array<{ name: string; size: number; is_video: boolean }>; voices: Array<{ name: string; size: number; description?: string }> };
 
 export type MusicItem = { id: number; name: string; duration_sec: number | null; description?: string; license?: string };
@@ -89,6 +105,50 @@ export type DriveClient = {
   client_id: string;
   client_secret: string;
   created_at: string;
+};
+
+/** Kết quả xử lý từng patch từ inbox / upload kết quả hàng loạt. */
+export type UploadResult = {
+  patch_id?: number;
+  patch_index?: number;
+  patch_name?: string;
+  filename: string;
+  status: "ok" | "error" | "skipped" | string;
+  detail?: string;
+  audio?: boolean;
+  timeline?: string;
+  publish_status?: string;
+  job_id?: number | null;
+  publish_error?: string | null;
+};
+
+export type InboxStatus = {
+  path: string;
+  files: string[];
+  count: number;
+};
+
+export type InboxProcessResult = {
+  ok: boolean;
+  installed: number;
+  renamed: { from: string; to: string }[];
+  results: UploadResult[];
+  path: string;
+  auto_upload?: boolean;
+  publish_ready?: boolean;
+  publish_warning?: string | null;
+};
+
+export type TtsGenerateResult = {
+  queued: number;
+  auto_create_video: boolean;
+  auto_upload_youtube: boolean;
+  retry_count: number;
+};
+
+export type PublishResult = {
+  metadata: Record<string, unknown>;
+  pipeline: Record<string, unknown>;
 };
 
 export type PatchExport = {

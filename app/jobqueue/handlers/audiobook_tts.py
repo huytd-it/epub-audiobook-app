@@ -106,37 +106,30 @@ def handle(ctx) -> dict:
 def _finish_audio_result(ctx, patch, audio_path: str, payload: dict, *,
                          chunk_count: int = 0, skipped: bool = False) -> dict:
     """Persist a usable audio result and idempotently continue the media pipeline."""
-    from app.patch_publishing import fetch_thumbnail_inputs, on_patch_audio_ready, warm_patch_thumbnail
-    from app.youtube_metadata import get_book_youtube_config
+    from app.patch_publishing import enqueue_patch_video, fetch_thumbnail_inputs, warm_patch_thumbnail
 
     thumbnail_inputs = fetch_thumbnail_inputs(ctx.conn, patch.id)
     warm_patch_thumbnail(thumbnail_inputs)
     repository.mark_patch_done(ctx.conn, patch.id, audio_path)
-    on_patch_audio_ready(ctx.conn, patch.id)
 
-    # Audio availability is the trigger for video creation. Upload intent implies
-    # video creation; the video handler validates the completed temporary render
-    # before atomically publishing and enqueueing the upload.
-    auto_upload_youtube = bool(payload.get("auto_upload_youtube"))
-    youtube_config = get_book_youtube_config(ctx.conn, patch.book_id)
-    configured_auto_upload = bool(youtube_config.get("auto_upload"))
-    auto_create_video = bool(payload.get("auto_create_video")) or auto_upload_youtube or configured_auto_upload
-    if auto_create_video:
-        upload_youtube = auto_upload_youtube or configured_auto_upload
-        store.enqueue(
-            ctx.conn, "patch_video",
-            payload={"patch_id": patch.id, "upload_youtube": upload_youtube,
-                     "privacy": youtube_config.get("privacy_status", "private")},
-            book_id=patch.book_id, patch_id=patch.id,
-            dedupe_key=f"patch_video:patch={patch.id}",
-        )
+    # Cờ auto_create_video/auto_upload_youtube trong request TTS ưu tiên hơn cờ đã lưu
+    # của sách; payload không có cờ (None) => dùng cờ persisted. enqueue_patch_video
+    # chạy preflight (waiting_config/waiting_timeline/awaiting_republish...) và chỉ
+    # enqueue job patch_video khi thật sự sẵn sàng — snapshot render được đóng băng lúc đó.
+    request_policy = {}
+    if payload.get("auto_create_video") is not None:
+        request_policy["auto_create_video"] = payload["auto_create_video"]
+    if payload.get("auto_upload_youtube") is not None:
+        request_policy["auto_upload_youtube"] = payload["auto_upload_youtube"]
+    outcome = enqueue_patch_video(ctx.conn, patch.id, request_policy=request_policy)
 
-    ctx.log(f"patch {patch.id} xong -> {audio_path}")
+    ctx.log(f"patch {patch.id} xong -> {audio_path}; automation={outcome['state']}")
     final_path = finalize_book_if_ready(ctx, patch.book_id)
     if chunk_count:
         ctx.progress(chunk_count, chunk_count, phase="synthesizing")
     return {"audio_path": audio_path, "chunks": chunk_count,
-            "final_audio_path": final_path, "skipped": skipped}
+            "final_audio_path": final_path, "skipped": skipped,
+            "automation": outcome["state"]}
 
 
 def synthesize_patch(

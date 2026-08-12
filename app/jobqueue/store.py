@@ -67,6 +67,12 @@ def enqueue(
     if patch_id is not None and payload_patch_id is not None and patch_id != payload_patch_id:
         raise ValueError("patch_id does not match payload.patch_id")
     patch_id = patch_id if patch_id is not None else payload_patch_id
+    # job.patch_id có FK tới patch; patch không tồn tại thì bỏ patch_id (NULL) — handler
+    # sẽ phát hiện "patch không tồn tại" và fatal như thiết kế, thay vì enqueue bị chặn.
+    if patch_id is not None and conn.execute(
+        "SELECT 1 FROM patch WHERE id=?", (patch_id,)
+    ).fetchone() is None:
+        patch_id = None
     now = _now()
     try:
         cur = conn.execute(

@@ -21,7 +21,7 @@ def test_manual_patch_job_renders_without_pipeline(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(patch_video.image_overlay, "ensure_patch_overlay", lambda *a, **k: str(image))
     monkeypatch.setattr(patch_video.video_gen, "generate_segment", lambda a,b,out,**kw: (seen.update(a=a,b=b,out=out,kw=kw), Path(out).write_bytes(b"new")))
-    monkeypatch.setattr(patch_video, "validate_video", lambda p: ValidationResult(True,None,"",(),ValidationFacts(),0))
+    monkeypatch.setattr(patch_video, "validate_video", lambda p, **kw: ValidationResult(True,None,"",(),ValidationFacts(),0))
     job_id = store.enqueue(conn, "patch_video", payload={"patch_id": 2}, book_id=1); job = store.claim(conn, "patch_video", "w")
     result = patch_video.handle(JobContext(job, conn, JobLogger(job_id, "patch_video"), lambda: False))
     output = tmp_path / "books" / "1" / "patch_videos" / "2.mp4"
@@ -47,7 +47,7 @@ def test_manual_patch_job_ignores_stale_pipeline_snapshot(tmp_path, monkeypatch)
     seen = {}
     monkeypatch.setattr(patch_video.image_overlay, "ensure_patch_overlay", lambda *a, **k: str(current))
     monkeypatch.setattr(patch_video.video_gen, "generate_segment", lambda a,b,out,**kw: (seen.update(image=a, kw=kw), Path(out).write_bytes(b"new")))
-    monkeypatch.setattr(patch_video, "validate_video", lambda p: ValidationResult(True,None,"",(),ValidationFacts(),0))
+    monkeypatch.setattr(patch_video, "validate_video", lambda p, **kw: ValidationResult(True,None,"",(),ValidationFacts(),0))
     job_id = store.enqueue(conn, "patch_video", payload={"patch_id": 2}, book_id=1); job = store.claim(conn, "patch_video", "w")
     patch_video.handle(JobContext(job, conn, JobLogger(job_id, "patch_video"), lambda: False))
     assert seen["image"] == str(current)
@@ -70,7 +70,7 @@ def test_patch_recovery_renders_atomically_and_resumes_upload(tmp_path, monkeypa
     conn.execute("UPDATE youtube_uploads SET status='waiting_for_rerender',validation_status='waiting_for_rerender',integrity_retry_count=1 WHERE id=?", (upload_id,)); conn.commit()
     seen = {}
     monkeypatch.setattr(patch_video.video_gen, "generate_standalone_video", lambda audio, image, out, **kw: (seen.update(out=out, kwargs=kw), Path(out).write_bytes(b"new")))
-    monkeypatch.setattr(patch_video, "validate_video", lambda p: ValidationResult(True, None, "", (), ValidationFacts(), 0))
+    monkeypatch.setattr(patch_video, "validate_video", lambda p, **kw: ValidationResult(True, None, "", (), ValidationFacts(), 0))
     job_id = store.enqueue(conn, "patch_video", payload={"patch_id": 2, "recovery_upload_id": upload_id})
     job = store.claim(conn, "patch_video", "w")
     result = patch_video.handle(JobContext(job, conn, JobLogger(job_id, "patch_video"), lambda: False))
@@ -96,7 +96,7 @@ def test_patch_recovery_uses_full_frozen_render_snapshot(tmp_path, monkeypatch):
     upload_id = youtube.enqueue_upload(conn, str(output), "T", render_source_type="patch", render_source_id=2)
     conn.execute("UPDATE youtube_uploads SET status='waiting_for_rerender',validation_status='waiting_for_rerender' WHERE id=?", (upload_id,)); conn.commit(); seen = {}
     monkeypatch.setattr(patch_video.video_gen, "generate_standalone_video", lambda a,b,out,**kw: (seen.update(a=a,b=b,out=out,kw=kw), Path(out).write_bytes(b"new")))
-    monkeypatch.setattr(patch_video, "validate_video", lambda p: ValidationResult(True,None,"",(),ValidationFacts(),0))
+    monkeypatch.setattr(patch_video, "validate_video", lambda p, **kw: ValidationResult(True,None,"",(),ValidationFacts(),0))
     job_id = store.enqueue(conn,"patch_video",payload={"patch_id":2,"recovery_upload_id":upload_id}); job=store.claim(conn,"patch_video","w")
     patch_video.handle(JobContext(job,conn,JobLogger(job_id,"patch_video"),lambda:False))
     assert seen["kw"] == frozen

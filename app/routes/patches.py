@@ -27,7 +27,11 @@ from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.deps import locked_conn
 from app.jobqueue import store
-from app.patch_publishing import enqueue_patch_publish, fetch_thumbnail_inputs, on_patch_audio_ready, run_patch_publish_stage, warm_patch_thumbnail
+from app.patch_publishing import (confirm_patch_republish, discard_stale_patch_video,
+                                  enqueue_patch_publish, enqueue_patch_video,
+                                  evaluate_patch_preflight, fetch_thumbnail_inputs,
+                                  on_patch_audio_ready, resolve_automation_policy,
+                                  run_patch_publish_stage, warm_patch_thumbnail)
 from app.youtube_metadata import get_book_youtube_config, get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_book_youtube_config, validate_timeline
 from app.video_config import get_book_video_config
 from app.video_integrity import validate_video
@@ -1043,6 +1047,22 @@ def retry_publish_patch(request: Request, book_id: int, patch_id: int, force_new
     return _run_publish_stage(request, patch_id, book_id=book_id, force_new=force_new)
 
 
+@router.post("/books/{book_id}/patches/{patch_id}/republish-confirm")
+def republish_confirm(request: Request, book_id: int, patch_id: int):
+    """Xác nhận publish lại một patch đã publish: audio mới được chấp nhận, pipeline
+    được reset để dựng video mới + upload — lịch sử upload cũ giữ nguyên."""
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        try:
+            pipeline = confirm_patch_republish(conn, patch_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        automation = enqueue_patch_video(conn, patch_id, force_new=True)
+    return {"pipeline": pipeline, "automation": automation}
+
+
 @router.post("/books/{book_id}/patches/{patch_id}/import-local")
 async def import_patch_from_upload(
     request: Request,
@@ -1223,22 +1243,6 @@ def _install_result_upload(audio_path: Path, audio: UploadFile | None, timeline_
     }
 
 
-def _result_publish_preflight(conn, book_id: int) -> tuple[bool, str | None, dict]:
-    config = get_book_youtube_config(conn, book_id)
-    if not config.get("auto_upload"):
-        return False, None, config
-    try:
-        config = validate_book_youtube_config(config)
-    except ValueError as exc:
-        return False, f"cấu hình YouTube không hợp lệ: {exc}", config
-    if not youtube.is_configured() or youtube.get_creds_from_db(conn) is None:
-        return False, "YouTube chưa được cấu hình hoặc kết nối", config
-    playlist = config["playlist"]
-    if playlist["mode"] != "existing" or not playlist["playlist_id"]:
-        return False, "Auto-upload cần một playlist hợp lệ", config
-    return True, None, config
-
-
 def _result_patch_publish_state(conn, patch_id: int) -> str | None:
     pipeline = conn.execute(
         """SELECT pp.stage, pp.youtube_upload_id, yu.status AS youtube_status,
@@ -1260,22 +1264,6 @@ def _result_patch_publish_state(conn, patch_id: int) -> str | None:
     return None
 
 
-def _discard_stale_patch_video(conn, book_id: int, patch_id: int) -> None:
-    video_path = _patch_video_path(book_id, patch_id)
-    row = conn.execute("SELECT id FROM videos WHERE file_path=?", (str(video_path),)).fetchone()
-    if row:
-        video_repository.delete_video(conn, row["id"])
-    else:
-        video_path.unlink(missing_ok=True)
-    conn.execute(
-        """UPDATE patch_pipeline SET stage='video', video_status='pending', video_id=NULL,
-                  video_path=NULL, youtube_upload_id=NULL, upload_status='pending',
-                  playlist_status='pending', last_error=NULL, updated_at=?
-            WHERE patch_id=?""", (datetime.now(timezone.utc).isoformat(), patch_id),
-    )
-    conn.commit()
-
-
 def _result_inbox(book_id: int) -> Path:
     # Mỗi ebook dùng chính data/books/<book_id> làm nơi nhận file lớn để toàn bộ
     # EPUB, WAV, timeline và artefact liên quan nằm chung một hồ sơ dễ quản lý.
@@ -1284,17 +1272,76 @@ def _result_inbox(book_id: int) -> Path:
     return folder
 
 
+def _archive_move(root: Path, source: Path, kind: str) -> Path:
+    """Move a processed result file into <root>/processed or <root>/rejected,
+    collision-safe (suffix .1, .2, ... — files are never overwritten)."""
+    dest_dir = root / kind
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / source.name
+    n = 1
+    while dest.exists():
+        base = source.name[:-(len(source.suffix) or 0)]
+        dest = dest_dir / f"{base}.{n}{source.suffix}"
+        n += 1
+    source.replace(dest)
+    return dest
+
+
+def _row_file_outcomes(row: dict, group: dict, outcome: dict | None) -> list[dict]:
+    """Per-file outcome for a result row: which of the dropped files went where."""
+    entries = []
+    audio_file = group.get("audio")
+    if audio_file is not None:
+        ok = bool(outcome and outcome.get("audio"))
+        entries.append({
+            "filename": audio_file.filename,
+            "outcome": "processed" if ok else "rejected",
+            "reason": None if ok else row.get("detail"),
+        })
+    timeline_file = group.get("timeline")
+    if timeline_file is not None:
+        timeline_outcome = (outcome or {}).get("timeline")
+        entries.append({
+            "filename": timeline_file.filename,
+            "outcome": "rejected" if timeline_outcome == "rejected" else "processed",
+            "reason": row.get("detail") if timeline_outcome == "rejected" else None,
+        })
+    if not entries and row.get("filename"):
+        entries.append({
+            "filename": row["filename"], "outcome": "rejected",
+            "reason": row.get("detail"),
+        })
+    return entries
+
+
 @router.get("/books/{book_id}/patches/result-inbox")
 def result_inbox_status(request: Request, book_id: int):
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail="book not found")
+        patches = repository.list_patches(conn, book_id)
     folder = _result_inbox(book_id)
     files = sorted(
         path.name for path in folder.iterdir()
         if path.is_file() and (path.name.lower().endswith(".wav") or path.name.lower().endswith(".timeline.json"))
     )
-    return {"path": str(folder.resolve()), "files": files, "count": len(files)}
+    processed_dir = folder / "processed"
+    rejected_dir = folder / "rejected"
+    processed = sorted(p.name for p in processed_dir.iterdir() if p.is_file()) if processed_dir.is_dir() else []
+    rejected = sorted(p.name for p in rejected_dir.iterdir() if p.is_file()) if rejected_dir.is_dir() else []
+    states = {}
+    for patch in patches:
+        if patch.status != "done" or not patch.audio_path:
+            continue
+        try:
+            with locked_conn(request) as inner:
+                check = evaluate_patch_preflight(inner, patch.id)
+        except Exception:
+            continue
+        states[patch.id] = {"state": check["state"], "code": check["code"],
+                            "error": check["error"]}
+    return {"path": str(folder.resolve()), "files": files, "count": len(files),
+            "processed": processed, "rejected": rejected, "patches": states}
 
 
 @router.post("/books/{book_id}/patches/result-inbox/open")
@@ -1364,6 +1411,26 @@ async def process_result_inbox(request: Request, book_id: int):
             handle.close()
     result["renamed"] = renamed
     result["path"] = str(folder.resolve())
+
+    # Lưu trữ file đã xử lý: file OK vào <book>/processed, file lỗi vào <book>/rejected
+    # kèm file .reason.txt — giữ vĩnh viễn để đối soát, không bao giờ ghi đè.
+    outcome_by_file: dict[str, tuple[str, str | None]] = {}
+    for row in result.get("results", []):
+        for entry in row.get("file_outcomes") or []:
+            outcome_by_file[entry["filename"]] = (entry["outcome"], entry.get("reason"))
+    archived = {"processed": [], "rejected": []}
+    for target in ready:
+        outcome, reason = outcome_by_file.get(target.name, (None, None))
+        if outcome is None or outcome == "kept":
+            continue
+        dest = _archive_move(folder, target, outcome)
+        archived[outcome].append({"from": target.name, "to": dest.name})
+        if outcome == "rejected" and reason:
+            try:
+                dest.with_name(dest.name + ".reason.txt").write_text(str(reason), encoding="utf-8")
+            except OSError:
+                logger.warning("cannot write reason file for rejected inbox file %s", dest, exc_info=True)
+    result["archived"] = archived
     return result
 
 
@@ -1383,8 +1450,9 @@ async def upload_batch_results(
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail="book not found")
+        book = repository.get_book(conn, book_id)
         patches = {p.patch_index: p for p in repository.list_patches(conn, book_id)}
-        publish_ready, publish_warning, youtube_config = _result_publish_preflight(conn, book_id)
+        policy = resolve_automation_policy(book)
         publish_states = {p.id: _result_patch_publish_state(conn, p.id) for p in patches.values()}
 
     groups: dict[int, dict[str, UploadFile]] = {}
@@ -1403,13 +1471,15 @@ async def upload_batch_results(
         else:
             groups.setdefault(index, {})[kind] = upload
             continue
-        skipped.append({"filename": name, "status": "skipped", "detail": reason})
+        skipped.append({"filename": name, "status": "skipped", "detail": reason,
+                        "file_outcomes": [{"filename": name, "outcome": "rejected", "reason": reason}]})
 
     audio_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[dict] = []
     installed_audio: list[tuple[int, Path]] = []
+    installed_timelines: list[int] = []
     for index in sorted(groups):
         patch, group = patches[index], groups[index]
         audio_path = audio_dir / f"{patch.id}.wav"
@@ -1422,9 +1492,11 @@ async def upload_batch_results(
         if patch.status == "processing":
             # Same refusal as the single-patch import: the worker owns this patch's
             # audio right now, so installing over it would race the merge.
+            row["file_outcomes"] = _row_file_outcomes(row, group, None)
             results.append({**row, "status": "error", "detail": "patch đang xử lý"})
             continue
         if publish_states[patch.id] == "active":
+            row["file_outcomes"] = _row_file_outcomes(row, group, None)
             results.append({**row, "status": "error", "detail": "patch đang tạo hoặc upload video", "publish_status": "blocked_active_pipeline"})
             continue
         try:
@@ -1433,54 +1505,110 @@ async def upload_batch_results(
             )
         except (ValueError, OSError) as exc:
             logger.warning("result upload failed for patch %s", patch.id, exc_info=True)
-            results.append({**row, "status": "error", "detail": str(exc)})
+            row["detail"] = str(exc)
+            row["file_outcomes"] = _row_file_outcomes(row, group, None)
+            results.append({**row, "status": "error", "detail": row["detail"]})
             continue
         if outcome["audio"]:
             installed_audio.append((patch.id, audio_path))
-        publish_status = "skipped_already_published" if publish_states[patch.id] == "published" else (
-            "pending" if publish_ready and outcome["audio"] else
-            "skipped_youtube_not_ready" if youtube_config.get("auto_upload") and outcome["audio"] else
-            "skipped_auto_upload_disabled"
-        )
-        results.append({**row, "status": "ok", **outcome, "publish_status": publish_status})
+        if outcome.get("timeline") == "installed":
+            installed_timelines.append(patch.id)
+        row["file_outcomes"] = _row_file_outcomes(row, group, outcome)
+        results.append({**row, "status": "ok", **outcome,
+                        "publish_status": "pending_automation" if outcome["audio"] else "skipped_no_new_audio"})
 
     for patch_id, _ in installed_audio:
         await asyncio.to_thread(_warm_thumbnail, request, patch_id)
+
     with locked_conn(request) as conn:
         for patch_id, audio_path in installed_audio:
             repository.mark_patch_done(conn, patch_id, str(audio_path))
-            if publish_ready and publish_states[patch_id] != "published":
-                _discard_stale_patch_video(conn, book_id, patch_id)
 
-    if publish_ready:
+    # Cổng tự động hoá: với mỗi patch vừa có audio, enqueue_patch_video chạy preflight
+    # (waiting_config / waiting_timeline / awaiting_republish_confirmation) và chỉ xếp
+    # job patch_video khi sẵn sàng. Audio không đổi sau khi publish -> awaiting_confirmation
+    # và KHÔNG reset pipeline (lịch sử upload giữ nguyên).
+    with locked_conn(request) as conn:
         for patch_id, _ in installed_audio:
-            if publish_states[patch_id] == "published":
-                continue
             result = next(row for row in results if row.get("patch_id") == patch_id)
             try:
-                with locked_conn(request) as conn:
-                    enqueue_patch_publish(conn, patch_id, force_new=True)
-                    job_id = store.enqueue(
-                        conn, "patch_video",
-                        payload={"patch_id": patch_id, "upload_youtube": True,
-                                 "privacy": youtube_config["privacy_status"]},
-                        book_id=book_id, patch_id=patch_id,
-                        dedupe_key=f"patch_video:patch={patch_id}",
-                    )
-                if job_id is None:
-                    raise RuntimeError("không thể enqueue job tạo video")
-                result["publish_status"] = "queued"
-                result["job_id"] = job_id
+                automation = enqueue_patch_video(conn, patch_id, force_new=True)
             except Exception as exc:  # audio remains installed and can be retried manually
                 logger.warning("result publish enqueue failed for patch %s", patch_id, exc_info=True)
                 result["publish_status"] = "enqueue_failed"
                 result["publish_error"] = str(exc)
+                continue
+            state = automation["state"]
+            if state == "queued":
+                result["publish_status"] = "queued"
+                result["job_id"] = automation["job_id"]
+            elif state == "no_automation":
+                result["publish_status"] = "skipped_auto_upload_disabled"
+            elif state == "waiting_timeline":
+                result["publish_status"] = "waiting_timeline"
+                result["publish_error"] = automation.get("error")
+            elif state == "waiting_config":
+                result["publish_status"] = "waiting_config"
+                result["publish_error"] = automation.get("error")
+            elif state == "awaiting_republish_confirmation":
+                result["publish_status"] = "awaiting_republish_confirmation"
+                result["publish_error"] = automation.get("error")
+            else:
+                result["publish_status"] = "enqueue_failed"
+                result["publish_error"] = automation.get("error")
 
+    if installed_timelines and not installed_audio:
+        # Timeline-only backfill (bổ sung sidecar cho audio đã có): patches đang
+        # waiting_timeline có thể chạy tiếp mà không cần treo lại audio nữa.
+        def _reconcile():
+            from app.patch_publishing import reconcile_patch_automation
+            with app_db.connect(settings.db_path) as conn:
+                return reconcile_patch_automation(conn, book_id=book_id)
+        try:
+            await asyncio.to_thread(_reconcile)
+        except Exception:
+            logger.exception("automation reconcile failed after timeline backfill for book %s", book_id)
+
+    statuses = [r.get("publish_status") for r in results if r.get("status") == "ok"]
     return {
         "ok": True,
         "installed": len(installed_audio),
-        "auto_upload": bool(youtube_config.get("auto_upload")),
-        "publish_ready": publish_ready,
-        "publish_warning": publish_warning,
+        "auto_upload": policy["auto_upload_youtube"],
+        "auto_create_video": policy["auto_create_video"],
+        "publish_ready": any(s == "queued" for s in statuses),
+        "publish_warning": next(
+            (r["publish_error"] for r in results if r.get("publish_status") == "waiting_config"
+             and r.get("publish_error")), None),
         "results": results + skipped,
+    }
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/publish/confirm")
+def confirm_patch_publish(request: Request, book_id: int, patch_id: int):
+    """Xác nhận publish lại sau khi audio thay đổi: đóng dấu audio hiện tại và ngay
+    lập tức preflight + snapshot + enqueue video mới (upload intent theo policy).
+
+    Lịch sử upload cũ (youtube_uploads) được giữ nguyên; pipeline trỏ sang render mới."""
+    from fastapi import HTTPException
+
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        try:
+            outcome = confirm_patch_republish(conn, patch_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    pipeline = outcome.get("pipeline") or {}
+    return {
+        "ok": True,
+        "patch_id": patch_id,
+        "state": outcome["state"],
+        "job_id": outcome.get("job_id"),
+        "deduplicated": outcome.get("deduplicated"),
+        "code": outcome.get("code"),
+        "error": outcome.get("error"),
+        "stage": pipeline.get("stage"),
+        "republish_confirmed_for": pipeline.get("republish_confirmed_for"),
+        "note": "video mới đã được xếp hàng; upload sẽ chạy khi render xong",
     }

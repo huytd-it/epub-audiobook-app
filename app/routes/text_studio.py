@@ -430,8 +430,16 @@ async def generate_selected_tts(request: Request, book_id: int):
 
     body = await request.json()
     patch_ids = [int(value) for value in body.get("patch_ids") or []]
-    auto_upload_youtube = body.get("auto_upload_youtube") is True
-    auto_create_video = body.get("auto_create_video") is True or auto_upload_youtube
+    auto_upload_youtube = body.get("auto_upload_youtube")
+    auto_upload_youtube = True if auto_upload_youtube is True else (
+        False if auto_upload_youtube is False else None)
+    auto_create_video = body.get("auto_create_video")
+    auto_create_video = True if auto_create_video is True else (
+        False if auto_create_video is False else None)
+    # Upload bao hàm tạo video; nếu operator không truyền cờ nào thì enqueue bỏ trống
+    # để handler dùng cờ persisted của sách.
+    if auto_upload_youtube is True:
+        auto_create_video = True
     try:
         retry_count = int(body.get("retry_count", 2))
     except (TypeError, ValueError):

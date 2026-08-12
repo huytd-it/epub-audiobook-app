@@ -84,6 +84,16 @@ async def lifespan(app: FastAPI):
             backfilled["video"], backfilled["youtube_upload"],
         )
 
+    # Tự động hoá patch: enqueue các job patch_video/youtube_upload còn thiếu cho mọi
+    # patch đã có audio (waiting_config đã tự khỏi khi config hợp lệ trở lại).
+    from app.patch_publishing import reconcile_patch_automation
+    try:
+        reconciled = reconcile_patch_automation(conn)
+        if sum(v for k, v in reconciled.items() if k != "errors") or reconciled["errors"]:
+            logging.info("event=queue.automation_reconcile %s", reconciled)
+    except Exception:
+        logging.exception("event=queue.automation_reconcile.failed")
+
     removed = joblog.purge_old_logs(conn)
     if removed:
         logging.info("event=queue.log_purge removed=%s", removed)

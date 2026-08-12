@@ -173,7 +173,18 @@ async def save_video_config(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
-        return save_book_video_config(conn, book_id, validated)
+        result = save_book_video_config(conn, book_id, validated)
+
+    # Cấu hình video giờ hợp lệ => các patch đang waiting_config có thể chạy tiếp.
+    def _reconcile():
+        from app.patch_publishing import reconcile_patch_automation
+        with app_db.connect(settings.db_path) as conn:
+            return reconcile_patch_automation(conn, book_id=book_id)
+    try:
+        await asyncio.to_thread(_reconcile)
+    except Exception:
+        logger.exception("automation reconcile failed after video-config save for book %s", book_id)
+    return result
 
 
 @router.post("/books/{book_id}/youtube-settings")
@@ -187,8 +198,22 @@ async def update_youtube_settings(request: Request, book_id: int):
     if "id" in playlist:
         playlist["playlist_id"] = playlist.pop("id")
     data["playlist"] = playlist
+    # Cờ tự động hoá: lưu JSON (auto_upload legacy hoặc auto_upload_youtube mới) được
+    # phản chiếu sang cột persisted của sách; upload bao hàm tạo video. auto_upload
+    # legacy vẫn được lưu trong JSON để các đường đọc cũ và kiểm tra playlist khớp.
+    flags: dict[str, bool] = {}
+    if "auto_upload" in data:
+        flags["auto_upload_youtube"] = bool(data.get("auto_upload"))
+    if isinstance(data.get("auto_upload_youtube"), bool):
+        flags["auto_upload_youtube"] = data.pop("auto_upload_youtube")
+    if isinstance(data.get("auto_create_video"), bool):
+        flags["auto_create_video"] = data.pop("auto_create_video")
+    if flags.get("auto_upload_youtube"):
+        flags["auto_create_video"] = True
+    data["auto_upload"] = bool(flags.get("auto_upload_youtube", data.get("auto_upload")))
     with locked_conn(request) as conn:
-        if repository.get_book(conn, book_id) is None:
+        book = repository.get_book(conn, book_id)
+        if book is None:
             raise HTTPException(404, "book not found")
         try:
             normalized = {**get_book_youtube_config(conn, book_id), **data}
@@ -202,9 +227,15 @@ async def update_youtube_settings(request: Request, book_id: int):
                     if not playlist["playlist_id"]:
                         raise ValueError("playlist was not found")
             save_book_youtube_config(conn, book_id, data)
+            if flags:
+                repository.update_book_automation_flags(
+                    conn, book_id, auto_create_video=flags.get("auto_create_video"),
+                    auto_upload_youtube=flags.get("auto_upload_youtube"),
+                )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         result = get_book_youtube_config(conn, book_id)
+        book = repository.get_book(conn, book_id)
     if result.get("auto_upload") and result["playlist"]["mode"] == "existing":
         try:
             if not any(p.get("id") == result["playlist"]["playlist_id"] for p in _list_youtube_playlists()):
@@ -213,16 +244,32 @@ async def update_youtube_settings(request: Request, book_id: int):
             raise
         except Exception as exc:
             raise HTTPException(400, "YouTube playlist access could not be verified") from exc
+    if book is not None:
+        result["auto_create_video"] = bool(book.auto_create_video)
+        result["auto_upload_youtube"] = bool(book.auto_upload_youtube)
+    if flags:
+        # Cấu hình giờ hợp lệ => chạy reconcile cho các patch đang chờ config.
+        def _reconcile():
+            from app.patch_publishing import reconcile_patch_automation
+            with app_db.connect(settings.db_path) as conn:
+                return reconcile_patch_automation(conn, book_id=book_id)
+        try:
+            await asyncio.to_thread(_reconcile)
+        except Exception:
+            logger.exception("automation reconcile failed after youtube-settings save for book %s", book_id)
     return result
 
 
 @router.get("/books/{book_id}/youtube-settings")
 def youtube_settings(request: Request, book_id: int):
     with locked_conn(request) as conn:
-        if repository.get_book(conn, book_id) is None:
+        book = repository.get_book(conn, book_id)
+        if book is None:
             raise HTTPException(404, "book not found")
         creds = youtube.get_creds_from_db(conn)
-        result = {"config": get_book_youtube_config(conn, book_id), "connected": bool(creds), "channel_name": creds.get("channel_name") if creds else None}
+        result = {"config": get_book_youtube_config(conn, book_id), "connected": bool(creds), "channel_name": creds.get("channel_name") if creds else None,
+                  "auto_create_video": bool(book.auto_create_video),
+                  "auto_upload_youtube": bool(book.auto_upload_youtube)}
     try:
         result["playlists"] = _list_youtube_playlists() if result["connected"] else []
     except Exception:

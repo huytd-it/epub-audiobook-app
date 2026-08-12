@@ -378,17 +378,19 @@ def upload_video(
 
 
 def validate_upload_file(conn: sqlite3.Connection, upload_id: int):
-    from app.video_integrity import validate_video
+    from app.video_integrity import validate_video, validation_report_json
 
     row = conn.execute("SELECT video_path FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
     if row is None:
         raise ValueError(f"upload {upload_id} not found")
     mark_validation_started(conn, upload_id)
     result = validate_video(row["video_path"])
+    report = validation_report_json(result)
     if result.valid:
-        mark_validation_valid(conn, upload_id)
+        mark_validation_valid(conn, upload_id, report_json=report)
     else:
-        mark_validation_failed(conn, upload_id, result.error_code or "validation_failed", result.message)
+        mark_validation_failed(conn, upload_id, result.error_code or "validation_failed",
+                               result.message, report_json=report)
         mark_upload_failed(conn, upload_id, f"{result.error_code}: {result.message}")
     return result
 
@@ -432,24 +434,26 @@ def enqueue_upload(
 
 def mark_validation_started(conn: sqlite3.Connection, upload_id: int) -> None:
     conn.execute(
-        "UPDATE youtube_uploads SET validation_status='validating', validation_error_code=NULL, validation_error_message=NULL WHERE id=?",
+        "UPDATE youtube_uploads SET validation_status='validating', validation_error_code=NULL, validation_error_message=NULL, validation_report_json=NULL WHERE id=?",
         (upload_id,),
     )
     conn.commit()
 
 
-def mark_validation_valid(conn: sqlite3.Connection, upload_id: int) -> None:
+def mark_validation_valid(conn: sqlite3.Connection, upload_id: int,
+                          *, report_json: str | None = None) -> None:
     conn.execute(
-        "UPDATE youtube_uploads SET validation_status='valid', validation_error_code=NULL, validation_error_message=NULL, validated_at=? WHERE id=?",
-        (_now_iso(), upload_id),
+        "UPDATE youtube_uploads SET validation_status='valid', validation_error_code=NULL, validation_error_message=NULL, validation_report_json=?, validated_at=? WHERE id=?",
+        (report_json, _now_iso(), upload_id),
     )
     conn.commit()
 
 
-def mark_validation_failed(conn: sqlite3.Connection, upload_id: int, code: str, message: str) -> None:
+def mark_validation_failed(conn: sqlite3.Connection, upload_id: int, code: str, message: str,
+                           *, report_json: str | None = None) -> None:
     conn.execute(
-        "UPDATE youtube_uploads SET validation_status='failed', validation_error_code=?, validation_error_message=?, validated_at=? WHERE id=?",
-        (code, message[-2000:], _now_iso(), upload_id),
+        "UPDATE youtube_uploads SET validation_status='failed', validation_error_code=?, validation_error_message=?, validation_report_json=?, validated_at=? WHERE id=?",
+        (code, message[-2000:], report_json, _now_iso(), upload_id),
     )
     conn.commit()
 

@@ -83,6 +83,7 @@ export function OverlayEditor({
   const [config, setConfig] = useState<OverlayConfig>();
   const [background, setBackground] = useState<BackgroundItem>();
   const [preview, setPreview] = useState("");
+  const [thumbnailRevision, setThumbnailRevision] = useState(0);
   const [saving, setSaving] = useState(false);
   const layers = config?.overlays?.length ? config.overlays : config ? [config] : [];
 
@@ -150,6 +151,7 @@ export function OverlayEditor({
       await api(`/books/${bookId}/overlay-config`, { method: "POST", body: form });
       if (regenerate && patchIds.length) {
         await postJson(`/books/${bookId}/thumbnails/regenerate`, { patch_ids: patchIds });
+        setThumbnailRevision((current) => current + 1);
       }
       onMessage(regenerate
         ? "Đã lưu cấu hình overlay và đưa thumbnail vào hàng đợi tạo lại."
@@ -189,6 +191,32 @@ export function OverlayEditor({
         </div>
       )}
       {preview && <img src={preview} alt="Overlay preview" className="max-h-64 w-full rounded-md object-contain" />}
+
+      {patchIds.length > 0 && (
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <div>
+              <div className="text-sm font-semibold">Thumbnail các patch</div>
+              <div className="text-xs text-muted-foreground">Preview ảnh sẽ được dùng cho video và YouTube.</div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {patchIds.map((patchId, index) => (
+                <figure key={patchId} className="overflow-hidden rounded-md border bg-muted/20">
+                  <div className="aspect-video bg-muted">
+                    <img
+                      src={`/books/${bookId}/patches/${patchId}/overlay-image?v=${thumbnailRevision}`}
+                      alt={`Thumbnail patch ${index + 1}`}
+                      loading="lazy"
+                      className="h-full w-full object-contain"
+                    />
+                  </div>
+                  <figcaption className="border-t px-3 py-2 text-xs font-medium">Patch {index + 1}</figcaption>
+                </figure>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {layers.map((layer, index) => (
         <Card key={index}>

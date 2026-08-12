@@ -7,18 +7,28 @@ import {
   FileSearch,
   Film,
   Layers,
+  RotateCcw,
   ScanText,
+  ShieldAlert,
   Upload,
   Video,
   Wrench,
 } from "lucide-react";
-import { api, Chapter, Patch, post, postForm } from "@/api";
+import { api, Chapter, Patch, post, postForm, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/Header";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import {
   PatchRangeReport,
@@ -27,6 +37,7 @@ import {
   PatchTextCheckSummary,
   PipelineInfo,
   errorText,
+  stageBlockedReason,
 } from "./types";
 import { SectionHead, TabBar, checkboxClass } from "./parts";
 import { PatchIssuesDialog } from "./PatchIssuesDialog";
@@ -50,6 +61,8 @@ type RowProps = {
   onImportDrive: (patch: Patch) => void;
   onImportFiles: (patch: Patch, files: FileList | null) => void;
   onUploadVideo: (patch: Patch) => void;
+  onRetryPublish: (patch: Patch) => void;
+  onRepublish: (patch: Patch) => void;
 };
 
 /** Memo hoá theo từng dòng: nhịp polling chỉ vẽ lại patch thực sự đổi. */
@@ -68,6 +81,8 @@ const PatchRow = React.memo(function PatchRow({
   onImportDrive,
   onImportFiles,
   onUploadVideo,
+  onRetryPublish,
+  onRepublish,
 }: RowProps) {
   const percent = patch.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
   const rangeBad = rangeReport && rangeReport.severity !== "ok";
@@ -177,12 +192,32 @@ const PatchRow = React.memo(function PatchRow({
               <Video className="h-2.5 w-2.5" /> YouTube
             </span>
           )}
-          {pipeline?.last_error && (
+          {pipeline && (stageBlockedReason(pipeline.stage) || pipeline.last_error) && (
             <span
-              className="inline-flex items-center rounded bg-red-50 px-1.5 py-0.5 text-[10px] text-red-600"
-              title={pipeline.last_error}
+              className={cn(
+                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                pipeline.last_error ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-800"
+              )}
+              title={pipeline.last_error || stageBlockedReason(pipeline.stage) || undefined}
             >
-              Lỗi pipeline
+              <ShieldAlert className="h-2.5 w-2.5" />
+              {stageBlockedReason(pipeline.stage) || "Lỗi pipeline"}
+            </span>
+          )}
+          {pipeline?.attempt_count != null && pipeline.attempt_count > 0 && (
+            <span
+              className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+              title={`Đã thử ${pipeline.attempt_count} lần${pipeline.next_retry_at ? ` · thử lại sau ${new Date(pipeline.next_retry_at).toLocaleTimeString("vi-VN")}` : ""}`}
+            >
+              <RotateCcw className="h-2.5 w-2.5" /> {pipeline.attempt_count} lần thử
+            </span>
+          )}
+          {pipeline?.attempt_count != null && pipeline.attempt_count > 0 && (
+            <span
+              className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+              title={`Đã thử ${pipeline.attempt_count} lần${pipeline.next_retry_at ? ` · thử lại sau ${new Date(pipeline.next_retry_at).toLocaleTimeString("vi-VN")}` : ""}`}
+            >
+              <RotateCcw className="h-2.5 w-2.5" /> {pipeline.attempt_count} lần thử
             </span>
           )}
           {!pipeline && patch.status !== "done" && <span className="text-[10px] text-muted-foreground">—</span>}
@@ -219,6 +254,32 @@ const PatchRow = React.memo(function PatchRow({
               <span className="hidden lg:inline">
                 {pipeline.upload_state === "active" || pipeline.upload_state === "postprocessing" ? "Đang upload" : "YouTube"}
               </span>
+            </Button>
+          )}
+          {pipeline?.last_error && pipeline.upload_state !== "active" && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px] text-emerald-700"
+              disabled={busy}
+              onClick={() => onRetryPublish(patch)}
+              title="Thử lại bước pipeline bị lỗi (không đăng lại video đã hoàn thành)"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span className="hidden lg:inline">Retry</span>
+            </Button>
+          )}
+          {pipeline?.can_force_new && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px] text-red-700"
+              disabled={busy}
+              onClick={() => onRepublish(patch)}
+              title="Đăng lại với tư cách video mới (xác nhận trước khi thực hiện)"
+            >
+              <Video className="h-3 w-3" />
+              <span className="hidden lg:inline">Đăng lại</span>
             </Button>
           )}
           <Button
@@ -457,6 +518,41 @@ export function PatchesPanel({
     [bookId, runImport]
   );
 
+  const retryPublish = useCallback(
+    (patch: Patch) =>
+      runImport(
+        patch,
+        () => post(`/books/${bookId}/patches/${patch.id}/publish/retry`),
+        `Đã thử lại bước đăng dang dở của patch ${patch.patch_index + 1}.`
+      ),
+    [bookId, runImport]
+  );
+
+  const [republishPatch, setRepublishPatch] = useState<Patch>();
+  const [republishing, setRepublishing] = useState(false);
+
+  // Đăng lại với force_new: về phía API, bước này chỉ làm sạch trạng thái upload
+  // và hậu kỳ (thumbnail/playlist) — không bao giờ upload lại video đã hoàn thành
+  // trừ khi người dùng xác nhận ở dialog này.
+  const republish = useCallback(
+    async (patch: Patch) => {
+      setRepublishing(true);
+      onBusyChange(true);
+      try {
+        await postJson(`/books/${bookId}/patches/${patch.id}/publish`, { force_new: true });
+        onMessage(`Đã đưa patch ${patch.patch_index + 1} vào hàng đợi đăng lại (video mới).`);
+        await onRefresh();
+        setRepublishPatch(undefined);
+      } catch (error) {
+        onMessage(errorText(error));
+      } finally {
+        setRepublishing(false);
+        onBusyChange(false);
+      }
+    },
+    [bookId, onBusyChange, onMessage, onRefresh]
+  );
+
   return (
     <Card>
       <CardHeader className="gap-4 border-b border-border bg-muted/20">
@@ -560,6 +656,8 @@ export function PatchesPanel({
                     onImportDrive={importDrive}
                     onImportFiles={importFiles}
                     onUploadVideo={uploadVideo}
+                    onRetryPublish={retryPublish}
+                    onRepublish={(patch) => setRepublishPatch(patch)}
                   />
                 ))}
               </TableBody>
@@ -584,6 +682,32 @@ export function PatchesPanel({
         onOpenChange={setIssuesOpen}
         onMessage={onMessage}
       />
+
+      <Dialog open={Boolean(republishPatch)} onOpenChange={(open) => !open && setRepublishPatch(undefined)}>
+        <DialogContent className="max-h-[90vh] max-w-md overflow-auto">
+          <DialogHeader>
+            <DialogTitle>Đăng lại patch {republishPatch ? `#${republishPatch.patch_index + 1}` : ""}?</DialogTitle>
+            <DialogDescription>
+              Patch này đã được đăng lên YouTube. Đăng lại sẽ tạo một video mới và upload lên kênh — bản đăng trước
+              không bị xoá, nhưng sẽ xuất hiện video trùng nội dung trên kênh. Thumbnail, tiêu đề và playlist vẫn dùng
+              cấu hình hiện tại.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setRepublishPatch(undefined)} disabled={republishing}>
+              Huỷ
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={republishing || !republishPatch}
+              onClick={() => republishPatch && republish(republishPatch)}
+            >
+              {republishing ? "Đang đưa vào hàng đợi..." : "Đăng lại (video mới)"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

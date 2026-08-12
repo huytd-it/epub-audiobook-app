@@ -1,6 +1,7 @@
 """SQLite connection helper and schema initialization."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -22,6 +23,8 @@ CREATE TABLE IF NOT EXISTS book (
     normalize_spellcheck_enabled INTEGER NOT NULL DEFAULT 1,
     normalize_dictionary_enabled INTEGER NOT NULL DEFAULT 0,
     normalize_transliteration_enabled INTEGER NOT NULL DEFAULT 0,
+    auto_create_video INTEGER NOT NULL DEFAULT 1,
+    auto_upload_youtube INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -233,6 +236,7 @@ CREATE TABLE IF NOT EXISTS youtube_uploads (
     validation_error_code TEXT,
     validation_error_message TEXT,
     validated_at TEXT,
+    validation_report_json TEXT,
     integrity_retry_count INTEGER NOT NULL DEFAULT 0,
     render_source_type TEXT NOT NULL DEFAULT 'external',
     render_source_id INTEGER,
@@ -355,6 +359,15 @@ CREATE TABLE IF NOT EXISTS patch_pipeline (
     config_snapshot TEXT NOT NULL,
     media_snapshot TEXT NOT NULL,
     schema_version INTEGER NOT NULL DEFAULT 1,
+    preflight_status TEXT,
+    preflight_error_code TEXT,
+    preflight_error TEXT,
+    checked_at TEXT,
+    policy_snapshot TEXT,
+    snapshot_schema_version INTEGER NOT NULL DEFAULT 1,
+    render_attempts INTEGER NOT NULL DEFAULT 0,
+    validation_report_json TEXT,
+    republish_confirmed_for TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -646,6 +659,43 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for name, definition in upload_columns.items():
         if name not in uploads_existing:
             conn.execute(f"ALTER TABLE youtube_uploads ADD COLUMN {name} {definition}")
+    if "validation_report_json" not in uploads_existing:
+        conn.execute("ALTER TABLE youtube_uploads ADD COLUMN validation_report_json TEXT")
+    pipeline_late = {row["name"] for row in conn.execute("PRAGMA table_info(patch_pipeline)")}
+    for name, definition in {
+        "preflight_status": "TEXT",
+        "preflight_error_code": "TEXT",
+        "preflight_error": "TEXT",
+        "checked_at": "TEXT",
+        "policy_snapshot": "TEXT",
+        "snapshot_schema_version": "INTEGER NOT NULL DEFAULT 1",
+        "render_attempts": "INTEGER NOT NULL DEFAULT 0",
+        "validation_report_json": "TEXT",
+        "republish_confirmed_for": "TEXT",
+    }.items():
+        if name not in pipeline_late:
+            conn.execute(f"ALTER TABLE patch_pipeline ADD COLUMN {name} {definition}")
+    # Per-book automation flags. New books default both ON (auto_create_video = auto
+    # upload implies create). Legacy books keep their old behavior read from the
+    # youtube.auto_upload flag in automation_config — strict: JSON true -> both on,
+    # anything else (false/missing/broken) -> both off. Runs only when the column has
+    # just been created, so later saves via youtube-settings drive the flags instead.
+    if "auto_create_video" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN auto_create_video INTEGER NOT NULL DEFAULT 1")
+        conn.execute("ALTER TABLE book ADD COLUMN auto_upload_youtube INTEGER NOT NULL DEFAULT 1")
+        for row in conn.execute("SELECT id, automation_config FROM book").fetchall():
+            legacy = False
+            try:
+                raw = json.loads(row["automation_config"] or "{}")
+                youtube_cfg = raw.get("youtube")
+                legacy = isinstance(youtube_cfg, dict) and isinstance(
+                    youtube_cfg.get("auto_upload"), bool) and youtube_cfg["auto_upload"] is True
+            except (TypeError, ValueError, json.JSONDecodeError):
+                legacy = False
+            conn.execute(
+                "UPDATE book SET auto_create_video=?, auto_upload_youtube=? WHERE id=?",
+                (1 if legacy else 0, 1 if legacy else 0, row["id"]),
+            )
     videos_existing = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
     if "book_id" not in videos_existing:
         conn.execute("ALTER TABLE videos ADD COLUMN book_id INTEGER REFERENCES book(id) ON DELETE SET NULL")

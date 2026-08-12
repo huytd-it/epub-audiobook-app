@@ -33,7 +33,8 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     # always use audiobook_tts; persisted voxcpm_tts rows can still finish safely.
     queue.register("voxcpm_tts", audiobook_tts.handle)
     queue.register("video", video.handle)
-    queue.register("patch_video", patch_video.handle)
+    queue.register("patch_video", patch_video.handle,
+                   concurrency=max(1, int(settings.patch_video_concurrency)))
     queue.register("standalone_video", standalone_video.handle)
     queue.register("youtube_upload", youtube_upload.handle, cancellable=False)
     queue.register("light_tts", light_tts.handle)
@@ -46,8 +47,8 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
 def enqueue_pending_patch_jobs(
     conn: sqlite3.Connection, book_id: int | None = None, tts_engine: str | None = None,
     *, voice: str | None = None, max_chars: int = 0, with_effects: bool = False,
-    patch_ids: list[int] | None = None, auto_create_video: bool = False,
-    auto_upload_youtube: bool = False, retry_count: int = 2,
+    patch_ids: list[int] | None = None, auto_create_video: bool | None = None,
+    auto_upload_youtube: bool | None = None, retry_count: int = 2,
     missing_audio_only: bool = False,
 ) -> int:
     """Queue a audiobook_tts job for every 'pending' patch, optionally of a single book.
@@ -93,9 +94,16 @@ def enqueue_pending_patch_jobs(
             continue
         request = {
             "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
-            "with_effects": with_effects, "auto_create_video": auto_create_video,
-            "auto_upload_youtube": auto_upload_youtube,
+            "with_effects": with_effects,
         }
+        # Cờ tự động hoá chỉ vào payload khi operator truyền RÕ — bỏ trống nghĩa là dùng
+        # cột persisted trên sách (auto_create_video/auto_upload_youtube).
+        if auto_create_video is not None:
+            request["auto_create_video"] = bool(auto_create_video)
+        if auto_upload_youtube is not None:
+            request["auto_upload_youtube"] = bool(auto_upload_youtube)
+        if auto_upload_youtube:
+            request["auto_create_video"] = True
         if not explicit_config:
             snapshot = (
                 Path(settings.data_root) / "books" / str(row["book_id"]) / "patches" /

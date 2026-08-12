@@ -1,13 +1,140 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, Eye, FolderOpen, ListPlus, Play, RefreshCw, RotateCcw, Upload, Trash2 } from "lucide-react";
-import { api, post, postForm } from "@/api";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Eye,
+  FolderOpen,
+  ListPlus,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  Upload,
+  Trash2,
+  XCircle,
+} from "lucide-react";
+import { api, post, postForm, InboxProcessResult, InboxStatus } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { ExtendPlan, PlannedPatch, PlannedRangeCheck, ReimportPlan, UploadResult, errorText } from "./types";
+import { ExtendPlan, PlannedPatch, PlannedRangeCheck, ReimportPlan, errorText, PUBLISH_STATUS_LABEL } from "./types";
 import { CheckField, Field, SectionHead, Tile, fieldClass } from "./parts";
+
+/** Báo cáo từng patch sau khi xử lý inbox / upload kết quả: nhận audio, hoặc
+ * bị từ chối kèm lý do, và trạng thái đưa vào dây chuyền YouTube. */
+export function InboxReportList({ report }: { report?: InboxProcessResult }) {
+  if (!report) return null;
+  const { results, renamed, publish_warning } = report;
+  const issues = results.filter((item) => item.status === "error" || item.status === "skipped");
+  const okCount = results.filter((item) => item.status === "ok").length;
+
+  return (
+    <div className="space-y-3">
+      {publish_warning && !report.publish_ready && (
+        <div className="flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{publish_warning}</span>
+        </div>
+      )}
+
+      {results.length > 0 && (
+        <div className="overflow-hidden rounded-md border border-border">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2">
+            <span className="text-xs font-medium">
+              Kết quả từng patch: {okCount} nhận · {issues.length} từ chối / bỏ qua
+            </span>
+            {report.publish_ready && (
+              <span className="text-[10px] font-medium text-emerald-700">
+                Auto-upload bật — patch đã nhận sẽ tự đăng lên YouTube
+              </span>
+            )}
+          </div>
+          <div className="max-h-72 overflow-auto">
+            {results.map((item) => (
+              <div
+                key={item.filename}
+                className="flex flex-col gap-1 border-b border-border px-3 py-2 last:border-0 sm:flex-row sm:items-start sm:gap-3"
+              >
+                <span className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium sm:mt-0.5">
+                  {item.status === "ok" ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">
+                      <CheckCircle2 className="h-2.5 w-2.5" /> Đã nhận
+                    </span>
+                  ) : item.status === "skipped" ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">
+                      <AlertTriangle className="h-2.5 w-2.5" /> Bỏ qua
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-red-700">
+                      <XCircle className="h-2.5 w-2.5" /> Từ chối
+                    </span>
+                  )}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <span className="break-all font-mono text-[11px] font-medium">{item.filename}</span>
+                    {item.patch_index != null && (
+                      <span className="text-[10px] text-muted-foreground">
+                        Patch #{item.patch_index + 1}
+                        {item.patch_name ? ` · ${item.patch_name}` : ""}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {item.status !== "ok"
+                      ? item.detail || "không rõ lý do"
+                      : `Audio ${item.audio ? "đã cài" : "giữ nguyên"}${
+                          item.timeline
+                            ? ` · timeline ${item.timeline === "installed" ? "cài mới" : item.timeline === "rejected" ? "bị từ chối" : item.timeline}`
+                            : ""
+                        }`}
+                  </div>
+                  {item.publish_status && (
+                    <div className="mt-1">
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                          item.publish_status === "queued"
+                            ? "bg-blue-50 text-blue-700"
+                            : item.publish_status === "blocked_active_pipeline" || item.publish_status === "enqueue_failed"
+                              ? "bg-red-50 text-red-700"
+                              : item.publish_status.startsWith("skipped_")
+                                ? "bg-muted text-muted-foreground"
+                                : "bg-emerald-50 text-emerald-700"
+                        )}
+                      >
+                        {item.publish_status === "queued" && item.job_id != null && (
+                          <Link to="/queue" className="underline">#{item.job_id}</Link>
+                        )}
+                        {PUBLISH_STATUS_LABEL[item.publish_status] || item.publish_status}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {renamed.length > 0 && (
+        <details className="text-[11px] text-muted-foreground">
+          <summary className="cursor-pointer font-medium text-foreground">
+            Đổi tên {renamed.length} file theo tên chuẩn
+          </summary>
+          <div className="mt-2 space-y-1 pl-1">
+            {renamed.map((item) => (
+              <div key={`${item.from}-${item.to}`} className="break-all font-mono">
+                {item.from} → {item.to}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
 
 export function BuildPanel({
   bookId,
@@ -31,7 +158,8 @@ export function BuildPanel({
   const [rangeCheck, setRangeCheck] = useState<PlannedRangeCheck>();
   const [building, setBuilding] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [inbox, setInbox] = useState<{ path: string; files: string[]; count: number }>();
+  const [inbox, setInbox] = useState<InboxStatus>();
+  const [inboxReport, setInboxReport] = useState<InboxProcessResult>();
   const [processingInbox, setProcessingInbox] = useState(false);
 
   const [reimportPlan, setReimportPlan] = useState<ReimportPlan>();
@@ -54,7 +182,7 @@ export function BuildPanel({
 
   const loadInbox = useCallback(async () => {
     try {
-      setInbox(await api<{ path: string; files: string[]; count: number }>(`/books/${bookId}/patches/result-inbox`));
+      setInbox(await api<InboxStatus>(`/books/${bookId}/patches/result-inbox`));
     } catch (error) {
       onMessage(errorText(error));
     }
@@ -79,15 +207,21 @@ export function BuildPanel({
     setProcessingInbox(true);
     onBusyChange(true);
     try {
-      const result = await post(`/books/${bookId}/patches/result-inbox/process`) as {
-        installed: number;
-        renamed: { from: string; to: string }[];
-        results: UploadResult[];
-      };
-      const problems = result.results
-        .filter((item) => item.status === "error" || item.status === "skipped")
-        .map((item) => `${item.filename}: ${item.detail || item.status}`);
-      onMessage(`Đã xử lý ${result.installed} audio, đổi tên ${result.renamed.length} file.${problems.length ? ` ${problems.join("; ")}` : ""}`);
+      const report = await api<InboxProcessResult>(`/books/${bookId}/patches/result-inbox/process`, {
+        method: "POST",
+      });
+      const problems = report.results.filter((item) => item.status === "error" || item.status === "skipped");
+      const installedNote = report.publish_ready
+        ? " Auto-upload đang bật — patch đã nhận sẽ chạy tiếp dây chuyền đăng."
+        : report.auto_upload
+          ? ` Auto-upload bật nhưng chưa sẵn sàng.${report.publish_warning ? ` ${report.publish_warning}` : ""}`
+          : "";
+      setInboxReport(report);
+      onMessage(
+        `Đã xử lý ${report.installed} audio, đổi tên ${report.renamed.length} file.${installedNote}${
+          problems.length ? ` ${problems.length} mục bị từ chối — xem chi tiết bên dưới.` : ""
+        }`
+      );
       await Promise.all([loadInbox(), onRefresh()]);
     } catch (error) {
       onMessage(errorText(error));
@@ -211,14 +345,14 @@ export function BuildPanel({
     try {
       const form = new FormData();
       Array.from(files).forEach((file) => form.append("files", file));
-      const result = await postForm<{ installed: number; results: UploadResult[] }>(
-        `/books/${bookId}/patches/upload-results`,
-        form
+      const report = await postForm<InboxProcessResult>(`/books/${bookId}/patches/upload-results`, form);
+      const problems = report.results.filter((item) => item.status === "error" || item.status === "skipped");
+      setInboxReport(report);
+      onMessage(
+        `Đã nhận ${report.installed} kết quả audio.${
+          problems.length ? ` ${problems.length} mục bị từ chối — xem chi tiết bên dưới.` : ""
+        }`
       );
-      const problems = result.results
-        .filter((item) => item.status === "error" || item.status === "skipped")
-        .map((item) => `${item.filename}: ${item.detail || item.status}`);
-      onMessage(`Đã nhận ${result.installed} kết quả audio.${problems.length ? ` ${problems.join("; ")}` : ""}`);
       await onRefresh();
     } catch (error) {
       onMessage(errorText(error));
@@ -407,6 +541,7 @@ export function BuildPanel({
               <RefreshCw className="h-4 w-4" /> Quét lại
             </Button>
           </div>
+          <InboxReportList report={inboxReport} />
           <details className="text-xs text-muted-foreground">
             <summary className="cursor-pointer font-medium text-foreground">Upload trực tiếp (dự phòng)</summary>
             <label className="mt-3 inline-flex">

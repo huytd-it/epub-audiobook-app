@@ -40,11 +40,12 @@ def infer_render_source(conn: sqlite3.Connection, upload: dict) -> tuple[str, in
 
 
 def _terminal(conn: sqlite3.Connection, upload_id: int, count: int,
-              code: str, message: str) -> RecoveryDecision:
+              code: str, message: str, report_json: str | None = None) -> RecoveryDecision:
     conn.execute(
         """UPDATE youtube_uploads SET status='failed', validation_status='failed',
-           validation_error_code=?, validation_error_message=?, error_message=? WHERE id=?""",
-        (code, message[-2000:], message[-2000:], upload_id),
+           validation_error_code=?, validation_error_message=?, validation_report_json=?,
+           error_message=? WHERE id=?""",
+        (code, message[-2000:], report_json, message[-2000:], upload_id),
     )
     conn.commit()
     return RecoveryDecision("failed", count, None, message)
@@ -92,7 +93,8 @@ def _source_error(conn: sqlite3.Connection, source_type: str, source_id: int) ->
 
 
 def schedule_rerender(conn: sqlite3.Connection, upload_id: int,
-                      result: ValidationResult) -> RecoveryDecision:
+                      result: ValidationResult,
+                      report_json: str | None = None) -> RecoveryDecision:
     upload_row = conn.execute("SELECT * FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
     if upload_row is None:
         return RecoveryDecision("failed", 0, None, f"upload {upload_id} not found")
@@ -102,29 +104,33 @@ def schedule_rerender(conn: sqlite3.Connection, upload_id: int,
     if code not in RECOVERABLE_OUTPUT_CODES:
         conn.execute(
             """UPDATE youtube_uploads SET validation_status='failed',
-               validation_error_code=?, validation_error_message=? WHERE id=?""",
-            (code, result.message[-2000:], upload_id),
+               validation_error_code=?, validation_error_message=?, validation_report_json=?
+               WHERE id=?""",
+            (code, result.message[-2000:], report_json, upload_id),
         )
         conn.commit()
         return RecoveryDecision("retry_validation", count, None, result.message)
     source_type, source_id = infer_render_source(conn, upload)
     if source_type == "external" or source_id is None:
         return _terminal(conn, upload_id, count, code,
-                         f"{result.message}; automatic re-render unavailable for external file")
+                         f"{result.message}; automatic re-render unavailable for external file",
+                         report_json=report_json)
     source_error = _source_error(conn, source_type, source_id)
     if source_error:
-        return _terminal(conn, upload_id, count, "source_unavailable", source_error)
+        return _terminal(conn, upload_id, count, "source_unavailable", source_error,
+                         report_json=report_json)
     if count >= 2:
         return _terminal(conn, upload_id, count, code,
-                         f"{result.message}; re-render limit 2/2 exhausted")
+                         f"{result.message}; re-render limit 2/2 exhausted",
+                         report_json=report_json)
 
     next_count = count + 1
     conn.execute(
         """UPDATE youtube_uploads SET status='waiting_for_rerender',
            validation_status='waiting_for_rerender', validation_error_code=?,
-           validation_error_message=?, integrity_retry_count=?, render_source_type=?,
-           render_source_id=? WHERE id=?""",
-        (code, result.message[-2000:], next_count, source_type, source_id, upload_id),
+           validation_error_message=?, validation_report_json=?, integrity_retry_count=?,
+           render_source_type=?, render_source_id=? WHERE id=?""",
+        (code, result.message[-2000:], report_json, next_count, source_type, source_id, upload_id),
     )
     if upload.get("video_id"):
         conn.execute("UPDATE videos SET upload_status='rerendering', error_message=? WHERE id=?",

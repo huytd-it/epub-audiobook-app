@@ -7,7 +7,7 @@ from app import youtube
 from app.jobqueue.models import JobFatalError
 from app.patch_publishing import sync_pipeline_from_upload
 from app.video_repository import update_video
-from app.video_integrity import validate_video
+from app.video_integrity import validate_video, validation_report_json
 from app.video_recovery import schedule_rerender
 
 logger = logging.getLogger(__name__)
@@ -36,15 +36,16 @@ def handle(ctx) -> dict:
     ctx.progress(0, 1, phase="validating")
     youtube.mark_validation_started(ctx.conn, upload_id)
     validation = validate_video(upload["video_path"])
+    report = validation_report_json(validation)
     if not validation.valid:
-        decision = schedule_rerender(ctx.conn, upload_id, validation)
+        decision = schedule_rerender(ctx.conn, upload_id, validation, report_json=report)
         ctx.log(f"validation failed: {validation.error_code}: {validation.message}", level=logging.ERROR)
         if decision.action == "rerender":
             return {"rerender_scheduled": True, "retry_count": decision.retry_count}
         if decision.action == "retry_validation":
             raise RuntimeError(f"{validation.error_code}: {validation.message}")
         raise JobFatalError(decision.message)
-    youtube.mark_validation_valid(ctx.conn, upload_id)
+    youtube.mark_validation_valid(ctx.conn, upload_id, report_json=report)
 
     ctx.progress(0, 1, phase="uploading")
     if video_id:

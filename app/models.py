@@ -41,6 +41,8 @@ class Book:
     text_box_padding: int = 12
     text_box_radius: int = 12
     automation_config: str | None = None
+    auto_create_video: int = 1
+    auto_upload_youtube: int = 1
     tts_model: str | None = None
     tts_max_chars: int | None = None
     tts_with_effects: int = 0

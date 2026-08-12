@@ -4,21 +4,34 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import soundfile as sf
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app import image_overlay, repository, video_gen, youtube
 from app.config import settings
 from app.image_overlay import ensure_patch_overlay
+from app.jobqueue import store
 from app.repository import build_patch_metadata_context, get_book, get_patch
-from app.video_repository import upsert_patch_video
+from app.video_repository import upsert_patch_video, delete_video
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
 from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_override,
-                                  resolve_patch_chapter_range, resolve_patch_youtube_metadata)
+                                  resolve_patch_chapter_range, resolve_patch_youtube_metadata,
+                                  validate_book_youtube_config, validate_timeline)
 from app.video_config import get_book_video_config
 
 STAGES = ("thumbnail", "video", "upload", "thumbnail_setting", "playlist", "published")
+
+# Tổng số lần render/rerender một patch video trước khi pipeline bị khoá chạy tiếp.
+MAX_PATCH_RENDER_ATTEMPTS = 3
+# phiên bản cấu trúc snapshot cấp vào job patch_video lúc enqueue.
+SNAPSHOT_SCHEMA_VERSION = 1
+
+AUTOMATION_PREFLIGHT_STATES = (
+    "no_automation", "waiting_config", "waiting_timeline",
+    "awaiting_republish_confirmation", "ready", "failed",
+)
 
 
 def _now() -> str:
@@ -30,13 +43,242 @@ def _row(conn, patch_id):
     return dict(row) if row else None
 
 
+def audio_fingerprint(patch) -> str:
+    """Định danh nội dung file audio (path:size:hash đầu+cuối) — dùng để nhận diện
+    audio mới so với lần publish trước (republish confirmation) và so với snapshot
+    lúc enqueue. Nội dung thay đổi mới tính là audio mới; tải lại cùng file không
+    kích hoạt xác nhận publish lại."""
+    import hashlib
+
+    path = patch.audio_path or ""
+    if not path or not Path(path).is_file():
+        return f"{path}:missing"
+    try:
+        size = Path(path).stat().st_size
+        head_tail_size = 512 * 1024
+        with open(path, "rb") as fh:
+            head = fh.read(head_tail_size)
+            fh.seek(max(0, size - head_tail_size))
+            digest = hashlib.sha1(head + fh.read(head_tail_size) + str(size).encode()).hexdigest()
+        return f"{path}:{size}:{digest}"
+    except OSError:
+        return f"{path}:missing"
+
+
+def resolve_automation_policy(book, *, request_policy: dict | None = None) -> dict:
+    """Hiệu lực hoá cờ tự động hoá cho một patch.
+
+    Cờ đã lưu của sách (cột book.auto_create_video / book.auto_upload_youtube) là
+    mặc định; request_policy (payload TTS) có auto_* ưu tiên khi được truyền rõ.
+    Upload bao hàm tạo video."""
+    create = bool(book.auto_create_video)
+    upload = bool(book.auto_upload_youtube)
+    if request_policy:
+        if request_policy.get("auto_create_video") is not None:
+            create = bool(request_policy["auto_create_video"])
+        if request_policy.get("auto_upload_youtube") is not None:
+            upload = bool(request_policy["auto_upload_youtube"])
+    if upload:
+        create = True
+    return {"auto_create_video": create, "auto_upload_youtube": upload}
+
+
+def _timeline_status(patch) -> str:
+    """Kiểm tra sidecar timeline của audio: 'missing' | 'valid' | 'invalid'."""
+    audio = Path(patch.audio_path or "")
+    sidecar = audio.with_suffix(".timeline.json")
+    if not sidecar.is_file():
+        return "missing"
+    try:
+        timeline = json.loads(sidecar.read_text(encoding="utf-8"))
+        info = sf.info(str(audio))
+        checked = validate_timeline(timeline, info.samplerate, info.frames)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, sf.SoundFileError):
+        return "invalid"
+    return "valid" if checked is not None else "invalid"
+
+
+def _youtube_privacy(conn, book_id: int) -> str | None:
+    try:
+        return validate_book_youtube_config(get_book_youtube_config(conn, book_id))["privacy_status"]
+    except ValueError:
+        return None
+
+
+def evaluate_patch_preflight(conn: sqlite3.Connection, patch_id: int, *,
+                             request_policy: dict | None = None) -> dict:
+    """Đánh giá một patch có được tự động render/publish hay không.
+
+    Trả về dict state/code/error kèm policy đã hiệu lực hoá; không ghi DB (preflight_patch
+    là phiên bản có ghi trạng thái để book_status/màn hình hiển thị)."""
+    patch = get_patch(conn, patch_id)
+    if patch is None:
+        return {"state": "failed", "code": "patch_not_found", "error": f"patch {patch_id} not found",
+                "policy": None}
+    book = get_book(conn, patch.book_id)
+    if book is None:
+        return {"state": "failed", "code": "book_not_found", "error": f"book {patch.book_id} not found",
+                "policy": None}
+    policy = resolve_automation_policy(book, request_policy=request_policy)
+    if not policy["auto_create_video"] and not policy["auto_upload_youtube"]:
+        return {"state": "no_automation", "code": None, "error": None, "policy": policy}
+    pipeline = _row(conn, patch_id) or {}
+    published_before = bool(pipeline.get("youtube_upload_id")) or pipeline.get("stage") == "published"
+    if published_before:
+        if pipeline.get("republish_confirmed_for") != audio_fingerprint(patch):
+            return {"state": "awaiting_republish_confirmation",
+                    "code": "republish_confirmation_required",
+                    "error": "Audio đã thay đổi sau khi publish; cần xác nhận publish lại.",
+                    "policy": policy}
+    try:
+        video_config = get_book_video_config(conn, book)
+    except ValueError as exc:
+        return {"state": "waiting_config", "code": "video_config_invalid",
+                "error": f"cấu hình video không hợp lệ: {exc}", "policy": policy}
+    resolved = {"policy": policy, "video_config": video_config}
+    if policy["auto_upload_youtube"]:
+        try:
+            youtube_config = validate_book_youtube_config(get_book_youtube_config(conn, patch.book_id))
+        except ValueError as exc:
+            return {"state": "waiting_config", "code": "youtube_config_invalid",
+                    "error": f"cấu hình YouTube không hợp lệ: {exc}", "policy": policy}
+        if not youtube.is_configured() or youtube.get_creds_from_db(conn) is None:
+            return {"state": "waiting_config", "code": "youtube_not_connected",
+                    "error": "YouTube chưa được cấu hình hoặc kết nối", "policy": policy}
+        playlist = youtube_config["playlist"]
+        if playlist["mode"] != "existing":
+            return {"state": "waiting_config", "code": "youtube_playlist_required",
+                    "error": "Auto-upload cần một playlist hợp lệ", "policy": policy}
+        if not playlist["playlist_id"]:
+            return {"state": "waiting_config", "code": "youtube_playlist_missing",
+                    "error": "Playlist chưa được chọn", "policy": policy}
+        timeline = _timeline_status(patch)
+        if timeline != "valid":
+            return {"state": "waiting_timeline",
+                    "code": "timeline_invalid" if timeline == "invalid" else "timeline_missing",
+                    "error": ("Timeline không hợp lệ" if timeline == "invalid"
+                              else "Chưa có timeline để publish phần chương"),
+                    "policy": policy}
+        resolved["youtube_config"] = youtube_config
+        resolved["privacy_status"] = youtube_config["privacy_status"]
+    return {"state": "ready", "code": None, "error": None, **resolved}
+
+
+def preflight_patch(conn: sqlite3.Connection, patch_id: int, *,
+                    request_policy: dict | None = None) -> dict:
+    """evaluate_patch_preflight + ghi trạng thái vào patch_pipeline (upsert)."""
+    result = evaluate_patch_preflight(conn, patch_id, request_policy=request_policy)
+    policy = result.get("policy") or {}
+    now = _now()
+    conn.execute(
+        """INSERT INTO patch_pipeline
+               (patch_id, stage, config_snapshot, media_snapshot, preflight_status,
+                preflight_error_code, preflight_error, checked_at, policy_snapshot,
+                created_at, updated_at)
+           VALUES (?, 'pending', '{}', '{}', ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(patch_id) DO UPDATE SET
+               preflight_status=excluded.preflight_status,
+               preflight_error_code=excluded.preflight_error_code,
+               preflight_error=excluded.preflight_error,
+               checked_at=excluded.checked_at,
+               policy_snapshot=excluded.policy_snapshot,
+               updated_at=excluded.updated_at""",
+        (patch_id, result["state"], result["code"],
+         (result.get("error") or "")[:2000], now,
+         json.dumps({**policy, "snapshot_schema_version": SNAPSHOT_SCHEMA_VERSION}, ensure_ascii=False),
+         now, now),
+    )
+    conn.commit()
+    return result
+
+
+def _resolve_sequence_inputs(book, patch, config: dict):
+    """Chia chế độ render khi enqueue: chuỗi nhiều ảnh nền hay ảnh đơn.
+
+    Trả về (sequence, backgrounds, image, image_type) — các giá trị này được
+    đóng băng vào job payload để render không phụ thuộc config hiện tại."""
+    fallback = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
+    raw_bg = video_gen.resolve_configured_patch_image(patch, config, fallback or "")
+    backgrounds = [p for p in config.get("backgrounds", []) if isinstance(p, str)]
+    sequence = len(backgrounds) > 1 and not (patch.image_path and Path(patch.image_path).exists())
+    image = raw_bg
+    if not sequence and raw_bg and not video_gen.is_video_background(raw_bg):
+        image = ensure_patch_overlay(book, patch, settings.default_font_path or None,
+                                     background_path=raw_bg) or raw_bg
+    image_type = "none" if (sequence or (raw_bg and video_gen.is_video_background(raw_bg))) else (
+        patch.image_type if patch.image_type and patch.image_type != "static"
+        else (book.default_image_animation or "none"))
+    return sequence, backgrounds, raw_bg, image, image_type
+
+
+def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict,
+                           pipeline: dict) -> dict:
+    """Đóng băng toàn bộ dữ liệu render cần thiết vào một dict JSON-safe.
+
+    render_config/audio lấy từ media_snapshot vừa được enqueue_patch_publish ghi
+    (bất biến từ lúc enqueue); phần chọn chuỗi ảnh nền lấy theo config lúc enqueue."""
+    config = resolved["video_config"]
+    try:
+        media = json.loads(pipeline.get("media_snapshot") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        media = {}
+    render_config = media.get("render_config")
+    if not isinstance(render_config, dict):
+        render_config = {"resolution": book.video_resolution or "1920x1080",
+                         "fps": book.video_fps or 30, "codec": "libx264",
+                         "crf": 23, "audio_bitrate": "192k"}
+    sequence, backgrounds, raw_bg, image, image_type = _resolve_sequence_inputs(book, patch, config)
+    if not raw_bg:
+        raise ValueError("chưa có ảnh nền để tạo video")
+    return {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "audio_path": media.get("audio_path") or patch.audio_path,
+        "audio_fingerprint": audio_fingerprint(patch),
+        "thumbnail_path": pipeline.get("thumbnail_path"),
+        "render_config": render_config,
+        "sequence": sequence,
+        "backgrounds": backgrounds,
+        "image": image,
+        "image_type": image_type,
+        "sequence_config": {
+            key: config.get(key) for key in (
+                "image_duration_seconds", "background_mode", "crossfade_enabled",
+                "crossfade_seconds", "ken_burns_enabled", "progress_bar_enabled",
+                "waveform_config",
+            )
+        },
+    }
+
+
+def discard_stale_patch_video(conn: sqlite3.Connection, book_id: int, patch_id: int) -> None:
+    """Xoá render cũ (row videos + file) và đưa pipeline về trạng thái chờ render mới.
+
+    Dùng khi audio của patch vừa thay đổi và cần dựng lại video từ đầu —
+    render_attempts về 0 cho phép một chu kỳ render mới."""
+    video_path = Path(settings.data_root) / "books" / str(book_id) / "patch_videos" / f"{patch_id}.mp4"
+    row = conn.execute("SELECT id FROM videos WHERE file_path=?", (str(video_path),)).fetchone()
+    if row:
+        delete_video(conn, row["id"])
+    else:
+        video_path.unlink(missing_ok=True)
+    conn.execute(
+        """UPDATE patch_pipeline SET stage='video', video_status='pending', video_id=NULL,
+                  video_path=NULL, youtube_upload_id=NULL, upload_status='pending',
+                  playlist_status='pending', render_attempts=0, republish_confirmed_for=NULL,
+                  validation_report_json=NULL, last_error=NULL, updated_at=?
+            WHERE patch_id=?""", (_now(), patch_id),
+    )
+    conn.commit()
+
+
 def fetch_thumbnail_inputs(conn: sqlite3.Connection, patch_id: int):
     """Read what warm_patch_thumbnail needs. Cheap: two row lookups and a config read."""
     patch = get_patch(conn, patch_id)
     book = get_book(conn, patch.book_id) if patch else None
     if not patch or not book:
         return None
-    if not get_book_youtube_config(conn, patch.book_id).get("auto_upload"):
+    policy = resolve_automation_policy(book)
+    if not policy["auto_create_video"] and not policy["auto_upload_youtube"]:
         return None
     return book, patch
 
@@ -261,3 +503,163 @@ def run_patch_publish_stage(conn: sqlite3.Connection, patch_id: int) -> dict:
 
 def retry_patch_publish(conn: sqlite3.Connection, patch_id: int) -> dict:
     return run_patch_publish_stage(conn, patch_id) if _row(conn, patch_id) else enqueue_patch_publish(conn, patch_id)
+
+
+def enqueue_patch_video(conn: sqlite3.Connection, patch_id: int, *,
+                        request_policy: dict | None = None,
+                        force_new: bool = False,
+                        privacy: str | None = None) -> dict:
+    """Cổng tự động hoá duy nhất: preflight -> snapshot bất biến -> enqueue patch_video.
+
+    force_new=True khi audio vừa thay đổi (result-inbox, republish): xoá render cũ và
+    đóng băng snapshot theo config hiện tại. Trả về {"state": ...} — 'queued' hoặc một
+    trạng thái preflight để caller hiển thị/ghi log."""
+    patch = get_patch(conn, patch_id)
+    if patch is None:
+        return {"state": "failed", "code": "patch_not_found", "error": f"patch {patch_id} not found"}
+    result = preflight_patch(conn, patch_id, request_policy=request_policy)
+    if result["state"] != "ready":
+        return result
+    book = get_book(conn, patch.book_id)
+    if book is None:
+        return {"state": "failed", "code": "book_not_found",
+                "error": f"book {patch.book_id} not found"}
+    if force_new:
+        discard_stale_patch_video(conn, patch.book_id, patch_id)
+        enqueue_patch_publish(conn, patch_id, force_new=True)
+    elif _row(conn, patch_id) is None:
+        enqueue_patch_publish(conn, patch_id)
+    else:
+        pipeline_row = _row(conn, patch_id)
+        if pipeline_row["stage"] == "pending" and not (pipeline_row["config_snapshot"] or "").strip("{} \n\t"):
+            enqueue_patch_publish(conn, patch_id, force_new=True)
+    pipeline = _row(conn, patch_id)
+    if not pipeline["thumbnail_path"] or not Path(pipeline["thumbnail_path"]).is_file():
+        return {"state": "failed", "code": "source_unavailable", "error": "chưa có thumbnail để render"}
+    try:
+        snapshot = build_enqueue_snapshot(conn, book, patch, result, pipeline)
+    except ValueError as exc:
+        return {"state": "failed", "code": "source_unavailable", "error": str(exc)}
+    if not snapshot["audio_path"] or not Path(snapshot["audio_path"]).is_file():
+        return {"state": "failed", "code": "source_unavailable",
+                "error": f"audio thiếu: {snapshot['audio_path']}"}
+    for key in ("music_path", "intro_audio", "outro_audio"):
+        value = snapshot["render_config"].get(key)
+        if value and not Path(value).is_file():
+            return {"state": "failed", "code": "source_unavailable",
+                    "error": f"{key} thiếu: {value}"}
+    dedupe_key = f"patch_video:patch={patch_id}"
+    existing = store.find_live_by_dedupe(conn, dedupe_key)
+    if existing is not None:
+        return {"state": "queued", "job_id": existing.id, "deduplicated": True}
+    job_id = store.enqueue(
+        conn, "patch_video",
+        payload={
+            "patch_id": patch_id,
+            "snapshot": snapshot,
+            "schema_version": SNAPSHOT_SCHEMA_VERSION,
+            "upload_youtube": result["policy"]["auto_upload_youtube"],
+            "privacy": privacy or result.get("privacy_status") or "private",
+        },
+        book_id=patch.book_id, patch_id=patch_id, dedupe_key=dedupe_key,
+    )
+    if job_id is None:
+        return {"state": "failed", "code": "enqueue_failed", "error": "không thể enqueue job tạo video"}
+    return {"state": "queued", "job_id": job_id}
+
+
+def confirm_patch_republish(conn: sqlite3.Connection, patch_id: int) -> dict:
+    """Xác nhận publish lại audio đã thay đổi và NGAY LẬP TỨC preflight + snapshot +
+    enqueue patch_video mới (upload intent theo policy). Đóng dấu audio hiện tại
+    trước khi enqueue để preflight không quay lại awaiting; render mới thay thế
+    pipeline nhưng mọi row youtube_uploads cũ (lịch sử upload) được giữ nguyên.
+
+    Trả về state/job_id của lần enqueue kèm pipeline mới."""
+    patch = get_patch(conn, patch_id)
+    if patch is None:
+        raise ValueError(f"patch {patch_id} not found")
+    pipeline = _row(conn, patch_id)
+    if pipeline is None:
+        raise ValueError("patch chưa publish trước đó — không cần xác nhận")
+    conn.execute(
+        "UPDATE patch_pipeline SET republish_confirmed_for=?, updated_at=? WHERE patch_id=?",
+        (audio_fingerprint(patch), _now(), patch_id),
+    )
+    conn.commit()
+    enqueued = enqueue_patch_video(conn, patch_id, force_new=True)
+    return {**enqueued, "pipeline": _row(conn, patch_id)}
+
+
+def reconcile_patch_automation(conn: sqlite3.Connection, *,
+                               book_id: int | None = None,
+                               request_policy: dict | None = None) -> dict:
+    """Đồng bộ tự động hoá cho mọi patch có audio: patch chưa render -> enqueue
+    patch_video (snapshot hiện tại), đã có video hợp lệ nhưng chưa upload -> chạy
+    publish stage + enqueue youtube_upload. Chạy lúc khởi động và sau khi sửa config.
+
+    Mỗi patch nằm trong try/except riêng — một patch lỗi không chặn phần còn lại."""
+    where, params = "WHERE p.status='done'", []
+    if book_id is not None:
+        where += " AND p.book_id=?"
+        params.append(book_id)
+    rows = conn.execute(
+        f"""SELECT p.id, p.book_id, p.audio_path FROM patch p
+            {where} ORDER BY p.book_id, p.patch_index""", params,
+    ).fetchall()
+    stats = {"checked": 0, "enqueued_render": 0, "enqueued_upload": 0,
+             "already_live": 0, "skipped": 0, "errors": []}
+    for row in rows:
+        stats["checked"] += 1
+        patch_id = int(row["id"])
+        try:
+            if not row["audio_path"] or not Path(row["audio_path"]).is_file():
+                stats["skipped"] += 1
+                continue
+            result = preflight_patch(conn, patch_id, request_policy=request_policy)
+            if result["state"] != "ready":
+                stats["skipped"] += 1
+                continue
+            if store.find_live_by_dedupe(conn, f"patch_video:patch={patch_id}") is not None:
+                stats["already_live"] += 1
+                continue
+            pipeline = _row(conn, patch_id) or {}
+            upload_id = pipeline.get("youtube_upload_id")
+            if upload_id:
+                upload = conn.execute(
+                    "SELECT status FROM youtube_uploads WHERE id=?", (upload_id,),
+                ).fetchone()
+                if upload and upload["status"] in ("pending", "claiming", "uploading",
+                                                    "waiting_for_rerender"):
+                    stats["already_live"] += 1
+                    continue
+                if upload and upload["status"] == "done":
+                    stats["skipped"] += 1
+                    continue
+            video_ready = (pipeline.get("video_status") == "done"
+                           and pipeline.get("video_path")
+                           and Path(pipeline["video_path"]).is_file())
+            if video_ready and not upload_id:
+                # Đã có video hợp lệ trên đĩa — chỉ thiếu bước upload. run_patch_publish_stage
+                # không render lại khi video_status='done' (chỉ resolve metadata + tạo row).
+                run_patch_publish_stage(conn, patch_id)
+                refreshed = _row(conn, patch_id) or {}
+                new_upload_id = refreshed.get("youtube_upload_id")
+                if new_upload_id:
+                    store.enqueue(
+                        conn, "youtube_upload", payload={"upload_id": new_upload_id},
+                        book_id=row["book_id"], dedupe_key=f"youtube_upload:upload={new_upload_id}",
+                    )
+                    stats["enqueued_upload"] += 1
+                    continue
+                stats["skipped"] += 1
+                continue
+            enqueued = enqueue_patch_video(conn, patch_id, request_policy=request_policy,
+                                           force_new=bool(pipeline))
+            if enqueued["state"] == "queued":
+                stats["enqueued_render"] += 1
+            else:
+                stats["skipped"] += 1
+        except Exception as exc:  # noqa: BLE001 - mỗi patch là một chốt chặn riêng
+            logging.getLogger(__name__).exception("automation reconcile failed for patch %s", patch_id)
+            stats["errors"].append({"patch_id": patch_id, "error": str(exc)[:500]})
+    return stats

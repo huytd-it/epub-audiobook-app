@@ -18,10 +18,18 @@ import { Header, LoadingState } from "@/components/common/Header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/common/StatusBadge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { AudioSettings, ConfigTab, NormalizationSettings, errorText } from "./book-detail/types";
 import { useBookDetail, useChapterValidation, useTtsOptions } from "./book-detail/useBookDetail";
-import { LiveIndicator, TabBar } from "./book-detail/parts";
+import { CheckField, LiveIndicator, TabBar } from "./book-detail/parts";
 import { PatchesPanel } from "./book-detail/PatchesPanel";
 import { BuildPanel } from "./book-detail/BuildPanel";
 import { ExportPanel } from "./book-detail/ExportPanel";
@@ -31,6 +39,98 @@ import { ConfigDialog, PatchPreviewDialog, TitleNormalizeDialog } from "./book-d
 import { OverlayEditor } from "./book-detail/OverlayEditor";
 
 type MainTab = "patches" | "build" | "chapters" | "thumbnail";
+
+/** Tùy chọn tự động hoá khi chạy hàng loạt TTS: dựng video (bắt buộc nếu muốn
+ * auto-upload) và/hoặc upload YouTube. */
+export type BatchTtsAutomation = {
+  autoCreateVideo: boolean;
+  autoUploadYoutube: boolean;
+  retryCount: number;
+};
+
+const DEFAULT_AUTOMATION: BatchTtsAutomation = {
+  autoCreateVideo: false,
+  autoUploadYoutube: false,
+  retryCount: 2,
+};
+
+/** Hộp thoại xác nhận TTS hàng loạt kèm thiết lập tự động hoá patch pipeline.
+ * Ràng buộc: upload YouTube bắt buộc kéo theo dựng video (upload => create). */
+export function BatchTtsDialog({
+  targets,
+  automation,
+  onAutomationChange,
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  targets: number;
+  automation: BatchTtsAutomation;
+  onAutomationChange: (patch: Partial<BatchTtsAutomation>) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  const toggleUpload = (value: boolean) => {
+    onAutomationChange({ autoUploadYoutube: value, autoCreateVideo: value ? true : automation.autoCreateVideo });
+  };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] max-w-lg overflow-auto">
+        <DialogHeader>
+          <DialogTitle>Tạo audio cho {targets} patch</DialogTitle>
+          <DialogDescription>
+            Đưa các patch vào hàng đợi TTS. Bật tự động hoá để nối tiếp dây chuyền video/YouTube ngay sau khi audio
+            hoàn thành.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="space-y-3 rounded-md border border-border p-3">
+            <CheckField
+              checked={automation.autoCreateVideo}
+              disabled={automation.autoUploadYoutube}
+              onChange={(value) => onAutomationChange({ autoCreateVideo: value })}
+              label="Tự động dựng video sau khi audio xong"
+            />
+            <CheckField
+              checked={automation.autoUploadYoutube}
+              onChange={toggleUpload}
+              label="Tự động upload lên YouTube sau khi dựng video"
+            />
+            {automation.autoUploadYoutube && (
+              <div className="rounded-md bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+                Đã bật kéo theo dựng video bắt buộc — video là tiền đề của upload, nên không thể tắt mục trên khi
+                upload vẫn bật.
+              </div>
+            )}
+          </div>
+
+          <label className="block text-xs font-medium">
+            <span className="flex items-baseline justify-between gap-2">
+              Số lần thử lại khi lỗi
+              <span className="font-normal text-muted-foreground">0–10 · mặc định 2</span>
+            </span>
+            <input
+              type="number"
+              min="0"
+              max="10"
+              className="mt-1.5 h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+              value={automation.retryCount}
+              onChange={(event) =>
+                onAutomationChange({ retryCount: Math.max(0, Math.min(10, Number(event.target.value) || 0)) })
+              }
+            />
+          </label>
+        </div>
+
+        <DialogFooter>
+          <Button onClick={onConfirm}>Đưa {targets} patch vào hàng đợi</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export function BookDetail() {
   const { id } = useParams();
@@ -48,6 +148,9 @@ export function BookDetail() {
   const [normalizeOpen, setNormalizeOpen] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
   const [running, setRunning] = useState<"audio" | "video" | "youtube" | "thumbnail">();
+  const [ttsOpen, setTtsOpen] = useState(false);
+  const [ttsTargets, setTtsTargets] = useState(0);
+  const [automation, setAutomation] = useState<BatchTtsAutomation>(DEFAULT_AUTOMATION);
   const [settings, setSettings] = useState<AudioSettings>({
     modelId: "voxcpm2",
     voiceId: "",
@@ -68,7 +171,7 @@ export function BookDetail() {
   );
 
   // Dừng polling khi đang mở dialog hoặc đang chạy thao tác: tránh ghi đè state giữa chừng.
-  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || busyCount > 0;
+  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || ttsOpen || busyCount > 0;
   const { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh } = useBookDetail(
     bookId,
     paused
@@ -210,38 +313,35 @@ export function BookDetail() {
         return;
       }
 
+      // TTS hàng loạt cần xác nhận + thiết lập tự động hoá (dựng video / upload
+      // YouTube). Các bước video/YouTube chạy ngay như cũ.
+      if (kind === "audio") {
+        setTtsTargets(targets.length);
+        setTtsOpen(true);
+        return;
+      }
+
       setRunning(kind);
       setBusy(true);
       try {
-        if (kind === "audio") {
-          const result = await postJson<{ queued: number }>(`/books/${bookId}/tts/generate`, {
-            patch_ids: targets,
-            model_id: settings.modelId,
-            voice_id: settings.voiceId || undefined,
-            max_chars: settings.maxChars ? Number(settings.maxChars) : undefined,
-            with_effects: settings.withEffects,
-          });
-          setMessage(`Đã đưa ${result.queued} patch vào hàng đợi TTS.`);
-        } else {
-          const endpoint = kind === "video" ? "generate-video" : "youtube-upload";
-          const label = kind === "video" ? "video" : "YouTube";
-          let queued = 0;
-          let firstError: unknown;
-          // Gửi tuần tự để hàng đợi giữ đúng thứ tự patch.
-          for (const patchId of targets) {
-            try {
-              await post(`/books/${bookId}/patches/${patchId}/${endpoint}`);
-              queued++;
-            } catch (err) {
-              if (!firstError) firstError = err;
-            }
+        const endpoint = kind === "video" ? "generate-video" : "youtube-upload";
+        const label = kind === "video" ? "video" : "YouTube";
+        let queued = 0;
+        let firstError: unknown;
+        // Gửi tuần tự để hàng đợi giữ đúng thứ tự patch.
+        for (const patchId of targets) {
+          try {
+            await post(`/books/${bookId}/patches/${patchId}/${endpoint}`);
+            queued++;
+          } catch (err) {
+            if (!firstError) firstError = err;
           }
-          setMessage(
-            queued === targets.length
-              ? `Đã đưa ${queued} patch vào hàng đợi ${label}.`
-              : `Đã đưa ${queued}/${targets.length} patch vào hàng đợi ${label}. ${errorText(firstError)}`
-          );
         }
+        setMessage(
+          queued === targets.length
+            ? `Đã đưa ${queued} patch vào hàng đợi ${label}.`
+            : `Đã đưa ${queued}/${targets.length} patch vào hàng đợi ${label}. ${errorText(firstError)}`
+        );
         await refresh();
       } catch (err) {
         setMessage(errorText(err));
@@ -262,6 +362,53 @@ export function BookDetail() {
     setConfigTab(next);
     setConfigOpen(true);
   }, []);
+
+  /** Chạy TTS hàng loạt với tự động hoá đã chọn trong dialog xác nhận. */
+  const confirmBatchTts = useCallback(async () => {
+    const targets = selectedIds.length ? selectedIds : patches.map((patch) => patch.id);
+    if (!targets.length || running) return;
+    const nextAutomation = {
+      autoCreateVideo: automation.autoUploadYoutube || automation.autoCreateVideo,
+      autoUploadYoutube: automation.autoUploadYoutube,
+      retryCount: automation.retryCount,
+    };
+    setRunning("audio");
+    setBusy(true);
+    try {
+      const result = await postJson<{
+        queued: number;
+        auto_create_video: boolean;
+        auto_upload_youtube: boolean;
+        retry_count: number;
+      }>(`/books/${bookId}/tts/generate`, {
+        patch_ids: targets,
+        model_id: settings.modelId,
+        voice_id: settings.voiceId || undefined,
+        max_chars: settings.maxChars ? Number(settings.maxChars) : undefined,
+        with_effects: settings.withEffects,
+        auto_create_video: nextAutomation.autoCreateVideo,
+        auto_upload_youtube: nextAutomation.autoUploadYoutube,
+        retry_count: nextAutomation.retryCount,
+      });
+      const chain = result.auto_upload_youtube
+        ? " → tự động dựng video và upload YouTube"
+        : result.auto_create_video
+          ? " → tự động dựng video"
+          : "";
+      setMessage(
+        `Đã đưa ${result.queued} patch vào hàng đợi TTS${chain}.${
+          result.retry_count ? ` Tối đa ${result.retry_count + 1} lần thử mỗi patch.` : ""
+        }`
+      );
+      await refresh();
+    } catch (err) {
+      setMessage(errorText(err));
+    } finally {
+      setRunning(undefined);
+      setBusy(false);
+      setTtsOpen(false);
+    }
+  }, [automation, bookId, patches, refresh, running, selectedIds, setBusy, settings]);
 
   const openChapter = useCallback((index: number) => {
     setChapterIndex(index);
@@ -564,13 +711,22 @@ export function BookDetail() {
         </div>
       )}
 
-      <PatchPreviewDialog
+<PatchPreviewDialog
         bookId={bookId}
         patch={previewPatch}
         chapters={data.chapters}
         open={previewOpen}
         onOpenChange={setPreviewOpen}
         onMessage={setMessage}
+      />
+
+      <BatchTtsDialog
+        targets={ttsTargets}
+        automation={automation}
+        onAutomationChange={(patch) => setAutomation((current) => ({ ...current, ...patch }))}
+        open={ttsOpen}
+        onOpenChange={setTtsOpen}
+        onConfirm={confirmBatchTts}
       />
 
       <ConfigDialog

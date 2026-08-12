@@ -18,7 +18,7 @@ from app.video_integrity import ValidationFacts, ValidationResult
 
 @pytest.fixture(autouse=True)
 def _valid_generated_video(monkeypatch):
-    valid = lambda p: ValidationResult(True, None, "", (), ValidationFacts(), 0)
+    valid = lambda p, **kw: ValidationResult(True, None, "", (), ValidationFacts(), 0)
     monkeypatch.setattr(patches, "validate_video", valid)
     monkeypatch.setattr(patch_video, "validate_video", valid)
 

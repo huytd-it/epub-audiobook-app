@@ -95,6 +95,9 @@ def test_retry_skips_tts_when_valid_audio_result_already_exists(tmp_path, monkey
     conn = db.connect(str(tmp_path / "existing.db"))
     db.init_schema(conn)
     patch_id = _book_with_patch(conn)
+    conn.execute(
+        "UPDATE book SET auto_create_video=1, auto_upload_youtube=0 WHERE id=1")
+    conn.commit()
     audio = tmp_path / "existing.wav"
     sf.write(audio, np.zeros(2400, dtype="float32"), 24000)
     conn.execute(

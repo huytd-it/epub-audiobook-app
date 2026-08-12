@@ -43,15 +43,54 @@ export type ExportContext = {
   accounts: DriveAccount[];
 };
 
-export type UploadResult = { filename: string; status: string; detail?: string };
+export type UploadResult = import("@/api").UploadResult;
 
+/** Trạng thái pipeline patch từ /books/{id}/status. Các trường bổ sung của bản
+ * backend mới (attempts, next_retry_at, video_path...) được để optional để trang
+ * vẫn hoạt động với mọi phiên bản API. */
 export type PipelineInfo = {
   stage: string;
+  thumbnail_status: string;
   video_status: string;
   upload_status: string;
-  upload_state: string;
+  playlist_status: string;
+  thumbnail_path: string | null;
   youtube_upload_id: number | null;
   last_error: string | null;
+  upload_state: string;
+  can_force_new: boolean;
+  attempt_count?: number;
+  video_path?: string | null;
+  video_id?: number | null;
+  next_retry_at?: string | null;
+};
+
+/** Giai đoạn pipeline bị chặn (cần thao tác của người dùng thay vì chờ worker). */
+export const BLOCKED_STAGES = [
+  "auth_required",
+  "waiting_for_audio",
+  "waiting_for_media",
+  "retry_wait",
+];
+
+export function stageBlockedReason(stage: string | undefined): string | null {
+  if (!stage) return null;
+  if (stage === "auth_required") return "Cần kết nối lại YouTube";
+  if (stage === "waiting_for_audio") return "Đang chờ audio của patch";
+  if (stage === "waiting_for_media") return "Đang chờ media nền hợp lệ";
+  if (stage === "retry_wait") return "Đang chờ thời điểm thử lại";
+  return null;
+}
+
+/** Nhãn hiển thị cho publish_status trả về từ inbox / upload kết quả. */
+export const PUBLISH_STATUS_LABEL: Record<string, string> = {
+  queued: "Đã đưa vào hàng đợi YouTube",
+  pending: "Chờ pipeline đăng",
+  skipped_already_published: "Đã đăng trước đó — bỏ qua",
+  skipped_youtube_not_ready: "YouTube chưa sẵn sàng (auto-upload bật)",
+  skipped_auto_upload_disabled: "Đã nhận audio — auto-upload đang tắt",
+  blocked_active_pipeline: "Bị chặn: patch đang dựng hoặc upload video",
+  enqueue_failed: "Đã nhận audio — lỗi khi đưa vào hàng đợi đăng",
 };
 
 export type BookStatus = {

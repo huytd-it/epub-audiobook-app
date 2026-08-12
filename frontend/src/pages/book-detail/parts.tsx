@@ -62,10 +62,12 @@ export function CheckField({
   checked,
   onChange,
   label,
+  disabled,
 }: {
   checked: boolean;
   onChange: (value: boolean) => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <label className="flex cursor-pointer items-center gap-2 text-xs font-medium">
@@ -73,9 +75,10 @@ export function CheckField({
         type="checkbox"
         className={checkboxClass}
         checked={checked}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
       />
-      {label}
+      <span className={disabled ? "text-muted-foreground" : undefined}>{label}</span>
     </label>
   );
 }

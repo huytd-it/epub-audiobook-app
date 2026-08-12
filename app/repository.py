@@ -928,6 +928,31 @@ def update_book_video_settings(
     conn.commit()
 
 
+def update_book_automation_flags(
+    conn: sqlite3.Connection,
+    book_id: int,
+    *,
+    auto_create_video: bool | None = None,
+    auto_upload_youtube: bool | None = None,
+) -> None:
+    """Update per-book automation flags (auto_create_video / auto_upload_youtube)."""
+    parts = []
+    params = []
+    if auto_create_video is not None:
+        parts.append("auto_create_video = ?")
+        params.append(1 if auto_create_video else 0)
+    if auto_upload_youtube is not None:
+        parts.append("auto_upload_youtube = ?")
+        params.append(1 if auto_upload_youtube else 0)
+    if not parts:
+        return
+    parts.append("updated_at = ?")
+    params.append(_now())
+    params.append(book_id)
+    conn.execute(f"UPDATE book SET {', '.join(parts)} WHERE id = ?", params)
+    conn.commit()
+
+
 def rename_book(conn: sqlite3.Connection, book_id: int, new_title: str) -> bool:
     cur = conn.execute(
         "UPDATE book SET title = ?, updated_at = ? WHERE id = ?",
