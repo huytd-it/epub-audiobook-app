@@ -38,6 +38,25 @@ def _job_dict(job) -> dict:
     return data
 
 
+def _production_names(conn, jobs) -> dict[int, str]:
+    patch_ids = {
+        patch_id
+        for job in jobs
+        if (patch_id := job.patch_id or job.payload.get("patch_id")) is not None
+    }
+    if not patch_ids:
+        return {}
+    placeholders = ",".join("?" for _ in patch_ids)
+    rows = conn.execute(
+        f"SELECT id, book_id, patch_index FROM patch WHERE id IN ({placeholders})",
+        tuple(patch_ids),
+    ).fetchall()
+    return {
+        row["id"]: f"{row['book_id']}_{row['patch_index'] + 1:03d}"
+        for row in rows
+    }
+
+
 def _pools(worker) -> list[dict]:
     if worker is None or not hasattr(worker, "pool_status"):
         return []
@@ -140,7 +159,14 @@ def list_jobs(request: Request, type: str = "", status: str = "",
     with locked_conn(request) as conn:
         jobs = store.list_jobs(conn, job_type=type or None, status=status or None,
                                book_id=book_id, limit=limit)
-    return {"jobs": [_job_dict(job) for job in jobs]}
+        production_names = _production_names(conn, jobs)
+    result = []
+    for job in jobs:
+        data = _job_dict(job)
+        patch_id = job.patch_id or job.payload.get("patch_id")
+        data["production_name"] = production_names.get(patch_id)
+        result.append(data)
+    return {"jobs": result}
 
 
 @router.get("/queue/jobs/{job_id}")
@@ -204,6 +230,14 @@ def retry_job(request: Request, job_id: int):
         if not store.retry(conn, job_id):
             raise HTTPException(409, detail="chỉ retry được job đã kết thúc")
     return {"job_id": job_id, "retried": True}
+
+
+@router.post("/queue/jobs/retry-all-failed")
+def retry_all_failed_jobs(request: Request):
+    with locked_conn(request) as conn:
+        retried = store.retry_all_failed(conn)
+    logger.info("event=queue.retry_all_failed count=%s", retried)
+    return {"retried": retried}
 
 
 @router.delete("/queue/jobs/{job_id}")

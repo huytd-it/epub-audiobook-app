@@ -46,6 +46,32 @@ def test_enqueue_reuses_a_dedupe_key_after_the_job_finished():
     assert second is not None and second != first
 
 
+def test_enqueue_dedupes_live_job_by_type_and_payload_patch_id():
+    conn = _conn()
+    now = _iso()
+    conn.execute(
+        """INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,created_at,updated_at)
+           VALUES (1,'Sách','a.epub','a.epub',10,'ready',?,?)""", (now, now))
+    patch_id = conn.execute(
+        """INSERT INTO patch (book_id,patch_index,chapter_start,chapter_end,status,
+                              attempt_count,created_at,updated_at)
+           VALUES (1,0,0,0,'pending',0,?,?)""", (now, now)).lastrowid
+    conn.commit()
+
+    first = store.enqueue(conn, "patch_video", payload={"patch_id": patch_id})
+
+    assert first is not None
+    assert store.get(conn, first).patch_id == patch_id
+    assert store.enqueue(conn, "patch_video", payload={"patch_id": patch_id}) is None
+    assert store.enqueue(conn, "light_tts", payload={"patch_id": patch_id}) is not None
+
+
+def test_enqueue_rejects_mismatched_patch_ids():
+    conn = _conn()
+    with pytest.raises(ValueError, match="patch_id does not match"):
+        store.enqueue(conn, "patch_video", payload={"patch_id": 1}, patch_id=2)
+
+
 def test_claim_moves_the_job_to_running_and_bumps_attempt_count():
     conn = _conn()
     job_id = store.enqueue(conn, "video")
@@ -216,6 +242,29 @@ def test_retry_refuses_a_running_job():
     job_id = store.enqueue(conn, "video")
     store.claim(conn, "video", "w")
     assert store.retry(conn, job_id) is False
+
+
+def test_retry_all_failed_only_retries_latest_type_patch_pair():
+    conn = _conn()
+    now = _iso()
+    conn.execute(
+        """INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,created_at,updated_at)
+           VALUES (1,'Sách','a.epub','a.epub',10,'ready',?,?)""", (now, now))
+    patch_id = conn.execute(
+        """INSERT INTO patch (book_id,patch_index,chapter_start,chapter_end,status,
+                              attempt_count,created_at,updated_at)
+           VALUES (1,0,0,0,'pending',0,?,?)""", (now, now)).lastrowid
+    conn.commit()
+    old = store.enqueue(conn, "patch_video", payload={"patch_id": patch_id})
+    conn.execute("UPDATE job SET status='failed' WHERE id=?", (old,))
+    conn.commit()
+    latest = store.enqueue(conn, "patch_video", payload={"patch_id": patch_id})
+    conn.execute("UPDATE job SET status='failed' WHERE id=?", (latest,))
+    conn.commit()
+
+    assert store.retry_all_failed(conn) == 1
+    assert store.get(conn, old).status == FAILED
+    assert store.get(conn, latest).status == PENDING
 
 
 def test_a_reaped_worker_cannot_finish_a_job_someone_else_now_owns():

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import threading
+import traceback
 from datetime import datetime, timezone
 
 from . import store
@@ -150,17 +152,26 @@ class JobQueue:
             tracker.total = ctx._total
         ctx._write = tracked_write
         try:
+            ctx.log(
+                f"Bắt đầu attempt {job.attempt_count}/{job.max_attempts}; "
+                f"worker={job.worker_id}; payload={job.payload}"
+            )
             result = spec.fn(ctx)
             ctx.flush()
             if self._cancelled(conn, job.id):
+                ctx.log("Tác vụ đã bị hủy", level=logging.WARNING)
                 store.mark_cancelled(conn, job.id)
             else:
+                ctx.log(f"Tác vụ hoàn tất; result={result}")
                 store.finish(conn, job.id, result if isinstance(result, dict) else None)
         except asyncio.CancelledError:
+            ctx.log("Tác vụ bị hủy bởi worker", level=logging.WARNING)
             ctx.flush(); store.mark_cancelled(conn, job.id)
         except JobFatalError as exc:
+            ctx.log(traceback.format_exc(), level=logging.ERROR)
             ctx.flush(); store.fail(conn, job.id, str(exc), fatal=True)
         except Exception as exc:
+            ctx.log(traceback.format_exc(), level=logging.ERROR)
             # The enqueue request may set a per-job retry policy. HandlerSpec is
             # only the default; do not overwrite the persisted max_attempts.
             ctx.flush(); store.fail(conn, job.id, str(exc), max_attempts=job.max_attempts)

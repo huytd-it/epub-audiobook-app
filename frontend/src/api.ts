@@ -20,7 +20,7 @@ export type Chapter = {
   is_excluded: boolean;
   chapter_no?: number | null;
 };
-export type Job = { id: number; job_type: string; status: string; phase: string; percent: number; book_id: number | null; error_message: string | null; created_at: string };
+export type Job = { id: number; job_type: string; status: string; phase: string; percent: number; book_id: number | null; production_name: string | null; error_message: string | null; created_at: string };
 export type Media = { music: Array<{ id: number; name: string; duration_sec: number | null; description?: string; license?: string }>; photos: Array<{ name: string; size: number; is_video: boolean }>; voices: Array<{ name: string; size: number; description?: string }> };
 
 export type MusicItem = { id: number; name: string; duration_sec: number | null; description?: string; license?: string };

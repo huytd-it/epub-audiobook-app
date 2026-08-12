@@ -62,6 +62,11 @@ def enqueue(
 
     Không tự kiểm tra trước rồi mới insert — chạy thẳng INSERT và bắt IntegrityError,
     vì partial unique index mới là thứ duy nhất đúng khi có nhiều tiến trình cùng gọi."""
+    payload = payload or {}
+    payload_patch_id = payload.get("patch_id")
+    if patch_id is not None and payload_patch_id is not None and patch_id != payload_patch_id:
+        raise ValueError("patch_id does not match payload.patch_id")
+    patch_id = patch_id if patch_id is not None else payload_patch_id
     now = _now()
     try:
         cur = conn.execute(
@@ -69,7 +74,7 @@ def enqueue(
                                 dedupe_key, max_attempts, created_at, updated_at,
                                 flow_run_id, node_id, patch_id)
                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (job_type, priority, book_id, json.dumps(payload or {}), dedupe_key,
+            (job_type, priority, book_id, json.dumps(payload), dedupe_key,
              max_attempts, now, now, flow_run_id, node_id, patch_id),
         )
     except sqlite3.IntegrityError:
@@ -273,6 +278,30 @@ def retry(conn: sqlite3.Connection, job_id: int) -> bool:
     )
     conn.commit()
     return True
+
+
+def retry_all_failed(conn: sqlite3.Connection) -> int:
+    """Retry job failed mới nhất cho mỗi type/patch và mọi job không gắn patch."""
+    now = _now()
+    cur = conn.execute(
+        """UPDATE job SET status='pending', attempt_count=0, error_message=NULL,
+                          next_retry_at=NULL, worker_id=NULL, started_at=NULL,
+                          finished_at=NULL, updated_at=?
+              WHERE status='failed'
+                AND (patch_id IS NULL OR id IN (
+                    SELECT MAX(id) FROM job
+                     WHERE status='failed' AND patch_id IS NOT NULL
+                     GROUP BY job_type, patch_id
+                ))
+                AND NOT EXISTS (
+                    SELECT 1 FROM job live
+                     WHERE live.job_type=job.job_type AND live.patch_id=job.patch_id
+                       AND live.status IN ('pending', 'running', 'cancelling')
+                )""",
+        (now,),
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def reap_stale(

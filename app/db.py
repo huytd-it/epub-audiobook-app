@@ -501,6 +501,36 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if name not in job_existing:
             conn.execute(f"ALTER TABLE job ADD COLUMN {name} {definition}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_flow_run ON job(flow_run_id, patch_id, id)")
+    conn.execute(
+        """UPDATE job SET patch_id=CAST(json_extract(payload_json, '$.patch_id') AS INTEGER)
+           WHERE patch_id IS NULL
+             AND json_type(payload_json, '$.patch_id') IN ('integer', 'real')
+             AND EXISTS (
+                 SELECT 1 FROM patch
+                  WHERE patch.id=CAST(json_extract(job.payload_json, '$.patch_id') AS INTEGER)
+             )"""
+    )
+    live_duplicates = conn.execute(
+        """SELECT job_type, patch_id, MIN(id) AS keep_id FROM job
+            WHERE patch_id IS NOT NULL
+              AND status IN ('pending', 'running', 'cancelling')
+            GROUP BY job_type, patch_id HAVING COUNT(*) > 1"""
+    ).fetchall()
+    for duplicate in live_duplicates:
+        conn.execute(
+            """UPDATE job SET status='cancelled',
+                              error_message='duplicate job_type/patch_id removed by migration',
+                              finished_at=updated_at
+                WHERE job_type=? AND patch_id=? AND id<>?
+                  AND status IN ('pending', 'running', 'cancelling')""",
+            (duplicate["job_type"], duplicate["patch_id"], duplicate["keep_id"]),
+        )
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_job_live_type_patch
+            ON job(job_type, patch_id)
+            WHERE patch_id IS NOT NULL
+              AND status IN ('pending', 'running', 'cancelling')"""
+    )
     if "voice_clip_path" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN voice_clip_path TEXT")
     if "voice_transcript" not in existing:

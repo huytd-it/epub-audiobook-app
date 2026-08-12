@@ -23,8 +23,13 @@ export function Dashboard() {
 
   if (loading || !data) return <LoadingState text="Đang kết nối trung tâm điều phối..." />;
 
-  const taskCount = Object.values(data.queue?.jobs || {}).reduce<number>(
-    (sum, val) => sum + Number(val),
+  const taskCount = Object.values(data.queue?.jobs ?? {}).reduce<number>(
+    (sum, counts) =>
+      sum +
+      Object.entries(counts as Record<string, unknown>).reduce<number>(
+        (s, [status, n]) => s + (["pending", "running"].includes(status) ? Number(n) || 0 : 0),
+        0
+      ),
     0
   );
 

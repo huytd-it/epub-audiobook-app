@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -16,6 +16,8 @@ import {
   Sparkles,
   Menu,
   Activity,
+  Moon,
+  Sun,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -134,8 +136,25 @@ function SidebarNav({ onSelect }: { onSelect?: () => void }) {
   );
 }
 
+type Theme = "light" | "dark";
+
+function getInitialTheme(): Theme {
+  const savedTheme = window.localStorage.getItem("studio-theme");
+  if (savedTheme === "light" || savedTheme === "dark") return savedTheme;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    window.localStorage.setItem("studio-theme", theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((current) => current === "dark" ? "light" : "dark");
+  const themeLabel = theme === "dark" ? "Chuyển sang giao diện sáng" : "Chuyển sang giao diện tối";
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col md:flex-row">
@@ -152,16 +171,21 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </div>
           <span className="font-bold text-xs tracking-wider uppercase">XƯỞNG SÁCH NÓI</span>
         </Link>
-        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-          <SheetTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label="Mở menu">
-              <Menu className="h-5 w-5" />
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="left" className="p-0 w-72">
-            <SidebarNav onSelect={() => setMobileOpen(false)} />
-          </SheetContent>
-        </Sheet>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label={themeLabel} title={themeLabel}>
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </Button>
+          <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Mở menu">
+                <Menu className="h-5 w-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="p-0 w-72">
+              <SidebarNav onSelect={() => setMobileOpen(false)} />
+            </SheetContent>
+          </Sheet>
+        </div>
       </header>
 
       {/* Main Content Area */}
@@ -172,8 +196,19 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <Activity className="h-3.5 w-3.5 text-primary" />
             <span>SẢN XUẤT SÁCH NÓI TỰ ĐỘNG</span>
           </div>
-          <div className="flex items-center gap-4">
-            <span>MÔ TRƯỜNG: LOCAL WORKSPACE</span>
+          <div className="flex items-center gap-3">
+            <span>MÔI TRƯỜNG: LOCAL WORKSPACE</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={toggleTheme}
+              aria-label={themeLabel}
+              title={themeLabel}
+              className="h-7 gap-1.5 px-2 font-mono text-[10px]"
+            >
+              {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+              {theme === "dark" ? "SÁNG" : "TỐI"}
+            </Button>
             <span className="flex items-center gap-1.5 text-foreground font-medium">
               <span className="h-2 w-2 rounded-full bg-emerald-500" />
               SẴN SÀNG

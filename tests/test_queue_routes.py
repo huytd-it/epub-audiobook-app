@@ -99,6 +99,19 @@ def test_clear_queue_deletes_inactive_and_preserves_active(client):
     assert {job.status for job in store.list_jobs(conn)} == {"running", "cancelling"}
 
 
+def test_retry_all_failed_jobs(client):
+    c, conn, _ = client
+    failed = store.enqueue(conn, "video")
+    done = store.enqueue(conn, "youtube_upload")
+    conn.execute("UPDATE job SET status='failed', error_message='boom' WHERE id=?", (failed,))
+    conn.execute("UPDATE job SET status='done' WHERE id=?", (done,))
+    conn.commit()
+
+    assert c.post("/queue/jobs/retry-all-failed").json() == {"retried": 1}
+    assert store.get(conn, failed).status == "pending"
+    assert store.get(conn, done).status == "done"
+
+
 def test_delete_removes_only_pending_job(client):
     c, conn, _ = client
     pending = store.enqueue(conn, "video")
