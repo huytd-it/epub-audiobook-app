@@ -124,6 +124,9 @@ export type VideoConfig = {
   waveform_position: "top" | "center" | "bottom";
   waveform_height: number;
   waveform_opacity: number;
+  waveform_layout: "horizontal" | "vertical" | "circular";
+  waveform_background_color: string;
+  waveform_background_opacity: number;
 };
 
 export type YouTubeConfig = {

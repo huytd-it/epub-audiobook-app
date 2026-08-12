@@ -33,10 +33,10 @@ import {
 import { CheckField, Field, TabBar, checkboxClass, fieldClass, selectClass } from "./parts";
 
 const WAVEFORM_TEMPLATES = [
-  { id: "minimal", name: "Tối giản", description: "Nét mảnh ở đáy", style: "line", color: "#ffffff", position: "bottom", height: 80, opacity: 0.8 },
-  { id: "studio", name: "Studio", description: "Đối xứng ở giữa", style: "cline", color: "#22d3ee", position: "center", height: 160, opacity: 0.9 },
-  { id: "pulse", name: "Nhịp sáng", description: "Điểm nhịp nổi bật", style: "point", color: "#facc15", position: "bottom", height: 120, opacity: 1 },
-  { id: "cinema", name: "Điện ảnh", description: "Dải sóng rộng phía dưới", style: "p2p", color: "#fb7185", position: "bottom", height: 180, opacity: 0.75 },
+  { id: "bold", name: "Dải nổi", description: "Line sáng trên nền tối", style: "line", layout: "horizontal", color: "#ffffff", background: "#050816", backgroundOpacity: 0.68, position: "bottom", height: 150, opacity: 1 },
+  { id: "studio", name: "Studio", description: "Sóng đối xứng giữa khung", style: "cline", layout: "horizontal", color: "#22d3ee", background: "#082f49", backgroundOpacity: 0.62, position: "center", height: 200, opacity: 1 },
+  { id: "vertical", name: "Cột nhịp", description: "Dải sóng dọc bên trái", style: "p2p", layout: "vertical", color: "#facc15", background: "#1c1917", backgroundOpacity: 0.72, position: "center", height: 300, opacity: 1 },
+  { id: "orbit", name: "Quỹ đạo", description: "Waveform tròn ở trung tâm", style: "line", layout: "circular", color: "#fb7185", background: "#2e1065", backgroundOpacity: 0.58, position: "center", height: 280, opacity: 1 },
 ] as const;
 
 const WAVEFORM_BARS = [18, 38, 24, 58, 34, 72, 42, 86, 48, 64, 30, 76, 44, 92, 54, 70, 36, 80, 46, 62, 28, 52, 34, 20];
@@ -737,19 +737,20 @@ export function ConfigDialog({
                 <div className={videoConfig.waveform_enabled ? "space-y-4" : "pointer-events-none space-y-4 opacity-45"}>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {WAVEFORM_TEMPLATES.map((template) => {
-                      const selected = videoConfig.waveform_style === template.style && videoConfig.waveform_color === template.color && videoConfig.waveform_position === template.position && videoConfig.waveform_height === template.height;
+                      const selected = videoConfig.waveform_layout === template.layout && videoConfig.waveform_color === template.color && videoConfig.waveform_position === template.position && videoConfig.waveform_height === template.height;
                       return (
                         <button
                           key={template.id}
                           type="button"
                           aria-pressed={selected}
-                          onClick={() => setVideoConfig({ ...videoConfig, waveform_enabled: true, waveform_style: template.style, waveform_color: template.color, waveform_position: template.position, waveform_height: template.height, waveform_opacity: template.opacity })}
+                          onClick={() => setVideoConfig({ ...videoConfig, waveform_enabled: true, waveform_style: template.style, waveform_layout: template.layout, waveform_color: template.color, waveform_background_color: template.background, waveform_background_opacity: template.backgroundOpacity, waveform_position: template.position, waveform_height: template.height, waveform_opacity: template.opacity })}
                           className={cn("group overflow-hidden rounded-md border bg-background text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary ring-1 ring-primary" : "border-border hover:border-primary/50")}
                         >
-                          <div className="relative flex h-16 items-center overflow-hidden bg-slate-950 px-2">
-                            <div className={cn("absolute inset-x-2 flex items-center justify-center gap-[2px]", template.position === "center" ? "top-1/2 -translate-y-1/2" : "bottom-2")}>
+                          <div className="relative flex h-16 items-center justify-center overflow-hidden bg-slate-950 px-2">
+                            <div className="absolute inset-2 rounded" style={{ backgroundColor: template.background, opacity: template.backgroundOpacity }} />
+                            <div className={cn("relative z-10 flex items-center justify-center gap-[2px]", template.layout === "circular" && "h-11 w-11 rounded-full border-2", template.layout === "vertical" && "rotate-90")} style={template.layout === "circular" ? { borderColor: template.color, boxShadow: `0 0 12px ${template.color}` } : undefined}>
                               {WAVEFORM_BARS.map((bar, index) => (
-                                <span key={index} className="w-[2px] rounded-full" style={{ height: `${Math.max(2, bar * (template.height / 180) * 0.48)}px`, backgroundColor: template.color, opacity: template.opacity }} />
+                                template.layout !== "circular" && <span key={index} className="w-[2px] rounded-full" style={{ height: `${Math.min(46, Math.max(3, bar * (template.height / 180) * 0.42))}px`, backgroundColor: template.color, opacity: template.opacity, boxShadow: `0 0 5px ${template.color}` }} />
                               ))}
                             </div>
                           </div>
@@ -762,7 +763,12 @@ export function ConfigDialog({
                     })}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                    <Field label="Bố cục">
+                      <select className={selectClass} value={videoConfig.waveform_layout} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_layout: event.target.value as VideoConfig["waveform_layout"] })}>
+                        <option value="horizontal">Ngang</option><option value="vertical">Dọc</option><option value="circular">Tròn</option>
+                      </select>
+                    </Field>
                     <Field label="Kiểu sóng">
                       <select className={selectClass} value={videoConfig.waveform_style} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_style: event.target.value as VideoConfig["waveform_style"] })}>
                         <option value="line">Line</option><option value="cline">Center line</option><option value="p2p">Point to point</option><option value="point">Point</option>
@@ -780,9 +786,17 @@ export function ConfigDialog({
                       <input className="w-full accent-primary" type="range" min="40" max="400" step="10" value={videoConfig.waveform_height} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_height: Number(event.target.value) })} />
                     </Field>
                   </div>
-                  <Field label={`Độ trong suốt: ${Math.round(videoConfig.waveform_opacity * 100)}%`}>
-                    <input className="w-full accent-primary" type="range" min="10" max="100" step="5" value={videoConfig.waveform_opacity * 100} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_opacity: Number(event.target.value) / 100 })} />
-                  </Field>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <Field label={`Độ rõ waveform: ${Math.round(videoConfig.waveform_opacity * 100)}%`}>
+                      <input className="w-full accent-primary" type="range" min="10" max="100" step="5" value={videoConfig.waveform_opacity * 100} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_opacity: Number(event.target.value) / 100 })} />
+                    </Field>
+                    <Field label="Màu nền">
+                      <input className="h-9 w-full cursor-pointer rounded-md border border-border bg-background p-1" type="color" value={videoConfig.waveform_background_color} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_background_color: event.target.value })} />
+                    </Field>
+                    <Field label={`Độ đậm nền: ${Math.round(videoConfig.waveform_background_opacity * 100)}%`}>
+                      <input className="w-full accent-primary" type="range" min="0" max="100" step="5" value={videoConfig.waveform_background_opacity * 100} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_background_opacity: Number(event.target.value) / 100 })} />
+                    </Field>
+                  </div>
                 </div>
               </section>
 

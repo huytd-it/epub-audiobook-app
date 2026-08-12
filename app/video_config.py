@@ -27,6 +27,9 @@ VIDEO_DEFAULTS = {
     "waveform_position": "bottom",
     "waveform_height": 120,
     "waveform_opacity": 0.85,
+    "waveform_layout": "horizontal",
+    "waveform_background_color": "#050816",
+    "waveform_background_opacity": 0.55,
     "resolution": "1920x1080",
     "fps": 30,
     "image_animation": "none",
@@ -87,17 +90,22 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("invalid waveform style")
     if result["waveform_position"] not in {"top", "center", "bottom"}:
         raise ValueError("invalid waveform position")
-    color = result["waveform_color"]
-    if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
-        raise ValueError("invalid waveform color")
-    try:
-        int(color[1:], 16)
-    except ValueError as exc:
-        raise ValueError("invalid waveform color") from exc
+    if result["waveform_layout"] not in {"horizontal", "vertical", "circular"}:
+        raise ValueError("invalid waveform layout")
+    for field in ("waveform_color", "waveform_background_color"):
+        color = result[field]
+        if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
+            raise ValueError(f"invalid {field}")
+        try:
+            int(color[1:], 16)
+        except ValueError as exc:
+            raise ValueError(f"invalid {field}") from exc
     if not isinstance(result["waveform_height"], int) or not 40 <= result["waveform_height"] <= 400:
         raise ValueError("waveform height must be 40-400")
     if not isinstance(result["waveform_opacity"], (int, float)) or not 0.1 <= result["waveform_opacity"] <= 1:
         raise ValueError("waveform opacity must be 0.1-1")
+    if not isinstance(result["waveform_background_opacity"], (int, float)) or not 0 <= result["waveform_background_opacity"] <= 1:
+        raise ValueError("waveform background opacity must be 0-1")
     return result
 
 

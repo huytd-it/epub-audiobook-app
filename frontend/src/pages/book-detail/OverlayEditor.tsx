@@ -197,23 +197,18 @@ export function OverlayEditor({
           <CardContent className="space-y-3 p-4">
             <div>
               <div className="text-sm font-semibold">Thumbnail các patch</div>
-              <div className="text-xs text-muted-foreground">Preview ảnh sẽ được dùng cho video và YouTube.</div>
+              <div className="text-xs text-muted-foreground">Ảnh preview của patch đầu tiên, dùng cho video và YouTube.</div>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {patchIds.map((patchId, index) => (
-                <figure key={patchId} className="overflow-hidden rounded-md border bg-muted/20">
-                  <div className="aspect-video bg-muted">
-                    <img
-                      src={`/books/${bookId}/patches/${patchId}/overlay-image?v=${thumbnailRevision}`}
-                      alt={`Thumbnail patch ${index + 1}`}
-                      loading="lazy"
-                      className="h-full w-full object-contain"
-                    />
-                  </div>
-                  <figcaption className="border-t px-3 py-2 text-xs font-medium">Patch {index + 1}</figcaption>
-                </figure>
-              ))}
-            </div>
+            <figure className="max-w-xl overflow-hidden rounded-md border bg-muted/20">
+              <div className="aspect-video bg-muted">
+                <img
+                  src={`/books/${bookId}/patches/${patchIds[0]}/overlay-image?v=${thumbnailRevision}`}
+                  alt="Thumbnail patch 1"
+                  className="h-full w-full object-contain"
+                />
+              </div>
+              <figcaption className="border-t px-3 py-2 text-xs font-medium">Patch 1</figcaption>
+            </figure>
           </CardContent>
         </Card>
       )}

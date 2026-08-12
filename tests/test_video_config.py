@@ -19,6 +19,8 @@ def test_video_config_defaults_match_video_creator():
     assert config["image_duration_seconds"] == 15
     assert config["waveform_enabled"] is False
     assert config["waveform_style"] == "line"
+    assert config["waveform_layout"] == "horizontal"
+    assert config["waveform_background_opacity"] == 0.55
 
 
 @pytest.mark.parametrize("field,value", [("codec", "bad"), ("audio_bitrate", "64k"), ("background_mode", "shuffle")])
@@ -27,7 +29,7 @@ def test_video_config_rejects_invalid_values(field, value):
         validate_video_config({field: value})
 
 
-@pytest.mark.parametrize("field,value", [("waveform_style", "bars"), ("waveform_color", "white"), ("waveform_height", 20), ("waveform_opacity", 2)])
+@pytest.mark.parametrize("field,value", [("waveform_style", "bars"), ("waveform_color", "white"), ("waveform_layout", "diagonal"), ("waveform_background_color", "black"), ("waveform_height", 20), ("waveform_opacity", 2), ("waveform_background_opacity", 2)])
 def test_video_config_rejects_invalid_waveform_values(field, value):
     with pytest.raises(ValueError):
         validate_video_config({field: value})

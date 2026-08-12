@@ -103,17 +103,41 @@ def _build_zoompan_filter(image_type: str, width: int, height: int, fps: int, du
 
 
 def _waveform_chains(config: dict, width: int, audio_input: int, video_label: str) -> tuple[list[str], str, str]:
-    """Build a transparent waveform overlay and preserve narration for output mixing."""
+    """Build a high-contrast waveform overlay and preserve narration for output mixing."""
     height = int(config.get("waveform_height", 120))
     style = config.get("waveform_style", "line")
     color = str(config.get("waveform_color", "#ffffff")).lstrip("#")
     opacity = float(config.get("waveform_opacity", 0.85))
+    layout = config.get("waveform_layout", "horizontal")
+    background = str(config.get("waveform_background_color", "#050816")).lstrip("#")
+    background_opacity = float(config.get("waveform_background_opacity", 0.55))
     position = config.get("waveform_position", "bottom")
+    overlay_width = height if layout in {"vertical", "circular"} else width
+    x = "40" if layout == "vertical" else "(W-w)/2"
     y = {"top": "40", "center": "(H-h)/2", "bottom": "H-h-40"}.get(position, "H-h-40")
+    panel_x = "0" if layout == "horizontal" else ("16" if layout == "vertical" else "(iw-%d)/2-24" % overlay_width)
+    panel_y = {"top": "16", "center": "(ih-%d)/2-24" % height, "bottom": "ih-%d-64" % height}.get(position, "ih-%d-64" % height)
+    panel_width = width if layout == "horizontal" else overlay_width + 48
+    panel_height = height + 48
+    if layout == "circular":
+        red, green, blue = (int(color[index:index + 2], 16) for index in (0, 2, 4))
+        visualizer = (
+            f"avectorscope=s={height}x{height}:mode=polar:draw=aaline:scale=sqrt:"
+            f"rc={red}:gc={green}:bc={blue}:rf=0:gf=0:bf=0,"
+            f"colorkey=0x000000:0.12:0.08,format=rgba,colorchannelmixer=aa={opacity}"
+        )
+    else:
+        visualizer = f"showwaves=s={width}x{height}:mode={style}:colors=0x{color}"
+        if layout == "vertical":
+            visualizer += ",transpose=clock,scale=%d:%d" % (overlay_width, height)
+        visualizer += f",format=rgba,colorchannelmixer=aa={opacity}"
     chains = [
         f"[{audio_input}:a]asplit=2[narration][waveaudio]",
-        f"[waveaudio]showwaves=s={width}x{height}:mode={style}:colors=0x{color},format=rgba,colorchannelmixer=aa={opacity}[wave]",
-        f"{video_label}[wave]overlay=x=(W-w)/2:y={y}:shortest=1[vout]",
+        f"{video_label}drawbox=x={panel_x}:y={panel_y}:w={panel_width}:h={panel_height}:color=0x{background}@{background_opacity}:t=fill[withpanel]",
+        f"[waveaudio]{visualizer},split=2[wave][waveglowsrc]",
+        "[waveglowsrc]gblur=sigma=8[waveglow]",
+        f"[withpanel][waveglow]overlay=x={x}:y={y}:shortest=1[withglow]",
+        f"[withglow][wave]overlay=x={x}:y={y}:shortest=1[vout]",
     ]
     return chains, "[vout]", "[narration]"
 
