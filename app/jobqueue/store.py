@@ -271,19 +271,33 @@ def mark_cancelled(
 
 
 def retry(conn: sqlite3.Connection, job_id: int) -> bool:
-    """Đưa một job đã kết thúc về pending với bộ đếm sạch. Từ chối job đang chạy."""
-    job = get(conn, job_id)
-    if job is None or job.status not in TERMINAL_STATUSES:
-        return False
+    """Đưa job đã kết thúc về pending nếu chưa có job thay thế đang hoạt động."""
     now = _now()
-    conn.execute(
+    cur = conn.execute(
         """UPDATE job SET status='pending', attempt_count=0, error_message=NULL,
                           next_retry_at=NULL, worker_id=NULL, started_at=NULL,
-                          finished_at=NULL, updated_at=? WHERE id=?""",
+                          finished_at=NULL, updated_at=?
+              WHERE id=?
+                AND status IN ('done', 'failed', 'cancelled')
+                AND NOT EXISTS (
+                    SELECT 1 FROM job live
+                     WHERE live.id != job.id
+                       AND job.patch_id IS NOT NULL
+                       AND live.job_type = job.job_type
+                       AND live.patch_id = job.patch_id
+                       AND live.status IN ('pending', 'running', 'cancelling')
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM job live
+                     WHERE live.id != job.id
+                       AND job.dedupe_key IS NOT NULL
+                       AND live.dedupe_key = job.dedupe_key
+                       AND live.status IN ('pending', 'running')
+                )""",
         (now, job_id),
     )
     conn.commit()
-    return True
+    return cur.rowcount > 0
 
 
 def retry_all_failed(conn: sqlite3.Connection) -> int:

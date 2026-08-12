@@ -244,6 +244,38 @@ def test_retry_refuses_a_running_job():
     assert store.retry(conn, job_id) is False
 
 
+def test_retry_refuses_a_terminal_job_when_its_dedupe_key_is_live():
+    conn = _conn()
+    old = store.enqueue(conn, "video", dedupe_key="video:book=1")
+    store.finish(conn, old, None)
+    replacement = store.enqueue(conn, "video", dedupe_key="video:book=1")
+
+    assert store.retry(conn, old) is False
+    assert store.get(conn, old).status == DONE
+    assert store.get(conn, replacement).status == PENDING
+
+
+def test_retry_refuses_a_terminal_job_when_same_type_patch_is_live():
+    conn = _conn()
+    now = _iso()
+    conn.execute(
+        """INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,created_at,updated_at)
+           VALUES (1,'Sách','a.epub','a.epub',10,'ready',?,?)""", (now, now))
+    patch_id = conn.execute(
+        """INSERT INTO patch (book_id,patch_index,chapter_start,chapter_end,status,
+                              attempt_count,created_at,updated_at)
+           VALUES (1,0,0,0,'pending',0,?,?)""", (now, now)).lastrowid
+    conn.commit()
+    old = store.enqueue(conn, "patch_video", payload={"patch_id": patch_id})
+    conn.execute("UPDATE job SET status='failed' WHERE id=?", (old,))
+    conn.commit()
+    replacement = store.enqueue(conn, "patch_video", payload={"patch_id": patch_id})
+
+    assert store.retry(conn, old) is False
+    assert store.get(conn, old).status == FAILED
+    assert store.get(conn, replacement).status == PENDING
+
+
 def test_retry_all_failed_only_retries_latest_type_patch_pair():
     conn = _conn()
     now = _iso()
