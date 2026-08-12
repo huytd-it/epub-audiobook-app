@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
-import { ChevronDown, Clipboard, Download, HardDrive, KeyRound } from "lucide-react";
-import { api, DriveAccount, DriveTarget, Patch, post } from "@/api";
+import { ChevronDown, Clipboard, Download, HardDrive, KeyRound, Save } from "lucide-react";
+import { api, DriveAccount, DriveTarget, Patch, post, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -42,6 +42,7 @@ export function ExportPanel({
   const [syncTargetId, setSyncTargetId] = useState("");
   const [accountId, setAccountId] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [credentials, setCredentials] = useState("");
   const [credentialsOpen, setCredentialsOpen] = useState(false);
 
@@ -83,6 +84,25 @@ export function ExportPanel({
       onMessage(errorText(error));
     } finally {
       setExporting(false);
+      onBusyChange(false);
+    }
+  };
+
+  const saveSettings = async () => {
+    setSaving(true);
+    onBusyChange(true);
+    try {
+      await postJson(`/books/${bookId}/export-audio-settings`, {
+        model_id: settings.modelId,
+        voice_id: settings.voiceId,
+        max_chars: settings.maxChars ? Number(settings.maxChars) : 1200,
+        with_effects: settings.withEffects,
+      });
+      onMessage("Đã lưu cấu hình Export Colab / Kaggle.");
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setSaving(false);
       onBusyChange(false);
     }
   };
@@ -219,11 +239,16 @@ export function ExportPanel({
           </Field>
         </div>
 
-        <CheckField
-          checked={settings.withEffects}
-          onChange={(value) => onSettingsChange({ withEffects: value })}
-          label="Chèn hiệu ứng âm thanh"
-        />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <CheckField
+            checked={settings.withEffects}
+            onChange={(value) => onSettingsChange({ withEffects: value })}
+            label="Chèn hiệu ứng âm thanh"
+          />
+          <Button type="button" size="sm" variant="outline" onClick={saveSettings} disabled={saving || exporting}>
+            <Save className="h-3.5 w-3.5" /> {saving ? "Đang lưu..." : "Lưu cấu hình export"}
+          </Button>
+        </div>
 
         <div className="grid grid-cols-1 gap-3 border-t border-border pt-4 sm:grid-cols-3">
           <div className="space-y-2">

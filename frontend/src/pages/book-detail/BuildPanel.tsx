@@ -315,7 +315,7 @@ export function BuildPanel({
       if (patchSize) form.set("patch_size", patchSize);
       await post(`/books/${bookId}/patches/auto-build`, form);
       setPlanned([]);
-      onMessage("Đã tạo patch và đưa vào hàng đợi.");
+      onMessage("Đã tạo patch.");
       await onRefresh();
     } catch (error) {
       onMessage(errorText(error));

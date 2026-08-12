@@ -47,6 +47,10 @@ class Book:
     tts_max_chars: int | None = None
     tts_with_effects: int = 0
     tts_voice_id: str | None = None
+    export_tts_model: str | None = None
+    export_tts_max_chars: int | None = None
+    export_tts_with_effects: int | None = None
+    export_tts_voice_id: str | None = None
 
 @dataclass
 class Chapter:

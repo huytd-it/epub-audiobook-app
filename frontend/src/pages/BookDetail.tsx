@@ -152,9 +152,15 @@ export function BookDetail() {
   const [ttsTargets, setTtsTargets] = useState(0);
   const [automation, setAutomation] = useState<BatchTtsAutomation>(DEFAULT_AUTOMATION);
   const [settings, setSettings] = useState<AudioSettings>({
-    modelId: "voxcpm2",
+    modelId: "edge-tts",
     voiceId: "",
-    maxChars: "",
+    maxChars: "400",
+    withEffects: false,
+  });
+  const [exportSettings, setExportSettings] = useState<AudioSettings>({
+    modelId: "omnivoice",
+    voiceId: "",
+    maxChars: "1200",
     withEffects: false,
   });
   const [normalization, setNormalization] = useState<NormalizationSettings>({
@@ -202,6 +208,27 @@ export function BookDetail() {
 
   useEffect(() => {
     if (!data) return;
+    let cancelled = false;
+    api<{ model_id: string; voice_id: string; max_chars: number; with_effects: boolean }>(
+      `/books/${bookId}/export-audio-settings`
+    )
+      .then((saved) => {
+        if (cancelled) return;
+        setExportSettings({
+          modelId: saved.model_id,
+          voiceId: saved.voice_id || "",
+          maxChars: saved.max_chars ? String(saved.max_chars) : "",
+          withEffects: saved.with_effects,
+        });
+      })
+      .catch((err) => !cancelled && setMessage(errorText(err)));
+    return () => {
+      cancelled = true;
+    };
+  }, [bookId, Boolean(data)]);
+
+  useEffect(() => {
+    if (!data) return;
     setNormalization({
       numbers: Boolean(data.book.normalize_numbers_enabled),
       junk: Boolean(data.book.normalize_junk_enabled),
@@ -222,6 +249,12 @@ export function BookDetail() {
     (patch: Partial<AudioSettings>) => setSettings((current) => ({ ...current, ...patch })),
     []
   );
+  const updateExportSettings = useCallback(
+    (patch: Partial<AudioSettings>) => setExportSettings((current) => ({ ...current, ...patch })),
+    []
+  );
+
+  const exportTtsOptions = useTtsOptions(data, exportSettings.modelId);
 
   // Model mặc định phải nằm trong danh sách backend trả về.
   useEffect(() => {
@@ -234,10 +267,25 @@ export function BookDetail() {
   useEffect(() => {
     if (!ttsModels.length) return;
     if (settings.voiceId && voiceOptions.some((option) => option.value === settings.voiceId)) return;
-    const model = ttsModels.find((item) => item.id === settings.modelId);
-    const next = model && !model.supports_reference ? model.default_voice || "" : currentVoiceName;
+    const next = voiceOptions[0]?.value || currentVoiceName;
     if (next !== settings.voiceId) updateSettings({ voiceId: next });
   }, [ttsModels, voiceOptions, settings.modelId, settings.voiceId, currentVoiceName, updateSettings]);
+
+  useEffect(() => {
+    if (!exportTtsOptions.ttsModels.length) return;
+    if (exportTtsOptions.ttsModels.some((model) => model.id === exportSettings.modelId)) return;
+    updateExportSettings({ modelId: exportTtsOptions.ttsModels[0].id });
+  }, [exportSettings.modelId, exportTtsOptions.ttsModels, updateExportSettings]);
+
+  useEffect(() => {
+    if (!exportTtsOptions.ttsModels.length) return;
+    if (
+      exportSettings.voiceId &&
+      exportTtsOptions.voiceOptions.some((option) => option.value === exportSettings.voiceId)
+    ) return;
+    const next = exportTtsOptions.voiceOptions[0]?.value || exportTtsOptions.currentVoiceName;
+    if (next !== exportSettings.voiceId) updateExportSettings({ voiceId: next });
+  }, [exportSettings, exportTtsOptions, updateExportSettings]);
 
   const patches = useMemo(() => data?.patches || [], [data]);
   const patchIds = useMemo(() => patches.map((patch) => patch.id), [patches]);
@@ -648,10 +696,10 @@ export function BookDetail() {
             selectedIds={selectedIds}
             accounts={exports.accounts}
             syncTargets={exports.sync_targets}
-            settings={settings}
-            onSettingsChange={updateSettings}
-            ttsModels={ttsModels}
-            voiceOptions={voiceOptions}
+            settings={exportSettings}
+            onSettingsChange={updateExportSettings}
+            ttsModels={exportTtsOptions.ttsModels}
+            voiceOptions={exportTtsOptions.voiceOptions}
             onMessage={setMessage}
             onRefresh={refresh}
             onBusyChange={setBusy}

@@ -375,9 +375,9 @@ def get_audio_settings(request: Request, book_id: int):
         if book is None:
             raise HTTPException(404, "book not found")
         return {
-            "model_id": book.tts_model or settings.tts_engine,
+            "model_id": book.tts_model or "edge-tts",
             "voice_id": book.tts_voice_id or "",
-            "max_chars": book.tts_max_chars or 0,
+            "max_chars": book.tts_max_chars or 400,
             "with_effects": bool(book.tts_with_effects),
         }
 
@@ -398,6 +398,49 @@ async def save_audio_settings(request: Request, book_id: int):
         conn.execute("UPDATE book SET tts_model=?, tts_voice_id=?, tts_max_chars=?, tts_with_effects=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (model_id, voice_id or None, max_chars or None, int(with_effects), book_id))
         conn.commit()
     return {"model_id": model_id, "voice_id": voice_id, "max_chars": max_chars, "with_effects": with_effects}
+
+
+@router.get("/books/{book_id}/export-audio-settings")
+def get_export_audio_settings(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        return {
+            "model_id": book.export_tts_model or "omnivoice",
+            "voice_id": book.export_tts_voice_id or "",
+            "max_chars": book.export_tts_max_chars or 1200,
+            "with_effects": bool(book.export_tts_with_effects),
+        }
+
+
+@router.post("/books/{book_id}/export-audio-settings")
+async def save_export_audio_settings(request: Request, book_id: int):
+    data = await request.json()
+    model_id = str(data.get("model_id") or "omnivoice").strip()
+    voice_id = str(data.get("voice_id") or "").strip()
+    try:
+        max_chars = max(0, int(data.get("max_chars") or 1200))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "max_chars không hợp lệ") from exc
+    with_effects = bool(data.get("with_effects", False))
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(404, "book not found")
+        conn.execute(
+            """UPDATE book
+                  SET export_tts_model=?, export_tts_voice_id=?, export_tts_max_chars=?,
+                      export_tts_with_effects=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?""",
+            (model_id, voice_id or None, max_chars, int(with_effects), book_id),
+        )
+        conn.commit()
+    return {
+        "model_id": model_id,
+        "voice_id": voice_id,
+        "max_chars": max_chars,
+        "with_effects": with_effects,
+    }
 
 
 @router.get("/books/{book_id}/music", name="get_book_music_legacy")
@@ -982,12 +1025,6 @@ async def auto_build_patches(
     start_chapter_str = body.get("start_chapter")
     end_chapter_str = body.get("end_chapter")
     patch_size_str = body.get("patch_size")
-    model_was_selected = bool(body.get("tts_engine") or body.get("model_id"))
-    tts_engine = str(body.get("tts_engine") or settings.tts_engine)
-    voice_id = str(body.get("voice_id") or "") or None
-    max_chars = int(body.get("max_chars") or 0)
-    with_effects = str(body.get("with_effects") or "0") in {"1", "true", "True"}
-
     try:
         start_chapter = int(start_chapter_str) if start_chapter_str else None
     except (TypeError, ValueError):
@@ -1015,18 +1052,6 @@ async def auto_build_patches(
             repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        # This route is the "Start queue" button: building the patches is what puts them
-        # on the TTS queue. Nothing else does - startup no longer backfills them.
-        from app.jobqueue.backfill import enqueue_pending_patch_jobs
-        if model_was_selected and tts_engine in {"voxcpm2", "omnivoice", "vieneu-fast"} and (
-            not book.voice_clip_path or not Path(book.voice_clip_path).is_file()
-        ):
-            raise HTTPException(status_code=400, detail="model requires the book reference voice")
-        queued = enqueue_pending_patch_jobs(
-            conn, book_id, tts_engine=tts_engine, voice=voice_id,
-            max_chars=max_chars, with_effects=with_effects,
-        )
-    logger.info("event=queue.start book_id=%s audiobook_tts=%s", book_id, queued)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 

@@ -659,6 +659,18 @@ def _load_batch_patches(conn, book_id: int, patch_ids: list[int]):
     return book, sorted(patches, key=lambda p: p.patch_index)
 
 
+def _save_export_audio_settings(
+    conn, book_id: int, *, model_id: str, voice_id: str, max_chars: int, with_effects: int
+) -> None:
+    conn.execute(
+        """UPDATE book
+              SET export_tts_model=?, export_tts_voice_id=?, export_tts_max_chars=?,
+                  export_tts_with_effects=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?""",
+        (model_id, voice_id or None, max_chars or None, int(bool(with_effects)), book_id),
+    )
+
+
 @router.post("/books/{book_id}/patches/export-batch/download")
 def download_batch_export(
     request: Request, book_id: int, patch_ids: list[int] = Form(...),
@@ -676,6 +688,11 @@ def download_batch_export(
             model_id=model_id, voice_id=voice_id or None, max_chars=max_chars,
             with_effects=bool(with_effects),
         )
+        _save_export_audio_settings(
+            conn, book_id, model_id=model_id, voice_id=voice_id,
+            max_chars=max_chars, with_effects=with_effects,
+        )
+        conn.commit()
     return FileResponse(
         str(zip_path),
         media_type="application/zip",
@@ -710,6 +727,10 @@ def export_batch_to_drive(
                     conn, entry["patch_id"], str(patch_folder), str(patch_folder), entry["chunk_count"],
                     sync_target_id=target["id"], local_folder_path=str(patch_folder), commit=False,
                 )
+            _save_export_audio_settings(
+                conn, book_id, model_id=model_id, voice_id=voice_id,
+                max_chars=max_chars, with_effects=with_effects,
+            )
             conn.commit()
         except Exception as exc:
             logger.exception("batch export to Google Drive failed for book %s", book_id)
@@ -765,6 +786,10 @@ def export_batch_to_drive_api(
                     conn, entry["patch_id"], sub["id"], sub["link"], entry["chunk_count"],
                     drive_account_id=account_id, commit=False,
                 )
+            _save_export_audio_settings(
+                conn, book_id, model_id=model_id, voice_id=voice_id,
+                max_chars=max_chars, with_effects=with_effects,
+            )
             conn.commit()
         except HTTPException:
             conn.rollback()

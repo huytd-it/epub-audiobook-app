@@ -50,9 +50,8 @@ def test_admin_actions_enqueue_jobs(client):
     assert store.list_jobs(conn, job_type="video")
 
 
-def test_start_queue_enqueues_the_patches_it_builds(client):
-    """Auto-build is the 'Start queue' button, so it - not app startup - is what puts
-    patches on the TTS queue."""
+def test_auto_build_does_not_enqueue_tts(client):
+    """Building patches must not implicitly start an optional local TTS engine."""
     c, conn = client
     for i in range(4):
         conn.execute(
@@ -67,8 +66,7 @@ def test_start_queue_enqueues_the_patches_it_builds(client):
     )
     assert res.status_code == 303
     jobs = store.list_jobs(conn, job_type="audiobook_tts")
-    assert len(jobs) == 2
-    assert {j.book_id for j in jobs} == {1}
+    assert jobs == []
 
 
 def test_regenerate_replaces_stale_queue_job(client):
