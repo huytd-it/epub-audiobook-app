@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
-from app import google_drive, repository, video_gen
+from app import background_gen, google_drive, repository, video_gen
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
@@ -185,6 +185,30 @@ async def save_video_config(request: Request, book_id: int):
     except Exception:
         logger.exception("automation reconcile failed after video-config save for book %s", book_id)
     return result
+
+
+@router.post("/books/{book_id}/backgrounds/generate")
+async def trigger_background_generation(request: Request, book_id: int):
+    """Enqueue a background_gen job to auto-populate the book's shared
+    background rotation. Fire-and-forget: the job runs on the queue like any
+    other render job, so progress/result show up on /queue rather than here."""
+    data = await request.json()
+    count = data.get("count", background_gen.DEFAULT_COUNT)
+    style = data.get("style", background_gen.DEFAULT_STYLE)
+    if not isinstance(count, int) or not 1 <= count <= background_gen.MAX_COUNT:
+        raise HTTPException(status_code=400, detail=f"count phải là số nguyên từ 1 đến {background_gen.MAX_COUNT}")
+    if style not in background_gen.STYLES:
+        raise HTTPException(status_code=400, detail="phong cách ảnh không hợp lệ")
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        from app.jobqueue import store
+        job_id = store.enqueue(
+            conn, "background_gen", payload={"book_id": book_id, "count": count, "style": style},
+            book_id=book_id, dedupe_key=f"background_gen:book={book_id}",
+        )
+    return JSONResponse({"status": "queued" if job_id is not None else "already_queued", "job_id": job_id})
 
 
 @router.post("/books/{book_id}/youtube-settings")

@@ -23,6 +23,7 @@ dependencies = [
     "num2words>=0.5.13",
     "vietnormalizer>=0.2.3",
     "pillow>=10.0.0",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]

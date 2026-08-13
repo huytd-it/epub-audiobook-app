@@ -16,6 +16,37 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def referenced_media_paths(conn) -> set[str]:
+    """Every background path currently reachable from a book or patch.
+
+    Used by material_cache.gc() to decide what is safe to delete: a cache
+    entry that made it into one of these three places - a direct book/patch
+    override, or a shared video config's backgrounds list - must survive
+    regardless of age or budget, the same way replace_background_reference()
+    above has to sweep all three when a manually-managed photo is renamed.
+    """
+    paths: set[str] = set()
+    for row in conn.execute(
+        "SELECT background_image_path FROM book WHERE background_image_path IS NOT NULL"
+    ).fetchall():
+        paths.add(row["background_image_path"])
+    for row in conn.execute(
+        "SELECT image_path FROM patch WHERE image_path IS NOT NULL"
+    ).fetchall():
+        paths.add(row["image_path"])
+    for row in conn.execute(
+        "SELECT automation_config FROM book WHERE automation_config IS NOT NULL"
+    ).fetchall():
+        try:
+            config = json.loads(row["automation_config"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        backgrounds = config.get("video", {}).get("backgrounds")
+        if isinstance(backgrounds, list):
+            paths.update(path for path in backgrounds if isinstance(path, str))
+    return paths
+
+
 def replace_background_reference(conn, old_path: str, new_path: str | None) -> None:
     """Repoint every reference to old_path at new_path, or drop it when None.
 

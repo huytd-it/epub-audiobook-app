@@ -128,6 +128,10 @@ export type VideoConfig = {
   waveform_layout: "horizontal" | "vertical" | "circular";
   waveform_background_color: string;
   waveform_background_opacity: number;
+  subtitle_enabled: boolean;
+  subtitle_font_size: number;
+  subtitle_color: string;
+  subtitle_position: "top" | "center" | "bottom";
 };
 
 export type YouTubeConfig = {

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, AudioLines, CheckCircle2, Download, Eye, ListChecks, Play } from "lucide-react";
+import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play } from "lucide-react";
 import { api, Chapter, Patch, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -211,6 +211,9 @@ export function ConfigDialog({
   const [previewChapter, setPreviewChapter] = useState(0);
   const [normalizationPreviewLoading, setNormalizationPreviewLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [genCount, setGenCount] = useState(4);
+  const [genStyle, setGenStyle] = useState("realistic");
+  const [genBusy, setGenBusy] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -323,6 +326,25 @@ export function ConfigDialog({
       onMessage(errorText(error));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const generateBackgrounds = async () => {
+    setGenBusy(true);
+    try {
+      const result = await postJson<{ status: string; job_id: number | null }>(
+        `/books/${bookId}/backgrounds/generate`,
+        { count: genCount, style: genStyle }
+      );
+      onMessage(
+        result.status === "already_queued"
+          ? "Đã có một lượt tạo nền đang chạy cho sách này — xem tiến độ ở Hàng đợi."
+          : "Đã đưa vào hàng đợi. Ảnh nền sẽ tự thêm vào danh sách bên dưới khi xong — xem tiến độ ở Hàng đợi."
+      );
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setGenBusy(false);
     }
   };
 
@@ -610,6 +632,33 @@ export function ConfigDialog({
 
               <div className="space-y-3 rounded-md border border-border p-3">
                 <div className="flex flex-wrap items-end gap-3">
+                  <Field label="Số ảnh" hint="1–12">
+                    <input
+                      className={fieldClass}
+                      type="number"
+                      min="1"
+                      max="12"
+                      value={genCount}
+                      onChange={(event) => setGenCount(Number(event.target.value))}
+                    />
+                  </Field>
+                  <Field label="Phong cách ảnh">
+                    <select className={selectClass} value={genStyle} onChange={(event) => setGenStyle(event.target.value)}>
+                      <option value="realistic">Tả thực</option>
+                      <option value="anime">Anime</option>
+                      <option value="watercolor">Màu nước</option>
+                      <option value="oil_painting">Sơn dầu</option>
+                      <option value="fantasy_art">Fantasy art</option>
+                    </select>
+                  </Field>
+                  <Button variant="outline" onClick={generateBackgrounds} disabled={genBusy}>
+                    {genBusy ? "Đang gửi..." : "Tạo nền tự động"}
+                  </Button>
+                  <span className="pb-2 text-[11px] text-muted-foreground">
+                    Sinh ảnh nền theo thể loại sách (không cần LLM), chạy trong hàng đợi
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-end gap-3">
                   <Field label="Thứ tự background media">
                     <select
                       className={selectClass}
@@ -814,6 +863,58 @@ export function ConfigDialog({
                       <input className="w-full accent-primary" type="range" min="0" max="100" step="5" value={videoConfig.waveform_background_opacity * 100} onChange={(event) => setVideoConfig({ ...videoConfig, waveform_background_opacity: Number(event.target.value) / 100 })} />
                     </Field>
                   </div>
+                </div>
+              </section>
+
+              <section className="space-y-3 rounded-md border border-border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-xs font-semibold">
+                      <Captions className="h-4 w-4 text-primary" /> Phụ đề tự động
+                    </div>
+                    <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                      Tạo trực tiếp từ văn bản gốc và thời lượng từng chunk TTS thật — không dùng nhận diện
+                      giọng nói nên không lệch chữ. Đổi cỡ chữ/màu/vị trí không cần tạo lại audio.
+                    </p>
+                  </div>
+                  <CheckField
+                    checked={videoConfig.subtitle_enabled}
+                    onChange={(value) => setVideoConfig({ ...videoConfig, subtitle_enabled: value })}
+                    label="Bật"
+                  />
+                </div>
+
+                <div className={videoConfig.subtitle_enabled ? "grid gap-3 sm:grid-cols-3" : "pointer-events-none grid gap-3 opacity-45 sm:grid-cols-3"}>
+                  <Field label="Vị trí">
+                    <select
+                      className={selectClass}
+                      value={videoConfig.subtitle_position}
+                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_position: event.target.value as VideoConfig["subtitle_position"] })}
+                    >
+                      <option value="bottom">Dưới</option>
+                      <option value="center">Giữa</option>
+                      <option value="top">Trên</option>
+                    </select>
+                  </Field>
+                  <Field label={`Cỡ chữ: ${videoConfig.subtitle_font_size}`}>
+                    <input
+                      className="w-full accent-primary"
+                      type="range"
+                      min="20"
+                      max="96"
+                      step="2"
+                      value={videoConfig.subtitle_font_size}
+                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_font_size: Number(event.target.value) })}
+                    />
+                  </Field>
+                  <Field label="Màu chữ">
+                    <input
+                      className="h-9 w-full cursor-pointer rounded-md border border-border bg-background p-1"
+                      type="color"
+                      value={videoConfig.subtitle_color}
+                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_color: event.target.value })}
+                    />
+                  </Field>
                 </div>
               </section>
 

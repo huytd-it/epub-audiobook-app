@@ -34,6 +34,10 @@ VIDEO_DEFAULTS = {
     "fps": 30,
     "image_animation": "none",
     "fit_mode": "auto",
+    "subtitle_enabled": False,
+    "subtitle_font_size": 46,
+    "subtitle_color": "#ffffff",
+    "subtitle_position": "bottom",
 }
 
 _RESOLUTIONS = {"1920x1080", "1280x720", "854x480", "1080x1920", "1080x1080"}
@@ -46,6 +50,7 @@ _ANIMATIONS = {"none", "static", "zoom-in", "zoom-out", "pan-left", "pan-right"}
 # switched to 9:16 stops rendering two thirds black without any extra setting.
 _FIT_MODES = {"auto", "contain", "cover", "blur"}
 _WAVEFORM_STYLES = {"line", "cline", "p2p", "point"}
+_SUBTITLE_POSITIONS = {"top", "center", "bottom"}
 
 
 def _json_object(value) -> dict:
@@ -86,7 +91,7 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("quality must be 18-28")
     if not isinstance(result["concurrency"], int) or result["concurrency"] not in {1, 2, 3, 4, 6, 8}:
         raise ValueError("invalid concurrency")
-    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool) or not isinstance(result["waveform_enabled"], bool):
+    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool) or not isinstance(result["waveform_enabled"], bool) or not isinstance(result["subtitle_enabled"], bool):
         raise ValueError("enhancement flags must be boolean")
     if not isinstance(result["crossfade_seconds"], (int, float)) or not 0 <= result["crossfade_seconds"] <= 3:
         raise ValueError("crossfade must be 0-3 seconds")
@@ -99,7 +104,11 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("invalid waveform position")
     if result["waveform_layout"] not in {"horizontal", "vertical", "circular"}:
         raise ValueError("invalid waveform layout")
-    for field in ("waveform_color", "waveform_background_color"):
+    if result["subtitle_position"] not in _SUBTITLE_POSITIONS:
+        raise ValueError("invalid subtitle position")
+    if not isinstance(result["subtitle_font_size"], int) or not 20 <= result["subtitle_font_size"] <= 96:
+        raise ValueError("subtitle font size must be 20-96")
+    for field in ("waveform_color", "waveform_background_color", "subtitle_color"):
         color = result[field]
         if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
             raise ValueError(f"invalid {field}")

@@ -35,6 +35,23 @@ def test_video_config_rejects_invalid_waveform_values(field, value):
         validate_video_config({field: value})
 
 
+def test_video_config_subtitle_defaults():
+    config = validate_video_config({})
+    assert config["subtitle_enabled"] is False
+    assert config["subtitle_font_size"] == 46
+    assert config["subtitle_color"] == "#ffffff"
+    assert config["subtitle_position"] == "bottom"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("subtitle_enabled", "yes"), ("subtitle_position", "middle"),
+    ("subtitle_color", "white"), ("subtitle_font_size", 10), ("subtitle_font_size", 200),
+])
+def test_video_config_rejects_invalid_subtitle_values(field, value):
+    with pytest.raises(ValueError):
+        validate_video_config({field: value})
+
+
 def test_video_config_reads_legacy_columns_and_json(tmp_path):
     conn = db.connect(":memory:")
     db.init_schema(conn)

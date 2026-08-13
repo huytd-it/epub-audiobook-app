@@ -11,6 +11,7 @@ from typing import Callable
 
 from app.config import settings
 from app.models import Book, Patch
+from app.subtitle_gen import ass_bgr
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,63 @@ def _build_fit_filter(width: int, height: int, mode: str = "contain") -> str:
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
     )
+
+
+# Windows-only, matching the rest of this codebase's font handling (see
+# image_overlay.py's _FONT_PATHS): the burned-in subtitle style is resolved
+# by name through Windows' own DirectWrite font provider, which this ffmpeg
+# build's libass uses automatically. fontsdir is kept as an explicit,
+# verified-working fallback rather than relied on alone - see
+# _build_subtitle_filter's docstring.
+_SUBTITLE_FONTS_DIR = r"C:\Windows\Fonts"
+_SUBTITLE_ALIGNMENT_BY_POSITION = {"top": 8, "center": 5, "bottom": 2}
+
+
+def _escape_ffmpeg_filter_path(path) -> str:
+    """Escape a filesystem path for use as a value inside an ffmpeg
+    filtergraph option string (e.g. subtitles=filename=...:fontsdir=...).
+
+    Backslashes become forward slashes (both are accepted on Windows) and the
+    value is wrapped in single quotes so ',' and ':' inside it are read
+    literally by ffmpeg's own filtergraph parser - except a drive-letter
+    colon, which still needs its own backslash escape even inside single
+    quotes, or libass's *separate* argument parser (one layer further in)
+    truncates the value at the first colon. Confirmed against a real ffmpeg
+    build (subprocess, not a shell) rather than assumed from memory - both
+    layers have their own quoting rules and disagreeing with either silently
+    breaks the filter instead of raising.
+    """
+    normalized = str(path).replace("\\", "/")
+    escaped = normalized.replace(":", r"\:")
+    return f"'{escaped}'"
+
+
+def _build_subtitle_filter(subtitle_path: Path, config: dict) -> str | None:
+    """Build the ffmpeg 'subtitles' filter for burning in captions, or None
+    when subtitles are off or this segment's audio has no caption sidecar.
+
+    A missing sidecar is a silent no-op, not an error: a voice-clip intro or
+    outro is never TTS'd chunk by chunk (see subtitle_gen's module docstring)
+    and so never gets one, and a patch synthesized before this feature
+    shipped simply predates it. Either way the segment still renders, just
+    without captions.
+
+    Uses the 'subtitles' filter rather than 'ass': only 'subtitles' exposes
+    force_style, which is what lets font size/colour/position come from
+    whatever video_config is current *at render time* rather than being
+    frozen into the .ass file when subtitle_gen wrote it at TTS time - so a
+    pure style change never requires regenerating cues/timing, only
+    whatever renders next.
+    """
+    if not config.get("subtitle_enabled") or not subtitle_path.is_file():
+        return None
+    font_size = config.get("subtitle_font_size", 46)
+    color = ass_bgr(config.get("subtitle_color", "#ffffff"))
+    alignment = _SUBTITLE_ALIGNMENT_BY_POSITION.get(config.get("subtitle_position", "bottom"), 2)
+    force_style = f"Fontsize={font_size},PrimaryColour={color},Alignment={alignment}"
+    filename_arg = _escape_ffmpeg_filter_path(subtitle_path)
+    fontsdir_arg = _escape_ffmpeg_filter_path(_SUBTITLE_FONTS_DIR)
+    return f"subtitles=filename={filename_arg}:fontsdir={fontsdir_arg}:force_style='{force_style}'"
 
 
 def _build_zoompan_filter(image_type: str, width: int, height: int, fps: int, duration: float) -> str:
@@ -295,6 +353,7 @@ def generate_segment(
         base_vf = f"{prefix}{zp_filter},format=yuv420p"
 
     waveform = waveform_config if waveform_config and waveform_config.get("waveform_enabled") else None
+    subtitle_filter = _build_subtitle_filter(Path(audio_path).with_suffix(".ass"), waveform_config or {})
     audio_chains: list[str] = []
     narration_label = "[1:a]"
     video_map_label = "[vout]"
@@ -313,6 +372,9 @@ def generate_segment(
         # Label the video chain: ffmpeg 5+ rejects mapping raw 0:v once it is
         # consumed by the complex filtergraph.
         chains = video_chains + audio_chains if waveform else audio_chains + [f"[0:v]{base_vf}[vout]"]
+        if subtitle_filter:
+            chains.append(f"{video_map_label}{subtitle_filter}[vsub]")
+            video_map_label = "[vsub]"
         cmd = [
             settings.get_ffmpeg_path(), "-y",
             *inputs,
@@ -335,10 +397,11 @@ def generate_segment(
         # narration (input 1) is kept and the background's audio is dropped. Still
         # images have no audio, so default stream selection is fine there.
         map_args = ["-map", "0:v", "-map", "1:a"] if is_video_bg else []
+        final_vf = f"{base_vf},{subtitle_filter}" if subtitle_filter else base_vf
         cmd = [
             settings.get_ffmpeg_path(), "-y",
             *inputs,
-            "-vf", base_vf,
+            "-vf", final_vf,
             *map_args,
             "-c:v", video_codec,
             *tune_args,
@@ -605,6 +668,15 @@ def generate_background_sequence(
         if waveform:
             waveform_chains, video_map, audio_map = _waveform_chains(waveform, width, 1, "[0:v]")
             chains.extend(waveform_chains)
+        subtitle_filter = _build_subtitle_filter(Path(audio_path).with_suffix(".ass"), waveform_config or {})
+        if subtitle_filter:
+            # video_map may still be the raw stream selector "0:v:0" here (no
+            # waveform ran) rather than a filtergraph label - filter_complex
+            # needs a bracketed input, so wrap it the first time any video
+            # filter becomes necessary.
+            video_in = video_map if video_map.startswith("[") else f"[{video_map}]"
+            chains.append(f"{video_in}{subtitle_filter}[vsub]")
+            video_map = "[vsub]"
         if music_path:
             inputs += ["-stream_loop", "-1", "-i", music_path]
             chains.extend(["[2:a]volume=" + str(music_volume) + "[music]", f"{audio_map}[music]amix=inputs=2:duration=first:normalize=0[aout]"])
@@ -612,7 +684,11 @@ def generate_background_sequence(
         cmd = inputs
         if chains:
             cmd += ["-filter_complex", ";".join(chains)]
-        cmd += ["-map", video_map, "-map", audio_map, "-c:v", video_codec if waveform else "copy",
+        # A subtitle burn (like the waveform overlay) rewrites pixels, so it
+        # forces a re-encode; the fast stream-copy path is only valid when
+        # neither is active and the concatenated 'visual' can pass through
+        # untouched.
+        cmd += ["-map", video_map, "-map", audio_map, "-c:v", video_codec if (waveform or subtitle_filter) else "copy",
                 "-c:a", "aac", "-b:a", audio_bitrate,
                 "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
                 "-shortest", out_path]

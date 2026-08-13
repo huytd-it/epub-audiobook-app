@@ -13,7 +13,7 @@ from pathlib import Path
 
 import soundfile as sf
 
-from app import audio_merge, repository
+from app import audio_merge, repository, subtitle_gen
 from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
@@ -148,6 +148,7 @@ def synthesize_patch(
     book_dir.mkdir(parents=True, exist_ok=True)
     audio_path = str(book_dir / f"{patch.id}.wav")
     timeline_path = Path(audio_path).with_suffix(".timeline.json")
+    subtitle_path = Path(audio_path).with_suffix(".ass")
     total = len(plan)
     ctx.progress(patch.next_chunk_index, total, phase="synthesizing")
 
@@ -158,10 +159,12 @@ def synthesize_patch(
                 raise asyncio.CancelledError()
             wavs.append(engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text))
             ctx.progress(index + 1, total)
-        chapters, _ = audio_merge.build_chapter_marks(plan, [len(a) for a in wavs], engine.sample_rate, _CHUNK_PAUSE_MS)
+        frame_counts = [len(a) for a in wavs]
+        chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, _CHUNK_PAUSE_MS)
         audio_merge.concat_chunks_to_wav(wavs, engine.sample_rate, audio_path, pause_ms=_CHUNK_PAUSE_MS)
         _apply_effects(ctx, with_effects, audio_path, plan)
         audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
+        subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, _CHUNK_PAUSE_MS)
         ctx.progress(total, total, phase="synthesizing")
         return audio_path, total
 
@@ -210,6 +213,7 @@ def synthesize_patch(
     audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
     _apply_effects(ctx, with_effects, audio_path, plan)
     audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
+    subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, _CHUNK_PAUSE_MS)
     ctx.progress(total, total, phase="synthesizing")
     return audio_path, total
 

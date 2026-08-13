@@ -9,14 +9,16 @@ import {
   Film,
   Layers,
   Mic,
+  Pencil,
   Settings,
   Video,
   X,
 } from "lucide-react";
-import { api, Patch, post, postJson } from "@/api";
+import { api, Patch, post, postForm, postJson } from "@/api";
 import { Header, LoadingState } from "@/components/common/Header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import {
   Dialog,
@@ -146,6 +148,9 @@ export function BookDetail() {
   const [chapterOpen, setChapterOpen] = useState(false);
   const [chapterIndex, setChapterIndex] = useState<number>();
   const [normalizeOpen, setNormalizeOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [bookTitle, setBookTitle] = useState("");
+  const [renaming, setRenaming] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
   const [running, setRunning] = useState<"audio" | "video" | "youtube" | "thumbnail">();
   const [ttsOpen, setTtsOpen] = useState(false);
@@ -177,7 +182,7 @@ export function BookDetail() {
   );
 
   // Dừng polling khi đang mở dialog hoặc đang chạy thao tác: tránh ghi đè state giữa chừng.
-  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || ttsOpen || busyCount > 0;
+  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || ttsOpen || busyCount > 0;
   const { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh } = useBookDetail(
     bookId,
     paused
@@ -463,6 +468,30 @@ export function BookDetail() {
     setChapterOpen(true);
   }, []);
 
+  const openRename = useCallback(() => {
+    if (!data) return;
+    setBookTitle(data.book.title);
+    setRenameOpen(true);
+  }, [data]);
+
+  const renameBook = useCallback(async () => {
+    const title = bookTitle.trim();
+    if (!title || renaming) return;
+    setRenaming(true);
+    try {
+      const form = new FormData();
+      form.append("title", title);
+      await postForm(`/books/${bookId}/rename`, form);
+      setMessage("Đã đổi tên sách.");
+      setRenameOpen(false);
+      await refresh();
+    } catch (err) {
+      setMessage(errorText(err));
+    } finally {
+      setRenaming(false);
+    }
+  }, [bookId, bookTitle, refresh, renaming]);
+
   // Sau khi ghi chương (sửa nội dung hoặc chuẩn hoá tiêu đề): làm mới báo cáo kiểm tra
   // trước (không bị inFlight-guard chặn), rồi làm mới data chính — best-effort.
   const onChapterSaved = useCallback(async () => {
@@ -541,7 +570,18 @@ export function BookDetail() {
       <Header
         title={
           <span className="flex flex-wrap items-center gap-2">
-            {data.book.title}
+            <span>{data.book.title}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              title="Đổi tên sách"
+              aria-label="Đổi tên sách"
+              onClick={openRename}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
             {chapterVal.report && !chapterVal.report.numbering.is_continuous && (
               <button
                 onClick={() => setTab("chapters")}
@@ -776,6 +816,38 @@ export function BookDetail() {
         onOpenChange={setTtsOpen}
         onConfirm={confirmBatchTts}
       />
+
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Đổi tên sách</DialogTitle>
+            <DialogDescription>Tên mới sẽ được dùng cho metadata và các bước xuất bản tiếp theo.</DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void renameBook();
+            }}
+            className="space-y-4"
+          >
+            <Input
+              autoFocus
+              value={bookTitle}
+              onChange={(event) => setBookTitle(event.target.value)}
+              aria-label="Tên sách"
+              placeholder="Nhập tên sách"
+            />
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setRenameOpen(false)} disabled={renaming}>
+                Hủy
+              </Button>
+              <Button type="submit" disabled={!bookTitle.trim() || renaming}>
+                {renaming ? "Đang lưu..." : "Lưu tên"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <ConfigDialog
         bookId={bookId}

@@ -419,6 +419,21 @@ CREATE INDEX IF NOT EXISTS idx_job_book  ON job(book_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dedupe ON job(dedupe_key)
     WHERE dedupe_key IS NOT NULL AND status IN ('pending','running');
 
+CREATE TABLE IF NOT EXISTS material_cache (
+    cache_key    TEXT PRIMARY KEY,
+    source       TEXT NOT NULL,
+    prompt       TEXT NOT NULL,
+    file_path    TEXT NOT NULL,
+    file_size    INTEGER,
+    width        INTEGER,
+    height       INTEGER,
+    created_at   TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    use_count    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_material_cache_last_used ON material_cache(last_used_at);
+
 """
 
 

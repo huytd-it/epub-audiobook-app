@@ -232,3 +232,37 @@ def test_no_video_job_when_the_book_has_no_image(tmp_path, monkeypatch):
     ctx, _ = _ctx(conn, patch_id=patch_id)
     audiobook_tts.handle(ctx)
     assert store.list_jobs(conn, job_type="video") == []
+
+
+@pytest.mark.parametrize("write_chunk_files", [True, False])
+def test_synthesize_patch_writes_a_subtitle_sidecar(tmp_path, monkeypatch, write_chunk_files):
+    monkeypatch.setattr(settings, "tts_write_chunk_files", write_chunk_files)
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn, text="Câu một. Câu hai. Câu ba.")
+    monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: _FakeEngine())
+    ctx, _ = _ctx(conn, patch_id=patch_id)
+    audiobook_tts.handle(ctx)
+
+    patch = repository.get_patch(conn, patch_id)
+    from pathlib import Path
+    subtitle_path = Path(patch.audio_path).with_suffix(".ass")
+    assert subtitle_path.is_file()
+    content = subtitle_path.read_text(encoding="utf-8")
+    assert "[Events]" in content
+    assert "Dialogue:" in content
+    assert "Câu một" in content
+
+
+def test_subtitle_sidecar_survives_a_generation_failure(tmp_path, monkeypatch):
+    """A caption bug must never take down an otherwise-good TTS run (see
+    subtitle_gen.try_generate's docstring)."""
+    from app import subtitle_gen
+    monkeypatch.setattr(subtitle_gen, "build_cues", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn)
+    monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: _FakeEngine())
+    ctx, _ = _ctx(conn, patch_id=patch_id)
+    audiobook_tts.handle(ctx)
+    assert repository.get_patch(conn, patch_id).status == "done"

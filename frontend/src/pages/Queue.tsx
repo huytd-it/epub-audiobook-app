@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { Check, Copy, FileText, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Check, ChevronLeft, ChevronRight, Copy, FileText, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered } from "lucide-react";
 import { api, post, Job } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -8,6 +8,11 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
+import { TabBar, checkboxClass } from "@/pages/book-detail/parts";
+
+type StatusFilter = "all" | "pending" | "running" | "failed" | "cancelled" | "done";
+
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 function jobTypeLabel(jobType: string) {
   if (jobType.includes("tts") || jobType === "flow_audio") return "TTS";
@@ -20,7 +25,11 @@ export function Queue() {
   const [jobs, setJobs] = useState<Job[]>();
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
-  const [retryingAll, setRetryingAll] = useState(false);
+  const [retryingSelected, setRetryingSelected] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [pageSize, setPageSize] = useState(25);
+  const [page, setPage] = useState(1);
   const [logJob, setLogJob] = useState<Job | null>(null);
   const [logText, setLogText] = useState("");
   const [logLoading, setLogLoading] = useState(false);
@@ -61,16 +70,71 @@ export function Queue() {
     }
   }
 
-  async function retryAllFailed() {
-    setRetryingAll(true);
+  const statusCounts = useMemo(() => {
+    const counts: Record<StatusFilter, number> = { all: jobs?.length || 0, pending: 0, running: 0, failed: 0, cancelled: 0, done: 0 };
+    jobs?.forEach((job) => {
+      if (job.status in counts && job.status !== "all") counts[job.status as Exclude<StatusFilter, "all">] += 1;
+    });
+    return counts;
+  }, [jobs]);
+
+  const filteredJobs = useMemo(
+    () => jobs?.filter((job) => statusFilter === "all" || job.status === statusFilter) || [],
+    [jobs, statusFilter]
+  );
+  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const visibleJobs = filteredJobs.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const retryableSelectedIds = jobs
+    ?.filter((job) => selectedIds.has(job.id) && ["failed", "cancelled"].includes(job.status))
+    .map((job) => job.id) || [];
+  const visibleSelectableIds = visibleJobs.filter((job) => ["failed", "cancelled"].includes(job.status)).map((job) => job.id);
+  const allVisibleSelected = visibleSelectableIds.length > 0 && visibleSelectableIds.every((id) => selectedIds.has(id));
+
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter, pageSize]);
+
+  useEffect(() => {
+    if (!jobs) return;
+    const retryableIds = new Set(jobs.filter((job) => ["failed", "cancelled"].includes(job.status)).map((job) => job.id));
+    setSelectedIds((previous) => new Set([...previous].filter((id) => retryableIds.has(id))));
+  }, [jobs]);
+
+  async function retrySelected() {
+    const ids = [...retryableSelectedIds];
+    if (!ids.length) return;
+    setRetryingSelected(true);
     try {
-      await post("/queue/jobs/retry-all-failed");
+      for (const id of ids) {
+        try {
+          await post(`/queue/jobs/${id}/retry`);
+        } catch (err) {
+          console.error(`Không thể thử lại job ${id}`, err);
+        }
+      }
+      setSelectedIds(new Set());
       await load();
-    } catch (err) {
-      console.error(err);
     } finally {
-      setRetryingAll(false);
+      setRetryingSelected(false);
     }
+  }
+
+  function toggleSelection(id: number, checked: boolean) {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function toggleVisibleSelection(checked: boolean) {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      visibleSelectableIds.forEach((id) => checked ? next.add(id) : next.delete(id));
+      return next;
+    });
   }
 
   async function openLog(job: Job) {
@@ -108,12 +172,12 @@ export function Queue() {
             <Button
               variant="outline"
               size="sm"
-              onClick={retryAllFailed}
-              disabled={retryingAll || !jobs?.some((job) => job.status === "failed")}
-              className="text-xs text-emerald-700 hover:bg-emerald-50"
+              onClick={retrySelected}
+              disabled={retryingSelected || retryableSelectedIds.length === 0}
+              className="text-xs text-emerald-700 hover:bg-emerald-50 disabled:text-muted-foreground"
             >
-              <RotateCcw className="h-3.5 w-3.5" />
-              {retryingAll ? "Đang thử lại..." : "Thử lại tất cả"}
+              <RotateCcw className={`h-3.5 w-3.5 ${retryingSelected ? "animate-spin" : ""}`} />
+              {retryingSelected ? "Đang thử lại..." : `Thử lại đã chọn${retryableSelectedIds.length ? ` (${retryableSelectedIds.length})` : ""}`}
             </Button>
             <Button variant="outline" size="sm" onClick={load} title="Làm mới">
               <RefreshCw className="h-3.5 w-3.5" />
@@ -144,14 +208,44 @@ export function Queue() {
         </CardHeader>
 
         <CardContent className="p-0">
+          {!!jobs?.length && (
+            <div className="border-b border-border px-4 py-3">
+              <TabBar<StatusFilter>
+                value={statusFilter}
+                onChange={setStatusFilter}
+                tabs={[
+                  { value: "all", label: "Tất cả", badge: statusCounts.all },
+                  { value: "pending", label: "Đang chờ", badge: statusCounts.pending },
+                  { value: "running", label: "Đang chạy", badge: statusCounts.running },
+                  { value: "failed", label: "Thất bại", badge: statusCounts.failed },
+                  { value: "cancelled", label: "Đã dừng", badge: statusCounts.cancelled },
+                  { value: "done", label: "Hoàn tất", badge: statusCounts.done },
+                ]}
+              />
+            </div>
+          )}
           {loading && !jobs ? (
             <LoadingState text="Đang kết nối danh sách tác vụ hàng đợi..." />
           ) : !jobs || jobs.length === 0 ? (
             <EmptyState text="Hàng đợi hiện không có tác vụ nào đang chờ." />
+          ) : filteredJobs.length === 0 ? (
+            <EmptyState text="Không có tác vụ nào ở trạng thái này." />
           ) : (
+            <>
+            <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10 px-3">
+                    <input
+                      type="checkbox"
+                      className={checkboxClass}
+                      checked={allVisibleSelected}
+                      disabled={visibleSelectableIds.length === 0 || retryingSelected}
+                      onChange={(event) => toggleVisibleSelection(event.target.checked)}
+                      aria-label="Chọn tất cả tác vụ có thể thử lại trên trang này"
+                    />
+                  </TableHead>
                   <TableHead className="w-16">MÃ JOB</TableHead>
                   <TableHead>LOẠI</TableHead>
                   <TableHead>GIAI ĐOẠN / SÁCH</TableHead>
@@ -161,14 +255,18 @@ export function Queue() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {jobs.map((job) => (
+                {visibleJobs.map((job) => (
                   <TableRow
                     key={job.id}
                     tabIndex={0}
                     role="button"
                     aria-label={`Xem log job ${job.id}`}
-                    onClick={() => openLog(job)}
+                    onClick={(event) => {
+                      if ((event.target as HTMLElement).closest("button, input, select, a")) return;
+                      openLog(job);
+                    }}
                     onKeyDown={(event) => {
+                      if ((event.target as HTMLElement).closest("button, input, select, a")) return;
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
                         openLog(job);
@@ -176,6 +274,18 @@ export function Queue() {
                     }}
                     className="cursor-pointer transition-colors hover:bg-primary/[0.04] focus-visible:bg-primary/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
                   >
+                    <TableCell className="px-3" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        className={checkboxClass}
+                        checked={selectedIds.has(job.id)}
+                        disabled={!['failed', 'cancelled'].includes(job.status) || retryingSelected}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        onChange={(event) => toggleSelection(job.id, event.target.checked)}
+                        aria-label={`Chọn job ${job.id} để thử lại`}
+                      />
+                    </TableCell>
                     <TableCell className="font-mono text-xs font-bold text-primary">
                       #{job.id}
                     </TableCell>
@@ -250,6 +360,33 @@ export function Queue() {
                 ))}
               </TableBody>
             </Table>
+            </div>
+            <div className="flex flex-col gap-3 border-t border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>Hiển thị</span>
+                <select
+                  value={pageSize}
+                  onChange={(event) => setPageSize(Number(event.target.value))}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                  aria-label="Số tác vụ mỗi trang"
+                >
+                  {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+                </select>
+                <span>mục · {filteredJobs.length} tác vụ</span>
+              </div>
+              <div className="flex items-center justify-between gap-2 sm:justify-end">
+                <span className="font-mono text-xs text-muted-foreground">Trang {currentPage} / {totalPages}</span>
+                <div className="flex items-center gap-1">
+                  <Button variant="outline" size="sm" className="h-8 w-8 p-0" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} title="Trang trước" aria-label="Trang trước">
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-8 w-8 p-0" disabled={currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))} title="Trang sau" aria-label="Trang sau">
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+            </>
           )}
         </CardContent>
       </Card>
