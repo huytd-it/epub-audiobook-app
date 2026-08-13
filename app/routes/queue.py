@@ -15,7 +15,10 @@ from app import repository
 from app.deps import locked_conn
 from app.config import settings
 from app.jobqueue import joblog, store
-from app.jobqueue.backfill import backfill_pending_jobs, enqueue_pending_patch_jobs
+from app.jobqueue.backfill import (
+    JOB_TYPES, QUEUE_CONCURRENCY_STATE_KEY, backfill_pending_jobs,
+    configured_concurrency, enqueue_pending_patch_jobs,
+)
 from app.jobqueue.models import TERMINAL_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,26 @@ def _job_dict(job) -> dict:
     data["percent"] = (min(100, round(job.progress_current * 100 / job.progress_total))
                        if job.progress_total else 0)
     return data
+
+
+@router.get("/queue/settings")
+def queue_settings(request: Request):
+    with locked_conn(request) as conn:
+        concurrency = configured_concurrency(conn)
+    return {"concurrency": concurrency, "min": 0, "max": 64, "requires_restart": True}
+
+
+@router.put("/queue/settings")
+def update_queue_settings(request: Request, body: dict):
+    values = body.get("concurrency")
+    if not isinstance(values, dict) or set(values) != set(JOB_TYPES):
+        raise HTTPException(400, "Cấu hình phải chứa đầy đủ các loại job hợp lệ")
+    if any(type(value) is not int or not 0 <= value <= 64 for value in values.values()):
+        raise HTTPException(400, "Số worker phải là số nguyên từ 0 đến 64")
+    normalized = {job_type: values[job_type] for job_type in JOB_TYPES}
+    with locked_conn(request) as conn:
+        repository.set_app_state(conn, QUEUE_CONCURRENCY_STATE_KEY, json.dumps(normalized))
+    return {"concurrency": normalized, "min": 0, "max": 64, "requires_restart": True}
 
 
 def _patch_ids_by_upload(conn, upload_ids: set[int]) -> dict[int, int]:

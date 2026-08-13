@@ -92,6 +92,22 @@ def test_health_preserves_legacy_keys_and_adds_pools(client):
     assert body["pools"][0]["job_type"] == "video"
 
 
+def test_queue_worker_settings_are_validated_and_persisted(client):
+    c, _, _ = client
+    settings = c.get("/queue/settings").json()
+    assert settings["concurrency"]["video"] >= 0
+    assert settings["requires_restart"] is True
+
+    concurrency = {job_type: 2 for job_type in settings["concurrency"]}
+    concurrency["background_gen"] = 0
+    response = c.put("/queue/settings", json={"concurrency": concurrency})
+    assert response.status_code == 200
+    assert c.get("/queue/settings").json()["concurrency"] == concurrency
+
+    concurrency["video"] = 65
+    assert c.put("/queue/settings", json={"concurrency": concurrency}).status_code == 400
+
+
 def test_queue_page_and_stats_keep_shapes(client):
     c, conn, _ = client
     store.enqueue(conn, "video")

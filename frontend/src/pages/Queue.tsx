@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Copy, FileText, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered } from "lucide-react";
-import { api, post, Job } from "@/api";
+import { Check, ChevronLeft, ChevronRight, Copy, FileText, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered, Settings2 } from "lucide-react";
+import { api, post, put, Job } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,10 +9,20 @@ import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 import { TabBar, checkboxClass } from "@/pages/book-detail/parts";
+import { Input } from "@/components/ui/input";
 
 type StatusFilter = "all" | "pending" | "running" | "failed" | "cancelled" | "done";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const WORKER_TYPES = [
+  ["audiobook_tts", "TTS audiobook"], ["light_tts", "TTS nhẹ"],
+  ["flow_audio", "Flow audio"], ["video", "Video sách"],
+  ["patch_video", "Video phân đoạn"], ["standalone_video", "Video độc lập"],
+  ["flow_video", "Flow video"], ["youtube_upload", "YouTube upload"],
+  ["flow_youtube", "Flow YouTube"], ["background_gen", "Tạo ảnh nền"],
+] as const;
+type WorkerType = typeof WORKER_TYPES[number][0];
+type WorkerSettings = { concurrency: Record<WorkerType, number>; min: number; max: number; requires_restart: boolean };
 
 function jobTypeLabel(jobType: string) {
   if (jobType.includes("tts") || jobType === "flow_audio") return "TTS";
@@ -35,6 +45,12 @@ export function Queue() {
   const [logLoading, setLogLoading] = useState(false);
   const [logError, setLogError] = useState("");
   const [logCopied, setLogCopied] = useState(false);
+  const [workerDialogOpen, setWorkerDialogOpen] = useState(false);
+  const [workerSettings, setWorkerSettings] = useState<WorkerSettings>();
+  const [workerDraft, setWorkerDraft] = useState<Record<WorkerType, string>>();
+  const [workerLoading, setWorkerLoading] = useState(false);
+  const [workerSaving, setWorkerSaving] = useState(false);
+  const [workerError, setWorkerError] = useState("");
 
   const load = () => {
     return api<{ jobs: Job[] }>("/queue/jobs?limit=200")
@@ -162,6 +178,41 @@ export function Queue() {
     window.setTimeout(() => setLogCopied(false), 1500);
   }
 
+  async function openWorkerSettings() {
+    setWorkerDialogOpen(true);
+    setWorkerLoading(true);
+    setWorkerError("");
+    try {
+      const data = await api<WorkerSettings>("/queue/settings");
+      setWorkerSettings(data);
+      setWorkerDraft(Object.fromEntries(WORKER_TYPES.map(([type]) => [type, String(data.concurrency[type])])) as Record<WorkerType, string>);
+    } catch (err) {
+      setWorkerError(err instanceof Error ? err.message : "Không tải được cấu hình worker");
+    } finally {
+      setWorkerLoading(false);
+    }
+  }
+
+  async function saveWorkerSettings() {
+    if (!workerSettings || !workerDraft) return;
+    const concurrency = Object.fromEntries(WORKER_TYPES.map(([type]) => [type, Number(workerDraft[type])])) as Record<WorkerType, number>;
+    if (Object.values(concurrency).some((value) => !Number.isInteger(value) || value < workerSettings.min || value > workerSettings.max)) {
+      setWorkerError(`Số worker phải là số nguyên từ ${workerSettings.min} đến ${workerSettings.max}.`);
+      return;
+    }
+    setWorkerSaving(true);
+    setWorkerError("");
+    try {
+      const data = await put<WorkerSettings>("/queue/settings", { concurrency });
+      setWorkerSettings(data);
+      setWorkerDialogOpen(false);
+    } catch (err) {
+      setWorkerError(err instanceof Error ? err.message : "Không lưu được cấu hình worker");
+    } finally {
+      setWorkerSaving(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Header
@@ -169,6 +220,9 @@ export function Queue() {
         subtitle="Trung tâm điều phối các tác vụ tổng hợp giọng đọc, ghép media và xuất video theo thời gian thực."
         action={
           <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={openWorkerSettings} className="text-xs">
+              <Settings2 className="h-3.5 w-3.5" /> Worker
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -390,6 +444,49 @@ export function Queue() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={workerDialogOpen} onOpenChange={setWorkerDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Cấu hình worker theo loại job</DialogTitle>
+            <DialogDescription>Giới hạn số job được xử lý đồng thời. Đặt 0 để tắt worker của loại đó.</DialogDescription>
+          </DialogHeader>
+          {workerLoading ? (
+            <LoadingState text="Đang tải cấu hình worker..." />
+          ) : workerDraft && workerSettings ? (
+            <div className="grid gap-3 py-2 sm:grid-cols-2">
+              {WORKER_TYPES.map(([type, label]) => (
+                <label key={type} className="flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2">
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">{label}</span>
+                    <span className="block truncate font-mono text-[10px] text-muted-foreground">{type}</span>
+                  </span>
+                  <Input
+                    type="number"
+                    min={workerSettings.min}
+                    max={workerSettings.max}
+                    step={1}
+                    value={workerDraft[type]}
+                    onChange={(event) => setWorkerDraft({ ...workerDraft, [type]: event.target.value })}
+                    className="w-20 text-center font-mono"
+                    aria-label={`Số worker cho ${label}`}
+                  />
+                </label>
+              ))}
+            </div>
+          ) : null}
+          <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            Cấu hình mới có hiệu lực sau khi khởi động lại backend. Các job đang chạy không bị ảnh hưởng.
+          </div>
+          {workerError && <p className="text-sm text-red-600">{workerError}</p>}
+          <DialogFooter>
+            <DialogClose asChild><Button variant="outline" disabled={workerSaving}>Hủy</Button></DialogClose>
+            <Button onClick={saveWorkerSettings} disabled={workerLoading || workerSaving || !workerDraft}>
+              {workerSaving ? "Đang lưu..." : "Lưu cấu hình"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!logJob} onOpenChange={(open) => !open && setLogJob(null)}>
         <DialogContent className="flex h-[min(760px,88vh)] w-[calc(100vw-2rem)] max-w-5xl flex-col gap-0 overflow-hidden p-0">

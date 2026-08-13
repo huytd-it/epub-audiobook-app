@@ -14,15 +14,45 @@ from app.jobqueue.runner import JobQueue, parse_concurrency
 
 logger = logging.getLogger(__name__)
 
+JOB_TYPES = (
+    "audiobook_tts", "video", "patch_video", "standalone_video",
+    "youtube_upload", "light_tts", "flow_audio", "flow_video",
+    "flow_youtube", "background_gen",
+)
+QUEUE_CONCURRENCY_STATE_KEY = "queue.concurrency"
+
+
+def configured_concurrency(conn: sqlite3.Connection) -> dict[str, int]:
+    from app import repository
+
+    concurrency = parse_concurrency(
+        settings.queue_concurrency, default=settings.queue_default_concurrency
+    )
+    concurrency.setdefault("patch_video", max(1, int(settings.patch_video_concurrency)))
+    raw = repository.get_app_state(conn, QUEUE_CONCURRENCY_STATE_KEY)
+    if raw:
+        try:
+            saved = json.loads(raw)
+            concurrency.update({
+                job_type: value for job_type, value in saved.items()
+                if job_type in JOB_TYPES and type(value) is int and 0 <= value <= 64
+            })
+        except (json.JSONDecodeError, AttributeError):
+            logger.warning("Ignoring invalid persisted queue concurrency")
+    return {job_type: concurrency.get(job_type, settings.queue_default_concurrency) for job_type in JOB_TYPES}
+
 
 def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     from app import repository
 
+    conn = conn_factory()
+    try:
+        concurrency = configured_concurrency(conn)
+    finally:
+        conn.close()
     queue = JobQueue(
         conn_factory,
-        concurrency=parse_concurrency(
-            settings.queue_concurrency, default=settings.queue_default_concurrency
-        ),
+        concurrency=concurrency,
         default_concurrency=settings.queue_default_concurrency,
         poll_interval=settings.worker_poll_interval,
         reap_after_seconds=settings.queue_reap_after_seconds,
@@ -33,8 +63,7 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     # always use audiobook_tts; persisted voxcpm_tts rows can still finish safely.
     queue.register("voxcpm_tts", audiobook_tts.handle)
     queue.register("video", video.handle)
-    queue.register("patch_video", patch_video.handle,
-                   concurrency=max(1, int(settings.patch_video_concurrency)))
+    queue.register("patch_video", patch_video.handle)
     queue.register("standalone_video", standalone_video.handle)
     queue.register("youtube_upload", youtube_upload.handle, cancellable=False)
     queue.register("light_tts", light_tts.handle)
