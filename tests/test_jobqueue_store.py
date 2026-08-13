@@ -453,6 +453,29 @@ def test_clear_inactive_preserves_active_jobs():
     assert {job.status for job in store.list_jobs(conn)} == {RUNNING, CANCELLING}
 
 
+def test_reorder_pending_is_scoped_by_type_and_controls_claim_order():
+    conn = _conn()
+    first = store.enqueue(conn, "video")
+    second = store.enqueue(conn, "video")
+    other = store.enqueue(conn, "light_tts")
+    assert store.reorder_pending(conn, "video", [second, first]) is True
+    assert store.claim(conn, "video", "w").id == second
+    assert store.claim(conn, "light_tts", "w").id == other
+    assert store.reorder_pending(conn, "video", [first, other]) is False
+
+
+def test_delete_terminal_only_deletes_selected_finished_jobs():
+    conn = _conn()
+    ids = {}
+    for status in (PENDING, DONE, FAILED, CANCELLED, RUNNING):
+        ids[status] = store.enqueue(conn, f"type_{status}")
+        conn.execute("UPDATE job SET status=? WHERE id=?", (status, ids[status]))
+    conn.commit()
+    assert store.delete_terminal(conn, list(ids.values())) == 3
+    assert store.get(conn, ids[PENDING]) is not None
+    assert store.get(conn, ids[RUNNING]) is not None
+
+
 def test_pending_count_is_per_type():
     conn = _conn()
     store.enqueue(conn, "video")

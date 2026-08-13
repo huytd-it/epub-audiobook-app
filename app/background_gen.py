@@ -1,45 +1,51 @@
-"""Auto-populate a book's shared background rotation without a manual upload.
+"""Auto-generate ONE background image per patch, stored in a managed folder.
 
 No LLM is involved: a prompt is assembled from data the app already has (the
 book's genre tags, already collected for YouTube metadata - see
 youtube_metadata.get_book_youtube_config - plus a fixed visual-style template
-and a small set of generic scene descriptors), not from analysing chapter
-text. That keeps this dependency-free and free-to-run, at the cost of images
-that suit the book's genre/mood rather than any specific scene. The book
-title and patch names are deliberately kept out of the prompt text itself:
-text-to-image models asked to render arbitrary words tend to draw garbled
-glyphs instead of illustrating them, and Vietnamese proper nouns make that
-worse. They still shape the per-image seed (see _stable_seed) so the same
-book+slot regenerates the same image across retries instead of drifting.
+and a generic scene descriptor), not from analysing chapter text. That keeps
+this dependency-free and free-to-run, at the cost of images that suit the
+book's genre/mood rather than any specific scene. The book title and patch
+name are deliberately kept out of the prompt text itself: text-to-image
+models asked to render arbitrary words tend to draw garbled glyphs instead of
+illustrating them, and Vietnamese proper nouns make that worse.
 
-Fetches go through app.material_cache, so re-running generation for a book
-(after a partial failure, or just to top up the pool) only pays the network
-cost for images it doesn't already have.
+Each patch gets exactly one image. Its style, scene and Pollinations seed are
+rolled once per job (see roll_variation) and persisted into the job payload
+on the first attempt, so a retry of the same job reproduces the same
+request - and, through the content-addressed app.material_cache, the same
+bytes - while a freshly created patch always starts from a brand-new draw.
+
+Generated images are copied out of the cache into a managed directory,
+data/backgrounds/patch_bg/<book_id>/, and the patch row's image_path is
+pointed at that copy. Nothing is merged into the shared video config's
+"backgrounds" list and nothing lands in the flat data/backgrounds library:
+every listing endpoint (routes/video.py's /video/backgrounds, routes/photos,
+routes/ui_api.py's /media, routes/books._list_backgrounds) iterates that
+folder non-recursively, so a nested patch_bg/ directory is invisible to it.
+The copy also survives material_cache GC, which only deletes cache entries
+whose file_path is not referenced - patch.image_path is referenced (see
+media_library.referenced_media_paths) - so the managed file is protected
+while the cache row behind it can be reclaimed like any other.
 """
 from __future__ import annotations
 
 import logging
+import random
 import shutil
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 from urllib.parse import quote
 
 import requests
 
 from app import material_cache, repository
 from app.config import settings
-from app.video_config import get_book_video_config, save_book_video_config, validate_media_path
+from app.jobqueue import store as job_store
 from app.youtube_metadata import get_book_youtube_config, split_tags
 
 logger = logging.getLogger(__name__)
-
-# A book's background pool is a shared rotation (video_config.py's
-# "backgrounds"), not one image per patch, so this bounds the whole pool
-# rather than scaling with chapter count. High enough to give real variety,
-# low enough that one "generate" click can't fire an unbounded burst of
-# requests at a free API.
-MAX_COUNT = 12
 
 _STYLE_TEMPLATES = {
     "realistic": "photorealistic digital illustration, cinematic lighting, highly detailed",
@@ -49,8 +55,8 @@ _STYLE_TEMPLATES = {
     "fantasy_art": "fantasy concept art, epic atmosphere, dramatic sky, highly detailed",
 }
 STYLES = frozenset(_STYLE_TEMPLATES)
+_STYLES_ORDERED = tuple(_STYLE_TEMPLATES)
 DEFAULT_STYLE = "realistic"
-DEFAULT_COUNT = 4
 
 # Best-effort Vietnamese web-novel genre -> English visual mood. Deliberately
 # small and exact-match only: a wrong or partial translation would steer the
@@ -77,8 +83,8 @@ _GENRE_KEYWORDS = {
     "hệ thống": "game system fantasy",
 }
 
-# Cycled evenly across the requested count (see build_prompts) so a pool of,
-# say, 6 images doesn't repeat the same descriptor back to back.
+# A single patch job picks one of these at random (see roll_variation); the
+# list is generic so the draw always yields a usable description.
 _SCENE_DESCRIPTORS = [
     "a wide establishing shot",
     "a quiet atmospheric moment",
@@ -108,6 +114,11 @@ def _translate_genres(genre_tags: str) -> str:
     return ", ".join(keywords)
 
 
+def _assemble_prompt(descriptor: str, genre_desc: str, style_desc: str) -> str:
+    parts = [descriptor, genre_desc, style_desc, "no text, no watermark"]
+    return ", ".join(part for part in parts if part)
+
+
 def build_prompts(count: int, style: str, genre_tags: str = "") -> list[str]:
     """Return `count` distinct-but-consistent image prompts for a book.
 
@@ -123,21 +134,31 @@ def build_prompts(count: int, style: str, genre_tags: str = "") -> list[str]:
     for index in range(count):
         slot = index * len(_SCENE_DESCRIPTORS) // count if count > 1 else 0
         descriptor = _SCENE_DESCRIPTORS[min(slot, len(_SCENE_DESCRIPTORS) - 1)]
-        parts = [descriptor, genre_desc, style_desc, "no text, no watermark"]
-        prompts.append(", ".join(part for part in parts if part))
+        prompts.append(_assemble_prompt(descriptor, genre_desc, style_desc))
     return prompts
 
 
-def _stable_seed(book_id: int, index: int) -> int:
-    """Deterministic per-slot seed so re-running generation for the same book
-    reproduces the same image instead of drawing a new one every retry."""
-    return (book_id * 1_000_003 + index) % (2**31 - 1)
+def build_patch_prompt(style: str, scene: str, genre_tags: str = "") -> str:
+    """Assemble the single prompt for one patch's background image."""
+    style_desc = _STYLE_TEMPLATES.get(style, _STYLE_TEMPLATES[DEFAULT_STYLE])
+    genre_desc = _translate_genres(genre_tags)
+    return _assemble_prompt(scene, genre_desc, style_desc)
 
 
-def _backgrounds_dir() -> Path:
-    root = Path(settings.data_root) / "backgrounds"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+def roll_variation(rng: random.Random | None = None) -> dict:
+    """Fresh random style + scene + seed for a NEW patch background job.
+
+    Called once per job (on its first attempt) and persisted into the job
+    payload: later retries of the same job reuse the same variation, so they
+    reproduce the same request instead of drifting, while a newly created
+    patch always rolls a different draw.
+    """
+    rng = rng or random
+    return {
+        "style": rng.choice(_STYLES_ORDERED),
+        "scene": rng.choice(_SCENE_DESCRIPTORS),
+        "seed": rng.randrange(2**31 - 1),
+    }
 
 
 def fetch_image(
@@ -153,12 +174,12 @@ def fetch_image(
     fail tends to fail fast (refused/reset) or slow (read timeout) rather
     than with a retryable HTTP status, so the retry loop here covers both -
     it's what actually recovers a transient failure within a single job run,
-    rather than pushing every retry up to the job queue's own backoff (which
-    would otherwise cost this image's *entire* run, cache hits on the other
-    slots included, just to retry the one that timed out).
+    rather than pushing every retry up to the job queue's own backoff.
 
     Raises the last error once every attempt is exhausted; the caller (see
-    generate_for_book) treats that as "this slot failed" and moves on.
+    generate_for_patch) lets that bubble up to the job queue, which retries
+    the job with the same variation (and therefore the same prompt+seed, so
+    the cache keeps a retry from drifting to a different image).
     """
     key = material_cache.make_key("pollinations", prompt, width, height)
     cached = material_cache.get(conn, key)
@@ -193,61 +214,92 @@ def fetch_image(
     raise last_error
 
 
-def generate_for_book(
-    conn, book_id: int, *, count: int, style: str,
+def _managed_patch_dir(book_id: int) -> Path:
+    """Per-book managed folder for generated patch backgrounds.
+
+    A nested subdirectory of data/backgrounds, so it never shows up in the
+    media/photo/backgrounds listings (they iterate non-recursively) while
+    still living next to the rest of the media data.
+    """
+    root = Path(settings.data_root) / "backgrounds" / "patch_bg" / str(book_id)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def generate_for_patch(
+    conn,
+    book,
+    patch,
+    *,
+    style: str,
+    scene: str,
+    seed: int,
     on_progress: Callable[[int, int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
-) -> list[str]:
-    """Generate up to `count` backgrounds for a book and merge them into its
-    shared rotation (video_config.py's "backgrounds").
+    timeout: float = 30.0,
+    retries: int = 2,
+    backoff_seconds: float = 3.0,
+) -> str:
+    """Generate ONE background for a patch and save it where the patch
+    expects it: a copy in the book's managed patch_bg folder, referenced by
+    patch.image_path.
 
-    A per-image failure is logged and skipped rather than aborting the whole
-    run - Pollinations has no SLA, and requiring every single image to
-    succeed would make the feature unusable on a flaky connection. Only
-    "every image failed" is treated as an error, since returning success
-    while having generated nothing would silently no-op the request.
-
-    Runs one image at a time (not in parallel): Pollinations is a shared free
-    service, and nothing here is latency-sensitive enough to justify the
-    extra load a burst of concurrent requests would put on it.
+    Returns the managed absolute path. Raises the underlying fetch error when
+    the image could not be produced - a job retry reruns this with the same
+    style/scene/seed, so the retry converges on the same image instead of
+    painting something new. Never touches the shared video config's
+    "backgrounds" list nor the flat library folder.
     """
-    if count < 1 or count > MAX_COUNT:
-        raise ValueError(f"count must be between 1 and {MAX_COUNT}")
-    if style not in STYLES:
-        raise ValueError(f"unknown style: {style!r}")
-    book = repository.get_book(conn, book_id)
-    if book is None:
-        raise ValueError(f"book {book_id} not found")
-
     width, height = (int(part) for part in (book.video_resolution or "1920x1080").split("x"))
-    genre_tags = get_book_youtube_config(conn, book_id).get("genre_tags", "")
-    prompts = build_prompts(count, style, genre_tags)
-    dest_dir = _backgrounds_dir()
-
-    generated: list[str] = []
-    for index, prompt in enumerate(prompts):
-        if should_cancel is not None and should_cancel():
-            break
-        if on_progress is not None:
-            on_progress(index, count)
-        try:
-            cached_path = fetch_image(conn, prompt, width, height, seed=_stable_seed(book_id, index))
-        except Exception:
-            logger.warning(
-                "background_gen: image %d/%d failed for book %s", index + 1, count, book_id, exc_info=True,
-            )
-            continue
-        cache_key = material_cache.make_key("pollinations", prompt, width, height)
-        dest = dest_dir / f"gen_{book_id}_{index:03d}_{cache_key[:8]}{cached_path.suffix}"
-        if not dest.exists():
-            shutil.copy2(cached_path, dest)
-        generated.append(validate_media_path(str(dest), dest_dir))
+    genre_tags = get_book_youtube_config(conn, book.id).get("genre_tags", "")
+    prompt = build_patch_prompt(style, scene, genre_tags)
     if on_progress is not None:
-        on_progress(len(prompts), count)
-    if not generated:
-        raise ValueError("no backgrounds could be generated (every request failed)")
+        on_progress(0, 1)
+    if should_cancel is not None and should_cancel():
+        raise ValueError("background generation cancelled")
+    cached = fetch_image(
+        conn, prompt, width, height, seed=seed,
+        timeout=timeout, retries=retries, backoff_seconds=backoff_seconds,
+    )
+    cache_key = material_cache.make_key("pollinations", prompt, width, height)
+    dest = _managed_patch_dir(book.id) / f"patch_{patch.id}_{cache_key[:8]}{cached.suffix}"
+    if not dest.exists():
+        shutil.copy2(cached, dest)
+    path = str(dest)
+    repository.save_patch_image(conn, patch.id, path)
+    if on_progress is not None:
+        on_progress(1, 1)
+    return path
 
-    video_config = get_book_video_config(conn, book)
-    merged = list(dict.fromkeys([*video_config["backgrounds"], *generated]))
-    save_book_video_config(conn, book_id, {**video_config, "backgrounds": merged})
-    return generated
+
+def enqueue_for_patches(conn, book_id: int, patches: Iterable) -> int:
+    """Enqueue a patch-scoped background_gen job for each newly created patch.
+
+    Must only be called AFTER the patch rows are committed: the repository
+    builders (rebuild_patches/auto_build_patches/extend_patches) commit
+    before returning, but store.enqueue drops job.patch_id for any patch it
+    cannot see in the DB, which would make the job fatal on a nonexistent
+    patch - so enqueuing before the insert commits is a correctness bug, not
+    just a race.
+
+    Dedupe is per patch (key "background_gen:patch=<id>", enforced by the
+    partial unique index on pending/running jobs): at most one live job can
+    exist per patch, and a finished job never blocks a later re-run. Each
+    enqueue draws its randomness only when the job first runs, so a new job
+    for a fresh patch starts from a different draw.
+    """
+    queued = 0
+    for patch in patches:
+        patch_id = patch.id if not isinstance(patch, int) else patch
+        if patch_id is None:
+            continue
+        if job_store.enqueue(
+            conn,
+            "background_gen",
+            payload={"patch_id": patch_id, "book_id": book_id},
+            book_id=book_id,
+            patch_id=patch_id,
+            dedupe_key=f"background_gen:patch={patch_id}",
+        ) is not None:
+            queued += 1
+    return queued

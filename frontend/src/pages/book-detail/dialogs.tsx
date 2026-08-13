@@ -211,9 +211,6 @@ export function ConfigDialog({
   const [previewChapter, setPreviewChapter] = useState(0);
   const [normalizationPreviewLoading, setNormalizationPreviewLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [genCount, setGenCount] = useState(4);
-  const [genStyle, setGenStyle] = useState("realistic");
-  const [genBusy, setGenBusy] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -326,25 +323,6 @@ export function ConfigDialog({
       onMessage(errorText(error));
     } finally {
       setSaving(false);
-    }
-  };
-
-  const generateBackgrounds = async () => {
-    setGenBusy(true);
-    try {
-      const result = await postJson<{ status: string; job_id: number | null }>(
-        `/books/${bookId}/backgrounds/generate`,
-        { count: genCount, style: genStyle }
-      );
-      onMessage(
-        result.status === "already_queued"
-          ? "Đã có một lượt tạo nền đang chạy cho sách này — xem tiến độ ở Hàng đợi."
-          : "Đã đưa vào hàng đợi. Ảnh nền sẽ tự thêm vào danh sách bên dưới khi xong — xem tiến độ ở Hàng đợi."
-      );
-    } catch (error) {
-      onMessage(errorText(error));
-    } finally {
-      setGenBusy(false);
     }
   };
 
@@ -631,33 +609,6 @@ export function ConfigDialog({
               </div>
 
               <div className="space-y-3 rounded-md border border-border p-3">
-                <div className="flex flex-wrap items-end gap-3">
-                  <Field label="Số ảnh" hint="1–12">
-                    <input
-                      className={fieldClass}
-                      type="number"
-                      min="1"
-                      max="12"
-                      value={genCount}
-                      onChange={(event) => setGenCount(Number(event.target.value))}
-                    />
-                  </Field>
-                  <Field label="Phong cách ảnh">
-                    <select className={selectClass} value={genStyle} onChange={(event) => setGenStyle(event.target.value)}>
-                      <option value="realistic">Tả thực</option>
-                      <option value="anime">Anime</option>
-                      <option value="watercolor">Màu nước</option>
-                      <option value="oil_painting">Sơn dầu</option>
-                      <option value="fantasy_art">Fantasy art</option>
-                    </select>
-                  </Field>
-                  <Button variant="outline" onClick={generateBackgrounds} disabled={genBusy}>
-                    {genBusy ? "Đang gửi..." : "Tạo nền tự động"}
-                  </Button>
-                  <span className="pb-2 text-[11px] text-muted-foreground">
-                    Sinh ảnh nền theo thể loại sách (không cần LLM), chạy trong hàng đợi
-                  </span>
-                </div>
                 <div className="flex flex-wrap items-end gap-3">
                   <Field label="Thứ tự background media">
                     <select

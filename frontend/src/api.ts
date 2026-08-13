@@ -2,6 +2,7 @@ export type Book = {
   id: number;
   title: string;
   status: string;
+  priority: number;
   original_filename: string;
   created_at: string;
   normalize_numbers_enabled?: number;

@@ -214,10 +214,11 @@ def queue_stats(request: Request):
 
 @router.get("/queue/jobs")
 def list_jobs(request: Request, type: str = "", status: str = "",
-              book_id: int | None = None, limit: int = 100):
+              book_id: int | None = None, limit: int = 100, order: str = ""):
     with locked_conn(request) as conn:
         jobs = store.list_jobs(conn, job_type=type or None, status=status or None,
-                               book_id=book_id, limit=limit)
+                               book_id=book_id, limit=limit,
+                               queue_order=order == "queue" and bool(type) and status == "pending")
         production_names = _production_names(conn, jobs)
     result = []
     for job in jobs:
@@ -296,6 +297,28 @@ def retry_all_failed_jobs(request: Request):
         retried = store.retry_all_failed(conn)
     logger.info("event=queue.retry_all_failed count=%s", retried)
     return {"retried": retried}
+
+
+@router.put("/queue/jobs/order")
+def reorder_jobs(request: Request, body: dict):
+    job_type = body.get("job_type")
+    job_ids = body.get("job_ids")
+    if job_type not in JOB_TYPES or not isinstance(job_ids, list) or any(type(job_id) is not int for job_id in job_ids):
+        raise HTTPException(400, detail="Thứ tự job không hợp lệ")
+    with locked_conn(request) as conn:
+        if not store.reorder_pending(conn, job_type, job_ids):
+            raise HTTPException(409, detail="Hàng đợi đã thay đổi, vui lòng tải lại")
+    return {"job_type": job_type, "job_ids": job_ids}
+
+
+@router.post("/queue/jobs/bulk-delete")
+def delete_selected_jobs(request: Request, body: dict):
+    job_ids = body.get("job_ids")
+    if not isinstance(job_ids, list) or any(type(job_id) is not int for job_id in job_ids):
+        raise HTTPException(400, detail="Danh sách job không hợp lệ")
+    with locked_conn(request) as conn:
+        deleted = store.delete_terminal(conn, job_ids)
+    return {"requested": len(set(job_ids)), "deleted": deleted}
 
 
 @router.delete("/queue/jobs/{job_id}")

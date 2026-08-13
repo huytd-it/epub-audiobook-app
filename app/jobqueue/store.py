@@ -109,6 +109,28 @@ def find_live_by_dedupe(conn: sqlite3.Connection, dedupe_key: str) -> Job | None
     return Job.from_row(row) if row else None
 
 
+def update_payload(
+    conn: sqlite3.Connection, job_id: int, payload: dict, *,
+    worker_id: str | None = None,
+) -> bool:
+    """Replace a job's payload_json. Fenced by worker_id like every other
+    write, so a worker that no longer owns the job cannot overwrite the
+    payload of its successor.
+
+    Handlers use this to persist a one-time random draw (e.g. a patch
+    background's style/scene/seed) on the first attempt, so a retry of the
+    same job reuses the same values instead of re-rolling.
+    """
+    stamp = _now()
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"UPDATE job SET payload_json=?, updated_at=? WHERE id=?{guard}",
+        [json.dumps(payload), stamp, job_id] + extra,
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 # ---------------------------------------------------------------------- claim
 
 def claim(
@@ -351,7 +373,7 @@ def reap_stale(
 
 def list_jobs(
     conn: sqlite3.Connection, *, job_type: str | None = None, status: str | None = None,
-    book_id: int | None = None, limit: int = 100,
+    book_id: int | None = None, limit: int = 100, queue_order: bool = False,
 ) -> list[Job]:
     where, params = [], []
     if job_type:
@@ -365,8 +387,9 @@ def list_jobs(
         params.append(book_id)
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     params.append(max(1, min(limit, 1000)))
+    order = "priority, id" if queue_order else "id DESC"
     rows = conn.execute(
-        f"SELECT {_COLUMNS} FROM job {clause} ORDER BY id DESC LIMIT ?", params
+        f"SELECT {_COLUMNS} FROM job {clause} ORDER BY {order} LIMIT ?", params
     ).fetchall()
     return [Job.from_row(r) for r in rows]
 
@@ -384,6 +407,37 @@ def clear_inactive(conn: sqlite3.Connection) -> int:
     cur = conn.execute("DELETE FROM job WHERE status NOT IN ('running', 'cancelling')")
     conn.commit()
     return cur.rowcount
+
+
+def delete_terminal(conn: sqlite3.Connection, job_ids: list[int]) -> int:
+    ids = list(dict.fromkeys(job_ids))
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    cur = conn.execute(
+        f"DELETE FROM job WHERE id IN ({placeholders}) AND status IN ('done', 'failed', 'cancelled')",
+        ids,
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def reorder_pending(conn: sqlite3.Connection, job_type: str, ordered_ids: list[int]) -> bool:
+    if len(ordered_ids) != len(set(ordered_ids)):
+        return False
+    current = conn.execute(
+        "SELECT id FROM job WHERE job_type=? AND status='pending' ORDER BY priority, id",
+        (job_type,),
+    ).fetchall()
+    if {row["id"] for row in current} != set(ordered_ids):
+        return False
+    count = len(ordered_ids)
+    conn.executemany(
+        "UPDATE job SET priority=?, updated_at=? WHERE id=? AND job_type=? AND status='pending'",
+        [(-count + index, _now(), job_id, job_type) for index, job_id in enumerate(ordered_ids)],
+    )
+    conn.commit()
+    return True
 
 
 def delete_pending(conn: sqlite3.Connection, job_id: int) -> bool:

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Copy, FileText, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered, Settings2 } from "lucide-react";
+import { ArrowDownToLine, ArrowUpToLine, Check, ChevronLeft, ChevronRight, Copy, FileText, GripVertical, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered, Settings2 } from "lucide-react";
 import { api, post, put, Job } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -12,6 +12,7 @@ import { TabBar, checkboxClass } from "@/pages/book-detail/parts";
 import { Input } from "@/components/ui/input";
 
 type StatusFilter = "all" | "pending" | "running" | "failed" | "cancelled" | "done";
+type JobTypeFilter = "all" | WorkerType;
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const WORKER_TYPES = [
@@ -38,6 +39,7 @@ export function Queue() {
   const [retryingSelected, setRetryingSelected] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [jobTypeFilter, setJobTypeFilter] = useState<JobTypeFilter>("all");
   const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
   const [logJob, setLogJob] = useState<Job | null>(null);
@@ -51,9 +53,18 @@ export function Queue() {
   const [workerLoading, setWorkerLoading] = useState(false);
   const [workerSaving, setWorkerSaving] = useState(false);
   const [workerError, setWorkerError] = useState("");
+  const [reordering, setReordering] = useState(false);
+  const [draggedJobId, setDraggedJobId] = useState<number | null>(null);
+  const [queueError, setQueueError] = useState("");
 
   const load = () => {
-    return api<{ jobs: Job[] }>("/queue/jobs?limit=200")
+    const params = new URLSearchParams({ limit: jobTypeFilter === "all" ? "200" : "1000" });
+    if (jobTypeFilter !== "all") params.set("type", jobTypeFilter);
+    if (jobTypeFilter !== "all" && statusFilter === "pending") {
+      params.set("status", "pending");
+      params.set("order", "queue");
+    }
+    return api<{ jobs: Job[] }>(`/queue/jobs?${params}`)
       .then((x) => setJobs(x.jobs))
       .catch((err) => console.error(err))
       .finally(() => setLoading(false));
@@ -63,7 +74,7 @@ export function Queue() {
     load();
     const timer = setInterval(load, 3000);
     return () => clearInterval(timer);
-  }, []);
+  }, [jobTypeFilter, statusFilter]);
 
   async function act(id: number, action: string) {
     try {
@@ -74,10 +85,17 @@ export function Queue() {
     }
   }
 
-  async function clearOldJobs() {
+  async function clearSelectedJobs() {
+    const ids = [...selectedTerminalIds];
+    if (!ids.length) return;
     setClearing(true);
     try {
-      await post("/queue/clear");
+      await api("/queue/jobs/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_ids: ids }),
+      });
+      setSelectedIds((previous) => new Set([...previous].filter((id) => !ids.includes(id))));
       await load();
     } catch (err) {
       console.error(err);
@@ -104,17 +122,21 @@ export function Queue() {
   const retryableSelectedIds = jobs
     ?.filter((job) => selectedIds.has(job.id) && ["failed", "cancelled"].includes(job.status))
     .map((job) => job.id) || [];
-  const visibleSelectableIds = visibleJobs.filter((job) => ["failed", "cancelled"].includes(job.status)).map((job) => job.id);
+  const selectedTerminalIds = jobs
+    ?.filter((job) => selectedIds.has(job.id) && ["done", "failed", "cancelled"].includes(job.status))
+    .map((job) => job.id) || [];
+  const visibleSelectableIds = visibleJobs.filter((job) => ["done", "failed", "cancelled"].includes(job.status)).map((job) => job.id);
   const allVisibleSelected = visibleSelectableIds.length > 0 && visibleSelectableIds.every((id) => selectedIds.has(id));
+  const canReorder = jobTypeFilter !== "all" && statusFilter === "pending";
 
   useEffect(() => {
     setPage(1);
-  }, [statusFilter, pageSize]);
+  }, [statusFilter, jobTypeFilter, pageSize]);
 
   useEffect(() => {
     if (!jobs) return;
-    const retryableIds = new Set(jobs.filter((job) => ["failed", "cancelled"].includes(job.status)).map((job) => job.id));
-    setSelectedIds((previous) => new Set([...previous].filter((id) => retryableIds.has(id))));
+    const selectableIds = new Set(jobs.filter((job) => ["done", "failed", "cancelled"].includes(job.status)).map((job) => job.id));
+    setSelectedIds((previous) => new Set([...previous].filter((id) => selectableIds.has(id))));
   }, [jobs]);
 
   async function retrySelected() {
@@ -129,7 +151,7 @@ export function Queue() {
           console.error(`Không thể thử lại job ${id}`, err);
         }
       }
-      setSelectedIds(new Set());
+      setSelectedIds((previous) => new Set([...previous].filter((id) => !ids.includes(id))));
       await load();
     } finally {
       setRetryingSelected(false);
@@ -176,6 +198,41 @@ export function Queue() {
     await navigator.clipboard.writeText(logText);
     setLogCopied(true);
     window.setTimeout(() => setLogCopied(false), 1500);
+  }
+
+  async function reorderJobs(orderedJobs: Job[]) {
+    if (jobTypeFilter === "all") return;
+    setReordering(true);
+    setQueueError("");
+    try {
+      await put("/queue/jobs/order", { job_type: jobTypeFilter, job_ids: orderedJobs.map((job) => job.id) });
+      setJobs(orderedJobs);
+    } catch (err) {
+      setQueueError(err instanceof Error ? err.message : "Không đổi được thứ tự hàng đợi");
+      await load();
+    } finally {
+      setReordering(false);
+      setDraggedJobId(null);
+    }
+  }
+
+  function moveJob(jobId: number, destination: "top" | "bottom") {
+    if (!jobs) return;
+    const job = jobs.find((item) => item.id === jobId);
+    if (!job) return;
+    const rest = jobs.filter((item) => item.id !== jobId);
+    void reorderJobs(destination === "top" ? [job, ...rest] : [...rest, job]);
+  }
+
+  function dropJob(targetId: number) {
+    if (!jobs || draggedJobId == null || draggedJobId === targetId) return setDraggedJobId(null);
+    const next = [...jobs];
+    const from = next.findIndex((job) => job.id === draggedJobId);
+    const to = next.findIndex((job) => job.id === targetId);
+    if (from < 0 || to < 0) return setDraggedJobId(null);
+    const [dragged] = next.splice(from, 1);
+    next.splice(to, 0, dragged);
+    void reorderJobs(next);
   }
 
   async function openWorkerSettings() {
@@ -239,12 +296,12 @@ export function Queue() {
             <Button
               variant="outline"
               size="sm"
-              onClick={clearOldJobs}
-              disabled={clearing}
+              onClick={clearSelectedJobs}
+              disabled={clearing || selectedTerminalIds.length === 0}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
               <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-              {clearing ? "Đang dọn..." : "Dọn tác vụ cũ"}
+              {clearing ? "Đang dọn..." : `Dọn theo đã chọn${selectedTerminalIds.length ? ` (${selectedTerminalIds.length})` : ""}`}
             </Button>
           </div>
         }
@@ -263,7 +320,7 @@ export function Queue() {
 
         <CardContent className="p-0">
           {!!jobs?.length && (
-            <div className="border-b border-border px-4 py-3">
+            <div className="flex flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
               <TabBar<StatusFilter>
                 value={statusFilter}
                 onChange={setStatusFilter}
@@ -276,6 +333,18 @@ export function Queue() {
                   { value: "done", label: "Hoàn tất", badge: statusCounts.done },
                 ]}
               />
+              <div className="flex items-center gap-2">
+                <label htmlFor="queue-type-filter" className="text-xs text-muted-foreground">Loại job</label>
+                <select
+                  id="queue-type-filter"
+                  value={jobTypeFilter}
+                  onChange={(event) => setJobTypeFilter(event.target.value as JobTypeFilter)}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-primary/15"
+                >
+                  <option value="all">Tất cả loại</option>
+                  {WORKER_TYPES.map(([type, label]) => <option key={type} value={type}>{label}</option>)}
+                </select>
+              </div>
             </div>
           )}
           {loading && !jobs ? (
@@ -286,6 +355,12 @@ export function Queue() {
             <EmptyState text="Không có tác vụ nào ở trạng thái này." />
           ) : (
             <>
+            {canReorder && (
+              <div className="border-b border-border bg-muted/25 px-4 py-2 text-xs text-muted-foreground">
+                Kéo thả hoặc dùng nút đầu/cuối để đổi thứ tự trong luồng worker <span className="font-mono font-semibold text-foreground">{jobTypeFilter}</span>.
+              </div>
+            )}
+            {queueError && <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">{queueError}</div>}
             <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -312,6 +387,11 @@ export function Queue() {
                 {visibleJobs.map((job) => (
                   <TableRow
                     key={job.id}
+                    draggable={canReorder && !reordering}
+                    onDragStart={() => setDraggedJobId(job.id)}
+                    onDragEnd={() => setDraggedJobId(null)}
+                    onDragOver={(event) => canReorder && event.preventDefault()}
+                    onDrop={() => dropJob(job.id)}
                     tabIndex={0}
                     role="button"
                     aria-label={`Xem log job ${job.id}`}
@@ -326,18 +406,18 @@ export function Queue() {
                         openLog(job);
                       }
                     }}
-                    className="cursor-pointer transition-colors hover:bg-primary/[0.04] focus-visible:bg-primary/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
+                    className={`${draggedJobId === job.id ? "opacity-50" : ""} cursor-pointer transition-colors hover:bg-primary/[0.04] focus-visible:bg-primary/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40`}
                   >
                     <TableCell className="px-3" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
                       <input
                         type="checkbox"
                         className={checkboxClass}
                         checked={selectedIds.has(job.id)}
-                        disabled={!['failed', 'cancelled'].includes(job.status) || retryingSelected}
+                        disabled={!['done', 'failed', 'cancelled'].includes(job.status) || retryingSelected || clearing}
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => event.stopPropagation()}
                         onChange={(event) => toggleSelection(job.id, event.target.checked)}
-                        aria-label={`Chọn job ${job.id} để thử lại`}
+                        aria-label={`Chọn job ${job.id}`}
                       />
                     </TableCell>
                     <TableCell className="font-mono text-xs font-bold text-primary">
@@ -388,6 +468,17 @@ export function Queue() {
 
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                        {canReorder && (
+                          <>
+                            <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" aria-hidden="true" />
+                            <Button variant="ghost" size="sm" onClick={() => moveJob(job.id, "top")} disabled={reordering || jobs?.[0]?.id === job.id} className="h-7 w-7 p-0" title="Đưa lên đầu">
+                              <ArrowUpToLine className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="sm" onClick={() => moveJob(job.id, "bottom")} disabled={reordering || jobs?.[jobs.length - 1]?.id === job.id} className="h-7 w-7 p-0" title="Đưa xuống cuối">
+                              <ArrowDownToLine className="h-3.5 w-3.5" />
+                            </Button>
+                          </>
+                        )}
                         {["failed", "cancelled"].includes(job.status) && (
                           <Button
                             variant="outline"

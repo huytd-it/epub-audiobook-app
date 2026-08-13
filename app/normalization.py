@@ -14,7 +14,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from num2words import num2words
 from vietnormalizer import VietnameseNormalizer, VietnameseTextProcessor
 
 _VIETNAMESE_PROCESSOR = VietnameseTextProcessor()
@@ -99,7 +98,7 @@ def _replace_currency(m: re.Match) -> str:
     n = int(amount_str)
     unit = _currency_unit(raw)
     # Currency always gets semantic reading regardless of digit count.
-    return f"{num2words(n, lang='vi')} {unit}"
+    return f"{_VIETNAMESE_PROCESSOR.number_to_words(str(n))} {unit}"
 
 
 def _read_extension(ext: str) -> str:
@@ -292,10 +291,7 @@ def _normalize_chapter_number(num_str: str) -> str:
     n = num_str.strip()
     if n in _ORDINAL_MAP_VI:
         return _ORDINAL_MAP_VI[n]
-    try:
-        return num2words(int(n), lang="vi")
-    except (ValueError, OverflowError):
-        return n
+    return _VIETNAMESE_PROCESSOR.number_to_words(n)
 
 
 def normalize_chapter_titles(text: str) -> str:

@@ -187,30 +187,6 @@ async def save_video_config(request: Request, book_id: int):
     return result
 
 
-@router.post("/books/{book_id}/backgrounds/generate")
-async def trigger_background_generation(request: Request, book_id: int):
-    """Enqueue a background_gen job to auto-populate the book's shared
-    background rotation. Fire-and-forget: the job runs on the queue like any
-    other render job, so progress/result show up on /queue rather than here."""
-    data = await request.json()
-    count = data.get("count", background_gen.DEFAULT_COUNT)
-    style = data.get("style", background_gen.DEFAULT_STYLE)
-    if not isinstance(count, int) or not 1 <= count <= background_gen.MAX_COUNT:
-        raise HTTPException(status_code=400, detail=f"count phải là số nguyên từ 1 đến {background_gen.MAX_COUNT}")
-    if style not in background_gen.STYLES:
-        raise HTTPException(status_code=400, detail="phong cách ảnh không hợp lệ")
-    with locked_conn(request) as conn:
-        book = repository.get_book(conn, book_id)
-        if book is None:
-            raise HTTPException(status_code=404, detail="book not found")
-        from app.jobqueue import store
-        job_id = store.enqueue(
-            conn, "background_gen", payload={"book_id": book_id, "count": count, "style": style},
-            book_id=book_id, dedupe_key=f"background_gen:book={book_id}",
-        )
-    return JSONResponse({"status": "queued" if job_id is not None else "already_queued", "job_id": job_id})
-
-
 @router.post("/books/{book_id}/youtube-settings")
 async def update_youtube_settings(request: Request, book_id: int):
     data = await request.json()
@@ -1032,6 +1008,10 @@ async def rebuild_patches(request: Request, book_id: int):
             patches = repository.rebuild_patches(conn, book_id, ranges, reset_done)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Background generation is queued only after rebuild_patches committed
+        # its patch inserts; enqueue_for_patches depends on the rows being
+        # visible, and is deduped per patch so a re-run never stacks jobs.
+        background_gen.enqueue_for_patches(conn, book_id, patches)
     return JSONResponse([
         {"patch_index": p.patch_index, "chapter_start": p.chapter_start,
          "chapter_end": p.chapter_end, "name": p.name, "chunk_count": p.chunk_count,
@@ -1073,9 +1053,10 @@ async def auto_build_patches(
         if book is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         try:
-            repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
+            patches = repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        background_gen.enqueue_for_patches(conn, book_id, patches)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
@@ -1152,9 +1133,10 @@ async def patch_builder_submit(request: Request, book_id: int):
                 )
         if ranges:
             try:
-                repository.rebuild_patches(conn, book_id, ranges, reset_done=True)
+                patches = repository.rebuild_patches(conn, book_id, ranges, reset_done=True)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            background_gen.enqueue_for_patches(conn, book_id, patches)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 

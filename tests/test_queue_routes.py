@@ -154,6 +154,24 @@ def test_delete_removes_only_pending_job(client):
     assert c.delete(f"/queue/jobs/{running}").status_code == 409
 
 
+def test_reorder_and_bulk_delete_selected_jobs(client):
+    c, conn, _ = client
+    first = store.enqueue(conn, "video")
+    second = store.enqueue(conn, "video")
+    other = store.enqueue(conn, "light_tts")
+    response = c.put("/queue/jobs/order", json={"job_type": "video", "job_ids": [second, first]})
+    assert response.status_code == 200
+    ordered = c.get("/queue/jobs?type=video&status=pending&order=queue").json()["jobs"]
+    assert [job["id"] for job in ordered] == [second, first]
+    assert c.put("/queue/jobs/order", json={"job_type": "video", "job_ids": [first, other]}).status_code == 409
+
+    conn.execute("UPDATE job SET status='done' WHERE id=?", (first,))
+    conn.execute("UPDATE job SET status='failed' WHERE id=?", (other,))
+    conn.commit()
+    assert c.post("/queue/jobs/bulk-delete", json={"job_ids": [first, second, other]}).json()["deleted"] == 2
+    assert store.get(conn, second) is not None
+
+
 
 
 

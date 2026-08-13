@@ -291,6 +291,11 @@ def extend(request: Request, book_id: int, patch_size: int | None = Form(default
             created = repository.extend_patches(conn, book_id, patch_size)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
+        # extend_patches committed its inserts before returning, so the rows
+        # are visible now; queue their per-patch background generation jobs
+        # (patch-scoped dedupe means re-running extend never stacks jobs).
+        from app import background_gen
+        background_gen.enqueue_for_patches(conn, book_id, created)
     return JSONResponse(
         {
             "created": len(created),
