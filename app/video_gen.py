@@ -257,13 +257,13 @@ def generate_segment(
     resolution: tuple[int, int] = (1920, 1080),
     fps: int = 30,
     fit_mode: str = "contain",
-    audio_bitrate: str = "192k",
+    audio_bitrate: str = "320k",
     crf: int = 23,
     use_nvenc: bool = False,
     music_path: str | None = None,
     music_volume: float = 0.15,
     codec: str = "libx264",
-    quality: int = 23,
+    quality: int | None = None,
     marquee_path: str | None = None,
     marquee_meta: str | None = None,
     waveform_config: dict | None = None,
@@ -296,11 +296,12 @@ def generate_segment(
           resolution=f"{width}x{height}", fps=fps, codec=video_codec,
           video_background=is_video_bg)
 
+    encode_quality = crf if quality is None else quality
     if use_nvenc or codec == "h264_nvenc":
-        quality_args = ["-cq", str(quality)]
+        quality_args = ["-cq", str(encode_quality)]
         tune_args = []
     else:
-        quality_args = ["-crf", str(quality)]
+        quality_args = ["-crf", str(encode_quality)]
         # '-tune stillimage' only helps genuine still frames; a video background
         # has real motion, so skip it there.
         tune_args = [] if is_video_bg else ["-tune", "stillimage"]
@@ -656,7 +657,9 @@ def generate_background_sequence(
             for piece in pieces:
                 cmd += ["-i", Path(piece).name]
             cmd += ["-filter_complex_script", script.name, "-map", current, "-an", "-c:v", video_codec,
-                    "-pix_fmt", "yuv420p", "-r", str(fps), Path(visual).name]
+                    "-pix_fmt", "yuv420p", "-r", str(fps),
+                    ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality),
+                    Path(visual).name]
             subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=temp)
         else:
             concat_segments(pieces, visual)
@@ -688,8 +691,12 @@ def generate_background_sequence(
         # forces a re-encode; the fast stream-copy path is only valid when
         # neither is active and the concatenated 'visual' can pass through
         # untouched.
-        cmd += ["-map", video_map, "-map", audio_map, "-c:v", video_codec if (waveform or subtitle_filter) else "copy",
-                "-c:a", "aac", "-b:a", audio_bitrate,
+        reencode_video = bool(waveform or subtitle_filter)
+        cmd += ["-map", video_map, "-map", audio_map, "-c:v", video_codec if reencode_video else "copy"]
+        if reencode_video:
+            cmd += ["-pix_fmt", "yuv420p", "-r", str(fps),
+                    ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality)]
+        cmd += ["-c:a", "aac", "-b:a", audio_bitrate,
                 "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
                 "-shortest", out_path]
         subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -749,7 +756,7 @@ def generate_full_video(
     music_volume: float = 0.15,
     codec: str = "libx264",
     quality: int = 23,
-    audio_bitrate: str = "192k",
+    audio_bitrate: str = "320k",
     video_config: dict | None = None,
     intro_audio: str | None = None,
     outro_audio: str | None = None,
@@ -898,7 +905,7 @@ def generate_standalone_video(
     fps: int = 30,
     fit_mode: str = "auto",
     codec: str = "libx264",
-    audio_bitrate: str = "192k",
+    audio_bitrate: str = "320k",
     image_type: str = "none",
     crf: int = 23,
     music_path: str | None = None,

@@ -58,6 +58,35 @@ def test_standalone_defaults_no_music():
     assert kwargs["music_volume"] == 0.15
 
 
+def test_standalone_forwards_crf_as_encode_quality():
+    with patch.object(video_gen, "generate_segment") as seg:
+        video_gen.generate_standalone_video("a.mp3", "i.jpg", "o.mp4", crf=18)
+    assert seg.call_args.kwargs["crf"] == 18
+
+
+def test_segment_uses_crf_when_quality_is_not_explicit(tmp_path, monkeypatch):
+    image = tmp_path / "image.jpg"
+    audio = tmp_path / "audio.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+
+        class Result:
+            stdout = ""
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(video_gen.subprocess, "run", fake_run)
+    video_gen.generate_segment(str(image), str(audio), str(tmp_path / "out.mp4"), crf=18)
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("-crf") + 1] == "18"
+    assert cmd[cmd.index("-b:a") + 1] == "320k"
+
+
 def test_segment_uses_nvenc_cq_and_configured_audio_bitrate(tmp_path, monkeypatch):
     image = tmp_path / "image.jpg"
     audio = tmp_path / "audio.wav"
