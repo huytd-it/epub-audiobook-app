@@ -24,10 +24,14 @@ def handle(ctx) -> dict:
                                 require_audio=False)
     try:
         with ctx.keep_alive():
-            publish_validated_video(path, lambda temp: gameplay_renderer.render_replay(
-                replay, temp, resolution=(int(dims[0]), int(dims[1])), fps=fps),
+            validation = publish_validated_video(path, lambda temp: gameplay_renderer.render_replay(
+                replay, temp, resolution=(int(dims[0]), int(dims[1])), fps=fps,
+                quality=int(ctx.job.payload.get("quality") or 23)),
                 validator=lambda output: validate_video(output, expected=expected))
-        ctx.conn.execute("UPDATE gameplay_clip SET status='available', error_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (clip_id,))
+        from app.video_integrity import validation_report_json
+        ctx.conn.execute("""UPDATE gameplay_clip SET status='available', error_message=NULL,
+                         validated_at=CURRENT_TIMESTAMP, validation_report_json=?, updated_at=CURRENT_TIMESTAMP
+                         WHERE id=?""", (validation_report_json(validation, expected), clip_id))
         ctx.conn.commit()
         apply_replay_stats(ctx.conn, row["replay_id"])
     except Exception as exc:

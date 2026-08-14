@@ -101,10 +101,18 @@ export type BookStatus = {
   patches: { id: number; status: string; chunk_count: number; next_chunk_index: number }[];
 };
 
+export type GameplaySelectionConfig = {
+  selection_mode: "single" | "rotation";
+  game_id: "garden_cycle" | "orbit_drift" | "aquarium_ecosystem" | "marble_flow" | "parcel_route" | "territory_bloom" | "cloud_runner" | "signal_garden" | "battle_royale";
+  game_ids: ("garden_cycle" | "orbit_drift" | "aquarium_ecosystem" | "marble_flow" | "parcel_route" | "territory_bloom" | "cloud_runner" | "signal_garden" | "battle_royale")[];
+  preset: "calm";
+};
+
 export type VideoConfig = {
-  background_type: "media" | "battle_royale";
+  background_type: "media" | "gameplay" | "battle_royale";
   backgrounds: string[];
-  background_mode: string;
+  background_mode: "sequential" | "random";
+  gameplay: GameplaySelectionConfig;
   image_duration_seconds: number;
   resolution: string;
   fps: number;

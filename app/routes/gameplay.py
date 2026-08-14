@@ -10,7 +10,9 @@ from fastapi.responses import FileResponse, PlainTextResponse
 
 from app.config import settings
 from app.gameplay_pool import maintain_pool
+from app.gameplay_registry import get_game, list_games
 from app.gameplay_repository import list_themes, pool_status
+from app.gameplay_theme_packs import install_theme_pack_zip
 from app.gameplay_themes import install_theme_zip, theme_prompt
 
 router = APIRouter(prefix="/gameplay", tags=["gameplay"])
@@ -27,16 +29,51 @@ def status(request: Request):
         themes = list_themes(conn)
         fighters = [dict(r) for r in conn.execute(
             "SELECT * FROM gameplay_fighter ORDER BY wins DESC, eliminations DESC, name")]
-        return {"pool": pool_status(conn), "target_seconds": settings.gameplay_pool_target_seconds,
-                "themes": themes, "fighters": fighters}
+        packs = [dict(row) for row in conn.execute(
+            "SELECT * FROM gameplay_theme_pack ORDER BY builtin DESC, family, name, version DESC")]
+        policies = {row["game_id"]: bool(row["enabled"]) for row in conn.execute("SELECT game_id,enabled FROM gameplay_game")}
+        catalog = [{**game, "enabled": policies.get(game["id"], True)} for game in list_games()]
+        failed = conn.execute("SELECT COUNT(*) FROM gameplay_clip WHERE status='failed'").fetchone()[0]
+        oldest_lease = conn.execute("SELECT MIN(updated_at) FROM gameplay_clip WHERE status='reserved'").fetchone()[0]
+        return {"catalog": catalog, "pool": pool_status(conn),
+                "health": {"failed_clips": failed, "oldest_lease_at": oldest_lease},
+                "target_seconds": settings.gameplay_pool_target_seconds,
+                "themes": themes, "theme_packs": packs, "fighters": fighters}
+
+
+@router.post("/games/{game_id}/toggle")
+def toggle_game(request: Request, game_id: str, enabled: bool = Form(...)):
+    try:
+        get_game(game_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    lock, conn = _locked(request)
+    with lock:
+        conn.execute("""INSERT INTO gameplay_game (game_id,enabled,family,display_order,config_json,updated_at)
+                      VALUES (?,?,?,0,'{}',CURRENT_TIMESTAMP)
+                      ON CONFLICT(game_id) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at""",
+                     (game_id, int(enabled), get_game(game_id).family))
+        conn.commit()
+    return {"game_id": game_id, "enabled": enabled}
 
 
 @router.post("/generate")
 def generate(request: Request, width: int = Form(1920), height: int = Form(1080),
-             fps: int = Form(30), count: int = Form(1)):
+             fps: int = Form(30), count: int = Form(1), game_id: str = Form("battle_royale")):
+    if (width, height) not in {(1920, 1080), (1280, 720), (854, 480), (1080, 1920), (1080, 1080)}:
+        raise HTTPException(400, "Unsupported gameplay resolution")
+    if fps not in {24, 30, 60}:
+        raise HTTPException(400, "Unsupported gameplay FPS")
+    try:
+        get_game(game_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     lock, conn = _locked(request)
     with lock:
-        return maintain_pool(conn, width=width, height=height, fps=fps,
+        policy = conn.execute("SELECT enabled FROM gameplay_game WHERE game_id=?", (game_id,)).fetchone()
+        if policy is not None and not policy["enabled"]:
+            raise HTTPException(409, "Gameplay game is disabled")
+        return maintain_pool(conn, width=width, height=height, fps=fps, game_id=game_id,
                              target_seconds=max(240, count * 240), max_enqueue=max(1, min(count, 10)))
 
 
@@ -44,6 +81,34 @@ def generate(request: Request, width: int = Form(1920), height: int = Form(1080)
 def prompt(army_theme: str = "futuristic neon army", unit_class: str = "tank, assassin, ranger",
            colors: str = "cyan, magenta, electric lime"):
     return theme_prompt(army_theme, unit_class, colors)
+
+
+@router.post("/theme-packs/upload")
+async def upload_theme_pack(request: Request, file: UploadFile = File(...)):
+    data = await file.read(80 * 1024 * 1024 + 1)
+    if len(data) > 80 * 1024 * 1024:
+        raise HTTPException(413, "Theme ZIP is too large")
+    root = Path(settings.data_root) / "gameplay" / "theme-packs"
+    try:
+        result = install_theme_pack_zip(data, root)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    lock, conn = _locked(request)
+    with lock:
+        now = conn.execute("SELECT CURRENT_TIMESTAMP").fetchone()[0]
+        existing = conn.execute("SELECT content_sha256 FROM gameplay_theme_pack WHERE id=? AND version=?",
+                                (result["id"], result["version"])).fetchone()
+        if existing and existing["content_sha256"] != result["content_sha256"]:
+            raise HTTPException(409, "Theme id/version is immutable")
+        conn.execute(
+            """INSERT INTO gameplay_theme_pack
+               (id,version,family,name,enabled,builtin,manifest_json,content_sha256,asset_dir,
+                validation_status,created_at,updated_at) VALUES (?,?,?,?,1,0,?,?,?,'valid',?,?)
+               ON CONFLICT(id,version) DO UPDATE SET updated_at=excluded.updated_at""",
+            (result["id"], result["version"], result["family"], result["name"],
+             json.dumps(result["manifest"]), result["content_sha256"], result["asset_dir"], now, now))
+        conn.commit()
+    return result
 
 
 @router.post("/themes/upload")

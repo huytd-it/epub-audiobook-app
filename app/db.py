@@ -448,6 +448,32 @@ CREATE TABLE IF NOT EXISTS gameplay_theme (
     PRIMARY KEY (id, version)
 );
 
+CREATE TABLE IF NOT EXISTS gameplay_game (
+    game_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    family TEXT NOT NULL,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gameplay_theme_pack (
+    id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    family TEXT NOT NULL,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    builtin INTEGER NOT NULL DEFAULT 0,
+    manifest_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    asset_dir TEXT,
+    validation_status TEXT NOT NULL DEFAULT 'valid',
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (id, version)
+);
+
 CREATE TABLE IF NOT EXISTS gameplay_fighter (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fighter_key TEXT NOT NULL UNIQUE,
@@ -465,12 +491,20 @@ CREATE TABLE IF NOT EXISTS gameplay_replay (
     replay_key TEXT NOT NULL UNIQUE,
     seed INTEGER NOT NULL,
     duration_seconds REAL NOT NULL,
-    roster_json TEXT NOT NULL,
-    themes_json TEXT NOT NULL,
-    map_json TEXT NOT NULL,
-    events_json TEXT NOT NULL,
-    top3_json TEXT NOT NULL,
-    winner_key TEXT NOT NULL,
+    roster_json TEXT NOT NULL DEFAULT '[]',
+    themes_json TEXT NOT NULL DEFAULT '[]',
+    map_json TEXT NOT NULL DEFAULT '{}',
+    events_json TEXT NOT NULL DEFAULT '[]',
+    top3_json TEXT NOT NULL DEFAULT '[]',
+    winner_key TEXT NOT NULL DEFAULT '',
+    game_id TEXT,
+    schema_version INTEGER,
+    simulation_version TEXT,
+    ruleset_version TEXT,
+    renderer_version TEXT,
+    payload_json TEXT,
+    result_json TEXT,
+    content_sha256 TEXT,
     stats_applied INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
@@ -577,6 +611,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for duplicate in duplicates:
         conn.execute("DELETE FROM youtube_playlist_map WHERE book_id=? AND channel_id=? AND id<>?", (duplicate["book_id"], duplicate["channel_id"], duplicate["keep_id"]))
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_playlist_map_book_channel ON youtube_playlist_map(book_id, channel_id)")
+    replay_existing = {row["name"] for row in conn.execute("PRAGMA table_info(gameplay_replay)")}
+    for name, definition in {
+        "game_id": "TEXT",
+        "schema_version": "INTEGER",
+        "simulation_version": "TEXT",
+        "ruleset_version": "TEXT",
+        "renderer_version": "TEXT",
+        "payload_json": "TEXT",
+        "result_json": "TEXT",
+        "content_sha256": "TEXT",
+    }.items():
+        if name not in replay_existing:
+            conn.execute(f"ALTER TABLE gameplay_replay ADD COLUMN {name} {definition}")
+    clip_existing = {row["name"] for row in conn.execute("PRAGMA table_info(gameplay_clip)")}
+    for name, definition in {
+        "game_id": "TEXT",
+        "render_profile_json": "TEXT",
+        "validated_at": "TEXT",
+        "validation_report_json": "TEXT",
+    }.items():
+        if name not in clip_existing:
+            conn.execute(f"ALTER TABLE gameplay_clip ADD COLUMN {name} {definition}")
     pipeline_existing = {row["name"] for row in conn.execute("PRAGMA table_info(patch_pipeline)")}
     for name, definition in {
         "thumbnail_status": "TEXT NOT NULL DEFAULT 'pending'",

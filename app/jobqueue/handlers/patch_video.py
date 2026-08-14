@@ -180,7 +180,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     waveform_config = seq_config
 
     def render_main(target: str) -> None:
-        if background_type == "battle_royale":
+        if background_type in {"battle_royale", "gameplay"}:
             gameplay = snapshot.get("gameplay") or {}
             clips = gameplay.get("clips") or []
             if not clips:
@@ -201,7 +201,10 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                     paths.append(path)
                 visual = str(Path(tmp) / "visual.mp4")
                 video_gen.concat_video_segments(paths, visual)
-                effects = {**seq_config, "waveform_enabled": False}
+                waveform_policy = gameplay.get("waveform_policy", "forbidden")
+                effects = {**seq_config, "waveform_enabled": bool(seq_config.get("waveform_enabled"))
+                           and waveform_policy != "forbidden"}
+
                 video_gen.generate_segment(
                     visual, audio, target, image_type="none", use_nvenc=False,
                     music_path=music_path, music_volume=music_volume, **common,
@@ -284,7 +287,7 @@ def handle(ctx) -> dict:
 
     snapshot = ctx.job.payload.get("snapshot")
     if isinstance(snapshot, dict):
-        if ctx.job.payload.get("schema_version") not in {1, 2}:
+        if ctx.job.payload.get("schema_version") not in {1, 2, 3}:
             raise JobFatalError("payload snapshot unsupported")
         pipeline_row = dict(pipeline) if pipeline else {}
         _account_render_attempt(ctx, patch_id, pipeline_row, recovery_upload_id)
@@ -293,8 +296,9 @@ def handle(ctx) -> dict:
         video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                    file_path=output, resolution=book.video_resolution)
         _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
-        if snapshot.get("background_type") == "battle_royale":
-            for clip_path in consume_reserved(ctx.conn, patch_id):
+        if snapshot.get("background_type") in {"battle_royale", "gameplay"}:
+            token = (snapshot.get("gameplay") or {}).get("reservation_token") if snapshot.get("schema_version") == 3 else None
+            for clip_path in consume_reserved(ctx.conn, patch_id, token):
                 Path(clip_path).unlink(missing_ok=True)
     else:
         output = (recovery_pipeline["video_path"] if recovery_pipeline else None) or str(
@@ -314,7 +318,9 @@ def handle(ctx) -> dict:
                                            file_path=output, resolution=book.video_resolution)
                 _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
                 if persisted_snapshot.get("background_type") == "battle_royale":
-                    for clip_path in consume_reserved(ctx.conn, patch_id):
+                    token = ((persisted_snapshot.get("gameplay") or {}).get("reservation_token")
+                             if persisted_snapshot.get("schema_version") == 3 else None)
+                    for clip_path in consume_reserved(ctx.conn, patch_id, token):
                         Path(clip_path).unlink(missing_ok=True)
                 resume_upload_after_render(ctx.conn, recovery_upload_id)
                 ctx.progress(6, 6, phase="done")

@@ -11,6 +11,12 @@ VIDEO_DEFAULTS = {
     "background_type": "media",
     "backgrounds": [],
     "background_mode": "sequential",
+    "gameplay": {
+        "selection_mode": "single",
+        "game_id": "garden_cycle",
+        "game_ids": ["garden_cycle", "orbit_drift"],
+        "preset": "calm",
+    },
     "image_duration_seconds": 15,
     "intro_voice": "",
     "outro_voice": "",
@@ -69,8 +75,28 @@ def _json_object(value) -> dict:
 def validate_video_config(config: dict | None) -> dict:
     config = _json_object(config)
     result = {**copy.deepcopy(VIDEO_DEFAULTS), **config}
-    if result["background_type"] not in {"media", "battle_royale"}:
+    if result["background_type"] not in {"media", "battle_royale", "gameplay"}:
         raise ValueError("invalid background type")
+    gameplay = result.get("gameplay")
+    if not isinstance(gameplay, dict):
+        raise ValueError("gameplay config must be an object")
+    defaults = VIDEO_DEFAULTS["gameplay"]
+    gameplay = {**defaults, **gameplay}
+    if gameplay["selection_mode"] not in {"single", "rotation"}:
+        raise ValueError("invalid gameplay selection mode")
+    from app.gameplay_registry import get_game
+    if gameplay["selection_mode"] == "single":
+        get_game(str(gameplay.get("game_id") or ""))
+    else:
+        values = gameplay.get("game_ids")
+        if not isinstance(values, list) or not values or not all(isinstance(value, str) for value in values):
+            raise ValueError("gameplay rotation requires game ids")
+        gameplay["game_ids"] = list(dict.fromkeys(values))
+        for game_id in gameplay["game_ids"]:
+            get_game(game_id)
+    if gameplay.get("preset") != "calm":
+        raise ValueError("invalid gameplay preset")
+    result["gameplay"] = gameplay
     if not isinstance(result["backgrounds"], list) or not all(isinstance(p, str) and p.strip() for p in result["backgrounds"]):
         raise ValueError("backgrounds must be a list of paths")
     result["backgrounds"] = list(dict.fromkeys(p.strip() for p in result["backgrounds"]))
