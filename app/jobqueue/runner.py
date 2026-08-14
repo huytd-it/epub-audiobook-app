@@ -160,21 +160,29 @@ class JobQueue:
             ctx.flush()
             if self._cancelled(conn, job.id):
                 ctx.log("Tác vụ đã bị hủy", level=logging.WARNING)
-                store.mark_cancelled(conn, job.id)
+                store.mark_cancelled(conn, job.id, worker_id=job.worker_id)
             else:
                 ctx.log(f"Tác vụ hoàn tất; result={result}")
-                store.finish(conn, job.id, result if isinstance(result, dict) else None)
+                store.finish(
+                    conn, job.id, result if isinstance(result, dict) else None,
+                    worker_id=job.worker_id,
+                )
         except asyncio.CancelledError:
             ctx.log("Tác vụ bị hủy bởi worker", level=logging.WARNING)
-            ctx.flush(); store.mark_cancelled(conn, job.id)
+            ctx.flush(); store.mark_cancelled(conn, job.id, worker_id=job.worker_id)
         except JobFatalError as exc:
             ctx.log(traceback.format_exc(), level=logging.ERROR)
-            ctx.flush(); store.fail(conn, job.id, str(exc), fatal=True)
+            ctx.flush(); store.fail(
+                conn, job.id, str(exc), fatal=True, worker_id=job.worker_id,
+            )
         except Exception as exc:
             ctx.log(traceback.format_exc(), level=logging.ERROR)
             # The enqueue request may set a per-job retry policy. HandlerSpec is
             # only the default; do not overwrite the persisted max_attempts.
-            ctx.flush(); store.fail(conn, job.id, str(exc), max_attempts=job.max_attempts)
+            ctx.flush(); store.fail(
+                conn, job.id, str(exc), max_attempts=job.max_attempts,
+                worker_id=job.worker_id,
+            )
         finally:
             ctx.close(); conn.close()
 

@@ -20,13 +20,15 @@ from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_ove
                                   resolve_patch_chapter_range, resolve_patch_youtube_metadata,
                                   validate_book_youtube_config, validate_timeline)
 from app.video_config import get_book_video_config
+from app.production_defaults import (get_effective_video_config, get_effective_youtube_config,
+                                     resolve_effective_youtube_metadata)
 
 STAGES = ("thumbnail", "video", "upload", "thumbnail_setting", "playlist", "published")
 
 # Tổng số lần render/rerender một patch video trước khi pipeline bị khoá chạy tiếp.
 MAX_PATCH_RENDER_ATTEMPTS = 3
 # phiên bản cấu trúc snapshot cấp vào job patch_video lúc enqueue.
-SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_SCHEMA_VERSION = 2
 
 AUTOMATION_PREFLIGHT_STATES = (
     "no_automation", "waiting_config", "waiting_timeline",
@@ -99,9 +101,10 @@ def _timeline_status(patch) -> str:
 
 
 def _youtube_privacy(conn, book_id: int) -> str | None:
+    book = get_book(conn, book_id)
     try:
-        return validate_book_youtube_config(get_book_youtube_config(conn, book_id))["privacy_status"]
-    except ValueError:
+        return validate_book_youtube_config(get_effective_youtube_config(conn, book))["privacy_status"]
+    except (ValueError, AttributeError):
         return None
 
 
@@ -131,14 +134,14 @@ def evaluate_patch_preflight(conn: sqlite3.Connection, patch_id: int, *,
                     "error": "Audio đã thay đổi sau khi publish; cần xác nhận publish lại.",
                     "policy": policy}
     try:
-        video_config = get_book_video_config(conn, book)
+        video_config = get_effective_video_config(conn, book)
     except ValueError as exc:
         return {"state": "waiting_config", "code": "video_config_invalid",
                 "error": f"cấu hình video không hợp lệ: {exc}", "policy": policy}
     resolved = {"policy": policy, "video_config": video_config}
     if policy["auto_upload_youtube"]:
         try:
-            youtube_config = validate_book_youtube_config(get_book_youtube_config(conn, patch.book_id))
+            youtube_config = validate_book_youtube_config(get_effective_youtube_config(conn, book))
         except ValueError as exc:
             return {"state": "waiting_config", "code": "youtube_config_invalid",
                     "error": f"cấu hình YouTube không hợp lệ: {exc}", "policy": policy}
@@ -197,6 +200,8 @@ def _resolve_sequence_inputs(book, patch, config: dict):
 
     Trả về (sequence, backgrounds, image, image_type) — các giá trị này được
     đóng băng vào job payload để render không phụ thuộc config hiện tại."""
+    if config.get("background_type") == "battle_royale":
+        return False, [], None, None, "none"
     fallback = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
     raw_bg = video_gen.resolve_configured_patch_image(patch, config, fallback or "")
     backgrounds = [p for p in config.get("backgrounds", []) if isinstance(p, str)]
@@ -228,10 +233,27 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
                          "fps": book.video_fps or 30, "fit_mode": "auto", "codec": "libx264",
                          "crf": 23, "audio_bitrate": "192k"}
     sequence, backgrounds, raw_bg, image, image_type = _resolve_sequence_inputs(book, patch, config)
-    if not raw_bg:
+    background_type = config.get("background_type", "media")
+    if background_type == "media" and not raw_bg:
         raise ValueError("chưa có ảnh nền để tạo video")
-    return {
+    gameplay = None
+    if background_type == "battle_royale":
+        from app.gameplay_pool import ensure_patch_coverage
+        info = sf.info(str(media.get("audio_path") or patch.audio_path))
+        duration = info.frames / info.samplerate
+        width, height = (int(v) for v in str(render_config.get("resolution") or "1920x1080").split("x"))
+        clips = ensure_patch_coverage(conn, patch.id, duration, width=width, height=height,
+                                      fps=int(render_config.get("fps") or 30))
+        gameplay = {
+            "profile_key": clips[0]["profile_key"],
+            "renderer_version": settings.gameplay_renderer_version,
+            "clips": [{"id": c["id"], "replay_id": c["replay_id"],
+                       "file_path": c["file_path"], "duration_seconds": c["duration_seconds"]} for c in clips],
+        }
+    snapshot = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "background_type": background_type,
+        "gameplay": gameplay,
         "audio_path": media.get("audio_path") or patch.audio_path,
         "audio_fingerprint": audio_fingerprint(patch),
         "thumbnail_path": pipeline.get("thumbnail_path"),
@@ -240,14 +262,22 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
         "backgrounds": backgrounds,
         "image": image,
         "image_type": image_type,
-        "sequence_config": {
-            key: config.get(key) for key in (
-                "image_duration_seconds", "background_mode", "crossfade_enabled",
-                "crossfade_seconds", "ken_burns_enabled", "progress_bar_enabled",
-                "waveform_config",
-            )
-        },
+        "sequence_config": {key: config.get(key) for key in (
+            "image_duration_seconds", "background_mode", "crossfade_enabled",
+            "crossfade_seconds", "ken_burns_enabled", "progress_bar_enabled",
+            "waveform_enabled", "waveform_style", "waveform_color", "waveform_position",
+            "waveform_height", "waveform_opacity", "waveform_layout",
+            "waveform_background_color", "waveform_background_opacity",
+            "subtitle_enabled", "subtitle_font_size", "subtitle_color", "subtitle_position",
+        )},
     }
+    media["render_snapshot"] = snapshot
+    conn.execute(
+        "UPDATE patch_pipeline SET media_snapshot=?, snapshot_schema_version=?, updated_at=? WHERE patch_id=?",
+        (json.dumps(media), SNAPSHOT_SCHEMA_VERSION, _now(), patch.id),
+    )
+    conn.commit()
+    return snapshot
 
 
 def discard_stale_patch_video(conn: sqlite3.Connection, book_id: int, patch_id: int) -> None:
@@ -307,14 +337,16 @@ def on_patch_audio_ready(conn: sqlite3.Connection, patch_id: int) -> dict | None
     patch = get_patch(conn, patch_id)
     if not patch:
         return None
-    if get_book_youtube_config(conn, patch.book_id).get("auto_upload"):
+    book = get_book(conn, patch.book_id)
+    if book and get_effective_youtube_config(conn, book).get("auto_upload"):
         return enqueue_patch_publish(conn, patch_id)
     return None
 
 
 def _build_metadata_snapshot(conn: sqlite3.Connection, book, patch) -> dict:
-    metadata = resolve_patch_youtube_metadata(
-        book, patch, get_patch_youtube_override(conn, patch.id), build_patch_metadata_context(conn, book, patch))
+    metadata = resolve_effective_youtube_metadata(
+        conn, book, patch, get_patch_youtube_override(conn, patch.id),
+        build_patch_metadata_context(conn, book, patch))
     metadata["automation"] = {"youtube": metadata.pop("youtube")}
     chapter_start, chapter_end, patch_name = resolve_patch_chapter_range(patch)
     metadata["playlist_template_values"] = {
@@ -337,7 +369,7 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
     if existing and not force_new:
         return existing
     metadata = _build_metadata_snapshot(conn, book, patch)
-    video_config = get_book_video_config(conn, book)
+    video_config = get_effective_video_config(conn, book)
     voices_dir = Path(settings.data_root) / "voices"
     intro = voices_dir / video_config["intro_voice"] if video_config.get("intro_voice") else None
     outro = voices_dir / video_config["outro_voice"] if video_config.get("outro_voice") else None
@@ -347,6 +379,7 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
         if music and Path(music.file_path).is_file():
             music_path = music.file_path
     render_config = {
+        "background_type": video_config.get("background_type", "media"),
         "resolution": video_config["resolution"],
         "fps": video_config["fps"],
         "fit_mode": video_config["fit_mode"],
@@ -635,6 +668,16 @@ def reconcile_patch_automation(conn: sqlite3.Connection, *,
                     continue
                 if upload and upload["status"] == "done":
                     stats["skipped"] += 1
+                    continue
+                if upload and upload["status"] == "failed":
+                    # Retry the same upload identity and rendered file. Creating a
+                    # fresh render/upload here can publish the same audio twice when
+                    # YouTube accepted the previous transfer but its response was lost.
+                    store.enqueue(
+                        conn, "youtube_upload", payload={"upload_id": upload_id},
+                        book_id=row["book_id"], dedupe_key=f"youtube_upload:upload={upload_id}",
+                    )
+                    stats["enqueued_upload"] += 1
                     continue
             video_ready = (pipeline.get("video_status") == "done"
                            and pipeline.get("video_path")

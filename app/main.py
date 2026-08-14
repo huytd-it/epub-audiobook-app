@@ -14,7 +14,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app import db, repository
 from app.config import settings
-from app.routes import books, database_io, downloads, drive, effects, flows, local_bridge, logs, music, patches, photos, queue, text_studio, ui_api, validation, video, video_api, voices, youtube
+from app.routes import (books, database_io, downloads, drive, effects, flows, gameplay, local_bridge, logs, music,
+    patches, photos, production_settings, queue, text_studio, ui_api, validation, video, video_api, voices, youtube)
 import asyncio
 
 from app.jobqueue import joblog
@@ -37,6 +38,11 @@ logging.getLogger("watchfiles").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     conn = db.connect(settings.db_path)
     db.init_schema(conn)
+    from app.gameplay_repository import recover_reserved_clips, seed_catalog
+    seed_catalog(conn)
+    recovered_gameplay = recover_reserved_clips(conn)
+    if recovered_gameplay:
+        logging.info("event=gameplay.reservations_recovered count=%s", recovered_gameplay)
     Path(settings.data_root, "preview_tmp").mkdir(parents=True, exist_ok=True)
     requeued_patches = repository.requeue_stuck_processing_returning(conn)
     if requeued_patches:
@@ -138,6 +144,8 @@ app.include_router(flows.router)
 app.include_router(local_bridge.router)
 app.include_router(validation.router)
 app.include_router(ui_api.router)
+app.include_router(production_settings.router)
+app.include_router(gameplay.router)
 
 
 SPA_DIR = Path("app/spa_dist")
@@ -154,7 +162,7 @@ def _spa_index():
 
 _SPA_PATHS = (
     re.compile(r"^/books(?:/upload|/\d+|/\d+/chapters/preview-ui|/\d+/patches/build|/\d+/patches/\d+/chunks|/\d+/text-studio)?$"),
-    re.compile(r"^/(?:queue|video|music|photos|voices|effects|youtube|drive|database-io|logs|flows)$"),
+    re.compile(r"^/(?:queue|video|music|photos|voices|effects|youtube|drive|database-io|logs|flows|production-defaults|gameplay)$"),
 )
 
 

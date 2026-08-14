@@ -9,13 +9,14 @@ import tempfile
 
 import soundfile as sf
 
-from app import image_overlay, repository, video_gen
+from app import gameplay_renderer, image_overlay, repository, video_gen
+from app.gameplay_repository import apply_replay_stats, consume_reserved, load_replay
 from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
 from app.patch_publishing import (MAX_PATCH_RENDER_ATTEMPTS, audio_fingerprint,
                                   enqueue_patch_publish, seed_patch_video)
-from app.video_config import get_book_video_config
+from app.production_defaults import get_effective_video_config
 from app.video_integrity import (VideoExpectation, validate_video,
                                  validation_report_json)
 from app.video_publish import VideoValidationError, publish_validated_video
@@ -153,8 +154,9 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     ctx.progress(1, 6, phase="overlay")
     ctx.progress(2, 6, phase="encoding")
+    background_type = snapshot.get("background_type", "media")
     image = snapshot.get("image") or thumbnail
-    if not image or not Path(image).is_file():
+    if background_type == "media" and (not image or not Path(image).is_file()):
         raise JobFatalError(f"source_unavailable: background missing: {image}")
     sequence = bool(snapshot.get("sequence"))
     backgrounds = [p for p in snapshot.get("backgrounds") or [] if isinstance(p, str)]
@@ -175,10 +177,38 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     music_path = render_config.get("music_path")
     music_volume = render_config.get("music_volume", 0.15)
     seq_config = snapshot.get("sequence_config") or {}
-    waveform_config = seq_config.get("waveform_config") or {}
+    waveform_config = seq_config
 
     def render_main(target: str) -> None:
-        if sequence:
+        if background_type == "battle_royale":
+            gameplay = snapshot.get("gameplay") or {}
+            clips = gameplay.get("clips") or []
+            if not clips:
+                raise JobFatalError("source_unavailable: gameplay replay list empty")
+            with tempfile.TemporaryDirectory(prefix="battle_royale_") as tmp:
+                paths = []
+                for clip in clips:
+                    path = clip.get("file_path")
+                    replay_id = clip.get("replay_id")
+                    if not path or replay_id is None:
+                        raise JobFatalError("source_unavailable: invalid gameplay clip snapshot")
+                    if not Path(path).is_file():
+                        Path(path).parent.mkdir(parents=True, exist_ok=True)
+                        gameplay_renderer.render_replay(load_replay(ctx.conn, int(replay_id)), path,
+                                                        resolution=common["resolution"], fps=common["fps"],
+                                                        quality=common["quality"])
+                        apply_replay_stats(ctx.conn, int(replay_id))
+                    paths.append(path)
+                visual = str(Path(tmp) / "visual.mp4")
+                video_gen.concat_video_segments(paths, visual)
+                effects = {**seq_config, "waveform_enabled": False}
+                video_gen.generate_segment(
+                    visual, audio, target, image_type="none", use_nvenc=False,
+                    music_path=music_path, music_volume=music_volume, **common,
+                    waveform_config=effects,
+                    progress_bar=bool(seq_config.get("progress_bar_enabled")),
+                )
+        elif sequence:
             for bg in backgrounds:
                 if not Path(bg).is_file():
                     raise JobFatalError(f"source_unavailable: background missing: {bg}")
@@ -254,7 +284,7 @@ def handle(ctx) -> dict:
 
     snapshot = ctx.job.payload.get("snapshot")
     if isinstance(snapshot, dict):
-        if ctx.job.payload.get("schema_version") != 1:
+        if ctx.job.payload.get("schema_version") not in {1, 2}:
             raise JobFatalError("payload snapshot unsupported")
         pipeline_row = dict(pipeline) if pipeline else {}
         _account_render_attempt(ctx, patch_id, pipeline_row, recovery_upload_id)
@@ -263,6 +293,9 @@ def handle(ctx) -> dict:
         video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                    file_path=output, resolution=book.video_resolution)
         _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
+        if snapshot.get("background_type") == "battle_royale":
+            for clip_path in consume_reserved(ctx.conn, patch_id):
+                Path(clip_path).unlink(missing_ok=True)
     else:
         output = (recovery_pipeline["video_path"] if recovery_pipeline else None) or str(
             Path(settings.data_root) / "books" / str(book.id) / "patch_videos" / f"{patch_id}.mp4"
@@ -273,6 +306,19 @@ def handle(ctx) -> dict:
         media = json.loads(recovery_pipeline["media_snapshot"] or "{}") if recovery_pipeline else {}
         render_config = media.get("render_config")
         if recovery_pipeline:
+            persisted_snapshot = media.get("render_snapshot")
+            if isinstance(persisted_snapshot, dict):
+                output = _render_from_snapshot(ctx, patch, book, recovery_pipeline, persisted_snapshot)
+                ctx.progress(4, 6, phase="registering")
+                video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
+                                           file_path=output, resolution=book.video_resolution)
+                _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
+                if persisted_snapshot.get("background_type") == "battle_royale":
+                    for clip_path in consume_reserved(ctx.conn, patch_id):
+                        Path(clip_path).unlink(missing_ok=True)
+                resume_upload_after_render(ctx.conn, recovery_upload_id)
+                ctx.progress(6, 6, phase="done")
+                return {"output_path": output, "video_id": video["id"], "youtube": None}
             image = recovery_pipeline["thumbnail_path"]
             if not image or not Path(image).is_file():
                 raise JobFatalError(f"source_unavailable: thumbnail missing: {image}")
@@ -304,7 +350,7 @@ def handle(ctx) -> dict:
                     raise
             _persist_validation_report(ctx, patch_id, result, expected)
         else:
-            config = get_book_video_config(ctx.conn, book)
+            config = get_effective_video_config(ctx.conn, book)
             fallback = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
             raw_bg = video_gen.resolve_configured_patch_image(patch, config, fallback or "")
             if not raw_bg:

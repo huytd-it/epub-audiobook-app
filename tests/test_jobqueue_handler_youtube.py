@@ -71,6 +71,33 @@ def test_successful_upload_returns_the_video_id(tmp_path, monkeypatch):
     assert dict(row) == {"status": "done", "youtube_video_id": "abc123"}
 
 
+def test_youtube_transfer_runs_with_keep_alive(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    upload_id = _upload_row(conn)
+    ctx, _ = _ctx(conn, upload_id)
+    calls = []
+
+    class KeepAlive:
+        def __enter__(self):
+            calls.append("enter")
+
+        def __exit__(self, *args):
+            calls.append("exit")
+
+    monkeypatch.setattr(ctx, "keep_alive", lambda: KeepAlive())
+    monkeypatch.setattr(
+        handler.youtube, "process_upload",
+        lambda *args: calls.append("upload") or {"status": "done", "youtube_video_id": "yt"},
+    )
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda *args: {"status": "published"})
+    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda *args: None)
+
+    handler.handle(ctx)
+
+    assert calls == ["enter", "upload", "exit"]
+
+
 def test_validation_finishes_before_youtube_transfer(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db")); db.init_schema(conn)
     upload_id = _upload_row(conn); calls = []

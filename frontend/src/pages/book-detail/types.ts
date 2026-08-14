@@ -102,6 +102,7 @@ export type BookStatus = {
 };
 
 export type VideoConfig = {
+  background_type: "media" | "battle_royale";
   backgrounds: string[];
   background_mode: string;
   image_duration_seconds: number;
@@ -159,6 +160,22 @@ export type YouTubeMetadataPreview = {
 };
 
 export type ConfigTab = "audio" | "normalization" | "video" | "youtube";
+
+export type ProductionGroup = ConfigTab;
+export type ProductionMode = "inherit" | "custom";
+export type ProductionSettings = {
+  schema_version: number;
+  updated_at: string | null;
+  defaults: {
+    audio: { model_id: string; voice_id: string; max_chars: number; with_effects: boolean };
+    normalization: NormalizationSettings;
+    video: VideoConfig;
+    youtube: YouTubeConfig;
+  };
+  book_id?: number;
+  modes?: Record<ProductionGroup, ProductionMode>;
+  effective?: ProductionSettings["defaults"];
+};
 
 export type NormalizationSettings = {
   numbers: boolean;

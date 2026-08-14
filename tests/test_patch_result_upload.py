@@ -370,7 +370,7 @@ def test_confirming_republish_enqueues_fresh_video_keeping_the_upload_history(cl
         payload = json.loads(jobs[0]["payload_json"])
         assert payload["upload_youtube"] is True
         assert payload["snapshot"]["audio_path"] == str(_patch_paths(book_id, 41)[0])
-        assert payload["snapshot"]["schema_version"] == 1
+        assert payload["snapshot"]["schema_version"] == 2
         pipeline = conn.execute(
             "SELECT stage, youtube_upload_id, video_status FROM patch_pipeline WHERE patch_id=41"
         ).fetchone()

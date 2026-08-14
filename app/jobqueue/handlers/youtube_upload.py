@@ -53,7 +53,10 @@ def handle(ctx) -> dict:
 
     ctx.log(f"bắt đầu upload {upload_id}")
     try:
-        result = youtube.process_upload(ctx.conn, upload_id)
+        # YouTube transfers can exceed the stale-job threshold. Keep ownership
+        # alive so the reaper cannot hand this upload to a second worker.
+        with ctx.keep_alive():
+            result = youtube.process_upload(ctx.conn, upload_id)
     except JobFatalError:
         raise
     except Exception as exc:

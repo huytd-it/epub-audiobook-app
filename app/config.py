@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     light_tts_chunk_retries: int = 3
     # Queue job chạy nền
     # Loại nào không liệt kê ở đây nhận queue_default_concurrency.
-    queue_concurrency: str = "audiobook_tts=1,video=2,youtube_upload=1,patch_video=1"
+    queue_concurrency: str = "audiobook_tts=1,video=2,youtube_upload=1,patch_video=1,gameplay_clip=1"
     queue_default_concurrency: int = 10
     queue_log_retention_days: int = 7
     # Job 'running' im lặng quá lâu bị coi là chết và trả về 'pending'.
@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Ôm GPU/CPU khi render patch video — một job tại một thời điểm tránh cạnh tranh
     # với audiobook_tts và giữ luồng upload ổn định.
     patch_video_concurrency: int = 1
+    gameplay_clip_concurrency: int = 1
+    gameplay_pool_target_seconds: int = 3600
+    gameplay_pool_maintainer_enabled: bool = False
+    gameplay_renderer_version: str = "1"
 
     @staticmethod
     @lru_cache(maxsize=1)

@@ -9,7 +9,7 @@ from typing import Callable
 
 from app.config import settings
 from app.jobqueue import store
-from app.jobqueue.handlers import background_gen, flow_nodes, light_tts, patch_video, standalone_video, video, audiobook_tts, youtube_upload
+from app.jobqueue.handlers import background_gen, flow_nodes, gameplay_clip, light_tts, patch_video, standalone_video, video, audiobook_tts, youtube_upload
 from app.jobqueue.runner import JobQueue, parse_concurrency
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 JOB_TYPES = (
     "audiobook_tts", "video", "patch_video", "standalone_video",
     "youtube_upload", "light_tts", "flow_audio", "flow_video",
-    "flow_youtube", "background_gen",
+    "flow_youtube", "background_gen", "gameplay_clip",
 )
 QUEUE_CONCURRENCY_STATE_KEY = "queue.concurrency"
 
@@ -29,6 +29,7 @@ def configured_concurrency(conn: sqlite3.Connection) -> dict[str, int]:
         settings.queue_concurrency, default=settings.queue_default_concurrency
     )
     concurrency.setdefault("patch_video", max(1, int(settings.patch_video_concurrency)))
+    concurrency.setdefault("gameplay_clip", max(1, int(settings.gameplay_clip_concurrency)))
     raw = repository.get_app_state(conn, QUEUE_CONCURRENCY_STATE_KEY)
     if raw:
         try:
@@ -71,6 +72,7 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     queue.register("flow_video", flow_nodes.video)
     queue.register("flow_youtube", flow_nodes.youtube, cancellable=False)
     queue.register("background_gen", background_gen.handle)
+    queue.register("gameplay_clip", gameplay_clip.handle)
     return queue
 
 
@@ -114,18 +116,43 @@ def enqueue_pending_patch_jobs(
 
     explicit_config = tts_engine is not None
     engine_id = tts_engine or settings.tts_engine
+    from app import repository
     from app.tts_engine import create_tts_engine
     # Validate without loading the heavy model.
     engine = create_tts_engine(engine_id)
     del engine
+
+    # Book audio config cache: bulk "Start queue" reads the book's ACTUAL (effective)
+    # audio config instead of blindly using settings.tts_engine. Snapshot files from a
+    # previous run still win per patch — that frozen config is what the chunks on disk
+    # were generated with, so changing it would invalidate them (no rename on the file).
+    from app.production_defaults import get_effective_audio_config
+    books: dict[int, object] = {}
+
+    def _audio_config(book_id: int) -> dict:
+        book = books.get(book_id)
+        if book is None:
+            book = repository.get_book(conn, book_id)
+            books[book_id] = book
+        return get_effective_audio_config(conn, book) if book else {}
+
     queued = 0
     for row in rows:
         if missing_audio_only and row["audio_path"] and Path(row["audio_path"]).is_file():
             continue
-        request = {
-            "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
-            "with_effects": with_effects,
-        }
+        if not explicit_config:
+            audio = _audio_config(row["book_id"])
+            request = {
+                "tts_engine": audio.get("model_id") or settings.tts_engine,
+                "voice": voice if voice else audio.get("voice_id"),
+                "max_chars": audio.get("max_chars") or 0,
+                "with_effects": bool(audio.get("with_effects", False)),
+            }
+        else:
+            request = {
+                "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
+                "with_effects": with_effects,
+            }
         # Cờ tự động hoá chỉ vào payload khi operator truyền RÕ — bỏ trống nghĩa là dùng
         # cột persisted trên sách (auto_create_video/auto_upload_youtube).
         if auto_create_video is not None:

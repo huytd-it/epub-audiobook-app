@@ -107,6 +107,10 @@ def resolve_patch_chapter_range(patch) -> tuple[int, int, str]:
         numbers = [n for n in (detect_chapter_number(ch["title"]) for ch in timeline["chapters"]) if n is not None]
         if numbers:
             return numbers[0], numbers[-1], name
+    semantic_start = getattr(patch, "chapter_no_start", None)
+    semantic_end = getattr(patch, "chapter_no_end", None)
+    if semantic_start is not None:
+        return int(semantic_start), int(semantic_end if semantic_end is not None else semantic_start), name
     start = detect_chapter_number(getattr(patch, "name", ""))
     if start is not None:
         return start, start + max(patch.chapter_end - patch.chapter_start, 0), name
@@ -424,6 +428,8 @@ def save_book_youtube_config(conn, book_id: int, config: dict) -> None:
     raw["youtube"] = validated
     conn.execute("UPDATE book SET automation_config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(raw), book_id))
     conn.commit()
+    from app.production_defaults import set_book_group_mode_db
+    set_book_group_mode_db(conn, book_id, "youtube", "custom")
 
 
 def get_patch_youtube_override(conn, patch_id: int) -> dict:

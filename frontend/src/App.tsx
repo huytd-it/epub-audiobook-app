@@ -18,6 +18,8 @@ import { FlowsPage } from "@/pages/FlowsPage";
 import { LogsPage } from "@/pages/LogsPage";
 import { EffectsPage } from "@/pages/EffectsPage";
 import { Tools } from "@/pages/Tools";
+import { ProductionSettingsPage } from "@/pages/ProductionSettingsPage";
+import { GameplayPage } from "@/pages/GameplayPage";
 import { NotFound } from "@/pages/NotFound";
 
 function App() {
@@ -42,6 +44,8 @@ function App() {
         <Route path="/flows" element={<FlowsPage />} />
         <Route path="/logs" element={<LogsPage />} />
         <Route path="/effects" element={<EffectsPage />} />
+        <Route path="/production-defaults" element={<ProductionSettingsPage />} />
+        <Route path="/gameplay" element={<GameplayPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Shell>

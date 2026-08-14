@@ -16,9 +16,12 @@ from app import background_gen, google_drive, repository, video_gen
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
-from app.normalization import NormalizationOptions, normalize_text
+from app.normalization import normalize_text
 from app.youtube_metadata import get_book_youtube_config, save_book_youtube_config
-from app.video_config import get_book_video_config, save_book_video_config, validate_video_config
+from app.video_config import save_book_video_config, validate_video_config
+from app.production_defaults import (get_effective_audio_config, get_effective_normalization_options,
+                                     get_effective_video_config, get_effective_youtube_config,
+                                     set_book_group_mode_db)
 from app import youtube
 from app import db as app_db
 
@@ -159,7 +162,7 @@ def get_video_config(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
-        return get_book_video_config(conn, book)
+        return get_effective_video_config(conn, book)
 
 
 @router.post("/books/{book_id}/video-config")
@@ -216,7 +219,7 @@ async def update_youtube_settings(request: Request, book_id: int):
         if book is None:
             raise HTTPException(404, "book not found")
         try:
-            normalized = {**get_book_youtube_config(conn, book_id), **data}
+            normalized = {**get_effective_youtube_config(conn, book), **data}
             if normalized.get("auto_upload"):
                 playlist = normalized["playlist"]
                 if not youtube.is_configured() or youtube.get_creds_from_db(conn) is None:
@@ -234,7 +237,7 @@ async def update_youtube_settings(request: Request, book_id: int):
                 )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        result = get_book_youtube_config(conn, book_id)
+        result = get_effective_youtube_config(conn, repository.get_book(conn, book_id))
         book = repository.get_book(conn, book_id)
     if result.get("auto_upload") and result["playlist"]["mode"] == "existing":
         try:
@@ -267,7 +270,7 @@ def youtube_settings(request: Request, book_id: int):
         if book is None:
             raise HTTPException(404, "book not found")
         creds = youtube.get_creds_from_db(conn)
-        result = {"config": get_book_youtube_config(conn, book_id), "connected": bool(creds), "channel_name": creds.get("channel_name") if creds else None,
+        result = {"config": get_effective_youtube_config(conn, book), "connected": bool(creds), "channel_name": creds.get("channel_name") if creds else None,
                   "auto_create_video": bool(book.auto_create_video),
                   "auto_upload_youtube": bool(book.auto_upload_youtube)}
     try:
@@ -374,12 +377,7 @@ def get_audio_settings(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(404, "book not found")
-        return {
-            "model_id": book.tts_model or "edge-tts",
-            "voice_id": book.tts_voice_id or "",
-            "max_chars": book.tts_max_chars or 400,
-            "with_effects": bool(book.tts_with_effects),
-        }
+        return get_effective_audio_config(conn, book)
 
 
 @router.post("/books/{book_id}/audio-settings")
@@ -397,6 +395,7 @@ async def save_audio_settings(request: Request, book_id: int):
             raise HTTPException(404, "book not found")
         conn.execute("UPDATE book SET tts_model=?, tts_voice_id=?, tts_max_chars=?, tts_with_effects=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (model_id, voice_id or None, max_chars or None, int(with_effects), book_id))
         conn.commit()
+        set_book_group_mode_db(conn, book_id, "audio", "custom")
     return {"model_id": model_id, "voice_id": voice_id, "max_chars": max_chars, "with_effects": with_effects}
 
 
@@ -957,6 +956,7 @@ def update_normalization(
             dictionary=dictionary.lower() == "on",
             transliteration=transliteration.lower() == "on",
         )
+        set_book_group_mode_db(conn, book_id, "normalization", "custom")
         repository.reset_done_patches_for_book(conn, book_id)
     if request.headers.get("X-Requested-With") == "autosave":
         return {"status": "ok"}
@@ -976,13 +976,7 @@ def preview_normalization(
         text = repository.get_chapter_text(conn, book_id, chapter_index)
         if text is None:
             raise HTTPException(status_code=404, detail=f"chapter {chapter_index} not found")
-        opts = NormalizationOptions(
-            numbers=bool(book.normalize_numbers_enabled),
-            junk=bool(book.normalize_junk_enabled),
-            spellcheck=bool(book.normalize_spellcheck_enabled),
-            dictionary=bool(book.normalize_dictionary_enabled),
-            transliteration=bool(book.normalize_transliteration_enabled),
-        )
+        opts = get_effective_normalization_options(conn, book)
         normalized = normalize_text(text, opts)
     return PlainTextResponse(normalized)
 

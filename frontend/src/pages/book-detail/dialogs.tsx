@@ -21,6 +21,8 @@ import {
   ConfigTab,
   MusicSettings,
   NormalizationSettings,
+  ProductionMode,
+  ProductionSettings,
   TitleNormalizePreview,
   TtsModel,
   VideoConfig,
@@ -211,9 +213,15 @@ export function ConfigDialog({
   const [previewChapter, setPreviewChapter] = useState(0);
   const [normalizationPreviewLoading, setNormalizationPreviewLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [productionSettings, setProductionSettings] = useState<ProductionSettings>();
 
   useEffect(() => {
     if (!open) return;
+    if (!productionSettings) {
+      api<ProductionSettings>(`/production-settings?book_id=${bookId}`)
+        .then(setProductionSettings)
+        .catch((error) => onMessage(errorText(error)));
+    }
     if (tab === "video" && !videoConfig) {
       Promise.all([
         api<VideoConfig>(`/books/${bookId}/video-config`),
@@ -234,7 +242,30 @@ export function ConfigDialog({
     if (tab === "youtube" && !ytSettings) {
       api<YouTubeSettings>(`/books/${bookId}/youtube-settings`).then(setYtSettings).catch((error) => onMessage(errorText(error)));
     }
-  }, [open, tab, bookId, videoConfig, ytSettings, onMessage]);
+  }, [open, tab, bookId, videoConfig, ytSettings, productionSettings, onMessage]);
+
+  const changeMode = async (mode: ProductionMode) => {
+    const result = await postJson<{ group: ConfigTab; mode: ProductionMode; effective: unknown }>(
+      `/books/${bookId}/production-settings-mode`, { group: tab, mode }
+    );
+    const effective = result.effective;
+    setProductionSettings((current) => current ? {
+      ...current,
+      modes: { ...current.modes!, [tab]: mode },
+      effective: { ...current.effective!, [tab]: effective },
+    } as ProductionSettings : current);
+    if (tab === "audio") {
+      const value = effective as ProductionSettings["defaults"]["audio"];
+      onSettingsChange({ modelId: value.model_id, voiceId: value.voice_id, maxChars: String(value.max_chars), withEffects: value.with_effects });
+    } else if (tab === "normalization") {
+      onNormalizationChange(effective as NormalizationSettings);
+    } else if (tab === "video") {
+      setVideoConfig(effective as VideoConfig);
+    } else if (ytSettings) {
+      setYtSettings({ ...ytSettings, config: effective as YouTubeConfig });
+    }
+    onMessage(mode === "inherit" ? "Đang dùng mặc định toàn hệ thống." : "Đã bật tùy chỉnh cho ebook này.");
+  };
 
   const ytConfig = ytSettings?.config;
   // Preview metadata live nhưng debounce để không gửi request theo từng ký tự.
@@ -359,6 +390,23 @@ export function ConfigDialog({
             { value: "youtube", label: "YouTube" },
           ]}
         />
+
+        {productionSettings?.modes && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/20 p-3">
+            <div>
+              <div className="text-xs font-semibold">Phạm vi áp dụng</div>
+              <div className="text-[11px] text-muted-foreground">Mặc định tự áp dụng cho mọi tập của ebook.</div>
+            </div>
+            <select
+              className={selectClass}
+              value={productionSettings.modes[tab]}
+              onChange={(event) => changeMode(event.target.value as ProductionMode).catch((error) => onMessage(errorText(error)))}
+            >
+              <option value="inherit">Mặc định toàn hệ thống</option>
+              <option value="custom">Tùy chỉnh ebook này</option>
+            </select>
+          </div>
+        )}
 
         {tab === "audio" && (
           <div className="space-y-4">
@@ -608,7 +656,25 @@ export function ConfigDialog({
                 </Field>
               </div>
 
-              <div className="space-y-3 rounded-md border border-border p-3">
+              <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
+                <Field label="Loại nền video">
+                  <select
+                    className={selectClass}
+                    value={videoConfig.background_type}
+                    onChange={(event) => setVideoConfig({ ...videoConfig, background_type: event.target.value as VideoConfig["background_type"] })}
+                  >
+                    <option value="media">Ảnh/video</option>
+                    <option value="battle_royale">Neon Battle Royale</option>
+                  </select>
+                </Field>
+                {videoConfig.background_type === "battle_royale" && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Gameplay được tạo từ replay deterministic, không cần media nền. Waveform sẽ được bỏ qua; phụ đề, tiến độ và thumbnail vẫn giữ cấu hình hiện tại.
+                  </p>
+                )}
+              </div>
+
+              {videoConfig.background_type === "media" && <div className="space-y-3 rounded-md border border-border p-3">
                 <div className="flex flex-wrap items-end gap-3">
                   <Field label="Thứ tự background media">
                     <select
@@ -657,7 +723,7 @@ export function ConfigDialog({
                 ) : (
                   <div className="text-xs text-muted-foreground">Thư viện chưa có background media.</div>
                 )}
-              </div>
+              </div>}
 
               <div className="grid grid-cols-1 gap-4 rounded-md border border-border p-3 sm:grid-cols-2">
                 <Field label="Âm thanh intro" hint="Phát trước nội dung patch">

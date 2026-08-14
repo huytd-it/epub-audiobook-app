@@ -13,6 +13,7 @@ from app.chunker import group_into_patches, split_into_tts_chunks
 from app.epub_parser import ParsedChapter
 from app.models import Book, BookJob, Chapter, Music, Patch, PatchExport, TextReplaceRule
 from app.normalization import NormalizationOptions, normalize_chapter_titles, normalize_text
+from app.production_defaults import get_effective_normalization_options
 from app.text_analysis import text_hash
 from app.validation import detect_chapter_number
 from app.youtube_metadata import format_chapter_range, resolve_patch_chapter_range
@@ -1107,13 +1108,7 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
 
     book = get_book(conn, patch.book_id)
     if book is not None:
-        opts = NormalizationOptions(
-            numbers=bool(book.normalize_numbers_enabled),
-            junk=bool(book.normalize_junk_enabled),
-            spellcheck=bool(book.normalize_spellcheck_enabled),
-            dictionary=bool(book.normalize_dictionary_enabled),
-            transliteration=bool(book.normalize_transliteration_enabled),
-        )
+        opts = get_effective_normalization_options(conn, book)
         raw = normalize_text(raw, opts)
 
     rules = list_replace_rules(conn, patch.book_id)
@@ -1138,13 +1133,7 @@ def fetch_patch_chunk_inputs(
         "clean_text": None,
         "chapters": get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end),
         "rules": list_replace_rules(conn, patch.book_id),
-        "opts": NormalizationOptions(
-            numbers=bool(book.normalize_numbers_enabled) if book else False,
-            junk=bool(book.normalize_junk_enabled) if book else False,
-            spellcheck=bool(book.normalize_spellcheck_enabled) if book else False,
-            dictionary=bool(book.normalize_dictionary_enabled) if book else False,
-            transliteration=bool(book.normalize_transliteration_enabled) if book else False,
-        ),
+        "opts": get_effective_normalization_options(conn, book) if book else NormalizationOptions(),
     }
 
 

@@ -34,7 +34,7 @@ from app.patch_publishing import (confirm_patch_republish, discard_stale_patch_v
                                   run_patch_publish_stage, seed_patch_video,
                                   warm_patch_thumbnail)
 from app.youtube_metadata import get_book_youtube_config, get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_book_youtube_config, validate_timeline
-from app.video_config import get_book_video_config
+from app.production_defaults import get_effective_video_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
 
@@ -441,32 +441,37 @@ async def generate_patch_video(
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
-        music_path = None
-        if book.music_id is not None:
-            music = repository.get_music(conn, book.music_id)
-            if music and Path(music.file_path).exists():
-                music_path = music.file_path
-        video_config = get_book_video_config(conn, book)
-
-    fallback_bg = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
-    raw_bg = video_gen.resolve_configured_patch_image(patch, video_config, fallback_bg or "")
-    if not raw_bg:
-        raise HTTPException(status_code=400, detail="No background image available")
-
-    dedupe_key = f"patch_video:patch={patch_id}"
-    with locked_conn(request) as conn:
-        existing = store.find_live_by_dedupe(conn, dedupe_key)
-        job_id = existing.id if existing else store.enqueue(
-            conn, "patch_video",
-            payload={"patch_id": patch_id, "upload_youtube": upload_youtube, "privacy": privacy},
-            book_id=book_id, dedupe_key=dedupe_key,
-        )
+        video_config = get_effective_video_config(conn, book)
+        if video_config.get("background_type") == "battle_royale":
+            from app.patch_publishing import enqueue_patch_video
+            result = enqueue_patch_video(
+                conn, patch_id,
+                request_policy={"auto_create_video": True, "auto_upload_youtube": upload_youtube},
+                privacy=privacy or None,
+            )
+            if result.get("state") != "queued":
+                raise HTTPException(status_code=400, detail=result.get("error") or "Could not enqueue patch video")
+            job_id = result["job_id"]
+            deduplicated = bool(result.get("deduplicated"))
+        else:
+            fallback_bg = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
+            raw_bg = video_gen.resolve_configured_patch_image(patch, video_config, fallback_bg or "")
+            if not raw_bg:
+                raise HTTPException(status_code=400, detail="No background image available")
+            dedupe_key = f"patch_video:patch={patch_id}"
+            existing = store.find_live_by_dedupe(conn, dedupe_key)
+            job_id = existing.id if existing else store.enqueue(
+                conn, "patch_video",
+                payload={"patch_id": patch_id, "upload_youtube": upload_youtube, "privacy": privacy},
+                book_id=book_id, dedupe_key=dedupe_key,
+            )
+            deduplicated = existing is not None
     if job_id is None:
         raise HTTPException(status_code=500, detail="Could not enqueue patch video")
     if _wants_json(request, ajax):
         return JSONResponse({
             "status": "queued", "job_id": job_id,
-            "deduplicated": existing is not None,
+            "deduplicated": deduplicated,
         }, status_code=202)
     return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
 
@@ -991,8 +996,9 @@ def youtube_metadata_preview(request: Request, book_id: int, patch_id: int | Non
         patch = repository.get_patch(conn, patch_id) if patch_id else next(iter(repository.list_patches(conn, book_id)), None)
         if not book or not patch or patch.book_id != book_id:
             raise HTTPException(404, "patch not found")
-        return resolve_patch_youtube_metadata(
-            book, patch, get_patch_youtube_override(conn, patch.id),
+        from app.production_defaults import resolve_effective_youtube_metadata
+        return resolve_effective_youtube_metadata(
+            conn, book, patch, get_patch_youtube_override(conn, patch.id),
             repository.build_patch_metadata_context(conn, book, patch))
 
 
@@ -1017,7 +1023,8 @@ async def youtube_metadata_preview_draft(request: Request, book_id: int):
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if validated is None:
-            validated = get_book_youtube_config(conn, book_id)
+            from app.production_defaults import get_effective_youtube_config
+            validated = get_effective_youtube_config(conn, book)
         try:
             return resolve_patch_youtube_metadata(
                 book, patch, get_patch_youtube_override(conn, patch.id),
@@ -1033,7 +1040,8 @@ def get_youtube_metadata(request: Request, book_id: int, patch_id: int):
         override = get_patch_youtube_override(conn, patch_id)
         pipeline = conn.execute("SELECT stage,last_error,thumbnail_path,video_path,thumbnail_status,video_status,upload_status,playlist_status FROM patch_pipeline WHERE patch_id = ?", (patch_id,)).fetchone()
         context = repository.build_patch_metadata_context(conn, book, patch)
-        return {"metadata": resolve_patch_youtube_metadata(book, patch, override, context), "override": override, "pipeline": dict(pipeline) if pipeline else {}}
+        from app.production_defaults import resolve_effective_youtube_metadata
+        return {"metadata": resolve_effective_youtube_metadata(conn, book, patch, override, context), "override": override, "pipeline": dict(pipeline) if pipeline else {}}
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/youtube-metadata")
@@ -1043,8 +1051,9 @@ async def save_youtube_metadata(request: Request, book_id: int, patch_id: int):
         book, patch = _youtube_patch(conn, book_id, patch_id)
         try:
             save_patch_youtube_override(conn, patch_id, data)
-            return resolve_patch_youtube_metadata(
-                book, patch, data, repository.build_patch_metadata_context(conn, book, patch))
+            from app.production_defaults import resolve_effective_youtube_metadata
+            return resolve_effective_youtube_metadata(
+                conn, book, patch, data, repository.build_patch_metadata_context(conn, book, patch))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -1062,8 +1071,9 @@ async def publish_patch(request: Request, book_id: int, patch_id: int):
         if any(k in {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"} for k in override):
             save_patch_youtube_override(conn, patch_id, override)
         effective_override = get_patch_youtube_override(conn, patch_id)
-        metadata = resolve_patch_youtube_metadata(
-            book, patch, effective_override, repository.build_patch_metadata_context(conn, book, patch))
+        from app.production_defaults import resolve_effective_youtube_metadata
+        metadata = resolve_effective_youtube_metadata(
+            conn, book, patch, effective_override, repository.build_patch_metadata_context(conn, book, patch))
     force_new = bool(data.get("force_new"))
     # The publish stage renders the thumbnail with PIL (and the video if it is still
     # missing), so it goes off the shared lock and off the event loop like every other

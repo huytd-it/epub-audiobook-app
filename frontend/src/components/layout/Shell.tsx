@@ -14,10 +14,12 @@ import {
   Workflow,
   FileText,
   Sparkles,
+  Settings2,
   Menu,
   Activity,
   Moon,
   Sun,
+  Swords,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -49,6 +51,8 @@ const navSections: NavSection[] = [
       { to: "/queue", label: "Hàng đợi sản xuất", icon: ListOrdered },
       { to: "/video", label: "Video thành phẩm", icon: Film },
       { to: "/media", label: "Kho tư liệu", icon: FolderKanban },
+      { to: "/gameplay", label: "Đấu trường", icon: Swords },
+      { to: "/production-defaults", label: "Mặc định sản xuất", icon: Settings2 },
     ],
   },
   {

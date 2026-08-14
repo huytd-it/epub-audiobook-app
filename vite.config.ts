@@ -15,6 +15,7 @@ const API_PREFIXES = [
   "/photos",
   "/voices",
   "/media",
+  "/gameplay",
   "/text-studio",
   "/drive",
   "/youtube",
@@ -41,7 +42,7 @@ const SPA_ROUTES = [
   /^\/books$/,
   /^\/books\/upload$/,
   /^\/books\/\d+(\/.*)?$/,
-  /^\/(upload|queue|video|music|photos|voices|media|tools|youtube|drive|database-io|flows|logs|effects)$/,
+  /^\/(upload|queue|video|music|photos|voices|media|gameplay|tools|youtube|drive|database-io|flows|logs|effects|production-defaults)$/,
 ];
 
 const isSpaNavigation = (req: { url?: string; method?: string; headers: Record<string, any> }) => {
@@ -107,7 +108,7 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern:
-              /^https?:.*\/(api|books|queue|video|music|photos|voices|media|text-studio|drive|youtube|logs|effects|database-io|flows|local-bridge)\//,
+              /^https?:.*\/(api|books|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|flows|local-bridge)\//,
             handler: "NetworkOnly",
           },
         ],

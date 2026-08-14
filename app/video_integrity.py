@@ -49,6 +49,7 @@ class VideoExpectation:
     fps: float | None = None
     pixel_format: str = ""
     rotation: int | None = None
+    require_audio: bool = True
 
     @classmethod
     def from_any(cls, raw: "VideoExpectation | dict | None") -> "VideoExpectation | None":
@@ -66,6 +67,7 @@ class VideoExpectation:
                 fps=float(raw["fps"]) if raw.get("fps") is not None else None,
                 pixel_format=str(raw["pixel_format"]) if raw.get("pixel_format") else "",
                 rotation=int(raw["rotation"]) if raw.get("rotation") is not None else None,
+                require_audio=bool(raw.get("require_audio", True)),
             )
         except (TypeError, ValueError):
             return None
@@ -231,17 +233,17 @@ def validate_video(path: str | Path, *, expected: "VideoExpectation | dict | Non
     if video is None:
         return _result(started, code="missing_video_stream", message="no video stream")
     audio = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
-    if audio is None:
+    if audio is None and (expectation is None or expectation.require_audio):
         return _result(started, code="missing_audio_stream", message="no audio stream")
     try:
         video_duration = _duration(video, format_info)
-        audio_duration = _duration(audio, format_info)
+        audio_duration = _duration(audio, format_info) if audio is not None else video_duration
     except (TypeError, ValueError, OverflowError) as exc:
         return _result(started, code="invalid_duration", message=str(exc))
 
     container = str(format_info.get("format_name") or "")
     video_codec = str(video.get("codec_name") or "").lower()
-    audio_codec = str(audio.get("codec_name") or "").lower()
+    audio_codec = str(audio.get("codec_name") or "").lower() if audio is not None else ""
     size_bytes = media.stat().st_size
     fps = 0.0
     try:
@@ -276,8 +278,9 @@ def validate_video(path: str | Path, *, expected: "VideoExpectation | dict | Non
         return _result(started, code="file_too_large",
                        message=f"video size {size_bytes} bytes exceeds {MAX_SIZE_FATAL_BYTES} bytes",
                        facts=facts)
+    audio_supported = audio_codec in _AUDIO_CODECS if audio is not None else bool(expectation and not expectation.require_audio)
     if not (_CONTAINERS.intersection(part.strip().lower() for part in container.split(","))
-            and video_codec in _VIDEO_CODECS and audio_codec in _AUDIO_CODECS):
+            and video_codec in _VIDEO_CODECS and audio_supported):
         return _result(started, code="unsupported_format",
                        message=f"unsupported output: {container}/{video_codec}/{audio_codec}",
                        facts=facts)
@@ -302,8 +305,11 @@ def validate_video(path: str | Path, *, expected: "VideoExpectation | dict | Non
 
     decode_cmd = [
         Settings.get_ffmpeg_path(), "-v", "error", "-xerror", "-i", str(media),
-        "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-",
+        "-map", "0:v:0",
     ]
+    if audio is not None:
+        decode_cmd.extend(["-map", "0:a:0"])
+    decode_cmd.extend(["-f", "null", "-"])
     try:
         decode = subprocess.run(
             decode_cmd, capture_output=True, text=True,

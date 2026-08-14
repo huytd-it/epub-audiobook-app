@@ -251,7 +251,8 @@ def generate_for_patch(
     "backgrounds" list nor the flat library folder.
     """
     width, height = (int(part) for part in (book.video_resolution or "1920x1080").split("x"))
-    genre_tags = get_book_youtube_config(conn, book.id).get("genre_tags", "")
+    from app.production_defaults import get_effective_youtube_config
+    genre_tags = get_effective_youtube_config(conn, book).get("genre_tags", "")
     prompt = build_patch_prompt(style, scene, genre_tags)
     if on_progress is not None:
         on_progress(0, 1)

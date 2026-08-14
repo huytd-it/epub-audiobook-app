@@ -8,7 +8,7 @@ from app import repository, video_gen, youtube
 from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
-from app.video_config import get_book_video_config
+from app.production_defaults import get_effective_video_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
 from app.video_recovery import resume_upload_after_render
@@ -61,7 +61,7 @@ def _render(ctx, book_job_id: int, book_id: int) -> str:
         raise JobFatalError(f"sách {book_id} chưa có final_audio_path")
 
     music_path = None
-    video_config = get_book_video_config(ctx.conn, book)
+    video_config = get_effective_video_config(ctx.conn, book)
     if book.music_id is not None:
         music = repository.get_music(ctx.conn, book.music_id)
         if music and Path(music.file_path).exists():

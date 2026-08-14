@@ -267,6 +267,7 @@ def generate_segment(
     marquee_path: str | None = None,
     marquee_meta: str | None = None,
     waveform_config: dict | None = None,
+    progress_bar: bool = False,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a single video segment from image + audio.
@@ -352,6 +353,8 @@ def generate_segment(
         resolved = _resolve_fit_mode(fit_mode, width, height)
         prefix = "" if resolved == "contain" else f"{_build_fit_filter(width, height, resolved)},"
         base_vf = f"{prefix}{zp_filter},format=yuv420p"
+    if progress_bar and narration_seconds:
+        base_vf += f",drawbox=x=0:y=ih-8:w='iw*t/{narration_seconds:.6f}':h=8:color=0xbaff39@0.9:t=fill"
 
     waveform = waveform_config if waveform_config and waveform_config.get("waveform_enabled") else None
     subtitle_filter = _build_subtitle_filter(Path(audio_path).with_suffix(".ass"), waveform_config or {})
@@ -570,6 +573,24 @@ def concat_segments(
         Path(list_file.name).unlink(missing_ok=True)
 
     _emit(on_progress, "concat.done", count=len(segment_paths), path=out_path)
+
+
+def concat_video_segments(segment_paths: list[str], out_path: str) -> None:
+    """Concat pre-rendered video-only gameplay clips without audio assertions."""
+    if not segment_paths:
+        raise ValueError("No video segments to concat")
+    _assert_uniform_frame_rate(segment_paths)
+    list_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
+    try:
+        for path in segment_paths:
+            safe = path.replace("\\", "/").replace("'", "'\\''")
+            list_file.write(f"file '{safe}'\n")
+        list_file.close()
+        subprocess.run([settings.get_ffmpeg_path(), "-y", "-f", "concat", "-safe", "0",
+                        "-i", list_file.name, "-c", "copy", out_path],
+                       check=True, capture_output=True, text=True)
+    finally:
+        Path(list_file.name).unlink(missing_ok=True)
 
 
 def _probe_duration(path: str) -> float:

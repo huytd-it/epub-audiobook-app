@@ -8,6 +8,7 @@ from pathlib import Path
 from app import repository
 
 VIDEO_DEFAULTS = {
+    "background_type": "media",
     "backgrounds": [],
     "background_mode": "sequential",
     "image_duration_seconds": 15,
@@ -68,6 +69,8 @@ def _json_object(value) -> dict:
 def validate_video_config(config: dict | None) -> dict:
     config = _json_object(config)
     result = {**copy.deepcopy(VIDEO_DEFAULTS), **config}
+    if result["background_type"] not in {"media", "battle_royale"}:
+        raise ValueError("invalid background type")
     if not isinstance(result["backgrounds"], list) or not all(isinstance(p, str) and p.strip() for p in result["backgrounds"]):
         raise ValueError("backgrounds must be a list of paths")
     result["backgrounds"] = list(dict.fromkeys(p.strip() for p in result["backgrounds"]))
@@ -151,6 +154,8 @@ def save_book_video_config(conn, book_id: int, config: dict) -> dict:
         (json.dumps(raw), video["resolution"], video["fps"], video["image_animation"], book_id),
     )
     conn.commit()
+    from app.production_defaults import set_book_group_mode_db
+    set_book_group_mode_db(conn, book_id, "video", "custom")
     return video
 
 

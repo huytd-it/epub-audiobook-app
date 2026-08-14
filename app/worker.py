@@ -26,7 +26,7 @@ import soundfile as sf
 from app import audio_merge, repository, video_gen
 from app.config import settings
 from app.models import BookJob, Patch
-from app.video_config import get_book_video_config
+from app.production_defaults import get_effective_video_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
 from app.tts_engine import VoxCPMEngine
@@ -434,12 +434,12 @@ class PatchWorker:
         if book.music_id is not None:
             with self.db_lock:
                 music = repository.get_music(self.conn, book.music_id)
-                video_config = get_book_video_config(self.conn, book)
+                video_config = get_effective_video_config(self.conn, book)
             if music and Path(music.file_path).exists():
                 music_path = music.file_path
         if video_config is None:
             with self.db_lock:
-                video_config = get_book_video_config(self.conn, book)
+                video_config = get_effective_video_config(self.conn, book)
         voices_dir = Path(settings.data_root) / "voices"
         intro_audio = voices_dir / video_config["intro_voice"] if video_config.get("intro_voice") else None
         outro_audio = voices_dir / video_config["outro_voice"] if video_config.get("outro_voice") else None

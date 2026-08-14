@@ -69,6 +69,17 @@ def export_json(conn: sqlite3.Connection, tables: list[str] | None = None) -> di
 
 def _table_order() -> list[str]:
     return [
+        "gameplay_clip",
+        "gameplay_replay",
+        "gameplay_fighter",
+        "gameplay_theme",
+        "job_dependency",
+        "job",
+        "patch_pipeline",
+        "book_media_selection",
+        "videos",
+        "youtube_playlist_map",
+        "patch_warning",
         "voice_meta",
         "patch_export",
         "patch",
@@ -83,6 +94,13 @@ def _table_order() -> list[str]:
         "app_state",
         "music",
         "book",
+        "automation_settings",
+        "media_assets",
+        "batches",
+        "flow_run",
+        "flow_definition",
+        "material_cache",
+        "sound_effect",
     ]
 
 

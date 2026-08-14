@@ -434,6 +434,69 @@ CREATE TABLE IF NOT EXISTS material_cache (
 
 CREATE INDEX IF NOT EXISTS idx_material_cache_last_used ON material_cache(last_used_at);
 
+CREATE TABLE IF NOT EXISTS gameplay_theme (
+    id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    builtin INTEGER NOT NULL DEFAULT 0,
+    manifest_json TEXT NOT NULL DEFAULT '{}',
+    asset_dir TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (id, version)
+);
+
+CREATE TABLE IF NOT EXISTS gameplay_fighter (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_key TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    class_name TEXT NOT NULL,
+    matches INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    eliminations INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gameplay_replay (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    replay_key TEXT NOT NULL UNIQUE,
+    seed INTEGER NOT NULL,
+    duration_seconds REAL NOT NULL,
+    roster_json TEXT NOT NULL,
+    themes_json TEXT NOT NULL,
+    map_json TEXT NOT NULL,
+    events_json TEXT NOT NULL,
+    top3_json TEXT NOT NULL,
+    winner_key TEXT NOT NULL,
+    stats_applied INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_gameplay_replay_seed ON gameplay_replay(seed);
+
+CREATE TABLE IF NOT EXISTS gameplay_clip (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_key TEXT NOT NULL,
+    replay_id INTEGER NOT NULL REFERENCES gameplay_replay(id) ON DELETE RESTRICT,
+    duration_seconds REAL NOT NULL,
+    file_path TEXT,
+    status TEXT NOT NULL DEFAULT 'available',
+    reserved_patch_id INTEGER REFERENCES patch(id) ON DELETE SET NULL,
+    reservation_token TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    consumed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_gameplay_clip_profile_status
+ON gameplay_clip(profile_key, status, id);
+CREATE INDEX IF NOT EXISTS idx_gameplay_clip_reserved_patch
+ON gameplay_clip(reserved_patch_id, status);
+
 """
 
 
@@ -462,6 +525,8 @@ def connect(db_path: str) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
     _migrate(conn)
+    from app.gameplay_repository import seed_catalog
+    seed_catalog(conn)
     conn.commit()
 
 

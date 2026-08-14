@@ -234,6 +234,55 @@ def test_reconcile_enqueues_missing_upload_for_ready_video(tmp_path, monkeypatch
     assert stats["already_live"] == 0
 
 
+def test_reconcile_retries_failed_upload_without_rendering_again(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "failed.db"))
+    db.init_schema(conn)
+    monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    book_id = conn.execute(
+        "INSERT INTO book (title, original_filename, epub_path, patch_size, status, created_at, updated_at) "
+        "VALUES ('B', 'b.epub', 'b.epub', 1, 'ready', ?, ?)", (NOW, NOW),
+    ).lastrowid
+    conn.execute(
+        "UPDATE book SET auto_create_video=1, auto_upload_youtube=1 WHERE id=?", (book_id,),
+    )
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(_wav_bytes())
+    (tmp_path / "a.timeline.json").write_text(json.dumps(_timeline()), encoding="utf-8")
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"media")
+    conn.execute(
+        "INSERT INTO patch (id, book_id, patch_index, chapter_start, chapter_end, status, audio_path, created_at, updated_at) "
+        "VALUES (1, ?, 0, 0, 0, 'done', ?, ?, ?)", (book_id, str(audio), NOW, NOW),
+    )
+    upload_id = conn.execute(
+        "INSERT INTO youtube_uploads (video_path, status, created_at) VALUES (?, 'failed', ?)",
+        (str(video), NOW),
+    ).lastrowid
+    conn.execute(
+        """INSERT INTO patch_pipeline
+           (patch_id, stage, video_status, upload_status, video_path, youtube_upload_id,
+            config_snapshot, media_snapshot, created_at, updated_at)
+           VALUES (1, 'upload', 'done', 'failed', ?, ?, '{}', '{}', ?, ?)""",
+        (str(video), upload_id, NOW, NOW),
+    )
+    save_book_youtube_config(conn, book_id, {
+        "auto_upload": True, "playlist": {"mode": "existing", "playlist_id": "PL1"},
+    })
+    conn.commit()
+    monkeypatch.setattr("app.patch_publishing.youtube.is_configured", lambda: True)
+    monkeypatch.setattr("app.patch_publishing.youtube.get_creds_from_db", lambda conn: {"id": 1})
+    monkeypatch.setattr("app.patch_publishing.preflight_patch", lambda *args, **kwargs: {"state": "ready"})
+
+    stats = reconcile_patch_automation(conn, book_id=book_id)
+
+    assert stats["enqueued_upload"] == 1
+    assert stats["enqueued_render"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM youtube_uploads").fetchone()[0] == 1
+    job = conn.execute("SELECT job_type, payload_json FROM job").fetchone()
+    assert job["job_type"] == "youtube_upload"
+    assert json.loads(job["payload_json"])["upload_id"] == upload_id
+
+
 def test_reconcile_respects_request_policy_override(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "c.db"))
     db.init_schema(conn)
