@@ -33,6 +33,7 @@ import {
   errorText,
 } from "./types";
 import { CheckField, Field, TabBar, checkboxClass, fieldClass, selectClass } from "./parts";
+import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
 
 const WAVEFORM_TEMPLATES = [
   { id: "bold", name: "Dải nổi", description: "Line sáng trên nền tối", style: "line", layout: "horizontal", color: "#ffffff", background: "#050816", backgroundOpacity: 0.68, position: "bottom", height: 150, opacity: 1 },
@@ -508,6 +509,8 @@ export function ConfigDialog({
               Lưu cấu hình sẽ reset các patch audio đã hoàn thành để TTS chạy lại. Nội dung đã sửa thủ công trong
               Text Studio vẫn được giữ nguyên và không normalize lại.
             </div>
+
+            <ReplaceRulesPanel bookId={bookId} onMessage={onMessage} />
 
             <div className="space-y-3 rounded-md border border-border p-3">
               <div className="flex flex-wrap items-end gap-2">

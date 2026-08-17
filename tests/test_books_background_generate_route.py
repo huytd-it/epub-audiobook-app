@@ -1,6 +1,5 @@
-"""Route tests: creating patches (rebuild/auto-build/extend) auto-enqueues a
-patch-scoped background_gen job per new patch, with no book-level generate
-endpoint left behind."""
+"""Route tests: creating patches (rebuild/auto-build/extend) never enqueues a
+background_gen job, and there is no book-level generate endpoint either."""
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
@@ -31,7 +30,7 @@ def _background_jobs(conn):
     return store.list_jobs(conn, job_type="background_gen")
 
 
-def test_rebuild_enqueues_one_background_job_per_patch(tmp_path, monkeypatch):
+def test_rebuild_enqueues_no_background_job(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
     monkeypatch.setattr(settings, "enable_worker", False)
     with TestClient(app) as client:
@@ -41,19 +40,10 @@ def test_rebuild_enqueues_one_background_job_per_patch(tmp_path, monkeypatch):
         assert response.status_code == 200
         assert len(response.json()) == 2
 
-        jobs = _background_jobs(conn)
-        assert len(jobs) == 2
-        patch_ids = [row["id"] for row in conn.execute(
-            "SELECT id FROM patch WHERE book_id=?", (book_id,)
-        ).fetchall()]
-        assert {job.patch_id for job in jobs} == set(patch_ids)
-        assert all(job.book_id == book_id for job in jobs)
-        assert {job.dedupe_key for job in jobs} == {f"background_gen:patch={pid}" for pid in patch_ids}
-        for job in jobs:
-            assert job.payload == {"patch_id": job.patch_id, "book_id": book_id}
+        assert _background_jobs(conn) == []
 
 
-def test_auto_build_enqueues_one_background_job_per_patch(tmp_path, monkeypatch):
+def test_auto_build_enqueues_no_background_job(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
     monkeypatch.setattr(settings, "enable_worker", False)
     with TestClient(app) as client:
@@ -67,15 +57,15 @@ def test_auto_build_enqueues_one_background_job_per_patch(tmp_path, monkeypatch)
         assert response.status_code == 200
         assert any(h.status_code == 303 for h in response.history)
 
-        jobs = _background_jobs(conn)
-        patch_ids = {row["id"] for row in conn.execute(
-            "SELECT id FROM patch WHERE book_id=?", (book_id,)
-        ).fetchall()}
-        assert {job.patch_id for job in jobs} == patch_ids
-        assert len(jobs) == 3  # 6 chapters / 2 = 3 patches
+        # 6 chapters / 2 = 3 patches were created, and still no image jobs.
+        patch_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM patch WHERE book_id=?", (book_id,)
+        ).fetchone()["n"]
+        assert patch_count == 3
+        assert _background_jobs(conn) == []
 
 
-def test_extend_enqueues_only_for_newly_created_patches(tmp_path, monkeypatch):
+def test_extend_enqueues_no_background_job(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
     monkeypatch.setattr(settings, "enable_worker", False)
     with TestClient(app) as client:
@@ -84,52 +74,32 @@ def test_extend_enqueues_only_for_newly_created_patches(tmp_path, monkeypatch):
 
         first = client.post(f"/books/{book_id}/patches/rebuild", json={"ranges": [[0, 1]]})
         assert first.status_code == 200
-        first_ids = {row["id"] for row in conn.execute(
-            "SELECT id FROM patch WHERE book_id=?", (book_id,)
-        ).fetchall()}
-        assert {job.patch_id for job in _background_jobs(conn)} == first_ids
+        assert _background_jobs(conn) == []
 
         second = client.post(f"/books/{book_id}/patches/extend")
         assert second.status_code == 200
         assert second.json()["created"] == 1
-        second_ids = {row["id"] for row in conn.execute(
-            "SELECT id FROM patch WHERE book_id=?", (book_id,)
-        ).fetchall()}
-        jobs = _background_jobs(conn)
-        assert {job.patch_id for job in jobs} == second_ids
-        assert len(jobs) == 2
-
-        # No more uncovered chapters: extend creates nothing, enqueues nothing.
-        again = client.post(f"/books/{book_id}/patches/extend")
-        assert again.json()["created"] == 0
-        assert len(_background_jobs(conn)) == 2
+        assert _background_jobs(conn) == []
 
 
-def test_rebuild_again_enqueues_for_the_fresh_patch_ids(tmp_path, monkeypatch):
-    """A rebuild replaces rows: the old patch's jobs are cascade-deleted with
-    it (job.patch_id -> patch ON DELETE CASCADE), and the fresh patch ids get
-    their own jobs even though the previous ones finished."""
+def test_patch_builder_submit_enqueues_no_background_job(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
     monkeypatch.setattr(settings, "enable_worker", False)
     with TestClient(app) as client:
         conn = client.app.state.conn
         book_id = _seed_book(conn)
-        client.post(f"/books/{book_id}/patches/rebuild", json={"ranges": [[0, 2]]})
-        first_jobs = _background_jobs(conn)
-        assert len(first_jobs) == 1
-        for job in first_jobs:
-            store.finish(conn, job.id, None)
+        response = client.post(
+            f"/books/{book_id}/patches/build",
+            data={"range_start": ["0"], "range_end": ["2"]},
+        )
+        assert response.status_code == 200
+        assert any(h.status_code == 303 for h in response.history)
 
-        client.post(f"/books/{book_id}/patches/rebuild", json={"ranges": [[0, 2]]})
-        second_ids = {row["id"] for row in conn.execute(
-            "SELECT id FROM patch WHERE book_id=?", (book_id,)
-        ).fetchall()}
-        jobs = _background_jobs(conn)
-        assert {job.patch_id for job in jobs} == second_ids
-        # Only the live job for the current patch remains: the finished one was
-        # cascade-deleted with its (now replaced) patch row.
-        assert len(jobs) == 1
-        assert jobs[0].status == "pending"
+        patch_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM patch WHERE book_id=?", (book_id,)
+        ).fetchone()["n"]
+        assert patch_count == 1
+        assert _background_jobs(conn) == []
 
 
 def test_book_level_generate_endpoint_is_gone(tmp_path, monkeypatch):

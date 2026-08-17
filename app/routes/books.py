@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
-from app import background_gen, google_drive, repository, video_gen
+from app import google_drive, repository, video_gen
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
@@ -862,17 +862,26 @@ def toggle_chapter_exclude(
 # ---------------------------------------------------------------------------
 
 
+def _rule_dict(rule) -> dict:
+    return {"id": rule.id, "book_id": rule.book_id, "find": rule.find, "replace": rule.replace,
+            "is_regex": rule.is_regex, "position": rule.position}
+
+
+def _rule_result(request: Request, book_id: int, payload: dict) -> Response:
+    """Mutations answer JSON to the SPA (which asks for it) and keep the 303 redirect
+    for plain form posts, so nothing that submits these endpoints as a form breaks."""
+    if "application/json" in (request.headers.get("accept") or ""):
+        return JSONResponse(payload)
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
 @router.get("/books/{book_id}/replace-rules")
 def list_rules(request: Request, book_id: int):
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         rules = repository.list_replace_rules(conn, book_id)
-    return JSONResponse([
-        {"id": r.id, "book_id": r.book_id, "find": r.find, "replace": r.replace,
-         "is_regex": r.is_regex, "position": r.position}
-        for r in rules
-    ])
+    return JSONResponse([_rule_dict(r) for r in rules])
 
 
 @router.post("/books/{book_id}/replace-rules")
@@ -893,8 +902,8 @@ def create_rule(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        repository.reset_done_patches_for_book(conn, book_id)
-    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        reset = repository.reset_done_patches_for_book(conn, book_id)
+    return _rule_result(request, book_id, {"rule": _rule_dict(rule), "reset_patches": reset})
 
 
 @router.post("/books/{book_id}/replace-rules/{rule_id}/edit")
@@ -917,16 +926,18 @@ def edit_rule(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if updated is None:
             raise HTTPException(status_code=404, detail=f"rule {rule_id} not found")
-        repository.reset_done_patches_for_book(conn, book_id)
-    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        reset = repository.reset_done_patches_for_book(conn, book_id)
+    return _rule_result(request, book_id, {"rule": _rule_dict(updated), "reset_patches": reset})
 
 
 @router.post("/books/{book_id}/replace-rules/{rule_id}/delete")
 def delete_rule(request: Request, book_id: int, rule_id: int):
+    reset = 0
     with locked_conn(request) as conn:
-        if repository.delete_replace_rule(conn, rule_id):
-            repository.reset_done_patches_for_book(conn, book_id)
-    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        deleted = repository.delete_replace_rule(conn, rule_id)
+        if deleted:
+            reset = repository.reset_done_patches_for_book(conn, book_id)
+    return _rule_result(request, book_id, {"deleted": deleted, "reset_patches": reset})
 
 
 # ---------------------------------------------------------------------------
@@ -1002,10 +1013,9 @@ async def rebuild_patches(request: Request, book_id: int):
             patches = repository.rebuild_patches(conn, book_id, ranges, reset_done)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        # Background generation is queued only after rebuild_patches committed
-        # its patch inserts; enqueue_for_patches depends on the rows being
-        # visible, and is deduped per patch so a re-run never stacks jobs.
-        background_gen.enqueue_for_patches(conn, book_id, patches)
+        # No background_gen job is queued here: building patches must not fire
+        # off image generation on its own (the Pollinations call is slow and
+        # times out). Backgrounds are generated on demand instead.
     return JSONResponse([
         {"patch_index": p.patch_index, "chapter_start": p.chapter_start,
          "chapter_end": p.chapter_end, "name": p.name, "chunk_count": p.chunk_count,
@@ -1047,10 +1057,9 @@ async def auto_build_patches(
         if book is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         try:
-            patches = repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
+            repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        background_gen.enqueue_for_patches(conn, book_id, patches)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
@@ -1127,10 +1136,9 @@ async def patch_builder_submit(request: Request, book_id: int):
                 )
         if ranges:
             try:
-                patches = repository.rebuild_patches(conn, book_id, ranges, reset_done=True)
+                repository.rebuild_patches(conn, book_id, ranges, reset_done=True)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            background_gen.enqueue_for_patches(conn, book_id, patches)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
