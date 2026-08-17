@@ -39,6 +39,51 @@ class TestLightTTSEngine:
         assert sr > 0
 
 
+class TestEdgeSynthesizeRetry:
+    """The Edge endpoint drops streams mid-run on valid text (NoAudioReceived);
+    _edge_tts_synthesize must absorb that instead of failing the patch job."""
+
+    @staticmethod
+    def _install_fake_communicate(monkeypatch, failures: int):
+        edge_tts = pytest.importorskip("edge_tts")
+        import app.light_tts as lt
+
+        calls = {"n": 0}
+
+        class _FakeCommunicate:
+            def __init__(self, text, voice):
+                self.text = text
+
+            async def stream(self):
+                calls["n"] += 1
+                if calls["n"] <= failures:
+                    raise edge_tts.exceptions.NoAudioReceived("No audio was received.")
+                yield {"type": "audio", "data": b"mp3-bytes"}
+
+        monkeypatch.setattr(edge_tts, "Communicate", _FakeCommunicate)
+        monkeypatch.setattr(lt.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(lt, "_mp3_to_wav_bytes", lambda b: (b"wav:" + b, 24000))
+        return calls
+
+    def test_retries_then_succeeds(self, monkeypatch):
+        from app.light_tts import _edge_tts_synthesize
+
+        calls = self._install_fake_communicate(monkeypatch, failures=2)
+        wav_bytes, sr = _edge_tts_synthesize("Xin chào", "vi-VN-HoaiMyNeural")
+        assert wav_bytes == b"wav:mp3-bytes"
+        assert sr == 24000
+        assert calls["n"] == 3
+
+    def test_raises_after_exhausting_retries(self, monkeypatch):
+        edge_tts = pytest.importorskip("edge_tts")
+        from app.light_tts import _EDGE_RETRIES, _edge_tts_synthesize
+
+        calls = self._install_fake_communicate(monkeypatch, failures=99)
+        with pytest.raises(edge_tts.exceptions.NoAudioReceived):
+            _edge_tts_synthesize("Xin chào", "vi-VN-HoaiMyNeural")
+        assert calls["n"] == _EDGE_RETRIES
+
+
 class TestListVoices:
     def test_edge_tts_sorted_vietnamese_first(self, monkeypatch):
         import app.light_tts as lt

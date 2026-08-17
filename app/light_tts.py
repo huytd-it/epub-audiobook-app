@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import time
 from typing import Any
 
 from app.config import settings
@@ -37,8 +38,16 @@ def _check_backend(name: str) -> None:
         raise RuntimeError(f"Unknown TTS backend: {name}")
 
 
+_EDGE_RETRIES = 5
+
+
 def _edge_tts_synthesize(text: str, voice: str) -> tuple[bytes, int]:
-    """Synthesize text via edge-tts, return (wav_bytes, sample_rate)."""
+    """Synthesize text via edge-tts, return (wav_bytes, sample_rate).
+
+    The Edge endpoint intermittently closes a stream without sending any audio --
+    it shows up as NoAudioReceived on perfectly valid text, typically a few hundred
+    requests into an audiobook run. Retrying the same chunk after a short backoff
+    succeeds, so absorb it here instead of failing the whole patch job."""
     import edge_tts
 
     async def _run() -> bytes:
@@ -49,8 +58,20 @@ def _edge_tts_synthesize(text: str, voice: str) -> tuple[bytes, int]:
                 buf.write(chunk["data"])
         return buf.getvalue()
 
-    mp3_bytes = asyncio.run(_run())
-    return _mp3_to_wav_bytes(mp3_bytes)
+    for attempt in range(_EDGE_RETRIES):
+        try:
+            mp3_bytes = asyncio.run(_run())
+        except Exception:
+            if attempt == _EDGE_RETRIES - 1:
+                raise
+            time.sleep(2 ** attempt)
+            continue
+        if mp3_bytes:
+            return _mp3_to_wav_bytes(mp3_bytes)
+        if attempt == _EDGE_RETRIES - 1:
+            raise RuntimeError(f"edge-tts trả về audio rỗng sau {_EDGE_RETRIES} lần thử")
+        time.sleep(2 ** attempt)
+    raise AssertionError("unreachable")
 
 
 def _gtts_synthesize(text: str, voice: str) -> tuple[bytes, int]:
