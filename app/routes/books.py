@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
-from app import background_gen, google_drive, repository, video_gen
+from app import google_drive, repository, video_gen
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
@@ -1013,10 +1013,9 @@ async def rebuild_patches(request: Request, book_id: int):
             patches = repository.rebuild_patches(conn, book_id, ranges, reset_done)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        # Background generation is queued only after rebuild_patches committed
-        # its patch inserts; enqueue_for_patches depends on the rows being
-        # visible, and is deduped per patch so a re-run never stacks jobs.
-        background_gen.enqueue_for_patches(conn, book_id, patches)
+        # No background_gen job is queued here: building patches must not fire
+        # off image generation on its own (the Pollinations call is slow and
+        # times out). Backgrounds are generated on demand instead.
     return JSONResponse([
         {"patch_index": p.patch_index, "chapter_start": p.chapter_start,
          "chapter_end": p.chapter_end, "name": p.name, "chunk_count": p.chunk_count,
@@ -1058,10 +1057,9 @@ async def auto_build_patches(
         if book is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         try:
-            patches = repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
+            repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        background_gen.enqueue_for_patches(conn, book_id, patches)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
@@ -1138,10 +1136,9 @@ async def patch_builder_submit(request: Request, book_id: int):
                 )
         if ranges:
             try:
-                patches = repository.rebuild_patches(conn, book_id, ranges, reset_done=True)
+                repository.rebuild_patches(conn, book_id, ranges, reset_done=True)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            background_gen.enqueue_for_patches(conn, book_id, patches)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 

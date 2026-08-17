@@ -274,7 +274,12 @@ def generate_for_patch(
 
 
 def enqueue_for_patches(conn, book_id: int, patches: Iterable) -> int:
-    """Enqueue a patch-scoped background_gen job for each newly created patch.
+    """Enqueue a patch-scoped background_gen job for each given patch.
+
+    NOT called when patches are built. Creating patches (rebuild/auto-build/
+    extend) deliberately queues nothing, so a build never blocks on - or logs
+    failures from - the slow Pollinations image call; callers that actually
+    want images must invoke this explicitly.
 
     Must only be called AFTER the patch rows are committed: the repository
     builders (rebuild_patches/auto_build_patches/extend_patches) commit
