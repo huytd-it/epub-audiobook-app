@@ -7,6 +7,7 @@ import {
   FileSearch,
   Film,
   Layers,
+  Replace,
   RotateCcw,
   ScanText,
   ShieldAlert,
@@ -41,6 +42,7 @@ import {
 } from "./types";
 import { SectionHead, TabBar, checkboxClass } from "./parts";
 import { PatchIssuesDialog } from "./PatchIssuesDialog";
+import { FindReplaceDialog } from "./FindReplaceDialog";
 
 type Filter = "all" | "processing" | "done" | "failed";
 
@@ -58,6 +60,7 @@ type RowProps = {
   onToggle: (patchId: number) => void;
   onOpen: (patch: Patch) => void;
   onOpenIssues: (patch: Patch) => void;
+  onOpenFindReplace: (patch: Patch) => void;
   onImportDrive: (patch: Patch) => void;
   onImportFiles: (patch: Patch, files: FileList | null) => void;
   onUploadVideo: (patch: Patch) => void;
@@ -78,6 +81,7 @@ const PatchRow = React.memo(function PatchRow({
   onToggle,
   onOpen,
   onOpenIssues,
+  onOpenFindReplace,
   onImportDrive,
   onImportFiles,
   onUploadVideo,
@@ -287,6 +291,17 @@ const PatchRow = React.memo(function PatchRow({
             variant="ghost"
             className="h-7 px-2 text-[11px]"
             disabled={busy || patch.status === "processing"}
+            onClick={() => onOpenFindReplace(patch)}
+            title="Tìm & thay trong text của patch"
+          >
+            <Replace className="h-3 w-3" />
+            <span className="hidden lg:inline">Tìm & thay</span>
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-[11px]"
+            disabled={busy || patch.status === "processing"}
             onClick={() => onImportDrive(patch)}
             title="Quét kết quả từ Drive Desktop"
           >
@@ -439,6 +454,13 @@ export function PatchesPanel({
   const openIssues = useCallback((patch: Patch) => {
     setIssuesPatch(patch);
     setIssuesOpen(true);
+  }, []);
+
+  const [findReplacePatch, setFindReplacePatch] = useState<Patch>();
+  const [findReplaceOpen, setFindReplaceOpen] = useState(false);
+  const openFindReplace = useCallback((patch: Patch) => {
+    setFindReplacePatch(patch);
+    setFindReplaceOpen(true);
   }, []);
 
   const visible = useMemo(
@@ -653,6 +675,7 @@ export function PatchesPanel({
                     onToggle={toggle}
                     onOpen={onOpenPatch}
                     onOpenIssues={openIssues}
+                    onOpenFindReplace={openFindReplace}
                     onImportDrive={importDrive}
                     onImportFiles={importFiles}
                     onUploadVideo={uploadVideo}
@@ -681,6 +704,15 @@ export function PatchesPanel({
         open={issuesOpen}
         onOpenChange={setIssuesOpen}
         onMessage={onMessage}
+      />
+
+      <FindReplaceDialog
+        bookId={bookId}
+        patch={findReplacePatch}
+        open={findReplaceOpen}
+        onOpenChange={setFindReplaceOpen}
+        onMessage={onMessage}
+        onSaved={onRefresh}
       />
 
       <Dialog open={Boolean(republishPatch)} onOpenChange={(open) => !open && setRepublishPatch(undefined)}>

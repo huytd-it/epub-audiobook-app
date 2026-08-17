@@ -454,6 +454,22 @@ export type PatchTextCheckSummary = {
   patches: { patch_id: number; patch_index: number; totals: Record<string, number>; total: number }[];
 };
 
+/** Một luật tìm/thay áp cho cả sách, chạy sau bước chuẩn hóa TTS. */
+export type ReplaceRule = {
+  id: number;
+  book_id: number;
+  find: string;
+  replace: string;
+  is_regex: boolean;
+  position: number;
+};
+
+export type ReplaceRuleResult = { rule: ReplaceRule; reset_patches: number };
+export type ReplaceRuleDeleteResult = { deleted: boolean; reset_patches: number };
+
+/** GET /books/{id}/text-studio/patches/{patchId} — text hiệu lực của patch. */
+export type PatchTextPayload = { text: string; warnings: TextWarning[]; is_edited: boolean };
+
 export type PlannedRangeCheck = {
   planned: number;
   issues: Issue[];

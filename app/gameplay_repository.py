@@ -84,17 +84,23 @@ def save_gameplay_replay(conn: sqlite3.Connection, replay_key: str, replay: Game
     canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     now = _now()
+    # The battle-royale columns are NOT NULL on databases migrated from the pre-catalog
+    # schema (no DEFAULT), so they must be written explicitly or INSERT OR IGNORE would
+    # silently drop the row.
     conn.execute(
         """INSERT OR IGNORE INTO gameplay_replay
-           (replay_key, seed, duration_seconds, game_id, schema_version, simulation_version,
+           (replay_key, seed, duration_seconds, roster_json, themes_json, map_json,
+            events_json, top3_json, winner_key, game_id, schema_version, simulation_version,
             ruleset_version, renderer_version, payload_json, result_json, content_sha256, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, '[]', '[]', '{}', '[]', '[]', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (replay_key, replay.seed, replay.duration_seconds, replay.game_id, replay.schema_version,
          replay.simulation_version, replay.ruleset_version, replay.renderer_version,
          json.dumps(replay.payload, ensure_ascii=False), json.dumps(replay.result, ensure_ascii=False),
          digest, now),
     )
     row = conn.execute("SELECT * FROM gameplay_replay WHERE replay_key=?", (replay_key,)).fetchone()
+    if row is None:
+        raise RuntimeError(f"gameplay replay {replay_key!r} was rejected by the database")
     if commit:
         conn.commit()
     return dict(row)

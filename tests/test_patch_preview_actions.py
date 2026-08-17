@@ -91,6 +91,40 @@ def test_replace_rules_endpoints(client, tmp_path):
     assert resp.status_code == 303
 
 
+def test_replace_rules_json_for_spa(client, tmp_path):
+    """The SPA asks for JSON, so the mutations answer with the rule instead of a redirect."""
+    book_id = _upload_book(client, tmp_path)
+    json_headers = {"accept": "application/json"}
+    resp = client.post(
+        f"/books/{book_id}/replace-rules",
+        data={"find": "AI", "replace": "A.I.", "is_regex": "false", "position": "0"},
+        headers=json_headers,
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    rule = resp.json()["rule"]
+    assert rule["find"] == "AI" and rule["replace"] == "A.I." and rule["is_regex"] is False
+
+    resp = client.post(
+        f"/books/{book_id}/replace-rules/{rule['id']}/edit",
+        data={"find": "AI", "replace": "Ây Ai", "is_regex": "false", "position": "2"},
+        headers=json_headers,
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["rule"]["replace"] == "Ây Ai"
+    assert resp.json()["rule"]["position"] == 2
+
+    resp = client.post(
+        f"/books/{book_id}/replace-rules/{rule['id']}/delete",
+        headers=json_headers,
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+    assert client.get(f"/books/{book_id}/replace-rules").json() == []
+
+
 def test_invalid_regex_rejected(client, tmp_path):
     book_id = _upload_book(client, tmp_path)
     resp = client.post(

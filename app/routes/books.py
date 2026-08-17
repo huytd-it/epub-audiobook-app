@@ -862,17 +862,26 @@ def toggle_chapter_exclude(
 # ---------------------------------------------------------------------------
 
 
+def _rule_dict(rule) -> dict:
+    return {"id": rule.id, "book_id": rule.book_id, "find": rule.find, "replace": rule.replace,
+            "is_regex": rule.is_regex, "position": rule.position}
+
+
+def _rule_result(request: Request, book_id: int, payload: dict) -> Response:
+    """Mutations answer JSON to the SPA (which asks for it) and keep the 303 redirect
+    for plain form posts, so nothing that submits these endpoints as a form breaks."""
+    if "application/json" in (request.headers.get("accept") or ""):
+        return JSONResponse(payload)
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
 @router.get("/books/{book_id}/replace-rules")
 def list_rules(request: Request, book_id: int):
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         rules = repository.list_replace_rules(conn, book_id)
-    return JSONResponse([
-        {"id": r.id, "book_id": r.book_id, "find": r.find, "replace": r.replace,
-         "is_regex": r.is_regex, "position": r.position}
-        for r in rules
-    ])
+    return JSONResponse([_rule_dict(r) for r in rules])
 
 
 @router.post("/books/{book_id}/replace-rules")
@@ -893,8 +902,8 @@ def create_rule(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        repository.reset_done_patches_for_book(conn, book_id)
-    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        reset = repository.reset_done_patches_for_book(conn, book_id)
+    return _rule_result(request, book_id, {"rule": _rule_dict(rule), "reset_patches": reset})
 
 
 @router.post("/books/{book_id}/replace-rules/{rule_id}/edit")
@@ -917,16 +926,18 @@ def edit_rule(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if updated is None:
             raise HTTPException(status_code=404, detail=f"rule {rule_id} not found")
-        repository.reset_done_patches_for_book(conn, book_id)
-    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        reset = repository.reset_done_patches_for_book(conn, book_id)
+    return _rule_result(request, book_id, {"rule": _rule_dict(updated), "reset_patches": reset})
 
 
 @router.post("/books/{book_id}/replace-rules/{rule_id}/delete")
 def delete_rule(request: Request, book_id: int, rule_id: int):
+    reset = 0
     with locked_conn(request) as conn:
-        if repository.delete_replace_rule(conn, rule_id):
-            repository.reset_done_patches_for_book(conn, book_id)
-    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+        deleted = repository.delete_replace_rule(conn, rule_id)
+        if deleted:
+            reset = repository.reset_done_patches_for_book(conn, book_id)
+    return _rule_result(request, book_id, {"deleted": deleted, "reset_patches": reset})
 
 
 # ---------------------------------------------------------------------------

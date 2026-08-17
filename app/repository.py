@@ -1088,6 +1088,12 @@ def rebuild_patches(
 _TITLE_END_PUNCTUATION = frozenset(".!?…:;,)]\"'»")
 
 
+def has_speakable_text(text: str) -> bool:
+    """True when the text holds at least one letter or digit. Cloud TTS backends
+    reject punctuation-only input (edge-tts raises NoAudioReceived)."""
+    return re.search(r"[^\W_]", text, re.UNICODE) is not None
+
+
 def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
     """Return the full text for a patch: included chapter texts joined,
     normalized (if enabled), then with the book's replace rules applied."""
@@ -1144,6 +1150,7 @@ def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
         return [
             {"text": chunk, "chapter_index": None, "chapter_title": None, "is_chapter_start": False}
             for chunk in split_into_tts_chunks(inputs["clean_text"], max_chars=limit)
+            if has_speakable_text(chunk)
         ]
     chapters, rules, opts = inputs["chapters"], inputs["rules"], inputs["opts"]
     plan = []
@@ -1158,9 +1165,9 @@ def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
         text = normalize_chapter_titles(text)
         text = normalize_text(text, opts)
         text = apply_replace_rules(text, rules)
-        if not text.strip().strip(" .!?…:;,)]\"'»"):
+        if not has_speakable_text(text):
             continue
-        chunks = split_into_tts_chunks(text, max_chars=limit)
+        chunks = [c for c in split_into_tts_chunks(text, max_chars=limit) if has_speakable_text(c)]
         for i, chunk in enumerate(chunks):
             plan.append({
                 "text": chunk,
