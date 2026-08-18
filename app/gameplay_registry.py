@@ -20,6 +20,7 @@ class GameDefinition:
     waveform_policy: str
     description: str
     simulate: Callable[[int, dict], GameplayReplay]
+    sprite_roles: tuple[str, ...] = ()
 
 
 def _duration(rng: random.Random) -> float:
@@ -99,24 +100,37 @@ def _legacy_placeholder(seed: int, config: dict) -> GameplayReplay:
     raise ValueError("battle_royale uses the legacy simulator")
 
 
+_CROP_ROLES = ("carrot", "wheat", "tomato", "lavender", "pumpkin")
+_KIND_ROLES = ("kind_0", "kind_1", "kind_2", "kind_3")
+_NODE_ROLES = ("node",)
+_ORBIT_ROLES = ("gate", "ship")
+
 _GAMES = {
     game.id: game for game in (
         GameDefinition("garden_cycle", "Garden Cycle", "pixel", "1", "1",
-                       "allowed_with_safe_area", "Trồng và thu hoạch một khu vườn yên bình.", _garden_cycle),
+                       "allowed_with_safe_area", "Trồng và thu hoạch một khu vườn yên bình.", _garden_cycle,
+                       _CROP_ROLES),
         GameDefinition("orbit_drift", "Orbit Drift", "neon", "1", "1",
-                       "default_off", "Trôi qua các cổng sáng trong không gian.", _orbit_drift),
+                       "default_off", "Trôi qua các cổng sáng trong không gian.", _orbit_drift,
+                       _ORBIT_ROLES),
         GameDefinition("aquarium_ecosystem", "Aquarium Ecosystem", "pixel", "1", "1",
-                       "default_off", "Đàn cá và cây thủy sinh chuyển động chậm.", _ambient("aquarium_ecosystem")),
+                       "default_off", "Đàn cá và cây thủy sinh chuyển động chậm.", _ambient("aquarium_ecosystem"),
+                       _KIND_ROLES),
         GameDefinition("marble_flow", "Marble Flow", "neon", "1", "1",
-                       "forbidden", "Những viên bi sáng đi qua mạng đường mềm.", _ambient("marble_flow")),
+                       "forbidden", "Những viên bi sáng đi qua mạng đường mềm.", _ambient("marble_flow"),
+                       _NODE_ROLES),
         GameDefinition("parcel_route", "Parcel Route", "pixel", "1", "1",
-                       "allowed_with_safe_area", "Chuyến giao hàng yên bình qua thị trấn.", _ambient("parcel_route")),
+                       "allowed_with_safe_area", "Chuyến giao hàng yên bình qua thị trấn.", _ambient("parcel_route"),
+                       _KIND_ROLES),
         GameDefinition("territory_bloom", "Territory Bloom", "neon", "1", "1",
-                       "default_off", "Các dải màu nở và hòa vào nhau.", _ambient("territory_bloom")),
+                       "default_off", "Các dải màu nở và hòa vào nhau.", _ambient("territory_bloom"),
+                       _NODE_ROLES),
         GameDefinition("cloud_runner", "Cloud Runner", "pixel", "1", "1",
-                       "allowed_with_safe_area", "Chuyến chạy ngắm cảnh qua mây và đồng cỏ.", _ambient("cloud_runner")),
+                       "allowed_with_safe_area", "Chuyến chạy ngắm cảnh qua mây và đồng cỏ.", _ambient("cloud_runner"),
+                       _KIND_ROLES),
         GameDefinition("signal_garden", "Signal Garden", "neon", "1", "1",
-                       "default_off", "Mạng nút ánh sáng đồng bộ theo nhịp chậm.", _ambient("signal_garden")),
+                       "default_off", "Mạng nút ánh sáng đồng bộ theo nhịp chậm.", _ambient("signal_garden"),
+                       _NODE_ROLES),
         GameDefinition("battle_royale", "Neon Battle Royale", "legacy", "1", "1",
                        "forbidden", "Gameplay Battle Royale tương thích ngược.", _legacy_placeholder),
     )
@@ -135,6 +149,7 @@ def list_games() -> list[dict]:
              "simulation_version": game.simulation_version,
              "renderer_version": game.renderer_version,
              "waveform_policy": game.waveform_policy, "description": game.description,
+             "sprite_roles": list(game.sprite_roles),
              "enabled": True} for game in _GAMES.values()]
 
 

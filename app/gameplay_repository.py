@@ -92,8 +92,9 @@ def save_gameplay_replay(conn: sqlite3.Connection, replay_key: str, replay: Game
            (replay_key, seed, duration_seconds, roster_json, themes_json, map_json,
             events_json, top3_json, winner_key, game_id, schema_version, simulation_version,
             ruleset_version, renderer_version, payload_json, result_json, content_sha256, created_at)
-           VALUES (?, ?, ?, '[]', '[]', '{}', '[]', '[]', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (replay_key, replay.seed, replay.duration_seconds, replay.game_id, replay.schema_version,
+           VALUES (?, ?, ?, '[]', ?, '{}', '[]', '[]', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (replay_key, replay.seed, replay.duration_seconds, json.dumps(replay.themes, ensure_ascii=False),
+         replay.game_id, replay.schema_version,
          replay.simulation_version, replay.ruleset_version, replay.renderer_version,
          json.dumps(replay.payload, ensure_ascii=False), json.dumps(replay.result, ensure_ascii=False),
          digest, now),
@@ -115,7 +116,8 @@ def load_replay(conn: sqlite3.Connection, replay_id: int) -> Replay | GameplayRe
                               row["duration_seconds"], 20, row["simulation_version"] or "1",
                               row["ruleset_version"] or "1", row["renderer_version"] or "1",
                               json.loads(row["payload_json"] or "{}"),
-                              json.loads(row["result_json"] or "{}"))
+                              json.loads(row["result_json"] or "{}"),
+                              json.loads(row["themes_json"] or "[]"))
     return Replay(row["seed"], row["duration_seconds"], json.loads(row["roster_json"]),
                   json.loads(row["themes_json"]), json.loads(row["map_json"]),
                   json.loads(row["events_json"]), json.loads(row["top3_json"]), row["winner_key"])

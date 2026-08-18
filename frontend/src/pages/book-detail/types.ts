@@ -143,12 +143,34 @@ export type VideoConfig = {
   subtitle_position: "top" | "center" | "bottom";
 };
 
+/** Khối nội dung mở rộng nối vào cuối description (bản quyền, miễn trừ AI,
+ * nguồn truyện, fair use). Dòng nào chứa placeholder chưa điền sẽ bị bỏ. */
+export type DescriptionExtra = {
+  enabled: boolean;
+  contact_email: string;
+  story_title: string;
+  story_source_name: string;
+  story_source_url: string;
+  fair_use_url: string;
+  template: string;
+};
+
+export const DESCRIPTION_EXTRA_FIELDS: { key: keyof DescriptionExtra & string; label: string; hint: string }[] = [
+  { key: "contact_email", label: "Email liên hệ bản quyền", hint: "{contact_email}" },
+  { key: "story_title", label: "Tên truyện", hint: "{story_title}" },
+  { key: "story_source_name", label: "Nguồn truyện", hint: "{story_source_name}" },
+  { key: "story_source_url", label: "Link nguồn truyện", hint: "{story_source_url}" },
+  { key: "fair_use_url", label: "Link chính sách Fair Use", hint: "{fair_use_url}" },
+];
+
 export type YouTubeConfig = {
   auto_upload: boolean;
   title_template: string;
   description: string;
   genre_tags: string;
   privacy_status: string;
+  timeline_enabled: boolean;
+  description_extra: DescriptionExtra;
   playlist: { mode: string; playlist_id: string; title_template: string; description_template: string };
 };
 

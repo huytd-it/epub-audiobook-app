@@ -73,6 +73,15 @@ def book(request: Request, book_id: int):
             "tts_models": list_tts_models()}
 
 
+@router.get("/tts-models")
+def tts_models():
+    """The TTS catalog on its own, for screens with no book in scope (the
+    production defaults page)."""
+    from app.tts_engine import list_tts_models
+
+    return {"tts_models": list_tts_models()}
+
+
 @router.get("/media")
 def media(request: Request):
     backgrounds = Path(settings.data_root, "backgrounds")

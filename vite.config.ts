@@ -24,6 +24,7 @@ const API_PREFIXES = [
   "/database-io",
   "/flows",
   "/local-bridge",
+  "/production-settings",
   "/health",
   "/bootstrap",
   "/pick-files",

@@ -8,7 +8,7 @@ from app import db
 from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_override,
                                   resolve_patch_youtube_metadata, save_book_youtube_config,
                                   save_patch_youtube_override, validate_book_youtube_config,
-                                  load_timeline)
+                                  load_timeline, render_description_extra)
 
 
 def test_load_timeline_returns_valid_sidecar(tmp_path):
@@ -556,3 +556,67 @@ def test_persistence_and_migration(tmp_path):
     conn.commit()
     assert get_book_youtube_config(conn, book_id)["genre_tags"] == ""
     assert get_patch_youtube_override(conn, patch_id) == {}
+
+
+# --- timeline toggle + extended description ------------------------------------
+
+
+def _config(**values):
+    return {"description": "book description", "genre_tags": "kinh di", **values}
+
+
+def test_timeline_is_omitted_when_timeline_display_is_disabled(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    shown = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None,
+                                           config=_config(timeline_enabled=True))["description"]
+    hidden = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None,
+                                            config=_config(timeline_enabled=False))["description"]
+    assert "00:10 Chapter 1" in shown
+    assert "00:10" not in hidden
+    assert hidden == "book description"
+
+
+def test_description_extra_is_appended_after_the_timeline(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    extra = {"enabled": True, "template": "Contact: {contact_email}", "contact_email": "me@example.com"}
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(str(audio)), None, config=_config(description_extra=extra))["description"]
+    assert description.endswith("Contact: me@example.com")
+    assert description.index("00:10 Chapter 1") < description.index("Contact:")
+
+
+def test_description_extra_drops_lines_whose_placeholder_is_blank():
+    extra = {"enabled": True, "contact_email": "me@example.com", "story_title": "",
+             "template": "Contact: {contact_email}\nTruyen: {story_title}\nAlways"}
+    assert render_description_extra(extra) == "Contact: me@example.com\nAlways"
+
+
+def test_description_extra_is_skipped_when_disabled():
+    extra = {"enabled": False, "contact_email": "me@example.com", "template": "Contact: {contact_email}"}
+    assert render_description_extra(extra) == ""
+
+
+def test_description_extra_survives_braces_the_author_typed():
+    extra = {"enabled": True, "template": "Literal {not_a_field} stays", "contact_email": "me@example.com"}
+    assert render_description_extra(extra) == "Literal {not_a_field} stays"
+
+
+def test_description_extra_reaches_the_generated_fallback_description():
+    extra = {"enabled": True, "template": "Fair use: {fair_use_url}",
+             "fair_use_url": "https://example.com/fair-use"}
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(), None,
+        config=_config(description="", description_extra=extra))["description"]
+    assert "Fair use: https://example.com/fair-use" in description
+
+
+def test_youtube_config_defaults_expose_timeline_and_extra_block():
+    config = validate_book_youtube_config({})
+    assert config["timeline_enabled"] is True
+    assert config["description_extra"]["enabled"] is False
+    assert "{contact_email}" in config["description_extra"]["template"]
+
+
+def test_youtube_config_rejects_a_non_boolean_timeline_flag():
+    with pytest.raises(ValueError):
+        validate_book_youtube_config({"timeline_enabled": "yes"})

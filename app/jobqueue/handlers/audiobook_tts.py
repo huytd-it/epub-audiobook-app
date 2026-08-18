@@ -251,6 +251,15 @@ def finalize_book_if_ready(ctx, book_id: int) -> str | None:
     if not has_image:
         ctx.log("sách không có ảnh nào dùng được — bỏ qua bước tạo video")
         return final_path
+    if book.auto_create_video:
+        # Automation per-patch (enqueue_patch_video) đã render + upload từng patch rồi;
+        # tự enqueue thêm video toàn sách ở đây sẽ tạo video/upload trùng lặp (video
+        # toàn sách + upload YouTube thứ 2 cho cùng nội dung). Bật auto_create_video
+        # nghĩa là pipeline patch SỞ HỮU việc render/upload cho sách này — theo đúng
+        # thiết kế ở docs/superpowers/specs/2026-07-26-automated-patch-video-youtube-pipeline-design.md.
+        # Video toàn sách vẫn tạo được thủ công qua nút "Tạo video" (routes/books.py, routes/queue.py).
+        ctx.log("auto_create_video đang bật — pipeline patch đã tự render/upload, bỏ qua video toàn sách tự động")
+        return final_path
     book_job = repository.enqueue_book_job(ctx.conn, book_id, "video")
     job_id = store.enqueue(ctx.conn, "video", payload={"book_job_id": book_job.id}, book_id=book_id, dedupe_key=f"video:book_job={book_job.id}")
     ctx.log(f"đã xếp hàng job video (book_job={book_job.id}, job={job_id})")

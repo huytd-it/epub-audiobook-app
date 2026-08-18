@@ -210,6 +210,28 @@ def test_cancel_between_chunks_stops_the_run(tmp_path, monkeypatch):
 
 
 def test_finishing_the_last_patch_enqueues_a_video_job(tmp_path, monkeypatch):
+    # Legacy book (patch automation off): finalize_book_if_ready still owns the
+    # book-level video auto-render.
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn)
+    conn.execute(
+        "UPDATE book SET background_image_path='/tmp/bg.jpg', auto_create_video=0 WHERE id=1")
+    conn.commit()
+    monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: _FakeEngine())
+    ctx, _ = _ctx(conn, patch_id=patch_id)
+    audiobook_tts.handle(ctx)
+    assert repository.get_book(conn, 1).final_audio_path is not None
+    video_jobs = store.list_jobs(conn, job_type="video")
+    assert len(video_jobs) == 1
+    assert video_jobs[0].payload["book_job_id"] == repository.get_book_job(conn, 1, "video").id
+
+
+def test_finishing_the_last_patch_skips_book_video_when_patch_automation_is_on(tmp_path, monkeypatch):
+    # book.auto_create_video defaults to 1: the per-patch pipeline (enqueue_patch_video,
+    # called earlier in _finish_audio_result) already owns rendering/uploading for this
+    # book, so the legacy book-level video job must NOT also be auto-enqueued — doing so
+    # produced a duplicate video + duplicate YouTube upload for the same book.
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
     patch_id = _book_with_patch(conn)
@@ -219,9 +241,7 @@ def test_finishing_the_last_patch_enqueues_a_video_job(tmp_path, monkeypatch):
     ctx, _ = _ctx(conn, patch_id=patch_id)
     audiobook_tts.handle(ctx)
     assert repository.get_book(conn, 1).final_audio_path is not None
-    video_jobs = store.list_jobs(conn, job_type="video")
-    assert len(video_jobs) == 1
-    assert video_jobs[0].payload["book_job_id"] == repository.get_book_job(conn, 1, "video").id
+    assert store.list_jobs(conn, job_type="video") == []
 
 
 def test_no_video_job_when_the_book_has_no_image(tmp_path, monkeypatch):

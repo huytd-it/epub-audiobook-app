@@ -21,8 +21,6 @@ import {
   ConfigTab,
   MusicSettings,
   NormalizationSettings,
-  ProductionMode,
-  ProductionSettings,
   TitleNormalizePreview,
   TtsModel,
   VideoConfig,
@@ -34,6 +32,7 @@ import {
 } from "./types";
 import { CheckField, Field, TabBar, checkboxClass, fieldClass, selectClass } from "./parts";
 import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
+import { YouTubeConfigFields } from "./YouTubeFields";
 
 const WAVEFORM_TEMPLATES = [
   { id: "bold", name: "Dải nổi", description: "Line sáng trên nền tối", style: "line", layout: "horizontal", color: "#ffffff", background: "#050816", backgroundOpacity: 0.68, position: "bottom", height: 150, opacity: 1 },
@@ -214,15 +213,9 @@ export function ConfigDialog({
   const [previewChapter, setPreviewChapter] = useState(0);
   const [normalizationPreviewLoading, setNormalizationPreviewLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [productionSettings, setProductionSettings] = useState<ProductionSettings>();
 
   useEffect(() => {
     if (!open) return;
-    if (!productionSettings) {
-      api<ProductionSettings>(`/production-settings?book_id=${bookId}`)
-        .then(setProductionSettings)
-        .catch((error) => onMessage(errorText(error)));
-    }
     if (tab === "video" && !videoConfig) {
       Promise.all([
         api<VideoConfig>(`/books/${bookId}/video-config`),
@@ -243,30 +236,7 @@ export function ConfigDialog({
     if (tab === "youtube" && !ytSettings) {
       api<YouTubeSettings>(`/books/${bookId}/youtube-settings`).then(setYtSettings).catch((error) => onMessage(errorText(error)));
     }
-  }, [open, tab, bookId, videoConfig, ytSettings, productionSettings, onMessage]);
-
-  const changeMode = async (mode: ProductionMode) => {
-    const result = await postJson<{ group: ConfigTab; mode: ProductionMode; effective: unknown }>(
-      `/books/${bookId}/production-settings-mode`, { group: tab, mode }
-    );
-    const effective = result.effective;
-    setProductionSettings((current) => current ? {
-      ...current,
-      modes: { ...current.modes!, [tab]: mode },
-      effective: { ...current.effective!, [tab]: effective },
-    } as ProductionSettings : current);
-    if (tab === "audio") {
-      const value = effective as ProductionSettings["defaults"]["audio"];
-      onSettingsChange({ modelId: value.model_id, voiceId: value.voice_id, maxChars: String(value.max_chars), withEffects: value.with_effects });
-    } else if (tab === "normalization") {
-      onNormalizationChange(effective as NormalizationSettings);
-    } else if (tab === "video") {
-      setVideoConfig(effective as VideoConfig);
-    } else if (ytSettings) {
-      setYtSettings({ ...ytSettings, config: effective as YouTubeConfig });
-    }
-    onMessage(mode === "inherit" ? "Đang dùng mặc định toàn hệ thống." : "Đã bật tùy chỉnh cho ebook này.");
-  };
+  }, [open, tab, bookId, videoConfig, ytSettings, onMessage]);
 
   const ytConfig = ytSettings?.config;
   // Preview metadata live nhưng debounce để không gửi request theo từng ký tự.
@@ -378,7 +348,10 @@ export function ConfigDialog({
       <DialogContent className="max-h-[90vh] max-w-2xl overflow-auto">
         <DialogHeader>
           <DialogTitle>Cấu hình sản xuất</DialogTitle>
-          <DialogDescription>Thiết lập âm thanh, video và YouTube riêng cho sách này.</DialogDescription>
+          <DialogDescription>
+            Thiết lập âm thanh, video và YouTube riêng cho sách này. Khi lưu, nhóm cấu hình đó tách khỏi{" "}
+            <Link to="/production-defaults" className="underline">Cấu hình mặc định</Link> và chỉ áp dụng cho ebook này.
+          </DialogDescription>
         </DialogHeader>
 
         <TabBar<ConfigTab>
@@ -391,23 +364,6 @@ export function ConfigDialog({
             { value: "youtube", label: "YouTube" },
           ]}
         />
-
-        {productionSettings?.modes && (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/20 p-3">
-            <div>
-              <div className="text-xs font-semibold">Phạm vi áp dụng</div>
-              <div className="text-[11px] text-muted-foreground">Mặc định tự áp dụng cho mọi tập của ebook.</div>
-            </div>
-            <select
-              className={selectClass}
-              value={productionSettings.modes[tab]}
-              onChange={(event) => changeMode(event.target.value as ProductionMode).catch((error) => onMessage(errorText(error)))}
-            >
-              <option value="inherit">Mặc định toàn hệ thống</option>
-              <option value="custom">Tùy chỉnh ebook này</option>
-            </select>
-          </div>
-        )}
 
         {tab === "audio" && (
           <div className="space-y-4">
@@ -1007,96 +963,11 @@ export function ConfigDialog({
                 </div>
               )}
 
-              <CheckField
-                checked={ytSettings.config.auto_upload}
-                onChange={(value) =>
-                  setYtSettings({ ...ytSettings, config: { ...ytSettings.config, auto_upload: value } })
-                }
-                label="Tự động upload sau khi tạo video"
+              <YouTubeConfigFields
+                config={ytSettings.config}
+                onChange={(patch) => setYtSettings({ ...ytSettings, config: { ...ytSettings.config, ...patch } })}
+                playlists={ytSettings.playlists}
               />
-
-              <div className="grid grid-cols-1 gap-4">
-                <Field label="Title template">
-                  <input
-                    className={fieldClass}
-                    value={ytSettings.config.title_template}
-                    onChange={(event) =>
-                      setYtSettings({
-                        ...ytSettings,
-                        config: { ...ytSettings.config, title_template: event.target.value },
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="Mô tả">
-                  <Textarea
-                    className="min-h-20 text-xs"
-                    value={ytSettings.config.description}
-                    onChange={(event) =>
-                      setYtSettings({
-                        ...ytSettings,
-                        config: { ...ytSettings.config, description: event.target.value },
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="Genre tags">
-                  <input
-                    className={fieldClass}
-                    value={ytSettings.config.genre_tags}
-                    onChange={(event) =>
-                      setYtSettings({
-                        ...ytSettings,
-                        config: { ...ytSettings.config, genre_tags: event.target.value },
-                      })
-                    }
-                  />
-                </Field>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <Field label="Privacy">
-                    <select
-                      className={selectClass}
-                      value={ytSettings.config.privacy_status}
-                      onChange={(event) =>
-                        setYtSettings({
-                          ...ytSettings,
-                          config: { ...ytSettings.config, privacy_status: event.target.value },
-                        })
-                      }
-                    >
-                      <option value="private">Private</option>
-                      <option value="unlisted">Unlisted</option>
-                      <option value="public">Public</option>
-                    </select>
-                  </Field>
-                  <Field label="Playlist">
-                    <select
-                      className={selectClass}
-                      value={ytSettings.config.playlist.playlist_id}
-                      onChange={(event) =>
-                        setYtSettings({
-                          ...ytSettings,
-                          config: {
-                            ...ytSettings.config,
-                            playlist: {
-                              ...ytSettings.config.playlist,
-                              mode: event.target.value ? "existing" : "none",
-                              playlist_id: event.target.value,
-                            },
-                          },
-                        })
-                      }
-                    >
-                      <option value="">Không chọn</option>
-                      {ytSettings.playlists.map((playlist) => (
-                        <option key={playlist.id} value={playlist.id}>
-                          {playlist.title}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                </div>
-              </div>
 
               <div className="rounded-md border border-border">
                 <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/20 px-3 py-2">

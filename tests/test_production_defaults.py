@@ -365,3 +365,40 @@ def test_bulk_start_queue_explicit_engine_still_wins():
     assert enqueue_pending_patch_jobs(conn, tts_engine="voxcpm2") == 1
     job = store.list_jobs(conn, job_type="audiobook_tts")[0]
     assert job.payload["tts_engine"] == "voxcpm2"
+
+
+def test_production_settings_round_trip_youtube_timeline_and_extra(tmp_path, monkeypatch):
+    """The defaults page edits the youtube group as a whole; the two new blocks
+    must survive a save/read cycle and reach a book that inherits them."""
+    extra = {"enabled": True, "contact_email": "me@example.com", "story_title": "Truyen X",
+             "story_source_name": "Nguon", "story_source_url": "https://example.com",
+             "fair_use_url": "https://example.com/fair-use", "template": "Contact: {contact_email}"}
+    with _client(monkeypatch, tmp_path) as client:
+        conn = client.app.state.conn
+        _insert_book(conn, book_id=1)
+        current = client.get("/production-settings").json()["defaults"]["youtube"]
+        saved = client.post("/production-settings", json={"groups": {
+            "youtube": {**current, "timeline_enabled": False, "description_extra": extra},
+        }})
+        assert saved.status_code == 200
+        stored = saved.json()["defaults"]["youtube"]
+        assert stored["timeline_enabled"] is False
+        assert stored["description_extra"]["contact_email"] == "me@example.com"
+        effective = client.get("/production-settings?book_id=1").json()["effective"]["youtube"]
+    assert effective["timeline_enabled"] is False
+    assert effective["description_extra"]["story_title"] == "Truyen X"
+
+
+def test_production_settings_rejects_an_invalid_extra_block(tmp_path, monkeypatch):
+    with _client(monkeypatch, tmp_path) as client:
+        response = client.post("/production-settings", json={"groups": {
+            "youtube": {"description_extra": {"enabled": "sometimes"}},
+        }})
+    assert response.status_code == 400
+
+
+def test_tts_models_are_listed_without_a_book_in_scope(tmp_path, monkeypatch):
+    with _client(monkeypatch, tmp_path) as client:
+        response = client.get("/api/ui/tts-models")
+    assert response.status_code == 200
+    assert response.json()["tts_models"]

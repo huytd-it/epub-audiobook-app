@@ -1,6 +1,7 @@
 """Clip-pool planning and deterministic multi-game clip creation."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import uuid
@@ -8,11 +9,33 @@ from pathlib import Path
 
 from app.config import settings
 from app.gameplay_config import profile_key
-from app.gameplay_registry import get_game, simulate_game
+from app.gameplay_registry import GameDefinition, get_game, simulate_game
 from app.gameplay_repository import (create_clip, list_fighters, list_themes, pool_status,
                                      save_gameplay_replay, save_replay)
 from app.gameplay_simulation import simulate_match
 from app.jobqueue import store
+
+
+def _select_theme_pack(conn, game: GameDefinition) -> list[dict]:
+    """Pick the most recently updated enabled pack that ships assets for this game."""
+    rows = conn.execute(
+        """SELECT * FROM gameplay_theme_pack WHERE family=? AND enabled=1
+           ORDER BY builtin DESC, updated_at DESC""", (game.family,)).fetchall()
+    for row in rows:
+        try:
+            manifest = json.loads(row["manifest_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        contract = (manifest.get("supported_games") or {}).get(game.id)
+        if not isinstance(contract, dict):
+            continue
+        assets = contract.get("assets")
+        if not isinstance(assets, dict) or not assets:
+            continue
+        return [{"id": row["id"], "version": row["version"], "name": row["name"],
+                 "content_sha256": row["content_sha256"], "asset_dir": row["asset_dir"],
+                 "assets": assets}]
+    return [{"id": f"builtin-{game.family}", "version": 1, "name": f"Built-in {game.family.title()}"}]
 
 
 def active_profile(conn, width: int, height: int, fps: int, *, game_id: str = "battle_royale",
@@ -25,7 +48,7 @@ def active_profile(conn, width: int, height: int, fps: int, *, game_id: str = "b
     if game_id == "battle_royale":
         return profile_key(width, height, fps, themes), themes
     game = get_game(game_id)
-    selected = [{"id": f"builtin-{game.family}", "version": 1, "name": f"Built-in {game.family.title()}"}]
+    selected = _select_theme_pack(conn, game)
     return profile_key(width, height, fps, selected, game_id=game_id,
                        renderer_version=game.renderer_version,
                        simulation_version=game.simulation_version, quality=quality), selected
@@ -34,7 +57,10 @@ def active_profile(conn, width: int, height: int, fps: int, *, game_id: str = "b
 def _create_replay(conn, game_id: str, seed: int, themes: list[dict], replay_key: str, config: dict) -> dict:
     if game_id == "battle_royale":
         return save_replay(conn, replay_key, simulate_match(seed, list_fighters(conn), themes))
-    return save_gameplay_replay(conn, replay_key, simulate_game(game_id, seed, config))
+    replay = simulate_game(game_id, seed, config)
+    if themes:
+        replay = dataclasses.replace(replay, themes=themes)
+    return save_gameplay_replay(conn, replay_key, replay)
 
 
 def enqueue_generation(conn, *, width: int, height: int, fps: int, count: int = 1,

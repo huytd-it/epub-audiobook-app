@@ -1,7 +1,7 @@
 """Serializable gameplay domain models."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,7 @@ class GameplayReplay:
     renderer_version: str
     payload: dict
     result: dict
+    themes: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

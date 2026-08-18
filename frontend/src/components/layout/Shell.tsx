@@ -52,7 +52,7 @@ const navSections: NavSection[] = [
       { to: "/video", label: "Video thành phẩm", icon: Film },
       { to: "/media", label: "Kho tư liệu", icon: FolderKanban },
       { to: "/gameplay", label: "Đấu trường", icon: Swords },
-      { to: "/production-defaults", label: "Mặc định sản xuất", icon: Settings2 },
+      { to: "/production-defaults", label: "Cấu hình mặc định", icon: Settings2 },
     ],
   },
   {

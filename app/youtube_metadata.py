@@ -19,7 +19,36 @@ YOUTUBE_TITLE_LIMIT = 100
 YOUTUBE_DESCRIPTION_LIMIT = 5000
 CHAPTER_SECTION_HEADING = "📖 Nội dung:"
 OVERRIDE_FIELDS = {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"}
-DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}}
+
+# --- Extended description ("nội dung mở rộng") ---------------------------------
+# A boilerplate block appended after the description (and the timeline, when it is
+# shown). It exists so every upload carries the same copyright / AI / fiction
+# notices. The wording lives in ``template``; the values that change per ebook are
+# the placeholders below, filled from the sibling keys. A line whose placeholder
+# resolves to an empty string is dropped, so a half-filled notice never ships.
+EXTRA_PLACEHOLDERS = ("contact_email", "story_title", "story_source_name", "story_source_url", "fair_use_url")
+
+DEFAULT_DESCRIPTION_EXTRA_TEMPLATE = """✧ For any copyright-related issues regarding images or videos, please contact me via email: {contact_email}
+⚠ This story is created by the author with the support of AI. It uses an AI-generated voice and edited illustrative images solely for content delivery purposes.
+⚠ Nội dung câu chuyện trong video hoàn toàn hư cấu, chỉ mang tính giải trí, không dựa trên bất kỳ sự kiện hay nhân vật có thật; bất kỳ sự trùng hợp nào với thực tế chỉ là ngẫu nhiên.
+⚠ Nội dung không phù hợp với trẻ em dưới 13 tuổi nếu không có sự hướng dẫn của người lớn.
+⚠ Đây là video game do tôi tự chơi và quay, thêm vào đó là các hình ảnh được tôi tạo ra và được lồng ghép với âm thanh kể truyện, nhằm tạo ra một trải nghiệm giải trí vui vẻ, giúp người nghe thư giãn.
+Gameplay nền có tốc độ chậm, nhẹ nhàng, giúp não bớt phân tán để mọi người có thể nghe ở trạng thái nửa tập trung - nửa thư giãn.
+Story source: {story_source_name} ({story_source_url})
+Tên Truyện: {story_title}
+I do not own all the materials used in this video and comply with copyright law and the Fair Use doctrine. ({fair_use_url})"""
+
+DEFAULT_DESCRIPTION_EXTRA = {
+    "enabled": False,
+    "contact_email": "",
+    "story_title": "",
+    "story_source_name": "",
+    "story_source_url": "",
+    "fair_use_url": "https://www.youtube.com/howyoutubeworks/policies/copyright/",
+    "template": DEFAULT_DESCRIPTION_EXTRA_TEMPLATE,
+}
+
+DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "timeline_enabled": True, "description_extra": DEFAULT_DESCRIPTION_EXTRA, "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}}
 
 
 def load_timeline(audio_path) -> dict | None:
@@ -160,6 +189,45 @@ def _json_object(value, default):
     return parsed.copy() if isinstance(parsed, dict) else default.copy()
 
 
+def validate_description_extra(extra) -> dict:
+    """Normalize the extended description block (see DEFAULT_DESCRIPTION_EXTRA)."""
+    if extra is None:
+        extra = {}
+    if not isinstance(extra, dict):
+        raise ValueError("description_extra must be an object")
+    result = {**DEFAULT_DESCRIPTION_EXTRA, **extra}
+    if not isinstance(result["enabled"], bool):
+        raise ValueError("description_extra.enabled must be a boolean")
+    for key in (*EXTRA_PLACEHOLDERS, "template"):
+        if not isinstance(result[key], str):
+            raise ValueError(f"description_extra.{key} must be a string")
+        result[key] = result[key].strip() if key != "template" else result[key]
+    if len(result["template"]) > YOUTUBE_DESCRIPTION_LIMIT:
+        raise ValueError("description_extra template exceeds 5000 characters")
+    return {key: result[key] for key in DEFAULT_DESCRIPTION_EXTRA}
+
+
+def render_description_extra(extra) -> str:
+    """The extended block with its placeholders filled in.
+
+    Placeholders are substituted literally (never through ``str.format``) so the
+    author's own braces cannot raise. A line that needs a value the author left
+    blank is dropped rather than shipped with an empty tail.
+    """
+    extra = validate_description_extra(extra)
+    if not extra["enabled"]:
+        return ""
+    lines = []
+    for line in extra["template"].splitlines():
+        used = [key for key in EXTRA_PLACEHOLDERS if "{" + key + "}" in line]
+        if used and not all(extra[key] for key in used):
+            continue
+        for key in used:
+            line = line.replace("{" + key + "}", extra[key])
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def validate_book_youtube_config(config: dict) -> dict:
     if not isinstance(config, dict):
         raise ValueError("config must be an object")
@@ -178,6 +246,9 @@ def validate_book_youtube_config(config: dict) -> dict:
         raise ValueError("description and genre_tags must be strings")
     if result["privacy_status"] not in {"private", "unlisted", "public"}:
         raise ValueError("invalid privacy status")
+    if not isinstance(result["timeline_enabled"], bool):
+        raise ValueError("timeline_enabled must be a boolean")
+    result["description_extra"] = validate_description_extra(result["description_extra"])
     if not isinstance(result["playlist"], dict):
         raise ValueError("playlist must be an object")
     playlist = {**DEFAULT_BOOK_YOUTUBE_CONFIG["playlist"], **result["playlist"]}
@@ -298,7 +369,7 @@ def _fit_description(blocks: list[list[str]], limit: int = YOUTUBE_DESCRIPTION_L
     return text if len(text) <= limit else text[:limit].rstrip()
 
 
-def _default_description(values: dict, chapter_titles, music, timeline: str) -> str:
+def _default_description(values: dict, chapter_titles, music, timeline: str, extra: str = "") -> str:
     """Fallback description so videos never upload with an empty one."""
     line = f"Tập {values['episode_number']} - {format_chapter_range(values['chapter_start'], values['chapter_end'])}"
     if values["patch_name"]:
@@ -311,6 +382,7 @@ def _default_description(values: dict, chapter_titles, music, timeline: str) -> 
         header,
         [CHAPTER_SECTION_HEADING, *chapters] if chapters else [],
         _music_lines(music),
+        extra.split("\n") if extra else [],
         [_hashtags(values["book_title"], values["genre_tags"])],
     ])
 
@@ -388,19 +460,25 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
         description = description_template.format(**values)
     except (KeyError, ValueError, IndexError) as exc:
         raise ValueError("invalid description template") from exc
-    timeline = _timeline_description(patch)
+    timeline = _timeline_description(patch) if config["timeline_enabled"] else ""
+    extra = render_description_extra(config["description_extra"])
     context = context if isinstance(context, dict) else {}
     if not description.strip():
         # The generated description already places the timeline inside its chapter
         # list, so only an author-written description gets the block appended.
-        description = _default_description(values, context.get("chapter_titles"), context.get("music"), timeline)
-    elif timeline:
-        if description.rstrip() == timeline or description.endswith(f"\n\n{timeline}"):
-            candidate = description
-        else:
-            candidate = f"{description}\n\n{timeline}" if description else timeline
-        if len(candidate) <= YOUTUBE_DESCRIPTION_LIMIT:
-            description = candidate
+        description = _default_description(values, context.get("chapter_titles"), context.get("music"), timeline, extra)
+    else:
+        if timeline:
+            if description.rstrip() == timeline or description.endswith(f"\n\n{timeline}"):
+                candidate = description
+            else:
+                candidate = f"{description}\n\n{timeline}" if description else timeline
+            if len(candidate) <= YOUTUBE_DESCRIPTION_LIMIT:
+                description = candidate
+        if extra and not description.rstrip().endswith(extra):
+            candidate = f"{description.rstrip()}\n\n{extra}" if description.strip() else extra
+            if len(candidate) <= YOUTUBE_DESCRIPTION_LIMIT:
+                description = candidate
     if not explicit_title:
         title = _fit_title(title, genre_text)
     privacy = override.get("privacy_status") or config["privacy_status"]
