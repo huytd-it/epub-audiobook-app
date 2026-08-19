@@ -35,10 +35,14 @@ omnivoice = [
 vieneu-fast = [
     "vieneu",
 ]
+zerotts = [
+    "zerotts>=0.1.1",
+]
 all-tts = [
     "voxcpm",
     "omnivoice",
     "vieneu",
+    "zerotts>=0.1.1",
 ]
 light-tts = [
     "edge-tts>=7.0",

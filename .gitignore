@@ -29,3 +29,5 @@ node_modules/
 app/spa_dist/
 src-tauri/target/
 *.tsbuildinfo
+data/zerotts
+data/zerotts_test.wav
