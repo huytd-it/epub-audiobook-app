@@ -112,6 +112,27 @@ def test_pending_upload_updates_same_row(db_conn, tmp_path):
     assert rows[0]["youtube_video_id"] == result["youtube_video_id"]
 
 
+def test_second_worker_does_not_start_a_duplicate_transfer(db_conn, tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"video")
+    upload_id = youtube.enqueue_upload(db_conn, str(video), "Title")
+    # Simulate a first worker that already flipped the row to 'uploading' and
+    # is genuinely still transferring (e.g. its job was reaped as stale by
+    # the queue while still alive, and a second attempt was dispatched).
+    db_conn.execute("UPDATE youtube_uploads SET status='uploading' WHERE id=?", (upload_id,))
+    db_conn.commit()
+
+    def fail_insert(*args, **kwargs):
+        pytest.fail("second worker must not start a real YouTube upload")
+    monkeypatch.setattr(FakeYouTubeService, "insert", fail_insert)
+
+    with pytest.raises(youtube.UploadInProgress):
+        youtube.process_upload(db_conn, upload_id)
+
+    row = db_conn.execute("SELECT status FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+    assert row["status"] == "uploading"
+
+
 def test_playlist_stale_claim_is_recovered(db_conn, monkeypatch):
     db_conn.execute("INSERT INTO book (title, original_filename, epub_path, created_at, updated_at) VALUES ('Book', 'b', 'b', '2020', '2020')")
     book_id = db_conn.execute("SELECT last_insert_rowid()").fetchone()[0]

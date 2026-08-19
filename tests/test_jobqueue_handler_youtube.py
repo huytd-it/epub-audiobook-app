@@ -95,7 +95,7 @@ def test_youtube_transfer_runs_with_keep_alive(tmp_path, monkeypatch):
 
     handler.handle(ctx)
 
-    assert calls == ["enter", "upload", "exit"]
+    assert calls == ["enter", "exit", "enter", "upload", "exit"]
 
 
 def test_validation_finishes_before_youtube_transfer(tmp_path, monkeypatch):
@@ -117,6 +117,33 @@ def test_invalid_external_video_never_calls_youtube(tmp_path, monkeypatch):
     with pytest.raises(JobFatalError, match="external"):
         handler.handle(_ctx(conn, upload_id)[0])
     assert calls == []
+
+
+def test_upload_in_progress_elsewhere_retries_without_marking_failed(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    video_id = conn.execute(
+        "INSERT INTO videos (filename, file_path, upload_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ("v.mp4", "/tmp/v.mp4", "queued", now, now),
+    ).lastrowid
+    upload_id = _upload_row(conn, video_id=video_id)
+    conn.execute("UPDATE youtube_uploads SET status='uploading' WHERE id=?", (upload_id,))
+    conn.commit()
+    monkeypatch.setattr(
+        handler.youtube, "process_upload",
+        lambda c, uid: (_ for _ in ()).throw(handler.youtube.UploadInProgress("busy")))
+    ctx, _ = _ctx(conn, upload_id, video_id=video_id)
+
+    with pytest.raises(RuntimeError, match="busy"):
+        handler.handle(ctx)
+
+    upload = conn.execute("SELECT status, error_message FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+    video = conn.execute("SELECT upload_status, error_message FROM videos WHERE id=?", (video_id,)).fetchone()
+    assert upload["status"] == "uploading"
+    assert upload["error_message"] is None
+    assert video["upload_status"] == "uploading"
+    assert video["error_message"] is None
 
 
 def test_a_failed_transfer_marks_the_upload_and_raises(tmp_path, monkeypatch):

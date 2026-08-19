@@ -267,6 +267,16 @@ def exchange_code(code: str, redirect_uri: str) -> dict:
     }
 
 
+class UploadInProgress(RuntimeError):
+    """Another worker already owns this upload's transfer.
+
+    Raised instead of starting a second real upload when the job queue
+    double-dispatches the same upload_id (e.g. the reaper reclaimed a job
+    that was still genuinely running). The caller should treat this as
+    retryable, not as a failed upload — the row that is actually
+    transferring will resolve to 'done' or 'failed' on its own."""
+
+
 def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
     """Upload a video for an existing youtube_uploads row.
 
@@ -285,11 +295,24 @@ def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
     if not video_file.exists():
         raise FileNotFoundError(f"Video file not found: {row['video_path']}")
 
-    conn.execute(
-        "UPDATE youtube_uploads SET status='uploading', upload_progress=0 WHERE id=?",
+    # Atomic claim: if the job queue double-dispatches this upload_id (the
+    # job was reaped as stale while a first worker was still genuinely
+    # uploading), the loser must not start a second real transfer to
+    # YouTube. Only the caller that flips status away from
+    # 'uploading'/'done' is allowed to proceed.
+    claimed = conn.execute(
+        "UPDATE youtube_uploads SET status='uploading', upload_progress=0 "
+        "WHERE id=? AND status NOT IN ('uploading', 'done')",
         (upload_id,),
     )
     conn.commit()
+    if claimed.rowcount == 0:
+        current = conn.execute(
+            "SELECT status, youtube_video_id FROM youtube_uploads WHERE id=?", (upload_id,)
+        ).fetchone()
+        if current is not None and current["status"] == "done":
+            return {"youtube_video_id": current["youtube_video_id"], "status": "done"}
+        raise UploadInProgress(f"upload {upload_id} đang được worker khác xử lý")
 
     try:
         youtube = get_youtube_service(conn)

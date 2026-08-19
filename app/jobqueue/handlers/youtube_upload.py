@@ -35,7 +35,11 @@ def handle(ctx) -> dict:
 
     ctx.progress(0, 1, phase="validating")
     youtube.mark_validation_started(ctx.conn, upload_id)
-    validation = validate_video(upload["video_path"])
+    with ctx.keep_alive():
+        # Probing a large video can exceed the stale-job threshold too; without
+        # a heartbeat here the reaper can hand this job to a second worker
+        # while this one is still validating, causing a duplicate upload later.
+        validation = validate_video(upload["video_path"])
     report = validation_report_json(validation)
     if not validation.valid:
         decision = schedule_rerender(ctx.conn, upload_id, validation, report_json=report)
@@ -59,6 +63,14 @@ def handle(ctx) -> dict:
             result = youtube.process_upload(ctx.conn, upload_id)
     except JobFatalError:
         raise
+    except youtube.UploadInProgress as exc:
+        # A different worker already owns the real transfer for this upload_id
+        # (this job was reaped and re-claimed while still genuinely running).
+        # Don't mark the upload/video failed - that would stomp on the state
+        # of the transfer that's actually in flight. Just retry later; by
+        # then the row will read 'done' (or the other worker's own failure).
+        ctx.log(str(exc), level=logging.WARNING)
+        raise RuntimeError(str(exc)) from exc
     except Exception as exc:
         error = str(exc)
         youtube.mark_upload_failed(ctx.conn, upload_id, error)
