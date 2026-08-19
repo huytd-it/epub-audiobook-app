@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from app.gameplay_models import GameplayReplay
+from app.gameplay_procedural import PROCEDURAL_GAMES, simulate_procedural
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,10 @@ def _ambient(game_id: str) -> Callable[[int, dict], GameplayReplay]:
     return lambda seed, config: _ambient_game(game_id, seed, config)
 
 
+def _procedural(game_id: str) -> Callable[[int, dict], GameplayReplay]:
+    return lambda seed, config: simulate_procedural(game_id, seed, config)
+
+
 def _legacy_placeholder(seed: int, config: dict) -> GameplayReplay:
     raise ValueError("battle_royale uses the legacy simulator")
 
@@ -131,6 +136,10 @@ _GAMES = {
         GameDefinition("signal_garden", "Signal Garden", "neon", "1", "1",
                        "default_off", "Mạng nút ánh sáng đồng bộ theo nhịp chậm.", _ambient("signal_garden"),
                        _NODE_ROLES),
+        # The procedural family needs no theme pack at all: its renderer paints from palette
+        # LUTs and analytic fields, so sprite_roles stays empty.
+        *(GameDefinition(spec.id, spec.name, "procedural", "1", "1", spec.waveform_policy,
+                         spec.description, _procedural(spec.id)) for spec in PROCEDURAL_GAMES),
         GameDefinition("battle_royale", "Neon Battle Royale", "legacy", "1", "1",
                        "forbidden", "Gameplay Battle Royale tương thích ngược.", _legacy_placeholder),
     )

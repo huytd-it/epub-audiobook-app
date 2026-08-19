@@ -10,8 +10,10 @@ type PoolRow = { profile_key: string; game_id?: string | null; status: string; c
 type Fighter = { id: number; name: string; class_name: string; matches: number; wins: number; eliminations: number };
 type Theme = { id: string; version: number; name: string; enabled: number; builtin: number; asset_dir?: string; error_message?: string };
 type ThemePack = { id: string; version: number; family: "pixel" | "neon"; name: string; enabled: number; builtin: number; content_sha256: string; validation_status: string; error_message?: string };
-type Game = { id: string; name: string; family: "pixel" | "neon" | "legacy"; waveform_policy: string; description: string; enabled: boolean; sprite_roles?: string[] };
+type Game = { id: string; name: string; family: "pixel" | "neon" | "procedural" | "legacy"; waveform_policy: string; description: string; enabled: boolean; sprite_roles?: string[] };
 type Status = { catalog?: Game[]; pool: PoolRow[]; target_seconds: number; fighters: Fighter[]; themes: Theme[]; theme_packs?: ThemePack[]; health?: { failed_clips: number; oldest_lease_at?: string | null } };
+
+const gameplayPreview = (gameId: string) => `/gameplay/${gameId}.jpg`;
 
 const fallbackCatalog: Game[] = [
   { id: "garden_cycle", name: "Garden Cycle", family: "pixel", waveform_policy: "allowed_with_safe_area", description: "Trồng và thu hoạch một khu vườn yên bình.", enabled: true, sprite_roles: ["carrot", "wheat", "tomato", "lavender", "pumpkin"] },
@@ -22,6 +24,12 @@ const fallbackCatalog: Game[] = [
   { id: "marble_flow", name: "Marble Flow", family: "neon", waveform_policy: "forbidden", description: "Những viên bi sáng đi qua mạng đường mềm.", enabled: true, sprite_roles: ["node"] },
   { id: "territory_bloom", name: "Territory Bloom", family: "neon", waveform_policy: "default_off", description: "Các dải màu nở và hòa vào nhau.", enabled: true, sprite_roles: ["node"] },
   { id: "signal_garden", name: "Signal Garden", family: "neon", waveform_policy: "default_off", description: "Mạng nút ánh sáng đồng bộ theo nhịp chậm.", enabled: true, sprite_roles: ["node"] },
+  { id: "aurora_veil", name: "Aurora Veil", family: "procedural", waveform_policy: "allowed_with_safe_area", description: "Rèm cực quang trôi trên nền sao, sáng dần theo từng đợt.", enabled: true, sprite_roles: [] },
+  { id: "plasma_tide", name: "Plasma Tide", family: "procedural", waveform_policy: "default_off", description: "Sóng plasma giao thoa với các đường viền phát sáng.", enabled: true, sprite_roles: [] },
+  { id: "ripple_pond", name: "Ripple Pond", family: "procedural", waveform_policy: "allowed_with_safe_area", description: "Mặt nước tĩnh với những vòng sóng lan và ánh khúc xạ.", enabled: true, sprite_roles: [] },
+  { id: "lumen_bloom", name: "Lumen Bloom", family: "procedural", waveform_policy: "default_off", description: "Hoa ánh sáng xoè theo dãy Fibonacci, xoay chậm và đổi sắc.", enabled: true, sprite_roles: [] },
+  { id: "silk_current", name: "Silk Current", family: "procedural", waveform_policy: "default_off", description: "Hàng nghìn hạt sáng chảy theo dòng xoáy, để lại vệt lụa.", enabled: true, sprite_roles: [] },
+  { id: "starfall_warp", name: "Starfall Warp", family: "procedural", waveform_policy: "forbidden", description: "Bay xuyên trường sao với vệt kéo dài và sao chổi.", enabled: true, sprite_roles: [] },
   { id: "battle_royale", name: "Neon Battle Royale", family: "legacy", waveform_policy: "forbidden", description: "Chế độ tương thích cũ.", enabled: true, sprite_roles: [] },
 ];
 
@@ -74,9 +82,10 @@ export function GameplayPage() {
     <Header title="Gameplay" subtitle="Catalog Pixel và Neon · replay deterministic · CPU renderer" />
     {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
     <section className="grid gap-4 md:grid-cols-3">
-      {catalog.map((game) => <Card key={game.id} className={game.id === gameId ? "border-primary" : ""}>
+      {catalog.map((game) => <Card key={game.id} className={game.id === gameId ? "overflow-hidden border-primary" : "overflow-hidden"}>
+        <img className="aspect-video w-full bg-muted object-cover" src={gameplayPreview(game.id)} alt={`Preview ${game.name}`} loading="lazy" />
         <CardHeader><CardTitle className="flex items-center justify-between gap-2"><span>{game.name}</span><Badge variant={game.family === "legacy" ? "secondary" : "outline"}>{game.family}</Badge></CardTitle></CardHeader>
-        <CardContent className="space-y-3"><p className="min-h-10 text-xs text-muted-foreground">{game.description}</p><div className="flex flex-wrap gap-2 text-[11px]"><Badge variant="secondary">3–5 phút</Badge><Badge variant="secondary">{game.waveform_policy}</Badge></div>{!!game.sprite_roles?.length && <p className="font-mono text-[10px] text-muted-foreground">sprite: {game.sprite_roles.map((r) => `${r}.png`).join(", ")}</p>}<div className="flex gap-2"><Button size="sm" variant={game.id === gameId ? "default" : "outline"} onClick={() => setGameId(game.id)} disabled={!game.enabled}>Chọn</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => toggleGame(game)}>{game.enabled ? "Tắt" : "Bật"}</Button></div></CardContent>
+        <CardContent className="space-y-3"><p className="min-h-10 text-xs text-muted-foreground">{game.description}</p><div className="flex flex-wrap gap-2 text-[11px]"><Badge variant="secondary">3–5 phút</Badge><Badge variant="secondary">{game.waveform_policy}</Badge></div>{!!game.sprite_roles?.length && <p className="font-mono text-[10px] text-muted-foreground">sprite: {game.sprite_roles.map((r) => `${r}.png`).join(", ")}</p>}{game.family === "procedural" && <p className="text-[10px] text-muted-foreground">Không cần asset — render bằng palette LUT, sóng giải tích và glow cộng dồn.</p>}<div className="flex gap-2"><Button size="sm" variant={game.id === gameId ? "default" : "outline"} onClick={() => setGameId(game.id)} disabled={!game.enabled}>Chọn</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => toggleGame(game)}>{game.enabled ? "Tắt" : "Bật"}</Button></div></CardContent>
       </Card>)}
     </section>
     <section className="grid gap-4 lg:grid-cols-3">

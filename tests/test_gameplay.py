@@ -11,11 +11,14 @@ import pytest
 from PIL import Image
 
 from app import db
+from app.config import settings
 from app.gameplay_config import profile_key
 from app.gameplay_models import Fighter, GameplayReplay, Replay
+from app.gameplay_procedural import PROCEDURAL_GAMES
 from app.gameplay_registry import list_games, resolve_game_id, simulate_game
 from app.gameplay_repository import (apply_replay_stats, consume_reserved, create_clip, list_fighters,
-                                      load_replay, save_gameplay_replay, save_replay, seed_catalog)
+                                      load_replay, save_gameplay_replay, save_replay, seed_bundled_theme_packs,
+                                      seed_catalog)
 from app.gameplay_simulation import CLASS_STATS, simulate_match
 from app.gameplay_theme_packs import install_theme_pack_zip
 from app.gameplay_themes import ASSETS, install_theme_zip, theme_prompt
@@ -59,6 +62,19 @@ def test_catalog_and_stats_are_idempotent():
     assert apply_replay_stats(conn, row["id"]) is False
     assert conn.execute("SELECT SUM(matches) FROM gameplay_fighter").fetchone()[0] == 24
     assert conn.execute("SELECT SUM(wins) FROM gameplay_fighter").fetchone()[0] == 1
+
+
+def test_bundled_sunlit_harvest_pack_installs_as_a_builtin(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    conn = _conn()
+    seed_bundled_theme_packs(conn)
+    row = conn.execute("SELECT * FROM gameplay_theme_pack WHERE id='sunlit-harvest'").fetchone()
+    assert row is not None and row["builtin"] == 1 and row["enabled"] == 1
+    manifest = json.loads(row["manifest_json"])
+    assets = manifest["supported_games"]["garden_cycle"]["assets"]
+    assert set(assets) == {"carrot", "wheat", "tomato", "lavender"}
+    with Image.open(Path(row["asset_dir"]) / assets["tomato"]) as sprite:
+        assert sprite.size == (500, 500) and "A" in sprite.getbands()
 
 
 def _theme_zip(*, traversal=False, alpha=True):
@@ -119,9 +135,10 @@ def test_old_config_defaults_to_media():
 
 def test_generic_games_are_deterministic_versioned_and_bounded():
     catalog = [game for game in list_games() if game["family"] != "legacy"]
-    assert len(catalog) == 8
+    assert len(catalog) == 14
     assert sum(game["family"] == "pixel" for game in catalog) == 4
     assert sum(game["family"] == "neon" for game in catalog) == 4
+    assert sum(game["family"] == "procedural" for game in catalog) == 6
     for game_id in ("garden_cycle", "aquarium_ecosystem", "parcel_route", "cloud_runner",
                     "orbit_drift", "marble_flow", "territory_bloom", "signal_garden"):
         first = simulate_game(game_id, 123, {"preset": "calm"})
@@ -130,6 +147,26 @@ def test_generic_games_are_deterministic_versioned_and_bounded():
         assert first.schema_version == 3 and first.game_id == game_id
         assert 180 <= first.duration_seconds <= 300
         assert first.result["status"] == "complete"
+
+
+def test_procedural_games_need_no_assets_and_render_deterministically():
+    from app.gameplay_effects import ProceduralClip
+
+    catalog = {game["id"]: game for game in list_games()}
+    for spec in PROCEDURAL_GAMES:
+        game = catalog[spec.id]
+        assert game["family"] == "procedural" and game["sprite_roles"] == []
+        replay = simulate_game(spec.id, 31337, {"preset": "calm"})
+        assert replay == simulate_game(spec.id, 31337, {"preset": "calm"})
+        assert replay != simulate_game(spec.id, 31338, {"preset": "calm"})
+        assert 180 <= replay.duration_seconds <= 300 and replay.result["status"] == "complete"
+        renders = []
+        for _ in range(2):
+            clip = ProceduralClip(spec.id, replay.payload, replay.duration_seconds, 256, 144, 24)
+            renders.append([clip.frame(index, index / 24).tobytes() for index in range(8)])
+        # Same replay, same pixels: the pool may re-render a clip after a failed attempt.
+        assert renders[0] == renders[1], spec.id
+        assert max(max(frame) for frame in renders[0]) > 0, spec.id
 
 
 def test_replay_repository_dual_reads_legacy_and_envelope():

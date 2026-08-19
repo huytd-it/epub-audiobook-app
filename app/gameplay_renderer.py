@@ -10,6 +10,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from app.config import settings
+from app.gameplay_effects import ProceduralClip, is_procedural
 from app.gameplay_models import GameplayReplay, Replay
 from app.gameplay_registry import get_game
 
@@ -296,11 +297,16 @@ def _render_generic(replay: GameplayReplay, output_path: str, *, resolution=(192
     theme = replay.themes[0] if replay.themes else {}
     sprites = _load_role_sprites(theme.get("asset_dir"), theme.get("assets") or {},
                                  get_game(replay.game_id).sprite_roles)
+    # Procedural games carry per-frame state (particles, trails), so one painter serves the clip.
+    procedural = (ProceduralClip(replay.game_id, payload, replay.duration_seconds, width, height, fps)
+                  if is_procedural(replay.game_id) else None)
     try:
         for index in range(frame_count):
             t = index / fps
             progress = min(1.0, t / max(replay.duration_seconds, 0.001))
-            if replay.game_id == "garden_cycle":
+            if procedural is not None:
+                image = procedural.frame(index, t)
+            elif replay.game_id == "garden_cycle":
                 image = _garden_frame(payload, t, progress, width, height, sprites)
             elif replay.game_id == "orbit_drift":
                 image = _orbit_frame(payload, t, progress, width, height, sprites)
