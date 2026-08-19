@@ -5,14 +5,16 @@ import asyncio
 import json
 import logging
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from app import db as app_db
 from app import youtube
+from app import youtube_io
 from app.config import settings
 from app.deps import locked_conn
 
@@ -389,6 +391,124 @@ def youtube_bulk_retry_uploads(request: Request, ids: list[int]):
     with locked_conn(request) as conn:
         retried = youtube.reset_upload_status(conn, ids)
     return JSONResponse({"retried": retried})
+
+
+# ---------------------------------------------------------------------------
+# Upload queue import / export
+#
+# Export dumps the editable columns (title, description, tags, privacy, playlist,
+# video path) as JSON or CSV; import reads the same shape back so the queue can be
+# bulk-edited in a spreadsheet. See app/youtube_io.py for the round-trip contract.
+# ---------------------------------------------------------------------------
+
+
+def _parse_id_list(raw: str | None) -> list[int] | None:
+    if not raw:
+        return None
+    try:
+        return [int(part) for part in raw.split(",") if part.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ids phải là danh sách số nguyên, phân cách dấu phẩy")
+
+
+def _queue_imported_upload(request: Request):
+    """Factory for youtube_io.apply_import's `create` hook.
+
+    Mirrors _enqueue: the row is inserted and a youtube_upload job is queued on the
+    same already-locked connection, so an imported row behaves exactly like one added
+    through the upload form.
+    """
+    from app.jobqueue import store
+
+    def create(conn, payload: dict) -> int:
+        upload_id = youtube.enqueue_upload(
+            conn,
+            video_path=payload["video_path"],
+            title=payload["title"],
+            description=payload["description"],
+            tags=payload["tags"],
+            privacy_status=payload["privacy_status"],
+            playlist_id=payload["playlist_id"],
+        )
+        store.enqueue(conn, "youtube_upload", payload={"upload_id": upload_id},
+                      dedupe_key=f"youtube_upload:upload={upload_id}")
+        return upload_id
+
+    return create
+
+
+@router.get("/youtube/uploads/export")
+def youtube_export_uploads(
+    request: Request,
+    format: str = "json",
+    ids: str | None = None,
+    statuses: str | None = None,
+):
+    """Download the upload queue as an editable JSON or CSV sheet."""
+    if format not in ("json", "csv"):
+        raise HTTPException(status_code=400, detail="format phải là 'json' hoặc 'csv'")
+    id_list = _parse_id_list(ids)
+    status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
+
+    with locked_conn(request) as conn:
+        records = youtube_io.export_records(conn, ids=id_list, statuses=status_list)
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if format == "csv":
+        body, media_type = youtube_io.records_to_csv(records), "text/csv; charset=utf-8"
+    else:
+        body, media_type = youtube_io.records_to_json(records), "application/json"
+    filename = f"youtube-uploads-{stamp}.{format}"
+    return Response(
+        # utf-8-sig so Excel opens the Vietnamese titles without mojibake.
+        content=body.encode("utf-8-sig") if format == "csv" else body.encode("utf-8"),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/youtube/uploads/import")
+async def youtube_import_uploads(
+    request: Request,
+    file: UploadFile = File(...),
+    format: str = Form(default=""),
+    mode: str = Form(default="update"),
+    dry_run: bool = Form(default=False),
+):
+    """Apply an edited sheet back to the upload queue.
+
+    `dry_run=true` returns the per-row verdict without writing, so the UI can preview
+    the changes before the user commits them.
+    """
+    if mode not in youtube_io.IMPORT_MODES:
+        raise HTTPException(status_code=400,
+                            detail=f"mode phải là một trong: {', '.join(youtube_io.IMPORT_MODES)}")
+    fmt = format or youtube_io.detect_format(file.filename)
+    if fmt not in ("json", "csv"):
+        raise HTTPException(status_code=400, detail="format phải là 'json' hoặc 'csv'")
+
+    raw = await file.read()
+    if not raw.strip():
+        raise HTTPException(status_code=400, detail="File nhập vào rỗng")
+    try:
+        records = youtube_io.parse_records(raw, fmt)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Không đọc được file {fmt.upper()}: {exc}")
+    if not records:
+        raise HTTPException(status_code=400, detail="File nhập vào không có bản ghi nào")
+
+    create = None
+    if mode == "upsert" and not dry_run:
+        if getattr(request.app.state, "job_queue", None) is None:
+            raise HTTPException(status_code=503, detail="Upload worker is unavailable")
+        create = _queue_imported_upload(request)
+
+    with locked_conn(request) as conn:
+        try:
+            summary = youtube_io.apply_import(conn, records, mode=mode, dry_run=dry_run, create=create)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(summary)
 
 
 # ---------------------------------------------------------------------------

@@ -99,6 +99,38 @@ export type YouTubeUploadItem = {
   created_at: string;
 };
 
+/** One row of the editable upload sheet from GET /youtube/uploads/export. */
+export type YouTubeUploadRecord = {
+  id: number | string;
+  title: string;
+  description: string;
+  tags: string;
+  privacy_status: string;
+  playlist_id: string;
+  video_path: string;
+  status: string;
+  youtube_video_id: string;
+  created_at: string;
+};
+
+/** Per-row verdict of POST /youtube/uploads/import. */
+export type YouTubeImportRow = {
+  row: number;
+  id: number | string | null;
+  status: "updated" | "created" | "unchanged" | "skipped" | "error";
+  changes: Record<string, unknown>;
+  message: string;
+  warning: string;
+};
+
+export type YouTubeImportSummary = {
+  mode: string;
+  dry_run: boolean;
+  total: number;
+  counts: Record<string, number>;
+  results: YouTubeImportRow[];
+};
+
 export type PlaylistItem = {
   id: string;
   title: string;

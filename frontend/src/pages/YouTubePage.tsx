@@ -14,6 +14,9 @@ import {
   Layers,
   ArrowUpDown,
   FileVideo,
+  Download,
+  FileUp,
+  AlertTriangle,
 } from "lucide-react";
 import {
   api,
@@ -24,7 +27,9 @@ import {
   PlaylistItem,
   PlaylistItemDetail,
   ChannelVideo,
+  YouTubeImportSummary,
 } from "@/api";
+import { downloadTextFile, fileStamp, formatOf, parseSheet, toCsv } from "@/lib/tabular";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -32,6 +37,25 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+
+/** Columns of the playlist-order sheet; `position` drives the imported order. */
+const PLAYLIST_COLUMNS = ["position", "playlist_item_id", "video_id", "title"];
+
+const IMPORT_STATUS_LABELS: Record<string, string> = {
+  updated: "Đã cập nhật",
+  created: "Tạo mới",
+  unchanged: "Không đổi",
+  skipped: "Bỏ qua",
+  error: "Lỗi",
+};
+
+const IMPORT_STATUS_CLASSES: Record<string, string> = {
+  updated: "text-primary",
+  created: "text-lime",
+  unchanged: "text-muted-foreground",
+  skipped: "text-amber-600",
+  error: "text-destructive",
+};
 
 export function YouTubePage() {
   const [activeTab, setActiveTab] = useState<"uploads" | "playlists" | "upload_form">("uploads");
@@ -69,6 +93,14 @@ export function YouTubePage() {
   const [selectedAddVideoIds, setSelectedAddVideoIds] = useState<string[]>([]);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [sortMode, setSortMode] = useState<"natural" | "episode">("natural");
+
+  // Import / export of the upload queue (edit the sheet in Excel, push it back)
+  const [ioFormat, setIoFormat] = useState<"csv" | "json">("csv");
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importMode, setImportMode] = useState<"update" | "upsert">("update");
+  const [importSummary, setImportSummary] = useState<YouTubeImportSummary | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
 
   const loadUploads = () => {
     setLoading(true);
@@ -154,6 +186,109 @@ export function YouTubePage() {
       loadUploads();
     } catch (err: any) {
       alert(`Thử lại hàng loạt thất bại: ${err.message}`);
+    }
+  };
+
+  // --- Upload queue: export -> edit in a spreadsheet -> import back -------------
+
+  const handleExportUploads = () => {
+    const params = new URLSearchParams({ format: ioFormat });
+    // Nothing selected means "the whole queue".
+    if (selectedIds.length > 0) params.set("ids", selectedIds.join(","));
+    window.location.href = `/youtube/uploads/export?${params}`;
+  };
+
+  const runImport = async (dryRun: boolean) => {
+    if (!importFile) return alert("Vui lòng chọn file JSON hoặc CSV cần nhập");
+    setImportBusy(true);
+    try {
+      const form = new FormData();
+      form.append("file", importFile);
+      form.append("mode", importMode);
+      form.append("dry_run", dryRun ? "true" : "false");
+      const summary = await postForm<YouTubeImportSummary>("/youtube/uploads/import", form);
+      setImportSummary(summary);
+      if (!dryRun) {
+        loadUploads();
+        setSelectedIds([]);
+      }
+    } catch (err: any) {
+      alert(`Nhập dữ liệu thất bại: ${err.message}`);
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const openImportModal = () => {
+    setImportFile(null);
+    setImportSummary(null);
+    setImportMode("update");
+    setShowImportModal(true);
+  };
+
+  // --- Playlist order: exported and re-imported entirely in the browser --------
+
+  const handleExportPlaylist = () => {
+    if (playlistItems.length === 0) return alert("Playlist này chưa có video nào để xuất");
+    const playlistName = playlists.find((p) => p.id === selectedPlaylistId)?.title || selectedPlaylistId;
+    const rows = playlistItems.map((item, index) => ({
+      position: index + 1,
+      playlist_item_id: item.playlist_item_id,
+      video_id: item.video_id,
+      title: item.title,
+    }));
+    const name = `youtube-playlist-${fileStamp()}.${ioFormat}`;
+    if (ioFormat === "csv") {
+      downloadTextFile(name, toCsv(rows, PLAYLIST_COLUMNS), "text/csv");
+    } else {
+      downloadTextFile(
+        name,
+        JSON.stringify(
+          { kind: "youtube_playlist", playlist_id: selectedPlaylistId, playlist_title: playlistName, items: rows },
+          null,
+          2
+        ),
+        "application/json"
+      );
+    }
+  };
+
+  const handleImportPlaylistOrder = async (file: File) => {
+    try {
+      const rows = parseSheet(await file.text(), formatOf(file.name));
+      const positioned = rows.every((row) => Number.isFinite(Number(row.position)))
+        ? [...rows].sort((a, b) => Number(a.position) - Number(b.position))
+        : rows;
+
+      const byItemId = new Map(playlistItems.map((item) => [item.playlist_item_id, item]));
+      const byVideoId = new Map(playlistItems.map((item) => [item.video_id, item]));
+      const ordered: PlaylistItemDetail[] = [];
+      const placed = new Set<string>();
+      for (const row of positioned) {
+        const key = String(row.playlist_item_id ?? "").trim();
+        const videoKey = String(row.video_id ?? "").trim();
+        const item = byItemId.get(key) || byVideoId.get(videoKey);
+        if (!item || placed.has(item.playlist_item_id)) continue;
+        placed.add(item.playlist_item_id);
+        ordered.push(item);
+      }
+      if (ordered.length === 0) {
+        return alert("File không khớp video nào trong playlist đang mở (cần cột playlist_item_id hoặc video_id).");
+      }
+      // Anything the file left out keeps its relative order at the end, so an
+      // incomplete sheet can never silently drop videos from the playlist.
+      const rest = playlistItems.filter((item) => !placed.has(item.playlist_item_id));
+      const next = [...ordered, ...rest];
+      setPlaylistItems(next);
+      setManualOrders(Object.fromEntries(next.map((item, index) => [item.playlist_item_id, String(index + 1)])));
+      setHasPendingOrder(true);
+      alert(
+        `Đã nạp thứ tự từ file: ${ordered.length} video khớp` +
+          (rest.length > 0 ? `, ${rest.length} video không có trong file được xếp xuống cuối` : "") +
+          '. Nhấn "Lưu thứ tự" để áp dụng lên YouTube.'
+      );
+    } catch (err: any) {
+      alert(`Không đọc được file thứ tự: ${err.message}`);
     }
   };
 
@@ -352,22 +487,41 @@ export function YouTubePage() {
       {/* TAB 1: UPLOADS HISTORY */}
       {activeTab === "uploads" && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs font-mono text-muted-foreground">
               Đã chọn: {selectedIds.length} mục
             </div>
-            {selectedIds.length > 0 && (
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={handleBulkRetry}>
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  Thử lại các mục thất bại
-                </Button>
-                <Button variant="destructive" size="sm" onClick={handleBulkDelete}>
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Xóa lịch sử đã chọn
-                </Button>
-              </div>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {selectedIds.length > 0 && (
+                <>
+                  <Button variant="outline" size="sm" onClick={handleBulkRetry}>
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Thử lại các mục thất bại
+                  </Button>
+                  <Button variant="destructive" size="sm" onClick={handleBulkDelete}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Xóa lịch sử đã chọn
+                  </Button>
+                </>
+              )}
+              <select
+                value={ioFormat}
+                onChange={(e) => setIoFormat(e.target.value as any)}
+                className="h-8 rounded border border-input bg-background px-2 text-xs"
+                aria-label="Định dạng xuất dữ liệu"
+              >
+                <option value="csv">CSV (Excel)</option>
+                <option value="json">JSON</option>
+              </select>
+              <Button variant="secondary" size="sm" onClick={handleExportUploads}>
+                <Download className="h-3.5 w-3.5" />
+                {selectedIds.length > 0 ? `Xuất ${selectedIds.length} mục đã chọn` : "Xuất toàn bộ dữ liệu"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={openImportModal}>
+                <FileUp className="h-3.5 w-3.5" />
+                Nhập dữ liệu đã sửa
+              </Button>
+            </div>
           </div>
 
           {loading ? (
@@ -633,11 +787,35 @@ export function YouTubePage() {
                 {playlists.find((p) => p.id === selectedPlaylistId)?.title || "Chi tiết Playlist"}
               </CardTitle>
               {selectedPlaylistId && (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button variant="outline" size="sm" onClick={openAddVideos}>
                     <Plus className="h-3.5 w-3.5" />
                     Thêm video
                   </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleExportPlaylist}
+                    disabled={playlistItems.length === 0}
+                    title={`Xuất thứ tự playlist ra file ${ioFormat.toUpperCase()} để sửa`}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Xuất thứ tự
+                  </Button>
+                  <label className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input text-xs font-medium cursor-pointer hover:bg-muted transition-colors">
+                    <FileUp className="h-3.5 w-3.5" />
+                    Nhập thứ tự
+                    <input
+                      type="file"
+                      accept=".json,.csv"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleImportPlaylistOrder(file);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
                 </div>
               )}
             </CardHeader>
@@ -799,6 +977,138 @@ export function YouTubePage() {
                 </Button>
                 <Button variant="default" onClick={handleAddVideosToPlaylist} disabled={selectedAddVideoIds.length === 0}>
                   Thêm vào Playlist
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Upload queue import modal */}
+      {showImportModal && (
+        <Dialog open={showImportModal} onOpenChange={setShowImportModal}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <FileUp className="h-4 w-4 text-primary" />
+                Nhập dữ liệu upload đã chỉnh sửa
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-3 py-2">
+              <p className="text-xs text-muted-foreground">
+                Xuất dữ liệu ra JSON/CSV, sửa các cột{" "}
+                <code className="bg-muted px-1 py-0.5 rounded font-mono text-foreground">title</code>,{" "}
+                <code className="bg-muted px-1 py-0.5 rounded font-mono text-foreground">description</code>,{" "}
+                <code className="bg-muted px-1 py-0.5 rounded font-mono text-foreground">tags</code>,{" "}
+                <code className="bg-muted px-1 py-0.5 rounded font-mono text-foreground">privacy_status</code>,{" "}
+                <code className="bg-muted px-1 py-0.5 rounded font-mono text-foreground">playlist_id</code>,{" "}
+                <code className="bg-muted px-1 py-0.5 rounded font-mono text-foreground">video_path</code> rồi tải lại
+                lên đây. Cột <code className="bg-muted px-1 py-0.5 rounded font-mono text-foreground">id</code> là khóa
+                đối chiếu — giữ nguyên, đừng xóa.
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-foreground mb-1 block">File dữ liệu (.json / .csv)</label>
+                  <Input
+                    type="file"
+                    accept=".json,.csv"
+                    onChange={(e) => {
+                      setImportFile(e.target.files?.[0] || null);
+                      setImportSummary(null);
+                    }}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-foreground mb-1 block">Chế độ nhập</label>
+                  <select
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                    value={importMode}
+                    onChange={(e) => {
+                      setImportMode(e.target.value as any);
+                      setImportSummary(null);
+                    }}
+                  >
+                    <option value="update">Chỉ cập nhật bản ghi có sẵn (theo id)</option>
+                    <option value="upsert">Cập nhật + tạo mới dòng không có id</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex gap-2 p-2.5 rounded border border-amber-500/30 bg-amber-500/5 text-[11px] text-amber-700">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>
+                  Bản ghi đang upload sẽ bị bỏ qua. Video đã lên YouTube chỉ được sửa dữ liệu trong ứng dụng, không đổi
+                  metadata trên kênh. Chế độ "tạo mới" sẽ đưa dòng mới vào hàng đợi upload ngay.
+                </span>
+              </div>
+
+              {importSummary && (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
+                    <span className="font-semibold">
+                      {importSummary.dry_run ? "Xem trước thay đổi" : "Kết quả áp dụng"} ({importSummary.total} dòng):
+                    </span>
+                    {Object.entries(importSummary.counts)
+                      .filter(([, count]) => count > 0)
+                      .map(([key, count]) => (
+                        <span key={key} className="px-1.5 py-0.5 rounded bg-muted">
+                          {IMPORT_STATUS_LABELS[key] || key}: {count}
+                        </span>
+                      ))}
+                  </div>
+                  <div className="max-h-[40vh] overflow-y-auto border border-border rounded">
+                    <table className="w-full text-left text-[11px]">
+                      <thead className="bg-muted/50 border-b border-border font-mono text-muted-foreground sticky top-0">
+                        <tr>
+                          <th className="p-2 w-12">Dòng</th>
+                          <th className="p-2 w-16">ID</th>
+                          <th className="p-2 w-28">Trạng thái</th>
+                          <th className="p-2">Thay đổi / Ghi chú</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {importSummary.results.map((result) => (
+                          <tr key={`${result.row}-${result.id ?? "new"}`} className="align-top">
+                            <td className="p-2 font-mono text-muted-foreground">{result.row}</td>
+                            <td className="p-2 font-mono">{result.id ?? "-"}</td>
+                            <td className={`p-2 font-semibold ${IMPORT_STATUS_CLASSES[result.status] || ""}`}>
+                              {IMPORT_STATUS_LABELS[result.status] || result.status}
+                            </td>
+                            <td className="p-2">
+                              {Object.entries(result.changes).map(([field, value]) => (
+                                <div key={field} className="font-mono truncate max-w-md">
+                                  <span className="text-muted-foreground">{field}:</span>{" "}
+                                  {typeof value === "string" ? value : JSON.stringify(value)}
+                                </div>
+                              ))}
+                              {result.message && <div className="text-destructive">{result.message}</div>}
+                              {result.warning && <div className="text-amber-600">{result.warning}</div>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-border">
+              <span className="text-[11px] font-mono text-muted-foreground">
+                {importFile ? importFile.name : "Chưa chọn file"}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" onClick={() => setShowImportModal(false)}>
+                  Đóng
+                </Button>
+                <Button variant="secondary" onClick={() => runImport(true)} disabled={!importFile || importBusy}>
+                  {importBusy ? "Đang xử lý..." : "Xem trước thay đổi"}
+                </Button>
+                <Button variant="default" onClick={() => runImport(false)} disabled={!importFile || importBusy}>
+                  <FileUp className="h-4 w-4" />
+                  Áp dụng vào dữ liệu
                 </Button>
               </div>
             </div>
