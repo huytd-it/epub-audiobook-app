@@ -545,9 +545,11 @@ def test_sample_rate_constants_per_model(template):
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
-def test_reference_required_only_for_offline_models(template):
+def test_reference_required_only_for_cloning_models(template):
     src = _manifest_cell(template)
-    assert 'REFERENCE_MODELS = {"voxcpm2", "omnivoice", "vieneu-fast"}' in src
+    # vieneu-fast can clone, but the app drives it with a named preset instead, so
+    # a batch must not demand a reference clip for it.
+    assert 'REFERENCE_MODELS = {"voxcpm2", "omnivoice"}' in src
     assert "REFERENCE_REQUIRED" in src
     assert "if REFERENCE_REQUIRED:" in src
     assert "raise RuntimeError" in src
@@ -558,7 +560,7 @@ def test_reference_required_only_for_offline_models(template):
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
 def test_voice_id_required_for_voice_id_models(template):
     src = _manifest_cell(template)
-    assert 'VOICE_ID_MODELS = {"zerotts", "edge-tts", "gtts"}' in src
+    assert 'VOICE_ID_MODELS = {"vieneu-fast", "zerotts", "edge-tts", "gtts"}' in src
     assert "if TTS_MODEL in VOICE_ID_MODELS:" in src
     assert "VOICE_ID" in src
     assert "raise RuntimeError" in src
@@ -604,6 +606,14 @@ def test_generation_cells_dispatch_every_model(template):
     assert "model.synthesize(" in gen  # zerotts
     # v3 Turbo ignores the style argument, so it must not be passed any more.
     assert "style=TTS_OPTIONS" not in gen
+    # infer() resolves ref_audio before voice, so a clip would override the preset
+    # the app picked. vieneu's branch must pass the voice and no clip - omnivoice
+    # legitimately still uses ref_audio, so scope this to vieneu and ignore the
+    # comment lines that mention ref_audio to explain why it is absent.
+    assert "model.infer(text, voice=VOICE_ID)" in gen
+    branch = gen.split('elif TTS_MODEL == "vieneu-fast":')[1].split("elif TTS_MODEL ==")[0]
+    code = [l for l in branch.splitlines() if not l.lstrip().startswith("#")]
+    assert not any("ref_audio" in l for l in code), f"vieneu branch passes a clip: {code}"
     assert "save_online_mp3" in gen  # edge-tts / gtts
     # OmniVoice normalizes its list output to audio[0]
     assert "result[0]" in gen or "audio[0]" in gen

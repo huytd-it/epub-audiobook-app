@@ -166,6 +166,10 @@ def test_catalog_carries_capability_metadata():
     }
     assert models["zerotts"]["supports_reference"] is False
     assert models["zerotts"]["default_voice"] == "maichi"
+    # VieNeu could clone, but the app drives it from the same fixed cast instead.
+    assert models["vieneu-fast"]["capabilities"] == models["zerotts"]["capabilities"]
+    assert models["vieneu-fast"]["supports_reference"] is False
+    assert models["vieneu-fast"]["default_voice"] == "Adam"
 
 
 def test_normalize_payload_accepts_legacy_shapes_and_canonicalises():
@@ -222,19 +226,29 @@ def test_omnivoice_normalizes_list_output_and_clone_arguments(monkeypatch):
     assert model.calls == [{"text": "xin chào", "ref_audio": "voice.wav", "ref_text": "giọng mẫu"}]
 
 
-def test_vieneu_fast_clones_the_reference_without_a_deprecated_style():
+def test_vieneu_fast_speaks_a_preset_and_ignores_any_reference_clip():
+    """infer() resolves ref_audio before voice, so sending the book's clip would
+    silently override the preset the user chose. The clip must not reach infer()."""
     class FakeVieNeu:
         def infer(self, text, **kwargs):
             # v3 Turbo ignores style=, so the engine must not send it at all.
-            assert (text, kwargs) == ("xin chào", {"ref_audio": "voice.wav"})
+            assert (text, kwargs) == ("xin chào", {"voice": "Ngọc Linh"})
             return [0.5]
 
-    engine = VieNeuFastEngine()
+    engine = VieNeuFastEngine(voice="Ngọc Linh")
     engine._model = FakeVieNeu()
     result = engine.synthesize_chunk("xin chào", "voice.wav", "unused transcript")
 
     assert result.dtype == np.float32
     assert result.tolist() == [0.5]
+
+
+def test_vieneu_fast_falls_back_to_the_catalog_default_voice():
+    assert VieNeuFastEngine().voice == "Adam"
+    assert "Adam" in VieNeuFastEngine().config_fingerprint()
+    # The voice changes the audio, so it has to change the chunk cache key too.
+    assert (VieNeuFastEngine(voice="Mai Anh").config_fingerprint()
+            != VieNeuFastEngine(voice="Thái Sơn").config_fingerprint())
 
 
 def test_vieneu_fast_loads_v3turbo_weights_explicitly():

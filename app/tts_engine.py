@@ -72,8 +72,9 @@ _CAP_CLOUD = {
     "online": True,
 }
 # Offline like _CAP_LOCAL, but picks from a fixed cast instead of cloning a reference clip.
-# ZeroTTS ships only the decode half of its codec, so there is no way to turn a user's wav
-# into voice latents locally -- the published voices are all it can speak in.
+# ZeroTTS has no choice -- it ships only the decode half of its codec, so a user's wav can
+# never become voice latents. VieNeu could clone, but a curated preset is what keeps one
+# narrator identical across every chunk and patch of a book, which is the whole job here.
 _CAP_LOCAL_VOICES = {
     "kind": "local",
     "reference_audio": False,
@@ -91,7 +92,7 @@ _MODELS = {
     ),
     "vieneu-fast": TTSModel(
         "vieneu-fast", "VieNeu fast", "pnnbao-ump/VieNeu-TTS-v3-Turbo", "vieneu", 48000,
-        capabilities=_CAP_LOCAL,
+        supports_reference=False, capabilities=_CAP_LOCAL_VOICES, default_voice="Adam",
     ),
     "zerotts": TTSModel(
         "zerotts", "ZeroTTS", "zeroweight-ai/ZeroTTS", "zerotts", 48000,
@@ -157,13 +158,49 @@ def _zerotts_voices(model_dir: Path) -> list[dict]:
     ]
 
 
+def _vieneu_voices() -> list[dict]:
+    """VieNeu's curated presets, read from the installed package's own asset file.
+
+    ``vieneu/assets/voices_v3_turbo.json`` ships inside the wheel, so the cast is known
+    without downloading the weights or importing vieneu (which pulls onnxruntime). Returns
+    [] when the package is absent -- the catalog still lists the model."""
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("vieneu")
+    except (ImportError, ValueError):
+        return []
+    if not spec or not spec.origin:
+        return []
+    index = Path(spec.origin).parent / "assets" / "voices_v3_turbo.json"
+    if not index.exists():
+        return []
+    try:
+        presets = json.loads(index.read_text(encoding="utf-8")).get("presets", {})
+    except (OSError, ValueError):
+        return []
+    return [
+        {
+            "id": name,
+            "label": f"{name} — {info['description']}" if info.get("description") else name,
+            "language": "vi",
+        }
+        for name, info in presets.items()
+    ]
+
+
 def list_tts_models() -> list[dict]:
     """Serializable model catalog shared by the UI, worker and remote runtimes."""
+    voice_sources = {
+        "zerotts": lambda: _zerotts_voices(zerotts_model_dir()),
+        "vieneu-fast": _vieneu_voices,
+    }
     models = []
     for model in _MODELS.values():
         entry = asdict(model)
-        if model.id == "zerotts":
-            entry["voices"] = _zerotts_voices(zerotts_model_dir())
+        source = voice_sources.get(model.id)
+        if source:
+            entry["voices"] = source()
         models.append(entry)
     return models
 
@@ -325,25 +362,35 @@ class OmniVoiceEngine:
 
 
 class VieNeuFastEngine:
-    """VieNeu-TTS v3 Turbo (48 kHz). ``precision`` selects the int8 vs fp32 ONNX graph and
-    only applies on the CPU path; ``backend`` left as None keeps vieneu's own "auto"
-    (ONNX on CPU, PyTorch on GPU)."""
+    """VieNeu-TTS v3 Turbo (48 kHz), speaking one of its 20 curated preset voices.
+
+    v3 Turbo can clone from a clip, but this engine deliberately does not: ``infer``
+    resolves ``ref_audio`` before ``voice``, so passing the book's reference clip would
+    silently override the narrator the user picked. A preset also costs nothing per chunk
+    and is bit-identical across patches, which cloning is not.
+
+    ``precision`` selects the int8 vs fp32 ONNX graph and only applies on the CPU path;
+    ``backend`` left as None keeps vieneu's own "auto" (ONNX on CPU, PyTorch on GPU)."""
 
     sample_rate = 48000
+    supports_reference = False
 
     def __init__(
         self,
+        voice: str | None = None,
         model_id: str = "pnnbao-ump/VieNeu-TTS-v3-Turbo",
         backend: str | None = None,
         precision: str = "int8",
+        **options,
     ):
+        self.voice = voice or _MODELS["vieneu-fast"].default_voice
         self.model_id = model_id
         self.backend = backend
         self.precision = precision
         self._model = None
 
     def config_fingerprint(self) -> str:
-        return f"vieneu-fast:{self.model_id}:{self.backend}:{self.precision}"
+        return f"vieneu-fast:{self.model_id}:{self.voice}:{self.backend}:{self.precision}"
 
     def _ensure_loaded(self) -> None:
         if self._model is None:
@@ -358,13 +405,11 @@ class VieNeuFastEngine:
 
     def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
         self._ensure_loaded()
-        # v3 Turbo dropped `style=`: the reading style is baked into the reference codes,
-        # so the argument is accepted for compatibility but ignored. The clip is the only
-        # knob left, and prompt_text has no counterpart in infer().
-        kwargs = {}
-        if reference_wav_path:
-            kwargs["ref_audio"] = reference_wav_path
-        return np.asarray(self._model.infer(text, **kwargs), dtype=np.float32)
+        # reference_wav_path/prompt_text are accepted and ignored, like the cloud engines:
+        # the book's clip is passed to every engine uniformly, and feeding it here would
+        # take precedence over self.voice. v3 Turbo also dropped `style=` -- the reading
+        # style is part of each preset now.
+        return np.asarray(self._model.infer(text, voice=self.voice), dtype=np.float32)
 
 
 class ZeroTTSEngine:

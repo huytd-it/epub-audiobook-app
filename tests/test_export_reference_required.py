@@ -152,3 +152,21 @@ def test_zerotts_export_keeps_the_chosen_voice(conn, tmp_path, monkeypatch):
         import shutil
 
         shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_vieneu_export_needs_no_reference_and_defaults_its_voice(conn, tmp_path, monkeypatch):
+    """VieNeu is driven from its preset cast too, so a clip is no longer required."""
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn, voice_clip_path=None)
+
+    package_dir, batch_manifest = drive_export.build_batch_export_package(
+        conn, [patch], model_id="vieneu-fast"
+    )
+    try:
+        assert batch_manifest["tts"]["model_id"] == "vieneu-fast"
+        assert batch_manifest["tts"]["voice_id"] == "Adam"
+        assert batch_manifest["reference_wav"] is None
+    finally:
+        import shutil
+
+        shutil.rmtree(package_dir, ignore_errors=True)

@@ -194,7 +194,14 @@ export function useTtsOptions(data: Detail | undefined, modelId: string): TtsOpt
       return builtInVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
     }
     if (selectedModel && !selectedModel.supports_reference) {
-      return onlineVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
+      if (onlineVoices.length) {
+        return onlineVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
+      }
+      // Model chọn giọng nhưng chưa liệt kê được (chưa tải weights / chưa cài package):
+      // ít nhất vẫn đưa ra giọng mặc định thay vì một dropdown trống không lời giải thích.
+      return selectedModel.default_voice
+        ? [{ value: selectedModel.default_voice, label: selectedModel.default_voice }]
+        : [];
     }
     const names = new Set([...localVoices.map((voice) => voice.name), currentVoiceName]);
     return Array.from(names)
