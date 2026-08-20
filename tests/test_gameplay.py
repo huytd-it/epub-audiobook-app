@@ -11,16 +11,16 @@ import pytest
 from PIL import Image
 
 from app import db
-from app.config import settings
 from app.gameplay_config import profile_key
 from app.gameplay_models import Fighter, GameplayReplay, Replay
 from app.gameplay_procedural import PROCEDURAL_GAMES
-from app.gameplay_registry import list_games, resolve_game_id, simulate_game
+from app.gameplay_registry import list_games, migrate_game_id, resolve_game_id, simulate_game
+from app.gameplay_retro import RETRO_GAMES, rank_tier
+from app.gameplay_retro_render import RetroClip
+from app.gameplay_scores import high_score, leaderboard, standings
 from app.gameplay_repository import (apply_replay_stats, consume_reserved, create_clip, list_fighters,
-                                      load_replay, save_gameplay_replay, save_replay, seed_bundled_theme_packs,
-                                      seed_catalog)
+                                      load_replay, save_gameplay_replay, save_replay, seed_catalog)
 from app.gameplay_simulation import CLASS_STATS, simulate_match
-from app.gameplay_theme_packs import install_theme_pack_zip
 from app.gameplay_themes import ASSETS, install_theme_zip, theme_prompt
 from app.video_config import validate_video_config
 
@@ -64,19 +64,6 @@ def test_catalog_and_stats_are_idempotent():
     assert conn.execute("SELECT SUM(wins) FROM gameplay_fighter").fetchone()[0] == 1
 
 
-def test_bundled_sunlit_harvest_pack_installs_as_a_builtin(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "data_root", str(tmp_path))
-    conn = _conn()
-    seed_bundled_theme_packs(conn)
-    row = conn.execute("SELECT * FROM gameplay_theme_pack WHERE id='sunlit-harvest'").fetchone()
-    assert row is not None and row["builtin"] == 1 and row["enabled"] == 1
-    manifest = json.loads(row["manifest_json"])
-    assets = manifest["supported_games"]["garden_cycle"]["assets"]
-    assert set(assets) == {"carrot", "wheat", "tomato", "lavender"}
-    with Image.open(Path(row["asset_dir"]) / assets["tomato"]) as sprite:
-        assert sprite.size == (500, 500) and "A" in sprite.getbands()
-
-
 def _theme_zip(*, traversal=False, alpha=True):
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
@@ -99,25 +86,6 @@ def test_theme_zip_validation_and_prompt(tmp_path):
         install_theme_zip(_theme_zip(alpha=False), tmp_path)
 
 
-def test_theme_pack_v2_is_validated_and_immutable(tmp_path):
-    def pack(color):
-        output = io.BytesIO()
-        manifest = {"schema_version": 2, "id": "pixel-calm", "version": 1,
-                    "name": "Pixel Calm", "family": "pixel", "supported_games": {
-                        "garden_cycle": {"contract_version": 1, "assets": {"sprite": "assets/sprite.png"}}}}
-        with zipfile.ZipFile(output, "w") as archive:
-            archive.writestr("theme.json", json.dumps(manifest))
-            image = Image.new("RGBA", (16, 16), color)
-            raw = io.BytesIO(); image.save(raw, "PNG")
-            archive.writestr("assets/sprite.png", raw.getvalue())
-        return output.getvalue()
-    first = install_theme_pack_zip(pack((1, 2, 3, 255)), tmp_path)
-    assert first["family"] == "pixel" and len(first["content_sha256"]) == 64
-    assert install_theme_pack_zip(pack((1, 2, 3, 255)), tmp_path)["content_sha256"] == first["content_sha256"]
-    with pytest.raises(ValueError, match="immutable"):
-        install_theme_pack_zip(pack((4, 5, 6, 255)), tmp_path)
-
-
 def test_profile_changes_for_every_render_dimension():
     base = profile_key(1920, 1080, 30, _themes(), renderer_version="1")
     assert base != profile_key(1280, 720, 30, _themes(), renderer_version="1")
@@ -135,18 +103,62 @@ def test_old_config_defaults_to_media():
 
 def test_generic_games_are_deterministic_versioned_and_bounded():
     catalog = [game for game in list_games() if game["family"] != "legacy"]
-    assert len(catalog) == 14
-    assert sum(game["family"] == "pixel" for game in catalog) == 4
-    assert sum(game["family"] == "neon" for game in catalog) == 4
+    assert len(catalog) == 12
+    assert sum(game["family"] == "retro" for game in catalog) == 6
     assert sum(game["family"] == "procedural" for game in catalog) == 6
-    for game_id in ("garden_cycle", "aquarium_ecosystem", "parcel_route", "cloud_runner",
-                    "orbit_drift", "marble_flow", "territory_bloom", "signal_garden"):
-        first = simulate_game(game_id, 123, {"preset": "calm"})
-        assert first == simulate_game(game_id, 123, {"preset": "calm"})
-        assert first != simulate_game(game_id, 124, {"preset": "calm"})
-        assert first.schema_version == 3 and first.game_id == game_id
+    # No catalog game may need art any more: every family paints itself.
+    assert all(game["sprite_roles"] == [] for game in catalog)
+    for spec in RETRO_GAMES:
+        first = simulate_game(spec.id, 123, {"preset": "calm"})
+        assert first == simulate_game(spec.id, 123, {"preset": "calm"})
+        assert first != simulate_game(spec.id, 124, {"preset": "calm"})
+        assert first.schema_version == 3 and first.game_id == spec.id
         assert 180 <= first.duration_seconds <= 300
         assert first.result["status"] == "complete"
+        assert first.result["score"] > 0 and first.payload["player"]
+        assert first.result["metrics"]["level"] >= 1
+
+
+def test_retro_games_replay_identically_on_a_re_render():
+    for spec in RETRO_GAMES:
+        replay = simulate_game(spec.id, 4242, {"preset": "calm", "hi_score": 5_000})
+        assert replay.payload["hi_score"] == 5_000  # frozen: the HUD target cannot drift
+        renders = []
+        for _ in range(2):
+            clip = RetroClip(spec.id, replay.payload, replay.duration_seconds, 480, 270, 24)
+            renders.append([clip.frame(index, index / 24).tobytes() for index in range(0, 120, 12)])
+        assert renders[0] == renders[1], spec.id
+        assert len(set(renders[0])) > 1, spec.id  # the board actually moves
+    portrait = simulate_game("snake_arena", 7, {})
+    clip = RetroClip("snake_arena", portrait.payload, portrait.duration_seconds, 270, 480, 24)
+    assert clip.frame(0, 0.0).size == (270, 480)
+
+
+def test_retro_runs_are_ranked_and_promoted_once_rendered():
+    conn = _conn()
+    assert high_score(conn, "snake_arena") == 0
+    rows = []
+    for index, game_id in enumerate(("snake_arena", "snake_arena", "brick_stack")):
+        replay = simulate_game(game_id, 500 + index, {"hi_score": high_score(conn, game_id)})
+        rows.append(save_gameplay_replay(conn, f"run:{index}", replay))
+    assert conn.execute("SELECT COUNT(*) FROM gameplay_score").fetchone()[0] == 3
+    save_gameplay_replay(conn, "run:0", simulate_game("snake_arena", 500, {}))
+    assert conn.execute("SELECT COUNT(*) FROM gameplay_score").fetchone()[0] == 3  # idempotent
+    board = leaderboard(conn, "snake_arena")
+    assert [entry["position"] for entry in board] == [1, 2]
+    assert board[0]["score"] >= board[1]["score"]
+    assert board[0]["rating"] == 1000 and board[0]["player_tag"]
+    overall = leaderboard(conn)
+    assert {entry["game_id"] for entry in overall} == {"snake_arena", "brick_stack"}
+    assert overall[0]["rating"] >= overall[-1]["rating"]  # cross-game ranking is normalised
+    assert high_score(conn, "snake_arena") == board[0]["score"]
+    assert not board[0]["rendered"]
+    assert apply_replay_stats(conn, rows[0]["id"]) is True
+    assert conn.execute("SELECT rendered FROM gameplay_score WHERE replay_id=?",
+                        (rows[0]["id"],)).fetchone()[0] == 1
+    summary = {entry["game_id"]: entry for entry in standings(conn)}
+    assert summary["snake_arena"]["runs"] == 2 and summary["snake_arena"]["champion"]
+    assert rank_tier(100, 0) == "S" and rank_tier(100, 100) == "S" and rank_tier(10, 100) == "E"
 
 
 def test_procedural_games_need_no_assets_and_render_deterministically():
@@ -169,20 +181,56 @@ def test_procedural_games_need_no_assets_and_render_deterministically():
         assert max(max(frame) for frame in renders[0]) > 0, spec.id
 
 
+def test_gameplay_api_serves_the_catalog_and_the_boards(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import settings as app_settings
+    from app.main import app
+
+    monkeypatch.setattr(app_settings, "db_path", str(tmp_path / "api.db"))
+    monkeypatch.setattr(app_settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(app_settings, "enable_worker", False)
+    with TestClient(app) as client:
+        conn = app.state.conn
+        for index, game_id in enumerate(("snake_arena", "brick_stack")):
+            save_gameplay_replay(conn, f"api:{index}", simulate_game(game_id, 900 + index, {}))
+        status = client.get("/gameplay/status").json()
+        assert {game["id"] for game in status["catalog"]} >= {spec.id for spec in RETRO_GAMES}
+        assert status["stat_labels"]["snake_arena"] == [["apples", "Mồi"], ["length", "Độ dài"]]
+        assert len(status["leaderboard"]) == 2 and len(status["standings"]) == 2
+        board = client.get("/gameplay/leaderboard", params={"game_id": "snake_arena"}).json()
+        assert [entry["position"] for entry in board["entries"]] == [1]
+        assert board["entries"][0]["score"] > 0 and board["entries"][0]["rank_tier"] == "S"
+        assert client.get("/gameplay/leaderboard", params={"game_id": "nope"}).status_code == 404
+
+
 def test_replay_repository_dual_reads_legacy_and_envelope():
     conn = _conn()
     legacy = simulate_match(8, list_fighters(conn), _themes())
     legacy_row = save_replay(conn, "legacy", legacy)
     assert isinstance(load_replay(conn, legacy_row["id"]), Replay)
-    modern = simulate_game("garden_cycle", 8, {"preset": "calm"})
+    modern = simulate_game("snake_arena", 8, {"preset": "calm"})
     modern_row = save_gameplay_replay(conn, "modern", modern)
     loaded = load_replay(conn, modern_row["id"])
     assert isinstance(loaded, GameplayReplay)
     assert loaded.to_dict() == modern.to_dict()
 
 
+def test_books_configured_before_the_retro_catalog_still_render():
+    # A book saved against the retired pixel/neon catalog must not fail validation now.
+    config = validate_video_config({"background_type": "gameplay", "gameplay": {
+        "selection_mode": "single", "game_id": "garden_cycle", "preset": "calm"}})
+    assert config["gameplay"]["game_id"] == "snake_arena"
+    rotation = validate_video_config({"background_type": "gameplay", "gameplay": {
+        "selection_mode": "rotation", "game_ids": ["orbit_drift", "signal_garden"], "preset": "calm"}})
+    assert rotation["gameplay"]["game_ids"] == ["star_defender", "brick_stack"]
+    assert migrate_game_id("snake_arena") == "snake_arena"
+    assert resolve_game_id({"selection_mode": "single", "game_id": "cloud_runner"},
+                           book_id=1, patch_id=1, patch_index=0) == "pixel_dash"
+
+
 def test_rotation_resolution_is_retry_stable():
-    config = {"selection_mode": "rotation", "game_ids": ["orbit_drift", "garden_cycle"]}
+    config = {"selection_mode": "rotation", "game_ids": ["brick_stack", "snake_arena"]}
     first = resolve_game_id(config, book_id=1, patch_id=2, patch_index=3)
     assert first in config["game_ids"]
     assert first == resolve_game_id(config, book_id=1, patch_id=2, patch_index=3)
@@ -192,12 +240,12 @@ def test_rotation_resolution_is_retry_stable():
 
 def test_gameplay_video_config_and_profile_v2():
     config = validate_video_config({"background_type": "gameplay", "gameplay": {
-        "selection_mode": "rotation", "game_ids": ["garden_cycle", "orbit_drift"], "preset": "calm"}})
+        "selection_mode": "rotation", "game_ids": ["snake_arena", "brick_stack"], "preset": "calm"}})
     assert config["background_mode"] == "sequential"
     assert config["gameplay"]["selection_mode"] == "rotation"
-    pixel = profile_key(1920, 1080, 30, [{"id": "builtin-pixel", "version": 1}], game_id="garden_cycle")
-    neon = profile_key(1920, 1080, 30, [{"id": "builtin-neon", "version": 1}], game_id="orbit_drift")
-    assert len(pixel) == 32 and pixel != neon
+    snake = profile_key(1920, 1080, 30, [{"id": "builtin-retro", "version": 1}], game_id="snake_arena")
+    tetris = profile_key(1920, 1080, 30, [{"id": "builtin-retro", "version": 1}], game_id="brick_stack")
+    assert len(snake) == 32 and snake != tetris
 
 
 def test_clip_reservation_is_atomic_and_retry_stable(tmp_path):
@@ -236,9 +284,9 @@ def test_patch_coverage_is_complete_and_retry_stable(tmp_path):
     patch_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
     first = ensure_patch_coverage(conn, patch_id, 520, width=854, height=480, fps=24,
-                                  game_id="garden_cycle", config={"preset": "calm"})
+                                  game_id="snake_arena", config={"preset": "calm"})
     second = ensure_patch_coverage(conn, patch_id, 520, width=854, height=480, fps=24,
-                                   game_id="garden_cycle", config={"preset": "calm"})
+                                   game_id="snake_arena", config={"preset": "calm"})
     assert sum(row["duration_seconds"] for row in first) >= 520
     assert [row["id"] for row in first] == [row["id"] for row in second]
     assert len({row["reservation_token"] for row in first}) == 1

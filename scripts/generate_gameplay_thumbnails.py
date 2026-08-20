@@ -16,12 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.gameplay_effects import ProceduralClip
 from app.gameplay_registry import list_games, simulate_game
-from app.gameplay_renderer import (
-    _garden_frame,
-    _neon_ambient_frame,
-    _orbit_frame,
-    _pixel_ambient_frame,
-)
+from app.gameplay_retro import is_retro
+from app.gameplay_retro_render import RetroClip
 
 
 SIZE = (960, 540)
@@ -49,23 +45,21 @@ def _legacy_frame() -> Image.Image:
 def _frame(game_id: str) -> Image.Image:
     if game_id == "battle_royale":
         return _legacy_frame()
-    replay = simulate_game(game_id, SEED + sum(map(ord, game_id)))
+    # A high hi-score keeps the still from claiming a rank the catalog cannot back up.
+    replay = simulate_game(game_id, SEED + sum(map(ord, game_id)), {"hi_score": 10_000})
     width, height = SIZE
-    t = min(24.0, replay.duration_seconds * 0.18)
-    progress = t / replay.duration_seconds
-    if game_id == "garden_cycle":
-        return _garden_frame(replay.payload, t, progress, width, height, {})
-    if game_id == "orbit_drift":
-        return _orbit_frame(replay.payload, t, progress, width, height, {})
-    if game_id in {"aquarium_ecosystem", "parcel_route", "cloud_runner"}:
-        return _pixel_ambient_frame(game_id, replay.payload, t, progress, width, height, {})
-    if game_id in {"marble_flow", "territory_bloom", "signal_garden"}:
-        return _neon_ambient_frame(game_id, replay.payload, t, progress, width, height, {})
-    clip = ProceduralClip(game_id, replay.payload, replay.duration_seconds, width, height, 12)
+    # Far enough in that a retro board has a real score on it and a trail style has trails.
+    t = 90.0 if is_retro(game_id) else min(24.0, replay.duration_seconds * 0.18)
+    rate = 12
+    if is_retro(game_id):
+        # The retro painter fast-forwards its engine internally, so one call is enough.
+        clip = RetroClip(game_id, replay.payload, replay.duration_seconds, width, height, rate)
+        return clip.frame(int(t * rate), t)
+    clip = ProceduralClip(game_id, replay.payload, replay.duration_seconds, width, height, rate)
     # Stateful styles (silk and starfall) need a few prior frames to form their trails.
     image = None
-    for index in range(int(t * 12) + 1):
-        image = clip.frame(index, index / 12)
+    for index in range(int(t * rate) + 1):
+        image = clip.frame(index, index / rate)
     assert image is not None
     return image
 

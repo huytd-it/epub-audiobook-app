@@ -122,8 +122,8 @@ export type BookStatus = {
 
 export type GameplaySelectionConfig = {
   selection_mode: "single" | "rotation";
-  game_id: "garden_cycle" | "orbit_drift" | "aquarium_ecosystem" | "marble_flow" | "parcel_route" | "territory_bloom" | "cloud_runner" | "signal_garden" | "battle_royale";
-  game_ids: ("garden_cycle" | "orbit_drift" | "aquarium_ecosystem" | "marble_flow" | "parcel_route" | "territory_bloom" | "cloud_runner" | "signal_garden" | "battle_royale")[];
+  game_id: "snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp" | "battle_royale";
+  game_ids: ("snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp" | "battle_royale")[];
   preset: "calm";
 };
 

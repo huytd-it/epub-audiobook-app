@@ -8,10 +8,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.config import settings
 from app.gameplay_config import BUILTIN_THEME_ID, BUILTIN_THEME_VERSION
 from app.gameplay_models import Fighter, GameplayReplay, Replay
-from app.gameplay_theme_packs import install_theme_pack_zip
+from app.gameplay_scores import mark_rendered, record_score
 
 _NAMES = (
     "Axel", "Blaze", "Cruz", "Dash", "Echo", "Flint", "Gray", "Hawk",
@@ -51,26 +50,6 @@ def seed_catalog(conn: sqlite3.Connection) -> None:
             (key, name, classes[index % 3], now, now),
         )
     conn.commit()
-
-
-def seed_bundled_theme_packs(conn: sqlite3.Connection) -> None:
-    """Install shipped theme packs into the data root once, preserving immutable versions."""
-    pack = Path(__file__).parent / "assets" / "gameplay" / "sunlit-harvest.zip"
-    if not pack.is_file():
-        return
-    now = _now()
-    result = install_theme_pack_zip(pack.read_bytes(), Path(settings.data_root) / "gameplay" / "theme-packs")
-    conn.execute(
-        """INSERT INTO gameplay_theme_pack
-           (id,version,family,name,enabled,builtin,manifest_json,content_sha256,asset_dir,
-            validation_status,created_at,updated_at) VALUES (?,?,?,?,1,1,?,?,?,'valid',?,?)
-           ON CONFLICT(id,version) DO UPDATE SET
-             name=excluded.name, enabled=1, builtin=1, manifest_json=excluded.manifest_json,
-             content_sha256=excluded.content_sha256, asset_dir=excluded.asset_dir,
-             validation_status='valid', error_message=NULL, updated_at=excluded.updated_at""",
-        (result["id"], result["version"], result["family"], result["name"],
-         json.dumps(result["manifest"]), result["content_sha256"], result["asset_dir"], now, now),
-    )
 
 
 def list_fighters(conn: sqlite3.Connection) -> list[Fighter]:
@@ -124,6 +103,7 @@ def save_gameplay_replay(conn: sqlite3.Connection, replay_key: str, replay: Game
     row = conn.execute("SELECT * FROM gameplay_replay WHERE replay_key=?", (replay_key,)).fetchone()
     if row is None:
         raise RuntimeError(f"gameplay replay {replay_key!r} was rejected by the database")
+    record_score(conn, int(row["id"]), replay, commit=False)
     if commit:
         conn.commit()
     return dict(row)
@@ -153,6 +133,7 @@ def apply_replay_stats(conn: sqlite3.Connection, replay_id: int) -> bool:
             conn.commit()
             return False
         if row["game_id"]:
+            mark_rendered(conn, replay_id, commit=False)
             conn.execute("UPDATE gameplay_replay SET stats_applied=1 WHERE id=? AND stats_applied=0", (replay_id,))
             conn.commit()
             return True

@@ -13,8 +13,8 @@ VIDEO_DEFAULTS = {
     "background_mode": "sequential",
     "gameplay": {
         "selection_mode": "single",
-        "game_id": "garden_cycle",
-        "game_ids": ["garden_cycle", "orbit_drift"],
+        "game_id": "snake_arena",
+        "game_ids": ["snake_arena", "brick_stack"],
         "preset": "calm",
     },
     "image_duration_seconds": 15,
@@ -84,14 +84,15 @@ def validate_video_config(config: dict | None) -> dict:
     gameplay = {**defaults, **gameplay}
     if gameplay["selection_mode"] not in {"single", "rotation"}:
         raise ValueError("invalid gameplay selection mode")
-    from app.gameplay_registry import get_game
+    from app.gameplay_registry import get_game, migrate_game_id
     if gameplay["selection_mode"] == "single":
-        get_game(str(gameplay.get("game_id") or ""))
+        gameplay["game_id"] = migrate_game_id(str(gameplay.get("game_id") or ""))
+        get_game(gameplay["game_id"])
     else:
         values = gameplay.get("game_ids")
         if not isinstance(values, list) or not values or not all(isinstance(value, str) for value in values):
             raise ValueError("gameplay rotation requires game ids")
-        gameplay["game_ids"] = list(dict.fromkeys(values))
+        gameplay["game_ids"] = list(dict.fromkeys(migrate_game_id(str(value)) for value in values))
         for game_id in gameplay["game_ids"]:
             get_game(game_id)
     if gameplay.get("preset") != "calm":

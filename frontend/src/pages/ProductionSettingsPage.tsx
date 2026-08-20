@@ -30,14 +30,12 @@ const GROUPS: { key: ProductionGroup; label: string; hint: string }[] = [
 ];
 
 const GAMES = [
-  ["garden_cycle", "Garden Cycle · Pixel"],
-  ["aquarium_ecosystem", "Aquarium Ecosystem · Pixel"],
-  ["parcel_route", "Parcel Route · Pixel"],
-  ["cloud_runner", "Cloud Runner · Pixel"],
-  ["orbit_drift", "Orbit Drift · Neon"],
-  ["marble_flow", "Marble Flow · Neon"],
-  ["territory_bloom", "Territory Bloom · Neon"],
-  ["signal_garden", "Signal Garden · Neon"],
+  ["snake_arena", "Rắn Săn Mồi · Retro"],
+  ["brick_stack", "Xếp Gạch · Retro"],
+  ["tank_duel", "Xe Tăng 90 · Retro"],
+  ["brick_breaker", "Đập Gạch · Retro"],
+  ["star_defender", "Bắn Ruồi · Retro"],
+  ["pixel_dash", "Đua Xe · Retro"],
 ] as const;
 
 const NORMALIZATION_LABELS: { key: keyof NormalizationSettings; label: string }[] = [

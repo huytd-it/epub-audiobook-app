@@ -457,23 +457,6 @@ CREATE TABLE IF NOT EXISTS gameplay_game (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS gameplay_theme_pack (
-    id TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    family TEXT NOT NULL,
-    name TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    builtin INTEGER NOT NULL DEFAULT 0,
-    manifest_json TEXT NOT NULL,
-    content_sha256 TEXT NOT NULL,
-    asset_dir TEXT,
-    validation_status TEXT NOT NULL DEFAULT 'valid',
-    error_message TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (id, version)
-);
-
 CREATE TABLE IF NOT EXISTS gameplay_fighter (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fighter_key TEXT NOT NULL UNIQUE,
@@ -525,6 +508,28 @@ CREATE TABLE IF NOT EXISTS gameplay_clip (
     updated_at TEXT NOT NULL,
     consumed_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS gameplay_score (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    replay_id INTEGER NOT NULL UNIQUE REFERENCES gameplay_replay(id) ON DELETE CASCADE,
+    game_id TEXT NOT NULL,
+    seed INTEGER NOT NULL,
+    player_tag TEXT NOT NULL DEFAULT '',
+    score INTEGER NOT NULL DEFAULT 0,
+    total_score INTEGER NOT NULL DEFAULT 0,
+    level INTEGER NOT NULL DEFAULT 1,
+    games INTEGER NOT NULL DEFAULT 1,
+    deaths INTEGER NOT NULL DEFAULT 0,
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    rank_tier TEXT NOT NULL DEFAULT 'D',
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    rendered INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    rendered_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_gameplay_score_board
+ON gameplay_score(game_id, score DESC, id);
 
 CREATE INDEX IF NOT EXISTS idx_gameplay_clip_profile_status
 ON gameplay_clip(profile_key, status, id);

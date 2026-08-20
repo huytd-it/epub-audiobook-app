@@ -72,7 +72,6 @@ def _table_order() -> list[str]:
         "gameplay_clip",
         "gameplay_replay",
         "gameplay_fighter",
-        "gameplay_theme_pack",
         "gameplay_theme",
         "gameplay_game",
         "job_dependency",

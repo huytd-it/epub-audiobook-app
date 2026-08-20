@@ -667,20 +667,18 @@ export function ConfigDialog({
                       <Field label="Game nền">
                         <select className={selectClass} value={videoConfig.gameplay.game_id}
                           onChange={(event) => setVideoConfig({ ...videoConfig, gameplay: { ...videoConfig.gameplay, game_id: event.target.value as typeof videoConfig.gameplay.game_id } })}>
-                          <option value="garden_cycle">Garden Cycle · Pixel</option>
-                          <option value="aquarium_ecosystem">Aquarium Ecosystem · Pixel</option>
-                          <option value="parcel_route">Parcel Route · Pixel</option>
-                          <option value="cloud_runner">Cloud Runner · Pixel</option>
-                          <option value="orbit_drift">Orbit Drift · Neon</option>
-                          <option value="marble_flow">Marble Flow · Neon</option>
-                          <option value="territory_bloom">Territory Bloom · Neon</option>
-                          <option value="signal_garden">Signal Garden · Neon</option>
+                          <option value="snake_arena">Rắn Săn Mồi · Retro</option>
+                          <option value="brick_stack">Xếp Gạch · Retro</option>
+                          <option value="tank_duel">Xe Tăng 90 · Retro</option>
+                          <option value="brick_breaker">Đập Gạch · Retro</option>
+                          <option value="star_defender">Bắn Ruồi · Retro</option>
+                          <option value="pixel_dash">Đua Xe · Retro</option>
                         </select>
                       </Field>
                     ) : (
                       <div className="space-y-2">
                         <div className="text-xs font-medium">Game trong vòng xoay</div>
-                        {([ ["garden_cycle", "Garden Cycle · Pixel"], ["aquarium_ecosystem", "Aquarium Ecosystem · Pixel"], ["parcel_route", "Parcel Route · Pixel"], ["cloud_runner", "Cloud Runner · Pixel"], ["orbit_drift", "Orbit Drift · Neon"], ["marble_flow", "Marble Flow · Neon"], ["territory_bloom", "Territory Bloom · Neon"], ["signal_garden", "Signal Garden · Neon"] ] as const).map(([id, label]) => {
+                        {([ ["snake_arena", "Rắn Săn Mồi · Retro"], ["brick_stack", "Xếp Gạch · Retro"], ["tank_duel", "Xe Tăng 90 · Retro"], ["brick_breaker", "Đập Gạch · Retro"], ["star_defender", "Bắn Ruồi · Retro"], ["pixel_dash", "Đua Xe · Retro"] ] as const).map(([id, label]) => {
                           const checked = videoConfig.gameplay.game_ids.includes(id);
                           return <label key={id} className="flex items-center gap-2 text-xs">
                             <input type="checkbox" className={checkboxClass} checked={checked}

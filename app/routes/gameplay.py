@@ -12,7 +12,8 @@ from app.config import settings
 from app.gameplay_pool import maintain_pool
 from app.gameplay_registry import get_game, list_games
 from app.gameplay_repository import list_themes, pool_status
-from app.gameplay_theme_packs import install_theme_pack_zip
+from app.gameplay_retro import RETRO_GAMES
+from app.gameplay_scores import BOARD_LIMIT, leaderboard, standings
 from app.gameplay_themes import install_theme_zip, theme_prompt
 
 router = APIRouter(prefix="/gameplay", tags=["gameplay"])
@@ -29,8 +30,6 @@ def status(request: Request):
         themes = list_themes(conn)
         fighters = [dict(r) for r in conn.execute(
             "SELECT * FROM gameplay_fighter ORDER BY wins DESC, eliminations DESC, name")]
-        packs = [dict(row) for row in conn.execute(
-            "SELECT * FROM gameplay_theme_pack ORDER BY builtin DESC, family, name, version DESC")]
         policies = {row["game_id"]: bool(row["enabled"]) for row in conn.execute("SELECT game_id,enabled FROM gameplay_game")}
         catalog = [{**game, "enabled": policies.get(game["id"], True)} for game in list_games()]
         failed = conn.execute("SELECT COUNT(*) FROM gameplay_clip WHERE status='failed'").fetchone()[0]
@@ -38,7 +37,24 @@ def status(request: Request):
         return {"catalog": catalog, "pool": pool_status(conn),
                 "health": {"failed_clips": failed, "oldest_lease_at": oldest_lease},
                 "target_seconds": settings.gameplay_pool_target_seconds,
-                "themes": themes, "theme_packs": packs, "fighters": fighters}
+                "leaderboard": leaderboard(conn, limit=12), "standings": standings(conn),
+                "stat_labels": {spec.id: [list(pair) for pair in spec.stat_labels]
+                                for spec in RETRO_GAMES},
+                "themes": themes, "fighters": fighters}
+
+
+@router.get("/leaderboard")
+def board(request: Request, game_id: str | None = None, limit: int = BOARD_LIMIT):
+    """Top runs. Without a game_id the board is cross-game and ranks by the 0-1000 rating."""
+    if game_id is not None:
+        try:
+            get_game(game_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+    lock, conn = _locked(request)
+    with lock:
+        return {"game_id": game_id, "entries": leaderboard(conn, game_id, limit),
+                "standings": standings(conn)}
 
 
 @router.post("/games/{game_id}/toggle")
@@ -81,34 +97,6 @@ def generate(request: Request, width: int = Form(1920), height: int = Form(1080)
 def prompt(army_theme: str = "futuristic neon army", unit_class: str = "tank, assassin, ranger",
            colors: str = "cyan, magenta, electric lime"):
     return theme_prompt(army_theme, unit_class, colors)
-
-
-@router.post("/theme-packs/upload")
-async def upload_theme_pack(request: Request, file: UploadFile = File(...)):
-    data = await file.read(80 * 1024 * 1024 + 1)
-    if len(data) > 80 * 1024 * 1024:
-        raise HTTPException(413, "Theme ZIP is too large")
-    root = Path(settings.data_root) / "gameplay" / "theme-packs"
-    try:
-        result = install_theme_pack_zip(data, root)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    lock, conn = _locked(request)
-    with lock:
-        now = conn.execute("SELECT CURRENT_TIMESTAMP").fetchone()[0]
-        existing = conn.execute("SELECT content_sha256 FROM gameplay_theme_pack WHERE id=? AND version=?",
-                                (result["id"], result["version"])).fetchone()
-        if existing and existing["content_sha256"] != result["content_sha256"]:
-            raise HTTPException(409, "Theme id/version is immutable")
-        conn.execute(
-            """INSERT INTO gameplay_theme_pack
-               (id,version,family,name,enabled,builtin,manifest_json,content_sha256,asset_dir,
-                validation_status,created_at,updated_at) VALUES (?,?,?,?,1,0,?,?,?,'valid',?,?)
-               ON CONFLICT(id,version) DO UPDATE SET updated_at=excluded.updated_at""",
-            (result["id"], result["version"], result["family"], result["name"],
-             json.dumps(result["manifest"]), result["content_sha256"], result["asset_dir"], now, now))
-        conn.commit()
-    return result
 
 
 @router.post("/themes/upload")

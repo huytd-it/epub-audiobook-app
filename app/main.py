@@ -38,9 +38,8 @@ logging.getLogger("watchfiles").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     conn = db.connect(settings.db_path)
     db.init_schema(conn)
-    from app.gameplay_repository import recover_reserved_clips, seed_bundled_theme_packs, seed_catalog
+    from app.gameplay_repository import recover_reserved_clips, seed_catalog
     seed_catalog(conn)
-    seed_bundled_theme_packs(conn)
     recovered_gameplay = recover_reserved_clips(conn)
     if recovered_gameplay:
         logging.info("event=gameplay.reservations_recovered count=%s", recovered_gameplay)

@@ -1,14 +1,34 @@
-"""Registry and deterministic simulations for versioned gameplay backgrounds."""
+"""Registry and deterministic simulations for versioned gameplay backgrounds.
+
+Two asset-free families ship today: ``retro`` (the handheld console games — rắn săn mồi,
+xếp gạch, xe tăng and friends) and ``procedural`` (analytic colour fields). Neither needs a
+theme pack; ``legacy`` keeps Battle Royale renderable for clips produced before the catalog.
+"""
 from __future__ import annotations
 
 import hashlib
-import math
-import random
 from dataclasses import dataclass
 from typing import Callable
 
 from app.gameplay_models import GameplayReplay
 from app.gameplay_procedural import PROCEDURAL_GAMES, simulate_procedural
+from app.gameplay_retro import RETRO_GAMES, simulate_retro
+
+DEFAULT_GAME_ID = "snake_arena"
+
+# The sprite-hungry pixel/neon families were retired when the retro catalog landed. Books
+# configured before that keep rendering: their saved id maps to the closest live game rather
+# than failing validation months after the fact.
+RETIRED_GAMES = {
+    "garden_cycle": "snake_arena",
+    "aquarium_ecosystem": "brick_breaker",
+    "parcel_route": "pixel_dash",
+    "cloud_runner": "pixel_dash",
+    "orbit_drift": "star_defender",
+    "marble_flow": "brick_breaker",
+    "territory_bloom": "snake_arena",
+    "signal_garden": "brick_stack",
+}
 
 
 @dataclass(frozen=True)
@@ -24,77 +44,8 @@ class GameDefinition:
     sprite_roles: tuple[str, ...] = ()
 
 
-def _duration(rng: random.Random) -> float:
-    return float(rng.randint(180, 300))
-
-
-def _garden_cycle(seed: int, config: dict) -> GameplayReplay:
-    rng = random.Random(seed)
-    duration = _duration(rng)
-    crops = ("carrot", "wheat", "tomato", "lavender", "pumpkin")
-    plots = []
-    for row in range(5):
-        for column in range(9):
-            plots.append({"row": row, "column": column, "crop": rng.choice(crops),
-                          "phase": round(rng.uniform(0, 12), 3)})
-    route = list(range(len(plots)))
-    rng.shuffle(route)
-    events = [{"t": 0.0, "type": "start"}]
-    interval = max(2.5, (duration - 10.0) / len(route))
-    for index, plot_index in enumerate(route):
-        events.append({"t": round(5.0 + index * interval, 3), "type": "tend",
-                       "plot": plot_index, "stage": index % 4})
-    events.append({"t": duration, "type": "result", "plots_tended": len(plots)})
-    return GameplayReplay(3, "garden_cycle", seed, duration, 20, "1", "1", "1",
-                          {"preset": config.get("preset", "calm"), "plots": plots,
-                           "route": route, "events": events},
-                          {"status": "complete", "metrics": {"plots_tended": len(plots)}})
-
-
-def _orbit_drift(seed: int, config: dict) -> GameplayReplay:
-    rng = random.Random(seed)
-    duration = _duration(rng)
-    gates = []
-    gate_count = 14
-    for index in range(gate_count):
-        angle = index * math.tau / gate_count + rng.uniform(-0.18, 0.18)
-        radius = rng.uniform(0.25, 0.82)
-        gates.append({"x": round(math.cos(angle) * radius, 4),
-                      "y": round(math.sin(angle) * radius, 4),
-                      "size": round(rng.uniform(0.045, 0.085), 4)})
-    stars = [{"x": round(rng.uniform(-1, 1), 4), "y": round(rng.uniform(-1, 1), 4),
-              "size": rng.randint(1, 3), "phase": round(rng.random(), 4)} for _ in range(90)]
-    events = [{"t": 0.0, "type": "start"}]
-    for index in range(gate_count):
-        events.append({"t": round((index + 1) * duration / (gate_count + 1), 3),
-                       "type": "gate", "gate": index})
-    events.append({"t": duration, "type": "result", "gates": gate_count})
-    return GameplayReplay(3, "orbit_drift", seed, duration, 20, "1", "1", "1",
-                          {"preset": config.get("preset", "calm"), "gates": gates,
-                           "stars": stars, "events": events},
-                          {"status": "complete", "metrics": {"gates": gate_count}})
-
-
-def _ambient_game(game_id: str, seed: int, config: dict) -> GameplayReplay:
-    rng = random.Random(seed)
-    duration = _duration(rng)
-    entities = [{"x": round(rng.uniform(-0.9, 0.9), 4), "y": round(rng.uniform(-0.75, 0.75), 4),
-                 "speed": round(rng.uniform(0.035, 0.11), 4), "phase": round(rng.random(), 4),
-                 "kind": rng.randrange(4)} for _ in range(28 if game_id == "aquarium_ecosystem" else 18)]
-    nodes = [{"x": round(rng.uniform(-0.82, 0.82), 4), "y": round(rng.uniform(-0.7, 0.7), 4)}
-             for _ in range(12)]
-    events = [{"t": 0.0, "type": "start"}]
-    for index in range(12):
-        events.append({"t": round((index + 1) * duration / 14, 3), "type": "milestone", "index": index})
-    events.append({"t": duration, "type": "result", "cycles": 1})
-    return GameplayReplay(3, game_id, seed, duration, 20, "1", "1", "1",
-                          {"preset": config.get("preset", "calm"), "entities": entities,
-                           "nodes": nodes, "events": events},
-                          {"status": "complete", "metrics": {"cycles": 1}})
-
-
-def _ambient(game_id: str) -> Callable[[int, dict], GameplayReplay]:
-    return lambda seed, config: _ambient_game(game_id, seed, config)
+def _retro(game_id: str) -> Callable[[int, dict], GameplayReplay]:
+    return lambda seed, config: simulate_retro(game_id, seed, config)
 
 
 def _procedural(game_id: str) -> Callable[[int, dict], GameplayReplay]:
@@ -105,45 +56,23 @@ def _legacy_placeholder(seed: int, config: dict) -> GameplayReplay:
     raise ValueError("battle_royale uses the legacy simulator")
 
 
-_CROP_ROLES = ("carrot", "wheat", "tomato", "lavender", "pumpkin")
-_KIND_ROLES = ("kind_0", "kind_1", "kind_2", "kind_3")
-_NODE_ROLES = ("node",)
-_ORBIT_ROLES = ("gate", "ship")
-
+# Neither family declares sprite_roles: every pixel is painted from code, so a theme pack has
+# nothing to override and the catalog can never promise art the renderer cannot produce.
 _GAMES = {
     game.id: game for game in (
-        GameDefinition("garden_cycle", "Garden Cycle", "pixel", "1", "1",
-                       "allowed_with_safe_area", "Trồng và thu hoạch một khu vườn yên bình.", _garden_cycle,
-                       _CROP_ROLES),
-        GameDefinition("orbit_drift", "Orbit Drift", "neon", "1", "1",
-                       "default_off", "Trôi qua các cổng sáng trong không gian.", _orbit_drift,
-                       _ORBIT_ROLES),
-        GameDefinition("aquarium_ecosystem", "Aquarium Ecosystem", "pixel", "1", "1",
-                       "default_off", "Đàn cá và cây thủy sinh chuyển động chậm.", _ambient("aquarium_ecosystem"),
-                       _KIND_ROLES),
-        GameDefinition("marble_flow", "Marble Flow", "neon", "1", "1",
-                       "forbidden", "Những viên bi sáng đi qua mạng đường mềm.", _ambient("marble_flow"),
-                       _NODE_ROLES),
-        GameDefinition("parcel_route", "Parcel Route", "pixel", "1", "1",
-                       "allowed_with_safe_area", "Chuyến giao hàng yên bình qua thị trấn.", _ambient("parcel_route"),
-                       _KIND_ROLES),
-        GameDefinition("territory_bloom", "Territory Bloom", "neon", "1", "1",
-                       "default_off", "Các dải màu nở và hòa vào nhau.", _ambient("territory_bloom"),
-                       _NODE_ROLES),
-        GameDefinition("cloud_runner", "Cloud Runner", "pixel", "1", "1",
-                       "allowed_with_safe_area", "Chuyến chạy ngắm cảnh qua mây và đồng cỏ.", _ambient("cloud_runner"),
-                       _KIND_ROLES),
-        GameDefinition("signal_garden", "Signal Garden", "neon", "1", "1",
-                       "default_off", "Mạng nút ánh sáng đồng bộ theo nhịp chậm.", _ambient("signal_garden"),
-                       _NODE_ROLES),
-        # The procedural family needs no theme pack at all: its renderer paints from palette
-        # LUTs and analytic fields, so sprite_roles stays empty.
+        *(GameDefinition(spec.id, spec.name, "retro", "1", "1", spec.waveform_policy,
+                         spec.description, _retro(spec.id)) for spec in RETRO_GAMES),
         *(GameDefinition(spec.id, spec.name, "procedural", "1", "1", spec.waveform_policy,
                          spec.description, _procedural(spec.id)) for spec in PROCEDURAL_GAMES),
         GameDefinition("battle_royale", "Neon Battle Royale", "legacy", "1", "1",
                        "forbidden", "Gameplay Battle Royale tương thích ngược.", _legacy_placeholder),
     )
 }
+
+
+def migrate_game_id(game_id: str) -> str:
+    """Resolve a stored game id to one this build can still render."""
+    return RETIRED_GAMES.get(game_id, game_id)
 
 
 def get_game(game_id: str) -> GameDefinition:
@@ -169,8 +98,9 @@ def simulate_game(game_id: str, seed: int, config: dict | None = None) -> Gamepl
 def resolve_game_id(gameplay: dict, *, book_id: int, patch_id: int, patch_index: int) -> str:
     mode = gameplay.get("selection_mode", "single")
     if mode == "single":
-        return str(gameplay.get("game_id") or "garden_cycle")
-    game_ids = sorted(dict.fromkeys(str(value) for value in gameplay.get("game_ids", [])))
+        return migrate_game_id(str(gameplay.get("game_id") or DEFAULT_GAME_ID))
+    game_ids = sorted(dict.fromkeys(migrate_game_id(str(value))
+                                    for value in gameplay.get("game_ids", [])))
     if not game_ids:
         raise ValueError("gameplay rotation requires at least one game")
     digest = hashlib.sha256(

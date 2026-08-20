@@ -12,7 +12,8 @@ from PIL import Image, ImageDraw, ImageFont
 from app.config import settings
 from app.gameplay_effects import ProceduralClip, is_procedural
 from app.gameplay_models import GameplayReplay, Replay
-from app.gameplay_registry import get_game
+from app.gameplay_retro import is_retro
+from app.gameplay_retro_render import RetroClip
 
 
 def _font(size: int):
@@ -20,40 +21,6 @@ def _font(size: int):
         if Path(path).is_file():
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
-
-
-def _load_role_sprites(asset_dir: str | None, assets: dict, roles: tuple[str, ...]) -> dict[str, Image.Image]:
-    """Load theme-pack PNGs declared for these roles; missing/unreadable roles fall back to primitives."""
-    sprites: dict[str, Image.Image] = {}
-    if not asset_dir or not roles:
-        return sprites
-    base = Path(asset_dir)
-    if not base.is_dir():
-        return sprites
-    for role in roles:
-        filename = assets.get(role)
-        if not filename:
-            continue
-        try:
-            with Image.open(base / filename) as sprite:
-                sprites[role] = sprite.convert("RGBA")
-        except (OSError, ValueError):
-            continue
-    return sprites
-
-
-def _sprite_icon(sprite: Image.Image, size: int) -> Image.Image:
-    size = max(1, size)
-    return sprite.resize((size, size), Image.Resampling.LANCZOS)
-
-
-def _faded(icon: Image.Image, factor: float) -> Image.Image:
-    if factor >= 0.999:
-        return icon
-    faded = icon.copy()
-    alpha = faded.split()[3].point(lambda a: int(a * factor))
-    faded.putalpha(alpha)
-    return faded
 
 
 def _zone_radius(t: float, arena_radius: int) -> float:
@@ -294,28 +261,17 @@ def _render_generic(replay: GameplayReplay, output_path: str, *, resolution=(192
         process.kill()
         raise RuntimeError("gameplay ffmpeg stdin unavailable")
     payload = replay.payload
-    theme = replay.themes[0] if replay.themes else {}
-    sprites = _load_role_sprites(theme.get("asset_dir"), theme.get("assets") or {},
-                                 get_game(replay.game_id).sprite_roles)
-    # Procedural games carry per-frame state (particles, trails), so one painter serves the clip.
-    procedural = (ProceduralClip(replay.game_id, payload, replay.duration_seconds, width, height, fps)
-                  if is_procedural(replay.game_id) else None)
+    # Both families carry per-frame state — particles and trails, or a running match — so one
+    # painter serves the whole clip instead of a stateless per-frame function.
+    if is_procedural(replay.game_id):
+        painter = ProceduralClip(replay.game_id, payload, replay.duration_seconds, width, height, fps)
+    elif is_retro(replay.game_id):
+        painter = RetroClip(replay.game_id, payload, replay.duration_seconds, width, height, fps)
+    else:
+        raise ValueError(f"no renderer for game {replay.game_id}")
     try:
         for index in range(frame_count):
-            t = index / fps
-            progress = min(1.0, t / max(replay.duration_seconds, 0.001))
-            if procedural is not None:
-                image = procedural.frame(index, t)
-            elif replay.game_id == "garden_cycle":
-                image = _garden_frame(payload, t, progress, width, height, sprites)
-            elif replay.game_id == "orbit_drift":
-                image = _orbit_frame(payload, t, progress, width, height, sprites)
-            elif replay.game_id in {"aquarium_ecosystem", "parcel_route", "cloud_runner"}:
-                image = _pixel_ambient_frame(replay.game_id, payload, t, progress, width, height, sprites)
-            elif replay.game_id in {"marble_flow", "territory_bloom", "signal_garden"}:
-                image = _neon_ambient_frame(replay.game_id, payload, t, progress, width, height, sprites)
-            else:
-                raise ValueError(f"no renderer for game {replay.game_id}")
+            image = painter.frame(index, index / fps)
             process.stdin.write(np.asarray(image, dtype=np.uint8).tobytes())
             if on_progress and index % max(fps, 1) == 0:
                 on_progress(index, frame_count)
@@ -329,157 +285,6 @@ def _render_generic(replay: GameplayReplay, output_path: str, *, resolution=(192
         process.kill()
         process.wait()
         raise
-
-
-def _garden_frame(payload: dict, t: float, progress: float, width: int, height: int,
-                  sprites: dict[str, Image.Image]) -> Image.Image:
-    image = Image.new("RGB", (width, height), "#17231d")
-    draw = ImageDraw.Draw(image)
-    horizon = int(height * 0.22)
-    draw.rectangle((0, 0, width, horizon), fill="#8fc6b4")
-    draw.ellipse((width * 0.78, height * 0.05, width * 0.86, height * 0.13), fill="#f5d789")
-    plots = payload.get("plots", [])
-    columns, rows = 9, 5
-    margin_x, margin_y = width * 0.08, height * 0.28
-    cell_w, cell_h = (width - margin_x * 2) / columns, (height * 0.62) / rows
-    colors = ("#729b45", "#e3a84f", "#d76557", "#9075b8", "#df8c45")
-    tended = int(progress * max(1, len(plots)))
-    route = payload.get("route", list(range(len(plots))))
-    active = route[min(tended, len(route) - 1)] if route else 0
-    for idx, plot in enumerate(plots):
-        x0 = margin_x + plot["column"] * cell_w
-        y0 = margin_y + plot["row"] * cell_h
-        draw.rounded_rectangle((x0 + 3, y0 + 3, x0 + cell_w - 3, y0 + cell_h - 3),
-                               radius=max(2, int(cell_h * 0.08)), fill="#59442f", outline="#846548")
-        stage = 3 if idx in route[:tended] else max(0, int((t + plot["phase"]) / 18) % 4)
-        if stage:
-            crop_names = ("carrot", "wheat", "tomato", "lavender", "pumpkin")
-            crop_key = plot.get("crop") if plot.get("crop") in crop_names else crop_names[0]
-            crop = crop_names.index(crop_key)
-            radius = max(2, int(min(cell_w, cell_h) * (0.06 + stage * 0.035)))
-            cx, cy = int(x0 + cell_w / 2), int(y0 + cell_h / 2)
-            sprite = sprites.get(crop_key)
-            if sprite is not None:
-                icon = _sprite_icon(sprite, radius * 2)
-                image.paste(icon, (cx - icon.width // 2, cy - icon.height // 2), icon)
-            else:
-                draw.ellipse((cx-radius, cy-radius, cx+radius, cy+radius), fill=colors[crop])
-    if route:
-        plot = plots[active]
-        x = margin_x + (plot["column"] + 0.5) * cell_w
-        y = margin_y + (plot["row"] + 0.5) * cell_h
-        r = max(5, int(height * 0.018))
-        draw.ellipse((x-r, y-r, x+r, y+r), fill="#f7e8be", outline="#374b32", width=max(1, width//640))
-    return image
-
-
-def _orbit_frame(payload: dict, t: float, progress: float, width: int, height: int,
-                 sprites: dict[str, Image.Image]) -> Image.Image:
-    image = Image.new("RGB", (width, height), "#050816")
-    draw = ImageDraw.Draw(image)
-    scale = min(width, height) * 0.42
-    cx, cy = width / 2, height / 2
-    for star in payload.get("stars", []):
-        pulse = 0.45 + 0.55 * math.sin(t * 0.45 + star["phase"] * math.tau) ** 2
-        shade = int(100 + pulse * 120)
-        x, y, r = cx + star["x"] * width/2, cy + star["y"] * height/2, star["size"]
-        draw.ellipse((x-r, y-r, x+r, y+r), fill=(shade, shade, min(255, shade+25)))
-    gates = payload.get("gates", [])
-    gate_sprite = sprites.get("gate")
-    for index, gate in enumerate(gates):
-        x, y = cx + gate["x"] * scale, cy + gate["y"] * scale
-        radius = max(5, int(gate["size"] * scale))
-        passed = index / max(1, len(gates)) >= progress
-        if gate_sprite is not None:
-            icon = _faded(_sprite_icon(gate_sprite, radius * 2), 1.0 if passed else 0.35)
-            image.paste(icon, (int(x) - icon.width // 2, int(y) - icon.height // 2), icon)
-        else:
-            color = "#2fe8ff" if passed else "#5d587e"
-            draw.ellipse((x-radius, y-radius, x+radius, y+radius), outline=color, width=max(2, width//480))
-    if gates:
-        position = progress * (len(gates) - 1)
-        left = int(position)
-        right = min(len(gates)-1, left+1)
-        blend = position-left
-        gx = gates[left]["x"] * (1-blend) + gates[right]["x"] * blend
-        gy = gates[left]["y"] * (1-blend) + gates[right]["y"] * blend
-        x, y = cx + gx*scale, cy + gy*scale
-        size = max(7, int(height * 0.014))
-        ship_sprite = sprites.get("ship")
-        if ship_sprite is not None:
-            icon = _sprite_icon(ship_sprite, size * 2)
-            image.paste(icon, (int(x) - icon.width // 2, int(y) - icon.height // 2), icon)
-        else:
-            draw.polygon(((x+size, y), (x-size, y-size*0.7), (x-size*0.4, y), (x-size, y+size*0.7)),
-                         fill="#b9ff36", outline="#ffffff")
-    return image
-
-
-def _pixel_ambient_frame(game_id: str, payload: dict, t: float, progress: float,
-                         width: int, height: int, sprites: dict[str, Image.Image]) -> Image.Image:
-    palettes = {
-        "aquarium_ecosystem": ("#13354a", "#1d7080", "#f2c66d"),
-        "parcel_route": ("#8fb8a0", "#d8c18a", "#b75f4b"),
-        "cloud_runner": ("#83b7cf", "#dcecc4", "#f2cb6c"),
-    }
-    background, ground, accent = palettes[game_id]
-    image = Image.new("RGB", (width, height), background)
-    draw = ImageDraw.Draw(image)
-    if game_id == "aquarium_ecosystem":
-        draw.rectangle((0, height*0.82, width, height), fill="#735d45")
-    else:
-        draw.rectangle((0, height*0.64, width, height), fill=ground)
-        for x in range(0, width, max(24, width//12)):
-            draw.rectangle((x, height*0.55, x+width*0.055, height*0.64), fill="#e6d8b2")
-    for entity in payload.get("entities", []):
-        x = ((entity["x"] + 1 + t * entity["speed"]) % 2 - 1) * width/2 + width/2
-        y = (entity["y"] + 1) * height/2
-        size = max(4, int(height * (0.012 + entity["kind"] * 0.003)))
-        sprite = sprites.get(f"kind_{entity['kind']}")
-        if sprite is not None:
-            icon = _sprite_icon(sprite, size * 2)
-            image.paste(icon, (int(x) - icon.width // 2, int(y) - icon.height // 2), icon)
-        elif game_id == "aquarium_ecosystem":
-            draw.ellipse((x-size, y-size*0.6, x+size, y+size*0.6), fill=accent)
-            draw.polygon(((x-size, y), (x-size*1.6, y-size*0.6), (x-size*1.6, y+size*0.6)), fill=accent)
-        elif game_id == "parcel_route" and entity["kind"] == 0:
-            draw.rounded_rectangle((x-size*1.5, y-size, x+size*1.5, y+size), radius=3, fill=accent)
-        else:
-            draw.ellipse((x-size, y-size, x+size, y+size), fill=accent)
-    return image
-
-
-def _neon_ambient_frame(game_id: str, payload: dict, t: float, progress: float,
-                        width: int, height: int, sprites: dict[str, Image.Image]) -> Image.Image:
-    image = Image.new("RGB", (width, height), "#050816")
-    draw = ImageDraw.Draw(image)
-    nodes = payload.get("nodes", [])
-    points = [(width/2 + node["x"]*width*0.42, height/2 + node["y"]*height*0.42) for node in nodes]
-    colors = {"marble_flow": "#16f2ff", "territory_bloom": "#ff3dcb", "signal_garden": "#b9ff36"}
-    color = colors[game_id]
-    line_width = max(2, width//640)
-    node_sprite = sprites.get("node")
-    for index in range(len(points)-1):
-        draw.line((points[index], points[index+1]), fill="#26345d", width=line_width)
-    for index, (x, y) in enumerate(points):
-        pulse = 0.55 + 0.45*math.sin(t*0.7 + index) ** 2
-        radius = max(5, int(height*0.012*pulse))
-        active = index / max(1, len(points)-1) <= progress
-        if node_sprite is not None:
-            icon = _faded(_sprite_icon(node_sprite, radius * 2), 1.0 if active else 0.35)
-            image.paste(icon, (int(x) - icon.width // 2, int(y) - icon.height // 2), icon)
-        else:
-            draw.ellipse((x-radius, y-radius, x+radius, y+radius), outline=color if active else "#4c5270", width=line_width)
-    if points:
-        position = progress * (len(points)-1)
-        left = int(position)
-        right = min(len(points)-1, left+1)
-        blend = position-left
-        x = points[left][0]*(1-blend)+points[right][0]*blend
-        y = points[left][1]*(1-blend)+points[right][1]*blend
-        radius = max(6, int(height*0.014))
-        draw.ellipse((x-radius, y-radius, x+radius, y+radius), fill=color, outline="#ffffff")
-    return image
 
 
 def render_replay(replay: Replay | GameplayReplay, output_path: str, *, resolution=(1920, 1080), fps=30,
