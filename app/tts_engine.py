@@ -8,8 +8,11 @@ arrays at a learned sample rate, so they run the exact same audiobook pipeline
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import os
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -85,7 +88,8 @@ _CAP_LOCAL_VOICES = {
 
 _MODELS = {
     "voxcpm2": TTSModel(
-        "voxcpm2", "VoxCPM2", "openbmb/VoxCPM2", "voxcpm", 16000, capabilities=_CAP_LOCAL,
+        # 48 kHz: the model takes a 16 kHz reference but its AudioVAE decoder upsamples.
+        "voxcpm2", "VoxCPM2", "openbmb/VoxCPM2", "voxcpm", 48000, capabilities=_CAP_LOCAL,
     ),
     "omnivoice": TTSModel(
         "omnivoice", "OmniVoice", "k2-fsa/OmniVoice", "omnivoice", 24000, capabilities=_CAP_LOCAL,
@@ -189,16 +193,162 @@ def _vieneu_voices() -> list[dict]:
     ]
 
 
+# Where each fixed-cast engine's voice list comes from. Also the set of engines a preset
+# reference voice can be borrowed from (see preset_reference_clip below).
+_VOICE_SOURCES = {
+    "zerotts": lambda: _zerotts_voices(zerotts_model_dir()),
+    "vieneu-fast": _vieneu_voices,
+}
+
+# A preset voice can also stand in as the *reference clip* for the cloning models: rendering
+# one line with VieNeu/ZeroTTS gives VoxCPM/OmniVoice a clip whose transcript is known
+# exactly (which is what their prompt/cloning mode wants) and which is identical on every
+# run, so a book keeps one narrator without anyone having to record and upload a sample.
+# Selected as "preset:<engine id>:<voice id>" - a shape no library filename can take, so it
+# never collides with the uploaded clips in the same dropdown.
+PRESET_VOICE_PREFIX = "preset:"
+
+# The line read to build that clip: two sentences (~10s), long enough to carry timbre and
+# pacing, short enough that the cloning models treat it as a prompt rather than as material
+# to continue. Changing it re-renders every cached clip (the text is part of the filename).
+PRESET_REFERENCE_TEXT = (
+    "Trời vừa hửng sáng, gió từ mặt sông thổi vào mát rượi. "
+    "Người kể chuyện dừng lại một nhịp rồi đọc tiếp trang sách còn dang dở."
+)
+
+
+def parse_preset_voice(voice: str | None) -> tuple[str, str] | None:
+    """Split ``preset:<engine>:<voice>`` into (engine id, voice id).
+
+    Returns None for everything else - a library filename, a cloud voice id, or no
+    selection - so callers can treat "is this a preset reference?" as one question. A value
+    that *is* prefixed but names no real engine/voice raises instead of falling back: it can
+    only come from an explicit pick, and silently narrating a whole book in some other voice
+    is worse than refusing the job."""
+    if not voice or not str(voice).startswith(PRESET_VOICE_PREFIX):
+        return None
+    engine_id, _, voice_id = str(voice)[len(PRESET_VOICE_PREFIX):].partition(":")
+    if engine_id not in _VOICE_SOURCES or not voice_id:
+        choices = ", ".join(_VOICE_SOURCES)
+        raise ValueError(
+            f"Giọng preset {voice!r} không hợp lệ; dạng đúng là "
+            f"'{PRESET_VOICE_PREFIX}<engine>:<voice>' với engine thuộc: {choices}"
+        )
+    return engine_id, voice_id
+
+
+def preset_reference_options() -> list[dict]:
+    """Every preset voice offered as a reference clip, as [{"value", "label", "language"}].
+
+    The UI merges these into the voice dropdown of the cloning models; ``value`` is exactly
+    what has to come back as the job's ``voice``."""
+    options = []
+    for engine_id, source in _VOICE_SOURCES.items():
+        engine_name = _MODELS[engine_id].name
+        for voice in source():
+            options.append({
+                "value": f"{PRESET_VOICE_PREFIX}{engine_id}:{voice['id']}",
+                "label": f"{engine_name} · {voice.get('label') or voice['id']}",
+                "language": voice.get("language", ""),
+            })
+    return options
+
+
+def _preset_clip_path(engine_id: str, voice_id: str, transcript: str) -> Path:
+    """Cache path for one rendered preset clip.
+
+    Lives in a subdirectory of the voice library rather than in it: the library routes
+    refuse names containing a separator and /api/ui/media lists files only, so these
+    generated clips can never be renamed, deleted or tagged as if a user had uploaded them.
+    The transcript hash is part of the name so editing PRESET_REFERENCE_TEXT renders a fresh
+    clip instead of pairing new prompt text with old audio."""
+    from app.config import settings
+
+    stamp = hashlib.md5(f"{voice_id}|{transcript}".encode("utf-8")).hexdigest()[:8]
+    safe = re.sub(r"[^\w.-]+", "_", voice_id, flags=re.UNICODE).strip("_") or "voice"
+    return Path(settings.data_root) / "voices" / "_presets" / f"{engine_id}__{safe}-{stamp}.wav"
+
+
+def preset_reference_clip(voice: str, transcript: str | None = None) -> tuple[str, str]:
+    """Render (once) the reference clip for a ``preset:...`` voice; returns (path, transcript).
+
+    Rendered on the first chunk that needs it and reused by every later chunk, patch and
+    export - handing the cloning model the same file every time is what keeps one narrator
+    across a whole book."""
+    engine_id, voice_id = parse_preset_voice(voice)
+    transcript = transcript or PRESET_REFERENCE_TEXT
+    dest = _preset_clip_path(engine_id, voice_id, transcript)
+    if dest.is_file():
+        return str(dest), transcript
+
+    engine = create_tts_engine(engine_id, voice=voice_id)
+    audio = np.asarray(engine.synthesize_chunk(transcript), dtype=np.float32).reshape(-1)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Write beside the target and rename: a half-written wav left by a crash (or picked up
+    # by the other process while the app and the worker both run) would be cloned as-is.
+    staging = dest.with_name(f"{dest.name}.{os.getpid()}.part")
+    sf.write(str(staging), audio, engine.sample_rate, format="WAV")  # ".part" hides the format
+    staging.replace(dest)
+    return str(dest), transcript
+
+
+def voice_library_clip(voice: str) -> Path:
+    """The library clip a cloning model's voice id names: a bare filename under
+    ``<data_root>/voices``.
+
+    Cloning models have no cast of their own, so a voice that is not a preset id can only
+    be one of the uploaded clips. Refusing a name that escapes the library or is no longer
+    there - with the message the Colab/Kaggle export has always used - is what makes a
+    stale selection fail the same way whether the book is synthesized here or remotely."""
+    from app.config import settings
+
+    name = Path(voice).name
+    clip = Path(settings.data_root) / "voices" / name
+    if name != voice or not clip.is_file():
+        raise ValueError(f"unknown reference voice: {voice}")
+    return clip
+
+
+def _is_same_clip(path: str | None, clip: Path) -> bool:
+    return bool(path) and Path(path).resolve() == clip.resolve()
+
+
+def resolve_reference(
+    voice: str | None, reference_wav_path: str | None, prompt_text: str | None
+) -> tuple[str | None, str | None]:
+    """The clip and transcript a cloning engine should actually use.
+
+    The picked voice beats the book's own clip - it is the explicit choice for this run -
+    and both entry points (this app, and the export packages built for Colab/Kaggle) read
+    it the same way, so a book sounds identical wherever it is synthesized:
+
+    * ``preset:<engine>:<voice>`` - render the preset clip, transcript known word for word;
+    * a filename - that library clip, keeping ``prompt_text`` only when it really is the
+      book's own clip (``book.voice_transcript`` describes that one, and pairing it with
+      any other clip would hand the model words its audio does not say);
+    * nothing picked - the book's clip and transcript, untouched."""
+    if parse_preset_voice(voice):
+        return preset_reference_clip(voice)
+    if not voice:
+        return reference_wav_path, prompt_text
+    clip = voice_library_clip(voice)
+    return str(clip), prompt_text if _is_same_clip(reference_wav_path, clip) else None
+
+
+def requires_book_reference(engine_id: str, voice: str | None) -> bool:
+    """True when a run still needs the book's own clip: a cloning model with no voice picked.
+
+    Any pick - a library clip or a preset - already names the reference (resolve_reference),
+    and cloud and fixed-cast engines speak their own voice, so none of those need one."""
+    return _MODELS[engine_id].supports_reference and not voice
+
+
 def list_tts_models() -> list[dict]:
     """Serializable model catalog shared by the UI, worker and remote runtimes."""
-    voice_sources = {
-        "zerotts": lambda: _zerotts_voices(zerotts_model_dir()),
-        "vieneu-fast": _vieneu_voices,
-    }
     models = []
     for model in _MODELS.values():
         entry = asdict(model)
-        source = voice_sources.get(model.id)
+        source = _VOICE_SOURCES.get(model.id)
         if source:
             entry["voices"] = source()
         models.append(entry)
@@ -207,7 +357,7 @@ def list_tts_models() -> list[dict]:
 
 def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
     """Construct any catalog engine. Heavy models import lazily on first synthesis;
-    cloud engines take ``voice`` (popped here so local engines never see it)."""
+    ``voice`` reaches every engine (see below for what each does with it)."""
     voice = options.pop("voice", None)
     factories = {
         "voxcpm2": VoxCPMEngine,
@@ -222,11 +372,11 @@ def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
     except KeyError as exc:
         choices = ", ".join(factories)
         raise ValueError(f"Unknown TTS engine {engine_id!r}; choose one of: {choices}") from exc
-    # Engines that pick from a named cast take the voice; reference-cloning ones get the
-    # clip through synthesize_chunk instead and must never see this kwarg.
-    if not _MODELS[engine_id].supports_reference:
-        return cls(voice=voice, **options)
-    return cls(**options)
+    # Every engine takes the voice, but they read it differently: fixed-cast and cloud
+    # engines speak it, while a cloning engine only acts on it when it names a preset voice
+    # to borrow a reference clip from (resolve_reference) - otherwise its clip still arrives
+    # per chunk from the book.
+    return cls(voice=voice, **options)
 
 
 def normalize_tt_payload(payload: dict | None, *, default_engine: str | None = None) -> dict:
@@ -258,7 +408,12 @@ class VoxCPMEngine:
         cfg_value: float = 2.0,
         inference_timesteps: int = 10,
         seed: int = 42,
+        voice: str | None = None,
+        **options,
     ):
+        # Names the clip to clone: a library filename, or "preset:..." for a VieNeu/ZeroTTS
+        # preset voice. Unset falls back to the book's clip (see resolve_reference).
+        self.voice = voice
         self.model_id = model_id
         self.load_denoiser = load_denoiser
         self.cfg_value = cfg_value
@@ -267,10 +422,14 @@ class VoxCPMEngine:
         self._model = None
 
     def config_fingerprint(self) -> str:
-        return (
+        base = (
             f"voxcpm2:{self.model_id}:denoiser={self.load_denoiser}:"
             f"cfg={self.cfg_value}:steps={self.inference_timesteps}:seed={self.seed}"
         )
+        # The picked voice decides which clip is cloned, so it keys the chunk cache too:
+        # resuming chunks recorded against another reference would mix two narrators inside
+        # one patch. Books that never picked one keep their original fingerprint.
+        return f"{base}:ref={self.voice}" if self.voice else base
 
     def _ensure_loaded(self) -> None:
         if self._model is None:
@@ -289,6 +448,9 @@ class VoxCPMEngine:
         reference_wav_path: str | None = None,
         prompt_text: str | None = None,
     ) -> np.ndarray:
+        # Resolve before loading: a preset reference briefly loads VieNeu/ZeroTTS to render
+        # its clip, and doing that first keeps the two models out of memory at once.
+        reference_wav_path, prompt_text = resolve_reference(self.voice, reference_wav_path, prompt_text)
         self._ensure_loaded()
         kwargs = {}
         if reference_wav_path:
@@ -331,14 +493,18 @@ class VoxCPMEngine:
 class OmniVoiceEngine:
     sample_rate = 24000
 
-    def __init__(self, model_id: str = "k2-fsa/OmniVoice", device: str | None = None, seed: int = 42):
+    def __init__(self, model_id: str = "k2-fsa/OmniVoice", device: str | None = None,
+                 seed: int = 42, voice: str | None = None, **options):
+        # Like VoxCPM: names the clip to clone (library filename or "preset:...").
+        self.voice = voice
         self.model_id = model_id
         self.device = device
         self.seed = seed
         self._model = None
 
     def config_fingerprint(self) -> str:
-        return f"omnivoice:{self.model_id}:device={self.device}:seed={self.seed}"
+        base = f"omnivoice:{self.model_id}:device={self.device}:seed={self.seed}"
+        return f"{base}:ref={self.voice}" if self.voice else base
 
     def _ensure_loaded(self) -> None:
         if self._model is None:
@@ -350,6 +516,7 @@ class OmniVoiceEngine:
             self._model = OmniVoice.from_pretrained(self.model_id, device_map=device, dtype=dtype)
 
     def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
+        reference_wav_path, prompt_text = resolve_reference(self.voice, reference_wav_path, prompt_text)
         self._ensure_loaded()
         kwargs = {}
         if reference_wav_path:

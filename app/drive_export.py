@@ -70,20 +70,28 @@ def _voice_clip_or_raise(book: Book) -> Path:
     return Path(book.voice_clip_path)
 
 
-def _export_tts_config(book: Book, model_id: str, voice_id: str | None = None) -> tuple[dict, Path | None]:
-    from app.tts_engine import list_tts_models
+def _export_tts_config(
+    book: Book, model_id: str, voice_id: str | None = None
+) -> tuple[dict, Path | None, str | None]:
+    """(tts config, reference clip, reference transcript) for one export package."""
+    from app.tts_engine import list_tts_models, parse_preset_voice, resolve_reference
 
     models = {model["id"]: model for model in list_tts_models()}
     if model_id not in models:
         raise ValueError(f"unknown TTS model: {model_id}")
     model = models[model_id]
     reference = None
+    transcript = book.voice_transcript or None
     if model["supports_reference"]:
         if voice_id:
-            voice_name = Path(voice_id).name
-            reference = Path(settings.data_root) / "voices" / voice_name
-            if voice_name != voice_id or not reference.is_file():
-                raise ValueError(f"unknown reference voice: {voice_id}")
+            # Same resolution the app itself runs on, so a book cloned remotely uses the
+            # clip (and prompt text) it would have used locally.
+            clip, transcript = resolve_reference(voice_id, book.voice_clip_path, transcript)
+            reference = Path(clip)
+            if parse_preset_voice(voice_id):
+                # A preset ships as audio, not as an id: the remote runtime has only the
+                # cloning model, no VieNeu/ZeroTTS weights to render the voice itself.
+                voice_id = None
         else:
             reference = _voice_clip_or_raise(book)
     if not model["supports_reference"] and not voice_id:
@@ -94,7 +102,7 @@ def _export_tts_config(book: Book, model_id: str, voice_id: str | None = None) -
         "model_id": model_id,
         "voice_id": voice_id,
         "options": {},
-    }, reference
+    }, reference, transcript
 
 
 def _write_patch_files(
@@ -105,6 +113,7 @@ def _write_patch_files(
     reference_rel: str | None,
     tts: dict | None = None,
     max_chars: int = 0,
+    reference_transcript: str | None = None,
 ) -> dict:
     """Write manifest.json (with chunk text inlined) for one patch into dest_dir and
     return the manifest dict. The manifest is the only file a patch folder needs: the
@@ -144,7 +153,7 @@ def _write_patch_files(
         "chapter_titles": chapter_titles,
         "chunk_metadata": chunk_metadata,
         "reference_wav": reference_rel,
-        "reference_transcript": book.voice_transcript or None,
+        "reference_transcript": reference_transcript or book.voice_transcript or None,
         "voxcpm_model_id": "openbmb/VoxCPM2",
         "tts": tts or {"model_id": "voxcpm2", "voice_id": None, "options": {}},
     }
@@ -198,7 +207,7 @@ def build_batch_export_package(
     book = repository.get_book(conn, patches[0].book_id)
     if book is None:
         raise ValueError(f"book {patches[0].book_id} not found")
-    tts, voice_clip = _export_tts_config(book, model_id, voice_id)
+    tts, voice_clip, reference_transcript = _export_tts_config(book, model_id, voice_id)
     tts["options"]["with_effects"] = with_effects
 
     patches = sorted(patches, key=lambda p: p.patch_index)
@@ -218,7 +227,7 @@ def build_batch_export_package(
         reference_rel = f"../../{reference_wav_name}" if reference_wav_name else None
         manifest = _write_patch_files(
             conn, book, patch, package_dir / folder_rel, reference_rel,
-            tts=tts, max_chars=max_chars,
+            tts=tts, max_chars=max_chars, reference_transcript=reference_transcript,
         )
         patch_entries.append({
             "patch_id": patch.id,
@@ -251,7 +260,7 @@ def build_batch_export_package(
         "voxcpm_model_id": "openbmb/VoxCPM2",
         "tts": tts,
         "reference_wav": reference_wav_name,
-        "reference_transcript": book.voice_transcript or None,
+        "reference_transcript": reference_transcript or book.voice_transcript or None,
         "patch_count": len(patch_entries),
         "patches": patch_entries,
         "video_config": video_config,

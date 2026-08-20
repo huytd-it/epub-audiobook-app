@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from app.tts_engine import (
+    PRESET_REFERENCE_TEXT,
     EdgeTTSEngine,
     GTTSEngine,
     OmniVoiceEngine,
@@ -18,6 +19,11 @@ from app.tts_engine import (
     create_tts_engine,
     list_tts_models,
     normalize_tt_payload,
+    parse_preset_voice,
+    preset_reference_clip,
+    preset_reference_options,
+    requires_book_reference,
+    resolve_reference,
 )
 
 
@@ -268,3 +274,186 @@ def test_vieneu_fast_loads_v3turbo_weights_explicitly():
         "backbone_repo": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
         "precision": "int8",
     }
+
+
+def _fake_preset_engine(monkeypatch, sample_rate=48000):
+    """Stand in for VieNeu/ZeroTTS so preset clips render without model weights."""
+    class FakePresetEngine:
+        sample_rate = 48000
+
+        def __init__(self, voice=None, **options):
+            self.voice = voice
+
+        def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None):
+            return np.full(480, 0.25, dtype=np.float32)
+
+    FakePresetEngine.sample_rate = sample_rate
+    created = []
+
+    def factory(engine_id, **options):
+        created.append((engine_id, options))
+        return FakePresetEngine(**options)
+
+    monkeypatch.setattr("app.tts_engine.create_tts_engine", factory)
+    return created
+
+
+def test_parse_preset_voice_only_claims_its_own_prefix():
+    assert parse_preset_voice(None) is None
+    assert parse_preset_voice("") is None
+    assert parse_preset_voice("giong-nam.wav") is None
+    assert parse_preset_voice("vi-VN-HoaiMyNeural") is None
+    assert parse_preset_voice("preset:vieneu-fast:Adam") == ("vieneu-fast", "Adam")
+    assert parse_preset_voice("preset:zerotts:maichi") == ("zerotts", "maichi")
+
+
+def test_parse_preset_voice_refuses_a_prefixed_id_it_cannot_resolve():
+    """Falling back to the book clip here would narrate a whole book in a voice nobody
+    picked, so a broken preset id has to fail loudly instead."""
+    for broken in ("preset:", "preset:vieneu-fast", "preset:edge-tts:vi", "preset::Adam"):
+        with pytest.raises(ValueError, match="không hợp lệ"):
+            parse_preset_voice(broken)
+
+
+def test_preset_reference_clip_renders_once_and_reuses_the_file(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.config.settings.data_root", str(tmp_path))
+    created = _fake_preset_engine(monkeypatch)
+
+    path, transcript = preset_reference_clip("preset:vieneu-fast:Adam")
+
+    assert transcript == PRESET_REFERENCE_TEXT
+    assert Path(path).is_file() and Path(path).parent.name == "_presets"
+    assert created == [("vieneu-fast", {"voice": "Adam"})]
+    # Second call must hand back the same clip without synthesizing again: one narrator per
+    # book depends on every chunk cloning the exact same audio.
+    assert preset_reference_clip("preset:vieneu-fast:Adam") == (path, transcript)
+    assert len(created) == 1
+    assert not list(Path(path).parent.glob("*.part"))
+
+
+def test_preset_clips_of_different_voices_do_not_share_a_file(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.config.settings.data_root", str(tmp_path))
+    _fake_preset_engine(monkeypatch)
+
+    adam, _ = preset_reference_clip("preset:vieneu-fast:Adam")
+    maichi, _ = preset_reference_clip("preset:zerotts:maichi")
+    ngoc_linh, _ = preset_reference_clip("preset:vieneu-fast:Ngọc Linh")
+
+    assert len({adam, maichi, ngoc_linh}) == 3
+
+
+def test_cloning_engines_take_their_reference_from_a_preset_voice(tmp_path, monkeypatch):
+    """The book's own clip is still passed per chunk; an explicitly picked preset wins,
+    and brings the transcript its clip was rendered from."""
+    monkeypatch.setattr("app.config.settings.data_root", str(tmp_path))
+    monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
+    _fake_preset_engine(monkeypatch)
+    clip, transcript = preset_reference_clip("preset:zerotts:maichi")
+
+    voxcpm = VoxCPMEngine(voice="preset:zerotts:maichi")
+    voxcpm._model = FakeModel()
+    voxcpm.synthesize_chunk("xin chào", reference_wav_path="book.wav", prompt_text="cũ")
+    assert voxcpm._model.calls[0]["reference_wav_path"] == clip
+    assert voxcpm._model.calls[0]["prompt_text"] == transcript
+
+    omni = OmniVoiceEngine(voice="preset:zerotts:maichi")
+    omni._model = FakeModel()
+    omni.synthesize_chunk("xin chào", "book.wav", "cũ")
+    assert omni._model.calls[0] == {"text": "xin chào", "ref_audio": clip, "ref_text": transcript}
+
+
+def _seed_library_clip(tmp_path, monkeypatch, name: str) -> Path:
+    monkeypatch.setattr("app.config.settings.data_root", str(tmp_path))
+    clip = tmp_path / "voices" / name
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(b"RIFFfakewav")
+    return clip
+
+
+def test_a_picked_library_clip_overrides_the_books_own(tmp_path, monkeypatch):
+    """The voice id is a filename for cloning models - the same thing the Colab/Kaggle
+    export has always resolved it to - so picking one has to change what is cloned."""
+    monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
+    clip = _seed_library_clip(tmp_path, monkeypatch, "giong-nam.wav")
+    engine = VoxCPMEngine(voice="giong-nam.wav")
+    engine._model = FakeModel()
+
+    engine.synthesize_chunk("xin chào", reference_wav_path="book.wav", prompt_text="lời mẫu")
+
+    assert engine._model.calls[0]["reference_wav_path"] == str(clip)
+    # book.voice_transcript belongs to book.wav; sending it with another clip would give
+    # the model words that clip does not say.
+    assert "prompt_text" not in engine._model.calls[0]
+
+
+def test_the_books_transcript_survives_when_the_pick_is_the_books_own_clip(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
+    clip = _seed_library_clip(tmp_path, monkeypatch, "giong-nam.wav")
+    engine = VoxCPMEngine(voice="giong-nam.wav")
+    engine._model = FakeModel()
+
+    engine.synthesize_chunk("xin chào", reference_wav_path=str(clip), prompt_text="lời mẫu")
+
+    assert engine._model.calls[0]["prompt_text"] == "lời mẫu"
+
+
+def test_an_unpicked_voice_leaves_the_book_clip_alone(monkeypatch):
+    monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
+    engine = VoxCPMEngine()
+    engine._model = FakeModel()
+
+    engine.synthesize_chunk("xin chào", reference_wav_path="book.wav", prompt_text="lời mẫu")
+
+    assert engine._model.calls[0]["reference_wav_path"] == "book.wav"
+    assert engine._model.calls[0]["prompt_text"] == "lời mẫu"
+
+
+def test_a_voice_naming_no_library_clip_is_refused(tmp_path, monkeypatch):
+    """Same message and same failure as the export: a clip that was renamed or deleted
+    must stop the job, not quietly hand the book back to some other voice."""
+    _seed_library_clip(tmp_path, monkeypatch, "giong-nam.wav")
+    for missing in ("da-xoa.wav", "../ngoai-thu-vien.wav", "voices/giong-nam.wav"):
+        with pytest.raises(ValueError, match="unknown reference voice"):
+            resolve_reference(missing, "book.wav", "lời mẫu")
+
+
+def test_the_picked_voice_keys_the_chunk_cache():
+    """Chunks recorded against another reference must not be resumed into this run; books
+    that never picked a voice keep the fingerprint their chunks were written with."""
+    assert VoxCPMEngine().config_fingerprint().endswith("seed=42")
+    assert OmniVoiceEngine().config_fingerprint().endswith("seed=42")
+    for engine in (VoxCPMEngine, OmniVoiceEngine):
+        plain = engine().config_fingerprint()
+        assert engine(voice="giong-nam.wav").config_fingerprint() not in (
+            plain, engine(voice="giong-nu.wav").config_fingerprint(),
+        )
+        assert engine(voice="preset:zerotts:maichi").config_fingerprint() != plain
+        assert (engine(voice="preset:zerotts:maichi").config_fingerprint()
+                != engine(voice="preset:vieneu-fast:Adam").config_fingerprint())
+
+
+def test_requires_book_reference_only_for_cloning_models_with_nothing_picked():
+    assert requires_book_reference("voxcpm2", None) is True
+    assert requires_book_reference("omnivoice", "") is True
+    # A picked clip or preset is the reference, so the book no longer needs one of its own.
+    assert requires_book_reference("omnivoice", "giong-nam.wav") is False
+    assert requires_book_reference("voxcpm2", "preset:vieneu-fast:Adam") is False
+    # Fixed-cast and cloud engines speak their own voice; they never need a clip.
+    assert requires_book_reference("vieneu-fast", "Adam") is False
+    assert requires_book_reference("zerotts", "maichi") is False
+    assert requires_book_reference("edge-tts", "vi-VN-HoaiMyNeural") is False
+
+
+def test_preset_reference_options_are_offered_as_voice_ids(monkeypatch):
+    monkeypatch.setattr("app.tts_engine._VOICE_SOURCES", {
+        "vieneu-fast": lambda: [{"id": "Adam", "label": "Adam — nam trầm", "language": "vi"}],
+    })
+
+    options = preset_reference_options()
+
+    assert options == [{
+        "value": "preset:vieneu-fast:Adam",
+        "label": "VieNeu fast · Adam — nam trầm",
+        "language": "vi",
+    }]
+    assert parse_preset_voice(options[0]["value"]) == ("vieneu-fast", "Adam")

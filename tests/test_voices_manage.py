@@ -125,6 +125,62 @@ def test_voice_rename_renames_file_and_book_reference(client):
     db.close()
 
 
+def test_voice_rename_follows_the_audio_settings_voice_id(client):
+    """The voice id of a cloning model IS this filename, so a rename that left it behind
+    would fail the next TTS job with "unknown reference voice"."""
+    _seed_voice(client, "old.wav")
+    db = _db(client)
+    now = "2026-01-01T00:00:00+00:00"
+    db.execute(
+        "INSERT INTO book (title, original_filename, epub_path, patch_size, status, "
+        "tts_voice_id, export_tts_voice_id, created_at, updated_at) "
+        "VALUES ('b', 'b.epub', 'b.epub', 10, 'ready', 'old.wav', 'old.wav', ?, ?)",
+        (now, now),
+    )
+    db.commit()
+    db.close()
+    client.post("/production-settings", json={"audio": {"model_id": "voxcpm2", "voice_id": "old.wav"}})
+
+    resp = client.post(
+        "/voices/rename",
+        data={"old_name": "old.wav", "new_name": "narrator"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    db = _db(client)
+    row = db.execute("SELECT tts_voice_id, export_tts_voice_id FROM book").fetchone()
+    assert (row["tts_voice_id"], row["export_tts_voice_id"]) == ("narrator.wav", "narrator.wav")
+    db.close()
+    defaults = client.get("/production-settings").json()["defaults"]
+    assert defaults["audio"]["voice_id"] == "narrator.wav"
+
+
+def test_voice_delete_clears_the_audio_settings_voice_id(client):
+    p = _seed_voice(client, "gone.wav")
+    db = _db(client)
+    now = "2026-01-01T00:00:00+00:00"
+    db.execute(
+        "INSERT INTO book (title, original_filename, epub_path, patch_size, status, "
+        "tts_voice_id, created_at, updated_at) "
+        "VALUES ('b', 'b.epub', 'b.epub', 10, 'ready', 'gone.wav', ?, ?)",
+        (now, now),
+    )
+    db.commit()
+    db.close()
+    client.post("/production-settings", json={"audio": {"model_id": "voxcpm2", "voice_id": "gone.wav"}})
+
+    assert client.post("/voices/delete", data={"name": "gone.wav"},
+                       follow_redirects=False).status_code == 303
+    assert not p.exists()
+
+    db = _db(client)
+    assert db.execute("SELECT tts_voice_id FROM book").fetchone()["tts_voice_id"] is None
+    db.close()
+    defaults = client.get("/production-settings").json()["defaults"]
+    assert defaults["audio"]["voice_id"] == ""
+
+
 def test_voice_rename_rejects_traversal(client):
     _seed_voice(client, "ok.wav")
     for old_name, new_name in [

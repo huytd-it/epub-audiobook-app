@@ -534,7 +534,7 @@ def test_manifest_cell_reads_generic_tts_contract_with_legacy_fallback(template)
 def test_sample_rate_constants_per_model(template):
     src = _manifest_cell(template)
     for k, v in (
-        ("voxcpm2", 16000),
+        ("voxcpm2", 48000),
         ("omnivoice", 24000),
         ("vieneu-fast", 48000),
         ("zerotts", 48000),

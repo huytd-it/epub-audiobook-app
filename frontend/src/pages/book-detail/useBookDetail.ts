@@ -9,6 +9,7 @@ import {
   TtsModel,
   VoiceOption,
   errorText,
+  presetVoiceOptions,
 } from "./types";
 
 const POLL_MS = 5000;
@@ -203,11 +204,16 @@ export function useTtsOptions(data: Detail | undefined, modelId: string): TtsOpt
         ? [{ value: selectedModel.default_voice, label: selectedModel.default_voice }]
         : [];
     }
+    // Model clone: audio mẫu đã upload trong thư viện, cộng thêm giọng preset của
+    // VieNeu/ZeroTTS — chọn preset thì app tự sinh clip mẫu để clone, khỏi cần thu âm.
     const names = new Set([...localVoices.map((voice) => voice.name), currentVoiceName]);
-    return Array.from(names)
-      .filter(Boolean)
-      .map((name) => ({ value: name, label: name }));
-  }, [selectedModel, builtInVoices, onlineVoices, localVoices, currentVoiceName]);
+    return [
+      ...Array.from(names)
+        .filter(Boolean)
+        .map((name) => ({ value: name, label: name })),
+      ...presetVoiceOptions(ttsModels),
+    ];
+  }, [selectedModel, builtInVoices, onlineVoices, localVoices, currentVoiceName, ttsModels]);
 
   return { ttsModels, voiceOptions, currentVoiceName };
 }

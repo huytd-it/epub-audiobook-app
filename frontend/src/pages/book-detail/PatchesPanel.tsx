@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -48,6 +48,16 @@ type Filter = "all" | "processing" | "done" | "failed";
 
 type TextTotals = { totals: Record<string, number>; total: number };
 
+/** Kiểu chọn dòng: "single" chỉ giữ dòng vừa bấm, "toggle" bật/tắt riêng dòng đó,
+ * "range" quét từ dòng neo (lần bấm gần nhất) tới dòng hiện tại. */
+type SelectMode = "single" | "toggle" | "range";
+
+/** Phần tử tương tác trong dòng giữ hành vi riêng — click ở đó không đổi lựa chọn. */
+const INTERACTIVE = "button, a, input, label, select, textarea, [role='button']";
+
+const isInteractive = (target: EventTarget | null) =>
+  target instanceof Element && Boolean(target.closest(INTERACTIVE));
+
 type RowProps = {
   patch: Patch;
   chapters: Chapter[];
@@ -57,7 +67,7 @@ type RowProps = {
   textTotals?: TextTotals;
   selected: boolean;
   busy: boolean;
-  onToggle: (patchId: number) => void;
+  onSelect: (patchId: number, mode: SelectMode) => void;
   onOpen: (patch: Patch) => void;
   onOpenIssues: (patch: Patch) => void;
   onOpenFindReplace: (patch: Patch) => void;
@@ -78,7 +88,7 @@ const PatchRow = React.memo(function PatchRow({
   textTotals,
   selected,
   busy,
-  onToggle,
+  onSelect,
   onOpen,
   onOpenIssues,
   onOpenFindReplace,
@@ -97,14 +107,34 @@ const PatchRow = React.memo(function PatchRow({
   const actualStart = numberedChapters[0];
   const actualEnd = numberedChapters[numberedChapters.length - 1];
 
+  // Bấm vào phần trống của dòng để chọn; nút/link/ô nhập bên trong vẫn giữ hành vi riêng.
+  const selectFromEvent = (event: React.MouseEvent, fallback: SelectMode) =>
+    onSelect(patch.id, event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : fallback);
+
   return (
-    <TableRow className={cn(selected && "bg-primary/5", rangeReport?.severity === "error" && "bg-red-50/40")}>
+    <TableRow
+      className={cn(
+        "cursor-pointer",
+        selected && "bg-primary/5",
+        rangeReport?.severity === "error" && "bg-red-50/40"
+      )}
+      // Shift+click mặc định bôi đen text — chặn ngay từ mousedown.
+      onMouseDown={(event) => {
+        if (event.shiftKey && !isInteractive(event.target)) event.preventDefault();
+      }}
+      onClick={(event) => {
+        if (isInteractive(event.target)) return;
+        selectFromEvent(event, "single");
+      }}
+    >
       <TableCell className="w-8 py-2.5 pl-4 pr-0">
         <input
           type="checkbox"
           className={checkboxClass}
           checked={selected}
-          onChange={() => onToggle(patch.id)}
+          // Ô tick luôn bật/tắt một dòng, trừ khi giữ Shift để quét khoảng.
+          onClick={(event) => selectFromEvent(event, "toggle")}
+          onChange={() => undefined}
           aria-label={`Chọn patch ${patch.patch_index + 1}`}
         />
       </TableCell>
@@ -470,13 +500,32 @@ export function PatchesPanel({
 
   const allVisibleSelected = visible.length > 0 && visible.every((patch) => selectedIds.includes(patch.id));
 
-  const toggle = useCallback(
-    (patchId: number) => {
-      onSelectionChange(
-        selectedIds.includes(patchId) ? selectedIds.filter((id) => id !== patchId) : [...selectedIds, patchId]
-      );
+  // Dòng neo cho shift+click: lần bấm gần nhất không phải quét khoảng.
+  const anchorId = useRef<number | undefined>(undefined);
+
+  const select = useCallback(
+    (patchId: number, mode: SelectMode) => {
+      const visibleIds = visible.map((patch) => patch.id);
+      if (mode === "range" && anchorId.current != null) {
+        const from = visibleIds.indexOf(anchorId.current);
+        const to = visibleIds.indexOf(patchId);
+        if (from >= 0 && to >= 0) {
+          const span = visibleIds.slice(Math.min(from, to), Math.max(from, to) + 1);
+          onSelectionChange(Array.from(new Set([...selectedIds, ...span])));
+          return;
+        }
+      }
+      anchorId.current = patchId;
+      if (mode === "toggle" || mode === "range") {
+        onSelectionChange(
+          selectedIds.includes(patchId) ? selectedIds.filter((id) => id !== patchId) : [...selectedIds, patchId]
+        );
+        return;
+      }
+      // Click thường: chỉ giữ dòng này; bấm lại khi nó là lựa chọn duy nhất thì bỏ chọn.
+      onSelectionChange(selectedIds.length === 1 && selectedIds[0] === patchId ? [] : [patchId]);
     },
-    [selectedIds, onSelectionChange]
+    [visible, selectedIds, onSelectionChange]
   );
 
   const toggleAll = useCallback(() => {
@@ -581,7 +630,7 @@ export function PatchesPanel({
         <SectionHead
           icon={Layers}
           title={`Patches (${patches.length})`}
-          detail="Chọn patch để chạy hành động hàng loạt ở thanh dưới màn hình."
+          detail="Bấm vào dòng để chọn · Ctrl+click chọn thêm · Shift+click quét khoảng. Hành động hàng loạt nằm ở thanh dưới màn hình."
           action={
             <div className="flex shrink-0 flex-wrap items-center gap-2">
               <Button size="sm" variant="outline" onClick={checkText} disabled={checkingText}>
@@ -672,7 +721,7 @@ export function PatchesPanel({
                     textTotals={textChecks?.[patch.id]}
                     selected={selectedIds.includes(patch.id)}
                     busy={importingId === patch.id}
-                    onToggle={toggle}
+                    onSelect={select}
                     onOpen={onOpenPatch}
                     onOpenIssues={openIssues}
                     onOpenFindReplace={openFindReplace}

@@ -170,3 +170,40 @@ def test_vieneu_export_needs_no_reference_and_defaults_its_voice(conn, tmp_path,
         import shutil
 
         shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_batch_export_renders_a_preset_voice_into_the_reference_clip(conn, tmp_path, monkeypatch):
+    """A "preset:..." voice ships as audio, not as an id: the Colab runtime only has the
+    cloning model, so it could never render the VieNeu/ZeroTTS voice itself."""
+    import numpy as np
+
+    class FakePresetEngine:
+        sample_rate = 48000
+
+        def __init__(self, voice=None, **options):
+            self.voice = voice
+
+        def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None):
+            return np.full(480, 0.25, dtype=np.float32)
+
+    monkeypatch.setattr("app.tts_engine.create_tts_engine", lambda engine_id, **kw: FakePresetEngine(**kw))
+    monkeypatch.setattr("app.config.settings.data_root", str(tmp_path))
+    monkeypatch.setattr(drive_export.settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn, voice_clip_path=None)
+
+    package_dir, batch_manifest = drive_export.build_batch_export_package(
+        conn, [patch], model_id="voxcpm2", voice_id="preset:vieneu-fast:Adam"
+    )
+    try:
+        from app.tts_engine import PRESET_REFERENCE_TEXT
+
+        assert batch_manifest["reference_wav"] == "reference.wav"
+        assert (package_dir / "reference.wav").is_file()
+        assert batch_manifest["reference_transcript"] == PRESET_REFERENCE_TEXT
+        assert batch_manifest["tts"] == {"model_id": "voxcpm2", "voice_id": None,
+                                         "options": {"with_effects": False}}
+    finally:
+        import shutil
+
+        shutil.rmtree(package_dir, ignore_errors=True)

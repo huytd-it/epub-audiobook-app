@@ -60,6 +60,28 @@ def _clean_new_name(new_name: str, suffix: str) -> str:
 
 
 
+def _repoint_voice_selection(conn, old_name: str, new_name: str | None) -> None:
+    """Follow a renamed (or deleted) clip through every place a voice is *selected*.
+
+    Since the audio settings' voice id is the filename of the clip a cloning model clones,
+    a stale id is no longer harmless: the next TTS job would fail with "unknown reference
+    voice". Books carry their own id in tts_voice_id / export_tts_voice_id, and the ones
+    that inherit read it from the global audio defaults, so all three have to follow the
+    file. Does not commit - the caller owns the transaction, exactly like the
+    book.voice_clip_path sweep next to each call."""
+    from app.production_defaults import (
+        get_global_production_defaults,
+        save_global_production_defaults,
+    )
+
+    for column in ("tts_voice_id", "export_tts_voice_id"):
+        conn.execute(f"UPDATE book SET {column} = ? WHERE {column} = ?", (new_name, old_name))
+    audio = dict(get_global_production_defaults(conn)["audio"])
+    if audio.get("voice_id") == old_name:
+        audio["voice_id"] = new_name or ""
+        save_global_production_defaults(conn, {"audio": audio})
+
+
 def _meta_payload(name: str, meta: dict | None) -> dict:
     """Shape one clip's metadata for the API (genre as a list, not a raw column)."""
     return {
@@ -138,6 +160,7 @@ def rename_voice(
             "WHERE voice_clip_path = ?",
             (str(dest), datetime.now(timezone.utc).isoformat(), str(src)),
         )
+        _repoint_voice_selection(conn, src.name, dest.name)
         repository.rename_voice_meta(conn, old_name, dest.name)
         conn.commit()
     return RedirectResponse(url="/voices", status_code=303)
@@ -264,6 +287,7 @@ def delete_voice(request: Request, name: str = Form(...)):
             "WHERE voice_clip_path = ?",
             (datetime.now(timezone.utc).isoformat(), str(p)),
         )
+        _repoint_voice_selection(conn, p.name, None)
         conn.commit()
         p.unlink(missing_ok=True)
     return RedirectResponse(url="/voices", status_code=303)

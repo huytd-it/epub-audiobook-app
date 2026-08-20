@@ -6,7 +6,11 @@ Upload `.epub` files, automatically split into chapters and patches, synthesize 
 
 - **EPUB Parsing** — Extract chapters from EPUB files with smart chapter detection
 - **Patch System** — Split books into manageable patches for processing
-- **TTS Synthesis** — Unified VoxCPM2, OmniVoice, VieNeu fast, Edge TTS, and gTTS generation
+- **TTS Synthesis** — Unified VoxCPM2, OmniVoice, VieNeu fast, ZeroTTS, Edge TTS, and gTTS generation
+- **Reference Voice Selection** — VoxCPM2/OmniVoice clone whatever the audio settings' voice id names,
+  locally and in Colab/Kaggle exports alike: a clip from the `/voices` library, a VieNeu or ZeroTTS
+  preset voice (`preset:<engine>:<voice>`, rendered once and cached under `data/voices/_presets`), or
+  the book's own voice clip when nothing is picked
 - **Batch Colab/Kaggle Export** — Export one or more selected patches through the shared batch notebook
 - **Audio Merge** — Combine patches into full audiobook files
 - **Video Generation** — Create videos with custom backgrounds per patch/chapter

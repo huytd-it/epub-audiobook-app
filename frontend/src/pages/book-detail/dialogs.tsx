@@ -342,6 +342,11 @@ export function ConfigDialog({
   };
 
   const voiceClipName = voiceClipPath ? voiceClipPath.split(/[/\\]/).pop() : "";
+  // Chỉ model clone mới đụng tới audio mẫu; model có cast riêng (ZeroTTS, VieNeu) hay
+  // backend cloud thì ô Voice là giọng của chính nó. Chưa tải được catalog thì coi như
+  // model clone để không giấu mất thông tin voice clip.
+  const selectedModel = ttsModels.find((model) => model.id === settings.modelId);
+  const usesReferenceClip = selectedModel ? selectedModel.supports_reference : true;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -419,10 +424,27 @@ export function ConfigDialog({
                 />
               </div>
             </div>
-            <div className="rounded-md bg-muted/30 p-3 text-xs text-muted-foreground">
-              Voice clip:{" "}
-              {voiceClipName ? <span className="font-medium text-foreground">{voiceClipName}</span> : "Chưa thiết lập"}
-            </div>
+            {usesReferenceClip && (
+              <div className="rounded-md bg-muted/30 p-3 text-xs text-muted-foreground">
+                {settings.voiceId.startsWith("preset:") ? (
+                  <>
+                    Model clone sẽ đọc một câu mẫu bằng giọng preset đã chọn rồi dùng chính clip đó
+                    làm audio mẫu — voice clip của sách không được dùng trong lần chạy này.
+                  </>
+                ) : settings.voiceId ? (
+                  <>
+                    Audio mẫu:{" "}
+                    <span className="font-medium text-foreground">{settings.voiceId}</span> — giọng chọn
+                    ở ô Voice được dùng thay cho voice clip của sách.
+                  </>
+                ) : (
+                  <>
+                    Voice clip:{" "}
+                    {voiceClipName ? <span className="font-medium text-foreground">{voiceClipName}</span> : "Chưa thiết lập"}
+                  </>
+                )}
+              </div>
+            )}
             <DialogFooter>
               <Button onClick={saveAudio} disabled={saving}>
                 {saving ? "Đang lưu..." : "Lưu cấu hình âm thanh"}

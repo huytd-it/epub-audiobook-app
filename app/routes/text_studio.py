@@ -426,7 +426,7 @@ async def preview_stream(
 async def generate_selected_tts(request: Request, book_id: int):
     """Queue selected patches through the common five-model audiobook pipeline."""
     from app.jobqueue.backfill import enqueue_pending_patch_jobs
-    from app.tts_engine import normalize_tt_payload
+    from app.tts_engine import normalize_tt_payload, requires_book_reference
 
     body = await request.json()
     patch_ids = [int(value) for value in body.get("patch_ids") or []]
@@ -456,7 +456,13 @@ async def generate_selected_tts(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
-        if payload["tts_engine"] in {"voxcpm2", "omnivoice", "vieneu-fast"}:
+        # Only the cloning models need the book's own clip, and only when no preset voice
+        # was picked - a "preset:..." voice brings its own (generated) reference along.
+        try:
+            needs_book_clip = requires_book_reference(payload["tts_engine"], payload["voice"])
+        except ValueError as exc:  # a "preset:..." voice naming no real engine/voice
+            raise HTTPException(status_code=400, detail=str(exc))
+        if needs_book_clip:
             if not book.voice_clip_path or not Path(book.voice_clip_path).is_file():
                 raise HTTPException(status_code=400, detail="model requires the book reference voice")
         if payload["tts_engine"] in {"edge-tts", "gtts"} and not payload["voice"]:

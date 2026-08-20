@@ -40,6 +40,22 @@ export type TtsModel = {
 export type OnlineVoice = { id: string; label: string; language: string };
 export type VoiceOption = { value: string; label: string };
 
+/** Giọng preset của các model cast cố định (VieNeu, ZeroTTS) đưa sang cho model clone
+ *  (VoxCPM, OmniVoice) dùng làm audio mẫu: app tự đọc một câu bằng giọng preset rồi lấy
+ *  file đó làm reference. `value` phải đúng dạng "preset:<engine>:<voice>" mà backend
+ *  (app/tts_engine.parse_preset_voice) hiểu — filename trong thư viện không bao giờ có
+ *  dạng này nên hai nguồn giọng đứng chung dropdown được. */
+export function presetVoiceOptions(models: TtsModel[]): VoiceOption[] {
+  return models
+    .filter((model) => !model.supports_reference && (model.voices?.length || 0) > 0)
+    .flatMap((model) =>
+      (model.voices || []).map((voice) => ({
+        value: `preset:${model.id}:${voice.id}`,
+        label: `${model.name} · ${voice.label || voice.id}`,
+      }))
+    );
+}
+
 export type ExportContext = {
   exports: PatchExport[];
   sync_targets: DriveTarget[];

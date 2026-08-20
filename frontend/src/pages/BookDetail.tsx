@@ -42,37 +42,47 @@ import { OverlayEditor } from "./book-detail/OverlayEditor";
 
 type MainTab = "patches" | "build" | "chapters" | "thumbnail";
 
-/** Tùy chọn tự động hoá khi chạy hàng loạt TTS: dựng video (bắt buộc nếu muốn
+/** Hai bước chạy hàng loạt cần xác nhận trước khi vào hàng đợi. */
+type BatchKind = "audio" | "video";
+
+/** Tùy chọn tự động hoá khi chạy hàng loạt: dựng video (bắt buộc nếu muốn
  * auto-upload) và/hoặc upload YouTube. */
-export type BatchTtsAutomation = {
+export type BatchAutomation = {
   autoCreateVideo: boolean;
   autoUploadYoutube: boolean;
   retryCount: number;
 };
 
-const DEFAULT_AUTOMATION: BatchTtsAutomation = {
+const DEFAULT_AUTOMATION: BatchAutomation = {
   autoCreateVideo: false,
   autoUploadYoutube: false,
   retryCount: 2,
 };
 
-/** Hộp thoại xác nhận TTS hàng loạt kèm thiết lập tự động hoá patch pipeline.
- * Ràng buộc: upload YouTube bắt buộc kéo theo dựng video (upload => create). */
-export function BatchTtsDialog({
+/** Hộp thoại xác nhận chạy hàng loạt — dùng chung cho TTS và dựng video — kèm
+ * thiết lập tự động hoá patch pipeline. Ràng buộc ở nhánh audio: upload YouTube
+ * bắt buộc kéo theo dựng video (upload => create); nhánh video chỉ còn lựa chọn
+ * upload vì video là bước đang chạy. */
+export function BatchRunDialog({
+  kind,
   targets,
   automation,
   onAutomationChange,
   open,
   onOpenChange,
   onConfirm,
+  running,
 }: {
+  kind: BatchKind;
   targets: number;
-  automation: BatchTtsAutomation;
-  onAutomationChange: (patch: Partial<BatchTtsAutomation>) => void;
+  automation: BatchAutomation;
+  onAutomationChange: (patch: Partial<BatchAutomation>) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
+  running: boolean;
 }) {
+  const isAudio = kind === "audio";
   const toggleUpload = (value: boolean) => {
     onAutomationChange({ autoUploadYoutube: value, autoCreateVideo: value ? true : automation.autoCreateVideo });
   };
@@ -80,27 +90,36 @@ export function BatchTtsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-lg overflow-auto">
         <DialogHeader>
-          <DialogTitle>Tạo audio cho {targets} patch</DialogTitle>
+          <DialogTitle>
+            {isAudio ? `Tạo audio cho ${targets} patch` : `Dựng video cho ${targets} patch`}
+          </DialogTitle>
           <DialogDescription>
-            Đưa các patch vào hàng đợi TTS. Bật tự động hoá để nối tiếp dây chuyền video/YouTube ngay sau khi audio
-            hoàn thành.
+            {isAudio
+              ? "Đưa các patch vào hàng đợi TTS. Bật tự động hoá để nối tiếp dây chuyền video/YouTube ngay sau khi audio hoàn thành."
+              : "Đưa các patch vào hàng đợi dựng video. Bật tự động hoá để upload thẳng lên YouTube ngay sau khi video dựng xong."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
           <div className="space-y-3 rounded-md border border-border p-3">
-            <CheckField
-              checked={automation.autoCreateVideo}
-              disabled={automation.autoUploadYoutube}
-              onChange={(value) => onAutomationChange({ autoCreateVideo: value })}
-              label="Tự động dựng video sau khi audio xong"
-            />
+            {isAudio && (
+              <CheckField
+                checked={automation.autoCreateVideo}
+                disabled={automation.autoUploadYoutube}
+                onChange={(value) => onAutomationChange({ autoCreateVideo: value })}
+                label="Tự động dựng video sau khi audio xong"
+              />
+            )}
             <CheckField
               checked={automation.autoUploadYoutube}
-              onChange={toggleUpload}
-              label="Tự động upload lên YouTube sau khi dựng video"
+              onChange={isAudio ? toggleUpload : (value) => onAutomationChange({ autoUploadYoutube: value })}
+              label={
+                isAudio
+                  ? "Tự động upload lên YouTube sau khi dựng video"
+                  : "Tự động upload lên YouTube sau khi dựng video xong"
+              }
             />
-            {automation.autoUploadYoutube && (
+            {isAudio && automation.autoUploadYoutube && (
               <div className="rounded-md bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
                 Đã bật kéo theo dựng video bắt buộc — video là tiền đề của upload, nên không thể tắt mục trên khi
                 upload vẫn bật.
@@ -108,26 +127,30 @@ export function BatchTtsDialog({
             )}
           </div>
 
-          <label className="block text-xs font-medium">
-            <span className="flex items-baseline justify-between gap-2">
-              Số lần thử lại khi lỗi
-              <span className="font-normal text-muted-foreground">0–10 · mặc định 2</span>
-            </span>
-            <input
-              type="number"
-              min="0"
-              max="10"
-              className="mt-1.5 h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
-              value={automation.retryCount}
-              onChange={(event) =>
-                onAutomationChange({ retryCount: Math.max(0, Math.min(10, Number(event.target.value) || 0)) })
-              }
-            />
-          </label>
+          {isAudio && (
+            <label className="block text-xs font-medium">
+              <span className="flex items-baseline justify-between gap-2">
+                Số lần thử lại khi lỗi
+                <span className="font-normal text-muted-foreground">0–10 · mặc định 2</span>
+              </span>
+              <input
+                type="number"
+                min="0"
+                max="10"
+                className="mt-1.5 h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                value={automation.retryCount}
+                onChange={(event) =>
+                  onAutomationChange({ retryCount: Math.max(0, Math.min(10, Number(event.target.value) || 0)) })
+                }
+              />
+            </label>
+          )}
         </div>
 
         <DialogFooter>
-          <Button onClick={onConfirm}>Đưa {targets} patch vào hàng đợi</Button>
+          <Button onClick={onConfirm} disabled={running || !targets}>
+            {running ? "Đang gửi..." : `Đưa ${targets} patch vào hàng đợi`}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -152,10 +175,11 @@ export function BookDetail() {
   const [bookTitle, setBookTitle] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
-  const [running, setRunning] = useState<"audio" | "video" | "youtube" | "thumbnail">();
-  const [ttsOpen, setTtsOpen] = useState(false);
-  const [ttsTargets, setTtsTargets] = useState(0);
-  const [automation, setAutomation] = useState<BatchTtsAutomation>(DEFAULT_AUTOMATION);
+  const [running, setRunning] = useState<"audio" | "video" | "youtube">();
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchKind, setBatchKind] = useState<BatchKind>("audio");
+  const [batchTargets, setBatchTargets] = useState<number[]>([]);
+  const [automation, setAutomation] = useState<BatchAutomation>(DEFAULT_AUTOMATION);
   const [settings, setSettings] = useState<AudioSettings>({
     modelId: "edge-tts",
     voiceId: "",
@@ -182,7 +206,7 @@ export function BookDetail() {
   );
 
   // Dừng polling khi đang mở dialog hoặc đang chạy thao tác: tránh ghi đè state giữa chừng.
-  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || ttsOpen || busyCount > 0;
+  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || batchOpen || busyCount > 0;
   const { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh } = useBookDetail(
     bookId,
     paused
@@ -322,38 +346,6 @@ export function BookDetail() {
     };
   }, [patches, pipeline, data?.book.final_video_path]);
 
-  const runBatchThumbnail = useCallback(
-    async () => {
-      const targets = selectedIds.length ? selectedIds : patches.map((patch) => patch.id);
-      if (!targets.length) {
-        setMessage("Không có patch để cập nhật thumbnails.");
-        return;
-      }
-      setRunning("thumbnail");
-      setBusy(true);
-      try {
-        const result = await postJson<{
-          generated: number[];
-          failed: { patch_id: number; error: string }[];
-          invalid_ids: number[];
-        }>(`/books/${bookId}/thumbnails/regenerate`, { patch_ids: targets });
-        const issues = result.failed.length + result.invalid_ids.length;
-        setMessage(
-          issues
-            ? `Đã tạo ${result.generated.length}/${targets.length} thumbnail; ${issues} mục lỗi hoặc không hợp lệ.`
-            : `Đã tạo lại ${result.generated.length} thumbnail YouTube.`
-        );
-        await refresh();
-      } catch (err) {
-        setMessage(errorText(err));
-      } finally {
-        setRunning(undefined);
-        setBusy(false);
-      }
-    },
-    [bookId, patches, selectedIds, refresh, setBusy]
-  );
-
   const runBatch = useCallback(
     async (kind: "audio" | "video" | "youtube") => {
       const fallback =
@@ -366,19 +358,20 @@ export function BookDetail() {
         return;
       }
 
-      // TTS hàng loạt cần xác nhận + thiết lập tự động hoá (dựng video / upload
-      // YouTube). Các bước video/YouTube chạy ngay như cũ.
-      if (kind === "audio") {
-        setTtsTargets(targets.length);
-        setTtsOpen(true);
+      // TTS và dựng video hàng loạt cần xác nhận + thiết lập tự động hoá
+      // (dựng video / upload YouTube). Bước YouTube chạy ngay như cũ.
+      if (kind === "audio" || kind === "video") {
+        setBatchKind(kind);
+        setBatchTargets(targets);
+        setBatchOpen(true);
         return;
       }
 
       setRunning(kind);
       setBusy(true);
       try {
-        const endpoint = kind === "video" ? "generate-video" : "youtube-upload";
-        const label = kind === "video" ? "video" : "YouTube";
+        const endpoint = "youtube-upload";
+        const label = "YouTube";
         let queued = 0;
         let firstError: unknown;
         // Gửi tuần tự để hàng đợi giữ đúng thứ tự patch.
@@ -418,7 +411,7 @@ export function BookDetail() {
 
   /** Chạy TTS hàng loạt với tự động hoá đã chọn trong dialog xác nhận. */
   const confirmBatchTts = useCallback(async () => {
-    const targets = selectedIds.length ? selectedIds : patches.map((patch) => patch.id);
+    const targets = batchTargets;
     if (!targets.length || running) return;
     const nextAutomation = {
       autoCreateVideo: automation.autoUploadYoutube || automation.autoCreateVideo,
@@ -459,9 +452,45 @@ export function BookDetail() {
     } finally {
       setRunning(undefined);
       setBusy(false);
-      setTtsOpen(false);
+      setBatchOpen(false);
     }
-  }, [automation, bookId, patches, refresh, running, selectedIds, setBusy, settings]);
+  }, [automation, batchTargets, bookId, refresh, running, setBusy, settings]);
+
+  /** Dựng video hàng loạt; upload_youtube nối tiếp ngay trong cùng job nếu người
+   * dùng bật tự động hoá ở hộp thoại. Gửi tuần tự để hàng đợi giữ đúng thứ tự. */
+  const confirmBatchVideo = useCallback(async () => {
+    const targets = batchTargets;
+    if (!targets.length || running) return;
+    setRunning("video");
+    setBusy(true);
+    try {
+      let queued = 0;
+      let firstError: unknown;
+      for (const patchId of targets) {
+        try {
+          const form = new FormData();
+          form.append("upload_youtube", automation.autoUploadYoutube ? "true" : "false");
+          await postForm(`/books/${bookId}/patches/${patchId}/generate-video`, form);
+          queued++;
+        } catch (err) {
+          if (!firstError) firstError = err;
+        }
+      }
+      const chain = automation.autoUploadYoutube ? " → tự động upload YouTube" : "";
+      setMessage(
+        queued === targets.length
+          ? `Đã đưa ${queued} patch vào hàng đợi video${chain}.`
+          : `Đã đưa ${queued}/${targets.length} patch vào hàng đợi video${chain}. ${errorText(firstError)}`
+      );
+      await refresh();
+    } catch (err) {
+      setMessage(errorText(err));
+    } finally {
+      setRunning(undefined);
+      setBusy(false);
+      setBatchOpen(false);
+    }
+  }, [automation, batchTargets, bookId, refresh, running, setBusy]);
 
   const openChapter = useCallback((index: number) => {
     setChapterIndex(index);
@@ -788,9 +817,6 @@ export function BookDetail() {
               <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => runBatch("video")}>
                 <Film className="h-3.5 w-3.5" /> Video
               </Button>
-              <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => runBatchThumbnail()}>
-                <Film className="h-3.5 w-3.5" /> Thumbnails
-              </Button>
               <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => runBatch("youtube")}>
                 <Video className="h-3.5 w-3.5" /> YouTube
               </Button>
@@ -808,13 +834,15 @@ export function BookDetail() {
         onMessage={setMessage}
       />
 
-      <BatchTtsDialog
-        targets={ttsTargets}
+      <BatchRunDialog
+        kind={batchKind}
+        targets={batchTargets.length}
         automation={automation}
         onAutomationChange={(patch) => setAutomation((current) => ({ ...current, ...patch }))}
-        open={ttsOpen}
-        onOpenChange={setTtsOpen}
-        onConfirm={confirmBatchTts}
+        open={batchOpen}
+        onOpenChange={setBatchOpen}
+        onConfirm={batchKind === "audio" ? confirmBatchTts : confirmBatchVideo}
+        running={Boolean(running)}
       />
 
       <Dialog open={renameOpen} onOpenChange={setRenameOpen}>

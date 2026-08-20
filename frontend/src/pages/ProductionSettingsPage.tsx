@@ -15,6 +15,7 @@ import {
   VoiceOption,
   YouTubeConfig,
   errorText,
+  presetVoiceOptions,
 } from "@/pages/book-detail/types";
 import { CheckField, Field, TabBar, checkboxClass, fieldClass, selectClass } from "@/pages/book-detail/parts";
 import { YouTubeConfigFields } from "@/pages/book-detail/YouTubeFields";
@@ -63,9 +64,11 @@ function useGlobalTtsOptions(modelId: string) {
   }, []);
 
   const selectedModel = ttsModels.find((model) => model.id === modelId) || null;
+  // Model mang sẵn danh sách giọng (VieNeu, ZeroTTS) thì dùng luôn, khỏi gọi mạng.
+  const builtInVoices = useMemo(() => selectedModel?.voices || [], [selectedModel]);
 
   useEffect(() => {
-    if (!selectedModel || selectedModel.supports_reference) {
+    if (!selectedModel || selectedModel.supports_reference || builtInVoices.length) {
       setOnlineVoices([]);
       return;
     }
@@ -76,14 +79,21 @@ function useGlobalTtsOptions(modelId: string) {
     return () => {
       cancelled = true;
     };
-  }, [modelId, selectedModel]);
+  }, [modelId, selectedModel, builtInVoices]);
 
   const voiceOptions = useMemo<VoiceOption[]>(() => {
+    if (builtInVoices.length) {
+      return builtInVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
+    }
     if (selectedModel && !selectedModel.supports_reference) {
       return onlineVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
     }
-    return localVoices.map((voice) => ({ value: voice.name, label: voice.name }));
-  }, [selectedModel, onlineVoices, localVoices]);
+    // Model clone: audio mẫu trong thư viện + giọng preset của VieNeu/ZeroTTS.
+    return [
+      ...localVoices.map((voice) => ({ value: voice.name, label: voice.name })),
+      ...presetVoiceOptions(ttsModels),
+    ];
+  }, [selectedModel, builtInVoices, onlineVoices, localVoices, ttsModels]);
 
   return { ttsModels, voiceOptions };
 }
