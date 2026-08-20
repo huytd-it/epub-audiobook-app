@@ -172,8 +172,11 @@ export function useTtsOptions(data: Detail | undefined, modelId: string): TtsOpt
       .catch(() => {});
   }, []);
 
+  // Model mang sẵn danh sách giọng (ZeroTTS) thì dùng luôn, khỏi gọi mạng.
+  const builtInVoices = useMemo(() => selectedModel?.voices || [], [selectedModel]);
+
   useEffect(() => {
-    if (!selectedModel || selectedModel.supports_reference) {
+    if (!selectedModel || selectedModel.supports_reference || builtInVoices.length) {
       setOnlineVoices([]);
       return;
     }
@@ -184,9 +187,12 @@ export function useTtsOptions(data: Detail | undefined, modelId: string): TtsOpt
     return () => {
       cancelled = true;
     };
-  }, [modelId, selectedModel]);
+  }, [modelId, selectedModel, builtInVoices]);
 
   const voiceOptions = useMemo<VoiceOption[]>(() => {
+    if (builtInVoices.length) {
+      return builtInVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
+    }
     if (selectedModel && !selectedModel.supports_reference) {
       return onlineVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
     }
@@ -194,7 +200,7 @@ export function useTtsOptions(data: Detail | undefined, modelId: string): TtsOpt
     return Array.from(names)
       .filter(Boolean)
       .map((name) => ({ value: name, label: name }));
-  }, [selectedModel, onlineVoices, localVoices, currentVoiceName]);
+  }, [selectedModel, builtInVoices, onlineVoices, localVoices, currentVoiceName]);
 
   return { ttsModels, voiceOptions, currentVoiceName };
 }

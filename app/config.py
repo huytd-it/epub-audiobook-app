@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     # Maximum music file size in MB for uploads to the music library.
     music_max_size_mb: int = 20
 
+    # ZeroTTS weights directory (config.json + onnx/ + voices/). Empty => "<data_root>/zerotts",
+    # which is where scripts/download_zerotts.py puts them. The weights are ~910 MB and are not
+    # fetched on demand: without them the engine refuses to load and says how to get them.
+    zerotts_model_dir: str = ""
+    # onnxruntime intra-op threads for ZeroTTS. Measured flat from 4 upward on a 28-core CPU
+    # (memory-bandwidth bound, not thread bound), so the package default is kept.
+    zerotts_threads: int = 4
+
     # Lightweight TTS preview
     light_tts_backend: str = "edge-tts"
     light_tts_voice: str = "vi-VN-HoaiMyNeural"

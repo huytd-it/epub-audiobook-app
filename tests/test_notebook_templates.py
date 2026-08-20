@@ -505,7 +505,7 @@ def test_batch_notebook_has_no_result_zip_cell():
 # the always-VoxCPM2 "voxcpm_model_id" field.
 # ---------------------------------------------------------------------------
 
-SUPPORTED_MODELS = {"voxcpm2", "omnivoice", "vieneu-fast", "edge-tts", "gtts"}
+SUPPORTED_MODELS = {"voxcpm2", "omnivoice", "vieneu-fast", "zerotts", "edge-tts", "gtts"}
 
 
 def _manifest_cell(template):
@@ -537,6 +537,7 @@ def test_sample_rate_constants_per_model(template):
         ("voxcpm2", 16000),
         ("omnivoice", 24000),
         ("vieneu-fast", 48000),
+        ("zerotts", 48000),
         ("edge-tts", 24000),
         ("gtts", 24000),
     ):
@@ -555,9 +556,10 @@ def test_reference_required_only_for_offline_models(template):
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
-def test_voice_id_required_for_online_models(template):
+def test_voice_id_required_for_voice_id_models(template):
     src = _manifest_cell(template)
-    assert 'if TTS_MODEL in ("edge-tts", "gtts"):' in src
+    assert 'VOICE_ID_MODELS = {"zerotts", "edge-tts", "gtts"}' in src
+    assert "if TTS_MODEL in VOICE_ID_MODELS:" in src
     assert "VOICE_ID" in src
     assert "raise RuntimeError" in src
 
@@ -565,9 +567,14 @@ def test_voice_id_required_for_online_models(template):
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
 def test_gpu_check_is_skipped_for_online_models(template):
     gpu = next(src for src in _code_cells(template) if "torch.cuda.is_available()" in src)
-    assert 'GPU_MODELS = {"voxcpm2", "omnivoice", "vieneu-fast"}' in gpu
-    assert "if TTS_MODEL in GPU_MODELS:" in gpu
+    assert 'GPU_REQUIRED = {"voxcpm2", "omnivoice"}' in gpu
+    assert 'GPU_OPTIONAL = {"vieneu-fast", "zerotts"}' in gpu
+    assert "if TTS_MODEL in GPU_REQUIRED:" in gpu
     assert "no gpu required" in gpu.lower()
+    # The CPU-capable models must reach a print, never the raise.
+    required_branch = gpu.split("elif TTS_MODEL in GPU_OPTIONAL:")
+    assert len(required_branch) == 2, "GPU_OPTIONAL needs its own branch"
+    assert "raise RuntimeError" not in required_branch[1]
 
 
 def test_model_load_cell_dispatches_per_model():
@@ -575,12 +582,17 @@ def test_model_load_cell_dispatches_per_model():
         load = next(src for src in _code_cells(template) if "VoxCPM.from_pretrained" in src)
         assert "OmniVoice.from_pretrained" in load
         assert "Vieneu(" in load
+        assert "ZeroTTS.from_pretrained" in load
+        # VieNeu ships several modes; only v3turbo works on the base install.
+        assert 'mode="v3turbo"' in load
+        assert "pnnbao-ump/VieNeu-TTS-v3-Turbo" in load
+        assert "zeroweight-ai/ZeroTTS" in load
         assert "model = None" in load  # online models load nothing
         assert '"edge-tts"' in load
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
-def test_generation_cells_dispatch_all_five_models(template):
+def test_generation_cells_dispatch_every_model(template):
     gen = "\n".join(
         src for src in _code_cells(template)
         if "model.generate(" in src or "save_online_mp3" in src
@@ -589,6 +601,9 @@ def test_generation_cells_dispatch_all_five_models(template):
         assert f'"{model}"' in gen
     assert "model.generate(" in gen  # voxcpm2 / omnivoice
     assert "model.infer(" in gen     # vieneu-fast
+    assert "model.synthesize(" in gen  # zerotts
+    # v3 Turbo ignores the style argument, so it must not be passed any more.
+    assert "style=TTS_OPTIONS" not in gen
     assert "save_online_mp3" in gen  # edge-tts / gtts
     # OmniVoice normalizes its list output to audio[0]
     assert "result[0]" in gen or "audio[0]" in gen
