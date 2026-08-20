@@ -9,7 +9,9 @@ arrays at a learned sample rate, so they run the exact same audiobook pipeline
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -48,6 +50,11 @@ class TTSModel:
     supports_reference: bool = True
     capabilities: dict = field(default_factory=dict)
     default_voice: str | None = None
+    # Voices baked into the model itself, as [{"id", "label", "language"}]. Only engines
+    # that ship a fixed cast fill this in; cloud backends enumerate theirs over the network
+    # (app.light_tts) and reference-cloning models have no cast at all. Filled in by
+    # list_tts_models() rather than stored here, since it comes off disk.
+    voices: list = field(default_factory=list)
 
 
 _CAP_LOCAL = {
@@ -64,6 +71,16 @@ _CAP_CLOUD = {
     "offline": False,
     "online": True,
 }
+# Offline like _CAP_LOCAL, but picks from a fixed cast instead of cloning a reference clip.
+# ZeroTTS ships only the decode half of its codec, so there is no way to turn a user's wav
+# into voice latents locally -- the published voices are all it can speak in.
+_CAP_LOCAL_VOICES = {
+    "kind": "local",
+    "reference_audio": False,
+    "voice_selection": True,
+    "offline": True,
+    "online": False,
+}
 
 _MODELS = {
     "voxcpm2": TTSModel(
@@ -75,6 +92,10 @@ _MODELS = {
     "vieneu-fast": TTSModel(
         "vieneu-fast", "VieNeu fast", "pnnbao-ump/VieNeu-TTS-v3-Turbo", "vieneu", 48000,
         capabilities=_CAP_LOCAL,
+    ),
+    "zerotts": TTSModel(
+        "zerotts", "ZeroTTS", "zeroweight-ai/ZeroTTS", "zerotts", 48000,
+        supports_reference=False, capabilities=_CAP_LOCAL_VOICES, default_voice="maichi",
     ),
     "edge-tts": TTSModel(
         "edge-tts", "Edge TTS", "edge-tts", "edge-tts", None,
@@ -102,9 +123,49 @@ def resolve_engine_id(engine_id: str | None) -> str:
     return engine_id
 
 
+def zerotts_model_dir() -> Path:
+    """Where the ZeroTTS weights live: the configured override, else <data_root>/zerotts."""
+    from app.config import settings
+
+    return Path(settings.zerotts_model_dir or Path(settings.data_root) / "zerotts")
+
+
+def _zerotts_voices(model_dir: Path) -> list[dict]:
+    """The published cast, read from the weights' own voices/index.json.
+
+    Explicit utf-8: the display names are Vietnamese, and the app must not depend on the
+    process locale (zerotts' own voices.load_voice does depend on it, which is why the
+    engine below never calls it). Returns [] when the weights are missing -- the catalog
+    still lists the model so the UI can explain what to download."""
+    index = model_dir / "voices" / "index.json"
+    if not index.exists():
+        return []
+    try:
+        entries = json.loads(index.read_text(encoding="utf-8")).get("voices", [])
+    except (OSError, ValueError):
+        return []
+    return [
+        {
+            "id": voice["name"],
+            "label": voice.get("description")
+            and f"{voice.get('display_name') or voice['name']} — {voice['description']}"
+            or (voice.get("display_name") or voice["name"]),
+            "language": voice.get("language", ""),
+        }
+        for voice in entries
+        if voice.get("name")
+    ]
+
+
 def list_tts_models() -> list[dict]:
     """Serializable model catalog shared by the UI, worker and remote runtimes."""
-    return [asdict(model) for model in _MODELS.values()]
+    models = []
+    for model in _MODELS.values():
+        entry = asdict(model)
+        if model.id == "zerotts":
+            entry["voices"] = _zerotts_voices(zerotts_model_dir())
+        models.append(entry)
+    return models
 
 
 def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
@@ -115,6 +176,7 @@ def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
         "voxcpm2": VoxCPMEngine,
         "omnivoice": OmniVoiceEngine,
         "vieneu-fast": VieNeuFastEngine,
+        "zerotts": ZeroTTSEngine,
         "edge-tts": EdgeTTSEngine,
         "gtts": GTTSEngine,
     }
@@ -123,7 +185,9 @@ def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
     except KeyError as exc:
         choices = ", ".join(factories)
         raise ValueError(f"Unknown TTS engine {engine_id!r}; choose one of: {choices}") from exc
-    if engine_id in ("edge-tts", "gtts"):
+    # Engines that pick from a named cast take the voice; reference-cloning ones get the
+    # clip through synthesize_chunk instead and must never see this kwarg.
+    if not _MODELS[engine_id].supports_reference:
         return cls(voice=voice, **options)
     return cls(**options)
 
@@ -301,6 +365,74 @@ class VieNeuFastEngine:
         if reference_wav_path:
             kwargs["ref_audio"] = reference_wav_path
         return np.asarray(self._model.infer(text, **kwargs), dtype=np.float32)
+
+
+class ZeroTTSEngine:
+    """ZeroTTS (local, ONNX, CPU-only -- no torch, no GPU).
+
+    Speaks one of the eight voices published with the weights. The repo ships only the
+    decode half of the MOSS codec, so there is no encoder to turn a reference clip into
+    voice latents: ``reference_wav_path`` is accepted and ignored, exactly like the cloud
+    engines. Voice latents are read straight out of ``voice.npz`` rather than through
+    ``zerotts.voices.load_voice``, which reads the voice's meta.json with the process
+    locale and therefore raises UnicodeDecodeError on Windows for the Vietnamese
+    descriptions."""
+
+    sample_rate = 48000
+    supports_reference = False
+
+    def __init__(self, voice: str | None = None, model_dir: str | None = None,
+                 threads: int | None = None, **options):
+        from app.config import settings
+
+        self.voice = voice or _MODELS["zerotts"].default_voice
+        self.model_dir = Path(model_dir) if model_dir else zerotts_model_dir()
+        self.threads = threads or settings.zerotts_threads
+        self._model = None
+        self._voice_emb: np.ndarray | None = None
+
+    def config_fingerprint(self) -> str:
+        return f"zerotts:{self.voice}"
+
+    def _load_voice_emb(self, n_voice_queries: int) -> np.ndarray:
+        npz = self.model_dir / "voices" / str(self.voice) / "voice.npz"
+        if not npz.exists():
+            available = sorted(p.parent.name for p in (self.model_dir / "voices").glob("*/voice.npz"))
+            raise ValueError(
+                f"ZeroTTS không có giọng {self.voice!r} (có: {', '.join(available) or 'không có'})"
+            )
+        data = np.load(npz)
+        emb = np.asarray(data["voice_emb"], dtype=np.float32)
+        if emb.ndim == 2:
+            emb = emb[None, :, :]
+        # Latents built for other weights have the right dtype and rank, so they would feed
+        # the graph cleanly and produce confident nonsense. Refuse them instead.
+        if emb.shape[1] != n_voice_queries:
+            raise ValueError(
+                f"giọng {self.voice!r} có n_voice_queries={emb.shape[1]} nhưng model dùng "
+                f"{n_voice_queries} — voice pack không khớp với weights trong {self.model_dir}"
+            )
+        return emb
+
+    def _ensure_loaded(self) -> None:
+        if self._model is not None:
+            return
+        if not (self.model_dir / "config.json").exists():
+            raise RuntimeError(
+                f"Chưa có weights ZeroTTS ở {self.model_dir}. "
+                f"Chạy: python scripts/download_zerotts.py"
+            )
+        from zerotts import ZeroTTS  # heavy import, deferred until first real use
+
+        self._model = ZeroTTS.from_pretrained(
+            str(self.model_dir), intra_op_num_threads=self.threads
+        )
+        self._voice_emb = self._load_voice_emb(self._model.n_voice_queries)
+
+    def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
+        self._ensure_loaded()
+        audio = self._model.synthesize(text, voice=self._voice_emb)
+        return np.asarray(audio, dtype=np.float32).reshape(-1)
 
 
 def _decode_wav_bytes(wav_bytes: bytes) -> tuple[np.ndarray, int]:

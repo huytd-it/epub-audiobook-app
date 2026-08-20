@@ -119,3 +119,36 @@ def test_batch_export_leaves_background_and_music_behind(conn, tmp_path, monkeyp
         import shutil
 
         shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_zerotts_export_needs_no_reference_and_defaults_its_voice(conn, tmp_path, monkeypatch):
+    """ZeroTTS speaks a fixed cast, so a batch must export without a voice clip."""
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn, voice_clip_path=None)
+
+    package_dir, batch_manifest = drive_export.build_batch_export_package(
+        conn, [patch], model_id="zerotts"
+    )
+    try:
+        assert batch_manifest["tts"]["model_id"] == "zerotts"
+        assert batch_manifest["tts"]["voice_id"] == "maichi"
+        assert batch_manifest["reference_wav"] is None
+    finally:
+        import shutil
+
+        shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_zerotts_export_keeps_the_chosen_voice(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn, voice_clip_path=None)
+
+    package_dir, batch_manifest = drive_export.build_batch_export_package(
+        conn, [patch], model_id="zerotts", voice_id="giahuy"
+    )
+    try:
+        assert batch_manifest["tts"]["voice_id"] == "giahuy"
+    finally:
+        import shutil
+
+        shutil.rmtree(package_dir, ignore_errors=True)

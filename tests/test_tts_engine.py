@@ -14,6 +14,7 @@ from app.tts_engine import (
     OmniVoiceEngine,
     VieNeuFastEngine,
     VoxCPMEngine,
+    ZeroTTSEngine,
     create_tts_engine,
     list_tts_models,
     normalize_tt_payload,
@@ -132,10 +133,13 @@ def test_synthesize_chunk_without_prompt_text_omits_prompt_arguments(monkeypatch
 
 def test_model_catalog_and_factory_are_unified():
     models = list_tts_models()
-    assert [model["id"] for model in models] == ["voxcpm2", "omnivoice", "vieneu-fast", "edge-tts", "gtts"]
+    assert [model["id"] for model in models] == [
+        "voxcpm2", "omnivoice", "vieneu-fast", "zerotts", "edge-tts", "gtts",
+    ]
     assert isinstance(create_tts_engine("voxcpm2"), VoxCPMEngine)
     assert isinstance(create_tts_engine("omnivoice"), OmniVoiceEngine)
     assert isinstance(create_tts_engine("vieneu-fast"), VieNeuFastEngine)
+    assert isinstance(create_tts_engine("zerotts"), ZeroTTSEngine)
     assert isinstance(create_tts_engine("edge-tts"), EdgeTTSEngine)
     assert isinstance(create_tts_engine("gtts"), GTTSEngine)
 
@@ -154,6 +158,14 @@ def test_catalog_carries_capability_metadata():
         assert models[cloud]["supports_reference"] is False
     assert models["edge-tts"]["default_voice"] == "vi-VN-HoaiMyNeural"
     assert models["gtts"]["default_voice"] == "vi"
+    # ZeroTTS is the one local engine that picks from a fixed cast instead of cloning:
+    # offline like the other local models, voice_selection like the cloud ones.
+    assert models["zerotts"]["capabilities"] == {
+        "kind": "local", "reference_audio": False, "voice_selection": True,
+        "offline": True, "online": False,
+    }
+    assert models["zerotts"]["supports_reference"] is False
+    assert models["zerotts"]["default_voice"] == "maichi"
 
 
 def test_normalize_payload_accepts_legacy_shapes_and_canonicalises():

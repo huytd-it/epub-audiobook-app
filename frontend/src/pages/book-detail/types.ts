@@ -32,6 +32,9 @@ export type TtsModel = {
   supports_reference: boolean;
   default_voice: string | null;
   capabilities: { kind: string; voice_selection: boolean };
+  /** Giọng có sẵn trong chính model (ZeroTTS). Rỗng với model clone theo audio mẫu
+   * và với backend cloud — hai loại đó lấy giọng từ nơi khác. */
+  voices?: OnlineVoice[];
 };
 
 export type OnlineVoice = { id: string; label: string; language: string };
