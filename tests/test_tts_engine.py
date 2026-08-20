@@ -1,6 +1,9 @@
 import ast
 import importlib.util
+import sys
+import types
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -207,10 +210,11 @@ def test_omnivoice_normalizes_list_output_and_clone_arguments(monkeypatch):
     assert model.calls == [{"text": "xin chào", "ref_audio": "voice.wav", "ref_text": "giọng mẫu"}]
 
 
-def test_vieneu_fast_uses_storytelling_and_clone_reference():
+def test_vieneu_fast_clones_the_reference_without_a_deprecated_style():
     class FakeVieNeu:
         def infer(self, text, **kwargs):
-            assert (text, kwargs) == ("xin chào", {"style": "doc_truyen", "ref_audio": "voice.wav"})
+            # v3 Turbo ignores style=, so the engine must not send it at all.
+            assert (text, kwargs) == ("xin chào", {"ref_audio": "voice.wav"})
             return [0.5]
 
     engine = VieNeuFastEngine()
@@ -219,3 +223,22 @@ def test_vieneu_fast_uses_storytelling_and_clone_reference():
 
     assert result.dtype == np.float32
     assert result.tolist() == [0.5]
+
+
+def test_vieneu_fast_loads_v3turbo_weights_explicitly():
+    seen = {}
+
+    def fake_vieneu(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    module = types.ModuleType("vieneu")
+    module.Vieneu = fake_vieneu
+    with mock.patch.dict(sys.modules, {"vieneu": module}):
+        VieNeuFastEngine()._ensure_loaded()
+
+    assert seen == {
+        "mode": "v3turbo",
+        "backbone_repo": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+        "precision": "int8",
+    }

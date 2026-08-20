@@ -73,7 +73,8 @@ _MODELS = {
         "omnivoice", "OmniVoice", "k2-fsa/OmniVoice", "omnivoice", 24000, capabilities=_CAP_LOCAL,
     ),
     "vieneu-fast": TTSModel(
-        "vieneu-fast", "VieNeu fast", "v3turbo", "vieneu", 48000, capabilities=_CAP_LOCAL,
+        "vieneu-fast", "VieNeu fast", "pnnbao-ump/VieNeu-TTS-v3-Turbo", "vieneu", 48000,
+        capabilities=_CAP_LOCAL,
     ),
     "edge-tts": TTSModel(
         "edge-tts", "Edge TTS", "edge-tts", "edge-tts", None,
@@ -260,29 +261,43 @@ class OmniVoiceEngine:
 
 
 class VieNeuFastEngine:
+    """VieNeu-TTS v3 Turbo (48 kHz). ``precision`` selects the int8 vs fp32 ONNX graph and
+    only applies on the CPU path; ``backend`` left as None keeps vieneu's own "auto"
+    (ONNX on CPU, PyTorch on GPU)."""
+
     sample_rate = 48000
 
-    def __init__(self, backend: str | None = None, precision: str = "int8", style: str = "doc_truyen"):
+    def __init__(
+        self,
+        model_id: str = "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+        backend: str | None = None,
+        precision: str = "int8",
+    ):
+        self.model_id = model_id
         self.backend = backend
         self.precision = precision
-        self.style = style
         self._model = None
 
     def config_fingerprint(self) -> str:
-        return f"vieneu-fast:{self.backend}:{self.precision}:{self.style}"
+        return f"vieneu-fast:{self.model_id}:{self.backend}:{self.precision}"
 
     def _ensure_loaded(self) -> None:
         if self._model is None:
-            from vieneu import Vieneu
+            from vieneu import Vieneu  # heavy import, deferred until first real use
 
-            kwargs = {"precision": self.precision}
+            # mode="v3turbo" is the factory default, but spelling it out pins which weights
+            # load: the other modes ("standard", "fast", "turbo", ...) need vieneu[gpu].
+            kwargs = {"mode": "v3turbo", "backbone_repo": self.model_id, "precision": self.precision}
             if self.backend:
                 kwargs["backend"] = self.backend
             self._model = Vieneu(**kwargs)
 
     def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
         self._ensure_loaded()
-        kwargs = {"style": self.style}
+        # v3 Turbo dropped `style=`: the reading style is baked into the reference codes,
+        # so the argument is accepted for compatibility but ignored. The clip is the only
+        # knob left, and prompt_text has no counterpart in infer().
+        kwargs = {}
         if reference_wav_path:
             kwargs["ref_audio"] = reference_wav_path
         return np.asarray(self._model.infer(text, **kwargs), dtype=np.float32)
