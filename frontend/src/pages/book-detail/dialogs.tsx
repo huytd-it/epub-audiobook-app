@@ -5,6 +5,7 @@ import { api, Chapter, Patch, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/common/StatusBadge";
+import { WaveformPreview } from "@/components/common/WaveformPreview";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
@@ -40,8 +41,6 @@ const WAVEFORM_TEMPLATES = [
   { id: "vertical", name: "Cột nhịp", description: "Dải sóng dọc bên trái", style: "p2p", layout: "vertical", color: "#facc15", background: "#1c1917", backgroundOpacity: 0.72, position: "center", height: 300, opacity: 1 },
   { id: "orbit", name: "Quỹ đạo", description: "Waveform tròn ở trung tâm", style: "line", layout: "circular", color: "#fb7185", background: "#2e1065", backgroundOpacity: 0.58, position: "center", height: 280, opacity: 1 },
 ] as const;
-
-const WAVEFORM_BARS = [18, 38, 24, 58, 34, 72, 42, 86, 48, 64, 30, 76, 44, 92, 54, 70, 36, 80, 46, 62, 28, 52, 34, 20];
 
 export function PatchPreviewDialog({
   bookId,
@@ -266,7 +265,14 @@ export function ConfigDialog({
   const saveAudio = async () => {
     setSaving(true);
     try {
-      await postJson(`/books/${bookId}/audio-settings`, { model_id: settings.modelId, voice_id: settings.voiceId, max_chars: settings.maxChars ? Number(settings.maxChars) : 0, with_effects: settings.withEffects });
+      await postJson(`/books/${bookId}/audio-settings`, {
+        model_id: settings.modelId,
+        voice_id: settings.voiceId,
+        max_chars: settings.maxChars ? Number(settings.maxChars) : 0,
+        with_effects: settings.withEffects,
+        chunk_pause_ms: settings.chunkPauseMs === "" ? null : Number(settings.chunkPauseMs),
+        chapter_pause_ms: settings.chapterPauseMs === "" ? null : Number(settings.chapterPauseMs),
+      });
       onMessage("Đã lưu cấu hình âm thanh.");
     } catch (error) {
       onMessage(errorText(error));
@@ -423,6 +429,31 @@ export function ConfigDialog({
                   label="Thêm hiệu ứng âm thanh"
                 />
               </div>
+              <Field label="Khoảng lặng giữa chunk (ms)" hint="Nhịp thở giữa hai đoạn liền nhau">
+                <input
+                  className={fieldClass}
+                  type="number"
+                  min="0"
+                  max="30000"
+                  step="50"
+                  value={settings.chunkPauseMs ?? ""}
+                  onChange={(event) => onSettingsChange({ chunkPauseMs: event.target.value })}
+                />
+              </Field>
+              <Field
+                label="Khoảng lặng giữa chương (ms)"
+                hint="Chèn trước mỗi chương trong cùng một patch; cũng là chỗ nhạc nền được chèn vào"
+              >
+                <input
+                  className={fieldClass}
+                  type="number"
+                  min="0"
+                  max="30000"
+                  step="100"
+                  value={settings.chapterPauseMs ?? ""}
+                  onChange={(event) => onSettingsChange({ chapterPauseMs: event.target.value })}
+                />
+              </Field>
             </div>
             {usesReferenceClip && (
               <div className="rounded-md bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -801,6 +832,45 @@ export function ConfigDialog({
                       onChange={(event) => setMusic({ ...music, music_volume: Number(event.target.value) })}
                     />
                   </Field>
+                  <div className="sm:col-span-2">
+                    <CheckField
+                      checked={videoConfig.music_gap_only}
+                      onChange={(value) => setVideoConfig({ ...videoConfig, music_gap_only: value })}
+                      label="Chỉ chèn nhạc vào khoảng lặng"
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Nhạc chỉ phát ở những quãng im lặng đủ dài (nghỉ giữa chương, giữa chunk),
+                      không lặp nền dưới giọng đọc suốt patch.
+                    </p>
+                  </div>
+                  <Field label="Khoảng lặng tối thiểu (ms)" hint="Ngắn hơn mức này thì bỏ qua">
+                    <input
+                      className={fieldClass}
+                      type="number"
+                      min="200"
+                      max="60000"
+                      step="100"
+                      disabled={!videoConfig.music_gap_only}
+                      value={videoConfig.music_gap_min_ms}
+                      onChange={(event) =>
+                        setVideoConfig({ ...videoConfig, music_gap_min_ms: Number(event.target.value) || 0 })
+                      }
+                    />
+                  </Field>
+                  <Field label="Fade nhạc (ms)" hint="Vào/ra ở hai đầu mỗi đoạn nhạc">
+                    <input
+                      className={fieldClass}
+                      type="number"
+                      min="0"
+                      max="5000"
+                      step="50"
+                      disabled={!videoConfig.music_gap_only}
+                      value={videoConfig.music_gap_fade_ms}
+                      onChange={(event) =>
+                        setVideoConfig({ ...videoConfig, music_gap_fade_ms: Number(event.target.value) || 0 })
+                      }
+                    />
+                  </Field>
                 </div>
               )}
 
@@ -840,7 +910,9 @@ export function ConfigDialog({
                 </div>
 
                 <div className={videoConfig.waveform_enabled ? "space-y-4" : "pointer-events-none space-y-4 opacity-45"}>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <WaveformPreview settings={videoConfig} height={260} />
+
+                  <div className="flex flex-wrap gap-2">
                     {WAVEFORM_TEMPLATES.map((template) => {
                       const selected = videoConfig.waveform_layout === template.layout && videoConfig.waveform_color === template.color && videoConfig.waveform_position === template.position && videoConfig.waveform_height === template.height;
                       return (
@@ -848,21 +920,12 @@ export function ConfigDialog({
                           key={template.id}
                           type="button"
                           aria-pressed={selected}
+                          title={template.description}
                           onClick={() => setVideoConfig({ ...videoConfig, waveform_enabled: true, waveform_style: template.style, waveform_layout: template.layout, waveform_color: template.color, waveform_background_color: template.background, waveform_background_opacity: template.backgroundOpacity, waveform_position: template.position, waveform_height: template.height, waveform_opacity: template.opacity })}
-                          className={cn("group overflow-hidden rounded-md border bg-background text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary ring-1 ring-primary" : "border-border hover:border-primary/50")}
+                          className={cn("flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground")}
                         >
-                          <div className="relative flex h-16 items-center justify-center overflow-hidden bg-slate-950 px-2">
-                            <div className="absolute inset-2 rounded" style={{ backgroundColor: template.background, opacity: template.backgroundOpacity }} />
-                            <div className={cn("relative z-10 flex items-center justify-center gap-[2px]", template.layout === "circular" && "h-11 w-11 rounded-full border-2", template.layout === "vertical" && "rotate-90")} style={template.layout === "circular" ? { borderColor: template.color, boxShadow: `0 0 12px ${template.color}` } : undefined}>
-                              {WAVEFORM_BARS.map((bar, index) => (
-                                template.layout !== "circular" && <span key={index} className="w-[2px] rounded-full" style={{ height: `${Math.min(46, Math.max(3, bar * (template.height / 180) * 0.42))}px`, backgroundColor: template.color, opacity: template.opacity, boxShadow: `0 0 5px ${template.color}` }} />
-                              ))}
-                            </div>
-                          </div>
-                          <div className="px-2 py-2">
-                            <div className="text-[11px] font-semibold">{template.name}</div>
-                            <div className="truncate text-[10px] text-muted-foreground">{template.description}</div>
-                          </div>
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: template.color, boxShadow: `0 0 6px ${template.color}` }} />
+                          {template.name}
                         </button>
                       );
                     })}

@@ -8,7 +8,7 @@ from app import repository, video_gen, youtube
 from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
-from app.production_defaults import get_effective_video_config
+from app.production_defaults import get_effective_video_config, resolve_voice_clip
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
 from app.video_recovery import resume_upload_after_render
@@ -67,11 +67,8 @@ def _render(ctx, book_job_id: int, book_id: int) -> str:
         if music and Path(music.file_path).exists():
             music_path = music.file_path
 
-    voices_dir = Path(settings.data_root) / "voices"
-    intro = voices_dir / video_config["intro_voice"] if video_config.get("intro_voice") else None
-    outro = voices_dir / video_config["outro_voice"] if video_config.get("outro_voice") else None
-    intro_audio = str(intro) if intro and intro.is_file() else None
-    outro_audio = str(outro) if outro and outro.is_file() else None
+    intro_audio = resolve_voice_clip(video_config, "intro_voice")
+    outro_audio = resolve_voice_clip(video_config, "outro_voice")
     done_patches = [p for p in patches if p.status == "done" and p.audio_path]
     book_dir = Path(settings.data_root) / "books" / str(book_id)
     book_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +89,7 @@ def _render(ctx, book_job_id: int, book_id: int) -> str:
             use_nvenc=settings.use_nvenc,
             music_path=music_path,
             music_volume=book.music_volume,
+            music_gaps=video_config,
             codec=video_config["codec"],
             quality=video_config["quality"],
             audio_bitrate=video_config["audio_bitrate"],

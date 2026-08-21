@@ -382,7 +382,8 @@ def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
 def normalize_tt_payload(payload: dict | None, *, default_engine: str | None = None) -> dict:
     """The one canonical TTS job payload used by every engine and entry point:
 
-        {"patch_id", "tts_engine", "voice", "max_chars", "with_effects"}
+        {"patch_id", "tts_engine", "voice", "max_chars", "with_effects",
+         "chunk_pause_ms", "chapter_pause_ms"}
 
     Accepts the legacy shapes unchanged: voxcpm's bare {"patch_id"} and light_tts's
     {"patch_id", "backend", "voice", ...} (``backend`` is kept as an alias for
@@ -397,7 +398,23 @@ def normalize_tt_payload(payload: dict | None, *, default_engine: str | None = N
     p["voice"] = p.get("voice") or None
     p["max_chars"] = int(p.get("max_chars") or 0)
     p["with_effects"] = bool(p.get("with_effects"))
+    # The merge pauses ride along with the rest of the audio config so a job
+    # enqueued yesterday keeps the spacing it was queued with. Missing values
+    # (every payload written before this shipped) fall back to the defaults.
+    from app import audio_merge
+
+    p["chunk_pause_ms"] = _pause_value(p.get("chunk_pause_ms"), audio_merge.DEFAULT_CHUNK_PAUSE_MS)
+    p["chapter_pause_ms"] = _pause_value(p.get("chapter_pause_ms"), audio_merge.DEFAULT_CHAPTER_PAUSE_MS)
     return p
+
+
+def _pause_value(raw, default: int) -> int:
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(0, min(30000, int(round(float(raw)))))
+    except (TypeError, ValueError):
+        return default
 
 
 class VoxCPMEngine:

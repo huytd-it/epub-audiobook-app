@@ -80,6 +80,7 @@ export function YouTubeConfigFields({
             </select>
           </Field>
         </div>
+        <PlaylistLinkNote playlistId={config.playlist.playlist_id} />
       </div>
 
       <div className="rounded-md border border-border p-3">
@@ -98,6 +99,33 @@ export function YouTubeConfigFields({
         onChange={(patch) => onChange({ description_extra: { ...config.description_extra, ...patch } })}
       />
     </div>
+  );
+}
+
+export const PLAYLIST_URL_PREFIX = "https://www.youtube.com/playlist?list=";
+
+/** Nhắc rằng link playlist luôn được chèn vào description — người xem cần link này
+ * mới theo dõi được trọn bộ. Backend tự thêm khi upload, ô Mô tả không cần gõ tay. */
+function PlaylistLinkNote({ playlistId }: { playlistId: string }) {
+  if (!playlistId)
+    return (
+      <p className="text-[11px] leading-4 text-amber-700">
+        Chưa chọn playlist — description sẽ không có link để người nghe theo dõi trọn bộ.
+      </p>
+    );
+  return (
+    <p className="text-[11px] leading-4 text-muted-foreground">
+      Link playlist được tự động chèn vào description mỗi video:{" "}
+      <a
+        href={`${PLAYLIST_URL_PREFIX}${playlistId}`}
+        target="_blank"
+        rel="noreferrer"
+        className="break-all font-mono text-primary underline"
+      >
+        {PLAYLIST_URL_PREFIX}
+        {playlistId}
+      </a>
+    </p>
   );
 }
 

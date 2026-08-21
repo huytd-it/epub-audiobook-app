@@ -21,7 +21,7 @@ from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_ove
                                   validate_book_youtube_config, validate_timeline)
 from app.video_config import get_book_video_config
 from app.production_defaults import (get_effective_video_config, get_effective_youtube_config,
-                                     resolve_effective_youtube_metadata)
+                                     resolve_effective_youtube_metadata, resolve_voice_clip)
 
 STAGES = ("thumbnail", "video", "upload", "thumbnail_setting", "playlist", "published")
 
@@ -386,9 +386,8 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
         return existing
     metadata = _build_metadata_snapshot(conn, book, patch)
     video_config = get_effective_video_config(conn, book)
-    voices_dir = Path(settings.data_root) / "voices"
-    intro = voices_dir / video_config["intro_voice"] if video_config.get("intro_voice") else None
-    outro = voices_dir / video_config["outro_voice"] if video_config.get("outro_voice") else None
+    intro = resolve_voice_clip(video_config, "intro_voice")
+    outro = resolve_voice_clip(video_config, "outro_voice")
     music_path = None
     if book.music_id is not None:
         music = repository.get_music(conn, book.music_id)
@@ -405,8 +404,13 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
         "audio_bitrate": video_config["audio_bitrate"],
         "music_path": music_path,
         "music_volume": book.music_volume,
-        "intro_audio": str(intro) if intro and intro.is_file() else None,
-        "outro_audio": str(outro) if outro and outro.is_file() else None,
+        # Frozen with the rest of the render config: changing the gap settings
+        # later must not silently alter a patch already queued for render.
+        "music_gap_only": video_config.get("music_gap_only", True),
+        "music_gap_min_ms": video_config.get("music_gap_min_ms", 1500),
+        "music_gap_fade_ms": video_config.get("music_gap_fade_ms", 400),
+        "intro_audio": intro,
+        "outro_audio": outro,
     }
     media = {"patch_id": patch_id, "audio_path": patch.audio_path,
              "source_image": patch.image_path,

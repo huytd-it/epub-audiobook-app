@@ -2149,6 +2149,13 @@ def rename_music(conn: sqlite3.Connection, music_id: int, new_name: str) -> bool
     return cur.rowcount > 0
 
 
+def update_music_duration(conn: sqlite3.Connection, music_id: int, duration_sec: float | None) -> bool:
+    """Refresh a track's cached duration after it was edited in place."""
+    cur = conn.execute("UPDATE music SET duration_sec = ? WHERE id = ?", (duration_sec, music_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def update_music_metadata(conn: sqlite3.Connection, music_id: int, description: str, license: str) -> bool:
     cur = conn.execute(
         "UPDATE music SET description = ?, license = ? WHERE id = ?",

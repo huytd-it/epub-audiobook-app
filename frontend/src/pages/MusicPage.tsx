@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { Music, Plus, Edit2, Trash2, Play, Pause, FileAudio, Save } from "lucide-react";
-import { api, postForm, MusicItem } from "@/api";
+import { AudioWaveform, Music, Plus, Edit2, Trash2, Play, Pause, FileAudio, Save } from "lucide-react";
+import { api, postForm, AudioProcessResult, MusicItem } from "@/api";
+import { AudioStudioDialog } from "@/components/common/AudioStudioDialog";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ export function MusicPage() {
   const [editDesc, setEditDesc] = useState("");
   const [editLicense, setEditLicense] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [studioItem, setStudioItem] = useState<MusicItem | null>(null);
   const [search, setSearch] = useState("");
 
   const loadData = () => {
@@ -45,6 +47,13 @@ export function MusicPage() {
       setIsUploading(false);
       e.target.value = "";
     }
+  };
+
+  const handleProcessed = (_result: AudioProcessResult) => {
+    // Reload rather than patch locally: a "save as copy" adds a row and an
+    // overwrite changes the duration, both of which come from the list.
+    loadData();
+    setPlayingId(null);
   };
 
   const handleDelete = async (id: number, name: string) => {
@@ -188,6 +197,16 @@ export function MusicPage() {
                   )}
 
                   <div className="flex items-center justify-end gap-1 pt-2 border-t border-border/50">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => setStudioItem(item)}
+                      title="Cắt sửa, chỉnh âm lượng và làm sạch bản nhạc"
+                    >
+                      <AudioWaveform className="h-3.5 w-3.5" />
+                      Xử lý
+                    </Button>
                     <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => openEdit(item)}>
                       <Edit2 className="h-3.5 w-3.5" />
                       Sửa
@@ -207,6 +226,21 @@ export function MusicPage() {
             );
           })}
         </div>
+      )}
+
+      {studioItem && (
+        <AudioStudioDialog
+          target={{
+            name: studioItem.name,
+            fileUrl: `/music/${studioItem.id}/file`,
+            infoUrl: `/music/${studioItem.id}/info`,
+            processUrl: `/music/${studioItem.id}/process`,
+            hint: "Cắt lấy đoạn nhạc cần dùng, chỉnh âm lượng và fade trong một lượt.",
+            overwriteHint: "Các sách đang mix bản nhạc này sẽ nhận bản đã xử lý ngay.",
+          }}
+          onClose={() => setStudioItem(null)}
+          onSaved={handleProcessed}
+        />
       )}
 
       {editingItem && (

@@ -16,7 +16,7 @@ from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
 from app.patch_publishing import (MAX_PATCH_RENDER_ATTEMPTS, audio_fingerprint,
                                   enqueue_patch_publish, seed_patch_video)
-from app.production_defaults import get_effective_video_config
+from app.production_defaults import get_effective_video_config, resolve_voice_clip
 from app.video_integrity import (VideoExpectation, validate_video,
                                  validation_report_json)
 from app.video_publish import VideoValidationError, publish_validated_video
@@ -176,6 +176,14 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     outro = render_config.get("outro_audio")
     music_path = render_config.get("music_path")
     music_volume = render_config.get("music_volume", 0.15)
+    # Snapshots frozen before gap music shipped carry none of these keys; the
+    # defaults below are the ones video_config hands out, so an old snapshot
+    # renders the same way a fresh one would.
+    music_gaps = {
+        "music_gap_only": render_config.get("music_gap_only", True),
+        "music_gap_min_ms": render_config.get("music_gap_min_ms", 1500),
+        "music_gap_fade_ms": render_config.get("music_gap_fade_ms", 400),
+    }
     seq_config = snapshot.get("sequence_config") or {}
     waveform_config = seq_config
 
@@ -207,7 +215,8 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
 
                 video_gen.generate_segment(
                     visual, audio, target, image_type="none", use_nvenc=False,
-                    music_path=music_path, music_volume=music_volume, **common,
+                    music_path=music_path, music_volume=music_volume,
+                    music_gaps=music_gaps, **common,
                     waveform_config=effects,
                     progress_bar=bool(seq_config.get("progress_bar_enabled")),
                 )
@@ -221,7 +230,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                 mode=seq_config.get("background_mode", "sequential"),
                 seed=f"{book.id}-{patch.id}",
                 start_index=patch.patch_index,
-                music_path=music_path, music_volume=music_volume,
+                music_path=music_path, music_volume=music_volume, music_gaps=music_gaps,
                 crossfade=bool(seq_config.get("crossfade_enabled")),
                 crossfade_seconds=float(seq_config.get("crossfade_seconds", 1)),
                 ken_burns=bool(seq_config.get("ken_burns_enabled")),
@@ -233,7 +242,8 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                 image, audio, target,
                 image_type=snapshot.get("image_type") or "none",
                 use_nvenc=settings.use_nvenc, music_path=music_path,
-                music_volume=music_volume, **common, waveform_config=waveform_config,
+                music_volume=music_volume, music_gaps=music_gaps, **common,
+                waveform_config=waveform_config,
             )
 
     def render(target: str) -> None:
@@ -376,11 +386,8 @@ def handle(ctx) -> dict:
                 music = repository.get_music(ctx.conn, book.music_id)
                 if music and Path(music.file_path).is_file():
                     music_path = music.file_path
-            voices = Path(settings.data_root) / "voices"
-            intro = voices / config["intro_voice"] if config.get("intro_voice") else None
-            outro = voices / config["outro_voice"] if config.get("outro_voice") else None
-            intro = str(intro) if intro and intro.is_file() else None
-            outro = str(outro) if outro and outro.is_file() else None
+            intro = resolve_voice_clip(config, "intro_voice")
+            outro = resolve_voice_clip(config, "outro_voice")
             width, height = (book.video_resolution or "1920x1080").split("x")
             common = {
                 "resolution": (int(width), int(height)), "fps": book.video_fps or 30,
@@ -396,7 +403,7 @@ def handle(ctx) -> dict:
                         image_duration=float(config.get("image_duration_seconds", 15)),
                         mode=config.get("background_mode", "sequential"), seed=f"{book.id}-{patch.id}",
                         start_index=patch.patch_index, music_path=music_path,
-                        music_volume=book.music_volume,
+                        music_volume=book.music_volume, music_gaps=config,
                         crossfade=bool(config.get("crossfade_enabled")),
                         crossfade_seconds=float(config.get("crossfade_seconds", 1)),
                         ken_burns=bool(config.get("ken_burns_enabled")),
@@ -407,7 +414,7 @@ def handle(ctx) -> dict:
                     video_gen.generate_segment(
                         image, patch.audio_path, target, image_type=image_type,
                         use_nvenc=settings.use_nvenc, music_path=music_path,
-                        music_volume=book.music_volume, **common,
+                        music_volume=book.music_volume, music_gaps=config, **common,
                         waveform_config=config,
                     )
 

@@ -15,11 +15,54 @@ logger = logging.getLogger(__name__)
 
 _BLOCK_FRAMES = 65536
 
+# Pause inserted between two chunks of the same chapter, and between the last
+# chunk of one chapter and the first of the next. The chapter pause is the
+# audible "end of chapter" beat - and, with gap music on, the slot the
+# background track is placed in (see app/music_bed.py).
+DEFAULT_CHUNK_PAUSE_MS = 300
+DEFAULT_CHAPTER_PAUSE_MS = 1500
+
+
+def build_pause_plan(
+    plan: list[dict], chunk_pause_ms: int = DEFAULT_CHUNK_PAUSE_MS,
+    chapter_pause_ms: int = DEFAULT_CHAPTER_PAUSE_MS,
+) -> list[int]:
+    """Gap in ms to insert *before* each chunk; the first is always 0.
+
+    A chunk that opens a chapter gets the longer chapter pause, every other
+    chunk the normal one. Text Studio plans carry no chapter markers, so they
+    come back uniform - exactly the old behaviour.
+    """
+    return [
+        0 if index == 0 else (chapter_pause_ms if item.get("is_chapter_start") else chunk_pause_ms)
+        for index, item in enumerate(plan)
+    ]
+
+
+def resolve_pauses(pause_ms, count: int) -> list[int]:
+    """Normalize the ``pause_ms`` argument the concat helpers accept.
+
+    An int means one uniform gap between every pair (the original API); a
+    sequence is a per-chunk plan from :func:`build_pause_plan`, where element
+    ``i`` is the gap *before* chunk ``i``. Element 0 is forced to 0 either way:
+    nothing is ever prepended to the first chunk.
+    """
+    if isinstance(pause_ms, (int, float)):
+        return [0] + [int(pause_ms)] * max(0, count - 1)
+    pauses = [int(value) for value in pause_ms]
+    if len(pauses) != count:
+        raise ValueError("pause plan length must match the number of chunks")
+    return [0] + pauses[1:]
+
 
 def concat_chunks_to_wav(
-    chunks: list[np.ndarray], sample_rate: int, out_path: str, pause_ms: int = 0
+    chunks: list[np.ndarray], sample_rate: int, out_path: str, pause_ms=0
 ) -> None:
-    """Small scale (tens of chunks, seconds each) - safe to hold in memory."""
+    """Small scale (tens of chunks, seconds each) - safe to hold in memory.
+
+    ``pause_ms`` is either one uniform gap or a per-chunk plan (see
+    :func:`resolve_pauses`).
+    """
     if chunks:
         channel_shape = None
         for chunk in chunks:
@@ -30,11 +73,12 @@ def concat_chunks_to_wav(
                 channel_shape = shape
             elif shape != channel_shape:
                 raise ValueError("audio chunks must have the same channel shape")
-        pause = np.zeros((round(sample_rate * pause_ms / 1000),) + chunks[0].shape[1:], dtype=chunks[0].dtype)
+        pauses = resolve_pauses(pause_ms, len(chunks))
         parts = []
         for i, chunk in enumerate(chunks):
-            if i:
-                parts.append(pause)
+            frames = round(sample_rate * pauses[i] / 1000)
+            if frames:
+                parts.append(np.zeros((frames,) + chunks[0].shape[1:], dtype=chunks[0].dtype))
             parts.append(chunk)
         audio = np.concatenate(parts)
     else:
@@ -42,7 +86,7 @@ def concat_chunks_to_wav(
     sf.write(out_path, audio, sample_rate)
 
 
-def concat_wavs(input_paths: list[str], out_path: str, pause_ms: int = 0) -> None:
+def concat_wavs(input_paths: list[str], out_path: str, pause_ms=0) -> None:
     if not input_paths:
         raise ValueError("no input paths to merge")
     headers = []
@@ -52,11 +96,12 @@ def concat_wavs(input_paths: list[str], out_path: str, pause_ms: int = 0) -> Non
     sample_rate, channels = headers[0]
     if any(header != (sample_rate, channels) for header in headers[1:]):
         raise ValueError("input samplerate/channels mismatch")
-    pause_frames = round(sample_rate * pause_ms / 1000)
+    pauses = resolve_pauses(pause_ms, len(input_paths))
     with sf.SoundFile(out_path, mode="w", samplerate=sample_rate, channels=channels, subtype="PCM_16") as out_f:
         for index, path in enumerate(input_paths):
             with sf.SoundFile(path, mode="r") as in_f:
-                if index and pause_frames:
+                pause_frames = round(sample_rate * pauses[index] / 1000)
+                if pause_frames:
                     out_f.write(np.zeros((pause_frames, channels), dtype=np.float32) if channels > 1 else np.zeros(pause_frames, dtype=np.float32))
                 while True:
                     block = in_f.read(frames=_BLOCK_FRAMES, dtype="float32")
@@ -66,21 +111,21 @@ def concat_wavs(input_paths: list[str], out_path: str, pause_ms: int = 0) -> Non
 
 
 def build_chapter_marks(
-    plan: list[dict], frame_counts: list[int], sample_rate: int, pause_ms: int
+    plan: list[dict], frame_counts: list[int], sample_rate: int, pause_ms
 ) -> tuple[list[dict], int]:
     """Map a chunk plan onto merged-audio frame offsets.
 
-    Mirrors how ``concat_chunks_to_wav`` / ``concat_wavs`` lay chunks out: a pause
-    between every pair, none before the first. Returns the chapter markers plus the
-    total frame count the merge will produce, so the timeline sidecar describes the
-    exact file on disk. A plan with no chapter starts (a Text Studio edit, where the
-    boundaries are gone) yields no markers."""
-    pause_frames = round(sample_rate * pause_ms / 1000)
+    Mirrors how ``concat_chunks_to_wav`` / ``concat_wavs`` lay chunks out: the gap
+    from ``pause_ms`` before every chunk but the first, so a chapter marker lands
+    *after* the chapter pause, on the first frame of speech. Returns the chapter
+    markers plus the total frame count the merge will produce, so the timeline
+    sidecar describes the exact file on disk. A plan with no chapter starts (a Text
+    Studio edit, where the boundaries are gone) yields no markers."""
+    pauses = resolve_pauses(pause_ms, len(plan))
     chapters: list[dict] = []
     frame = 0
     for index, (item, frames) in enumerate(zip(plan, frame_counts)):
-        if index:
-            frame += pause_frames
+        frame += round(sample_rate * pauses[index] / 1000)
         if item.get("is_chapter_start"):
             chapters.append({
                 "chapter_index": item["chapter_index"],

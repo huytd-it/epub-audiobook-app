@@ -25,7 +25,9 @@ from __future__ import annotations
 import copy
 import json
 import sqlite3
+from pathlib import Path
 
+from app import audio_merge
 from app.config import settings
 from app.normalization import NormalizationOptions
 
@@ -38,7 +40,15 @@ DEFAULT_AUDIO_CONFIG = {
     "voice_id": "",
     "max_chars": settings.tts_max_chars,
     "with_effects": False,
+    # Silence stitched between chunks when a patch is merged. The chapter value
+    # is the beat between two chapters inside one patch - long enough to read as
+    # a break, and the slot gap music is placed in (app/music_bed.py).
+    "chunk_pause_ms": audio_merge.DEFAULT_CHUNK_PAUSE_MS,
+    "chapter_pause_ms": audio_merge.DEFAULT_CHAPTER_PAUSE_MS,
 }
+
+MIN_PAUSE_MS = 0
+MAX_PAUSE_MS = 30000
 
 # The CUSTOM audio fallback at book level (a custom book with NULL tts columns)
 # stays "edge-tts" — the value GET /books/{id}/audio-settings always exposed.
@@ -78,6 +88,21 @@ def _flag(value, default: bool) -> bool:
     return default
 
 
+def validate_pause_ms(value, default: int) -> int:
+    """Clamp a pause setting, falling back to the default for anything unusable.
+
+    A bad pause must never fail a save: the worst case is a silence of the wrong
+    length, and refusing the whole audio config over it would block the fields
+    next to it."""
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+    return max(MIN_PAUSE_MS, min(MAX_PAUSE_MS, parsed))
+
+
 def validate_audio_config(config) -> dict:
     if not isinstance(config, dict):
         raise ValueError("audio config must be an object")
@@ -93,6 +118,8 @@ def validate_audio_config(config) -> dict:
         "voice_id": voice_id,
         "max_chars": max_chars,
         "with_effects": _flag(config.get("with_effects", False), False),
+        "chunk_pause_ms": validate_pause_ms(config.get("chunk_pause_ms"), audio_merge.DEFAULT_CHUNK_PAUSE_MS),
+        "chapter_pause_ms": validate_pause_ms(config.get("chapter_pause_ms"), audio_merge.DEFAULT_CHAPTER_PAUSE_MS),
     }
 
 
@@ -285,6 +312,27 @@ def set_group_mode(raw: dict, group: str, mode: str) -> dict:
     return raw
 
 
+def save_book_audio_section(conn: sqlite3.Connection, book_id: int, **values) -> dict:
+    """Merge ``values`` into the book's automation_config["audio"] section.
+
+    Only the audio settings that have no book column of their own live here (the
+    merge pauses). Returns the stored section. The caller commits - this runs
+    inside the same transaction as the column update it accompanies."""
+    row = conn.execute("SELECT automation_config FROM book WHERE id = ?", (book_id,)).fetchone()
+    if row is None:
+        return {}
+    raw = _json_object(row["automation_config"], {})
+    section = raw.get("audio")
+    section = dict(section) if isinstance(section, dict) else {}
+    section.update({key: value for key, value in values.items() if value is not None})
+    raw["audio"] = section
+    conn.execute(
+        "UPDATE book SET automation_config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (json.dumps(raw), book_id),
+    )
+    return section
+
+
 def set_book_group_mode_db(conn: sqlite3.Connection, book_id: int, group: str, mode: str) -> None:
     """Persist one group's mode on a book (used by legacy save routes so a save
     always means 'this book customizes the group')."""
@@ -338,11 +386,17 @@ def get_effective_audio_config(conn: sqlite3.Connection, book) -> dict:
     config = parse_book_config(book)
     if get_group_mode(config, "audio", book=book) == "inherit":
         return _global_group(conn, "audio")
+    # The four legacy fields live in book columns; the pauses arrived later and
+    # live in the book's automation_config["audio"] section instead of forcing a
+    # migration. A book saved before they existed falls back to the defaults.
+    stored = config.get("audio") if isinstance(config.get("audio"), dict) else {}
     return {
         "model_id": getattr(book, "tts_model", None) or CUSTOM_AUDIO_FALLBACK_MODEL,
         "voice_id": getattr(book, "tts_voice_id", None) or "",
         "max_chars": getattr(book, "tts_max_chars", None) or settings.tts_max_chars,
         "with_effects": bool(getattr(book, "tts_with_effects", 0)),
+        "chunk_pause_ms": validate_pause_ms(stored.get("chunk_pause_ms"), audio_merge.DEFAULT_CHUNK_PAUSE_MS),
+        "chapter_pause_ms": validate_pause_ms(stored.get("chapter_pause_ms"), audio_merge.DEFAULT_CHAPTER_PAUSE_MS),
     }
 
 
@@ -363,15 +417,30 @@ def get_effective_normalization_options(conn: sqlite3.Connection, book) -> Norma
     return NormalizationOptions(**get_effective_normalization_config(conn, book))
 
 
+def resolve_voice_clip(video_config: dict | None, key: str) -> str | None:
+    """Đường dẫn clip intro/outro đang cấu hình, None nếu chưa chọn hoặc thiếu file."""
+    name = (video_config or {}).get(key)
+    if not name:
+        return None
+    path = Path(settings.data_root) / "voices" / str(name)
+    return str(path) if path.is_file() else None
+
+
 def resolve_effective_youtube_metadata(conn: sqlite3.Connection, book, patch, override,
                                        context: dict | None = None) -> dict:
     """resolve_patch_youtube_metadata with the effective youtube config.
 
     The pure resolver has no connection; this helper is the conn-coupled entry
     point so every call site with a connection (preflight, snapshots, previews,
-    uploads) resolves against the effective config."""
-    from app.youtube_metadata import resolve_patch_youtube_metadata
+    uploads) resolves against the effective config.
 
+    Nó cũng đo intro của video config: video phát intro trước nội dung patch, nên
+    timeline chương trong description phải dời theo đúng độ dài đó."""
+    from app.youtube_metadata import audio_duration_seconds, resolve_patch_youtube_metadata
+
+    intro = resolve_voice_clip(get_effective_video_config(conn, book), "intro_voice")
+    context = {**(context if isinstance(context, dict) else {}),
+               "intro_seconds": audio_duration_seconds(intro) if intro else 0.0}
     return resolve_patch_youtube_metadata(
         book, patch, override, context,
         config=get_effective_youtube_config(conn, book),

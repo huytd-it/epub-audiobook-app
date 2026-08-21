@@ -51,6 +51,11 @@ def test_enqueue_freezes_complete_patch_render_configuration(tmp_path, monkeypat
     assert config["crf"] == 23
     assert config["audio_bitrate"] == "320k"
     assert {"music_path", "music_volume", "intro_audio", "outro_audio"} <= config.keys()
+    # Gap music is frozen with everything else, so changing the setting later
+    # cannot alter a patch already queued for render.
+    assert config["music_gap_only"] is True
+    assert config["music_gap_min_ms"] == 1500
+    assert config["music_gap_fade_ms"] == 400
 
 
 def test_enqueue_snapshot_contains_timeline_once(tmp_path, monkeypatch):

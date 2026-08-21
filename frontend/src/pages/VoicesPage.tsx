@@ -2,10 +2,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import { AudioWaveform, Edit2, Mic, Pause, Play, Plus, Save, Trash2, X } from "lucide-react";
 import {
   api,
+  AudioProcessResult,
   postForm,
   postJson,
   VoiceItem,
-  VoiceProcessResult,
   VoiceTag,
   VoiceTaxonomy,
 } from "@/api";
@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { AudioStudioDialog } from "./voices/AudioStudioDialog";
+import { AudioStudioDialog } from "@/components/common/AudioStudioDialog";
 
 const selectClass =
   "h-9 rounded-md border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15";
@@ -134,7 +134,7 @@ export function VoicesPage() {
     }
   };
 
-  const handleProcessed = (result: VoiceProcessResult) => {
+  const handleProcessed = (result: AudioProcessResult) => {
     // Reload rather than patch state locally: a "save as copy" adds a row and an
     // overwrite changes the file size, both of which come from the media list.
     loadData();
@@ -445,7 +445,14 @@ export function VoicesPage() {
 
       {studioItem && (
         <AudioStudioDialog
-          voice={studioItem}
+          target={{
+            name: studioItem.name,
+            fileUrl: `/voices/file/${encodeURIComponent(studioItem.name)}`,
+            infoUrl: `/voices/${encodeURIComponent(studioItem.name)}/info`,
+            processUrl: `/voices/${encodeURIComponent(studioItem.name)}/process`,
+            hint: "Cắt lấy đoạn giọng sạch nhất rồi làm sạch trong một lượt.",
+            overwriteHint: "Các sách đang dùng giọng này sẽ nhận bản đã xử lý ngay.",
+          }}
           onClose={() => setStudioItem(null)}
           onSaved={handleProcessed}
         />

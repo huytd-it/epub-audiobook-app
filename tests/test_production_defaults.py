@@ -242,6 +242,18 @@ def test_production_settings_get_defaults(tmp_path, monkeypatch):
     assert set(body["defaults"]) == {"audio", "normalization", "video", "youtube"}
 
 
+def test_production_settings_round_trip_the_merge_pauses(tmp_path, monkeypatch):
+    with _client(monkeypatch, tmp_path) as client:
+        assert client.get("/production-settings").json()["defaults"]["audio"]["chapter_pause_ms"] == 1500
+        saved = client.post("/production-settings", json={
+            "audio": {"model_id": "edge-tts", "chunk_pause_ms": 250, "chapter_pause_ms": 2200},
+        })
+        assert saved.status_code == 200, saved.text
+        reloaded = client.get("/production-settings").json()["defaults"]["audio"]
+    assert reloaded["chunk_pause_ms"] == 250
+    assert reloaded["chapter_pause_ms"] == 2200
+
+
 def test_production_settings_get_per_book_modes_and_effective(tmp_path, monkeypatch):
     with _client(monkeypatch, tmp_path) as client:
         conn = client.app.state.conn
@@ -298,7 +310,10 @@ def test_audio_settings_save_marks_mode_custom(tmp_path, monkeypatch):
     with _client(monkeypatch, tmp_path) as client:
         conn = client.app.state.conn
         got = client.get("/books/1/audio-settings")
-    assert got.json() == {"model_id": "omnivoice", "voice_id": "", "max_chars": 500, "with_effects": True}
+    assert got.json() == {
+        "model_id": "omnivoice", "voice_id": "", "max_chars": 500, "with_effects": True,
+        "chunk_pause_ms": 300, "chapter_pause_ms": 1500,
+    }
 
 
 def test_video_config_save_marks_mode_custom(tmp_path, monkeypatch):
@@ -402,3 +417,63 @@ def test_tts_models_are_listed_without_a_book_in_scope(tmp_path, monkeypatch):
         response = client.get("/api/ui/tts-models")
     assert response.status_code == 200
     assert response.json()["tts_models"]
+
+
+def _patch_with_timeline(tmp_path):
+    """Một patch có audio 30 giây + sidecar timeline 3 chương cách nhau 10 giây."""
+    import numpy as np
+    import soundfile as sf
+
+    audio = tmp_path / "episode.wav"
+    sf.write(audio, np.zeros(300), 10)
+    audio.with_suffix(".timeline.json").write_text(json.dumps({
+        "version": 1, "sample_rate": 10, "total_frames": 300, "chapters": [
+            {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "Mot"},
+            {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "Hai"},
+            {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "Ba"},
+        ]}), encoding="utf-8")
+    return SimpleNamespace(name="Mua", chapter_start=1, chapter_end=3, patch_index=0,
+                           audio_path=str(audio))
+
+
+def test_effective_metadata_shifts_the_timeline_by_the_configured_intro(tmp_path, monkeypatch):
+    """Video phát intro trước nội dung patch: mốc chương phải dời đúng độ dài intro."""
+    import numpy as np
+    import soundfile as sf
+
+    from app.production_defaults import resolve_effective_youtube_metadata
+
+    monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    sf.write(voices / "intro.wav", np.zeros(12 * 16000), 16000)
+
+    conn = _conn()
+    book = _insert_book(conn, config={"youtube": {"description": "mo ta"}})
+    # video inherit để nhận intro từ global defaults, youtube custom để giữ
+    # description tự viết (timeline được nối vào sau nó).
+    set_book_group_mode_db(conn, book.id, "video", "inherit")
+    set_book_group_mode_db(conn, book.id, "youtube", "custom")
+    book = _book(conn)
+    patch = _patch_with_timeline(tmp_path)
+
+    before = resolve_effective_youtube_metadata(conn, book, patch, None)["description"]
+    assert before == "mo ta\n\n00:00 Mot\n00:10 Hai\n00:20 Ba"
+
+    save_global_production_defaults(conn, {"video": {"intro_voice": "intro.wav"}})
+    after = resolve_effective_youtube_metadata(conn, _book(conn), patch, None)["description"]
+    assert after == "mo ta\n\n00:00 Giới thiệu\n00:12 Mot\n00:22 Hai\n00:32 Ba"
+
+
+def test_effective_metadata_ignores_an_intro_whose_file_is_gone(tmp_path, monkeypatch):
+    from app.production_defaults import resolve_effective_youtube_metadata
+
+    monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    conn = _conn()
+    book = _insert_book(conn, config={"youtube": {"description": "mo ta"}})
+    set_book_group_mode_db(conn, book.id, "video", "inherit")
+    set_book_group_mode_db(conn, book.id, "youtube", "custom")
+    save_global_production_defaults(conn, {"video": {"intro_voice": "missing.wav"}})
+    description = resolve_effective_youtube_metadata(
+        conn, _book(conn), _patch_with_timeline(tmp_path), None)["description"]
+    assert description == "mo ta\n\n00:00 Mot\n00:10 Hai\n00:20 Ba"

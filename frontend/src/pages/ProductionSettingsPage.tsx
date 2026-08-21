@@ -4,6 +4,7 @@ import { AudioLines, Captions, Save, Settings2, X } from "lucide-react";
 import { api, VoiceItem, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { WaveformPreview } from "@/components/common/WaveformPreview";
 import {
   BackgroundItem,
   NormalizationSettings,
@@ -23,7 +24,7 @@ import { YouTubeConfigFields } from "@/pages/book-detail/YouTubeFields";
 type Defaults = ProductionSettings["defaults"];
 
 const GROUPS: { key: ProductionGroup; label: string; hint: string }[] = [
-  { key: "audio", label: "Âm thanh", hint: "TTS model, voice, độ dài chunk và hiệu ứng." },
+  { key: "audio", label: "Âm thanh", hint: "TTS model, voice, độ dài chunk, hiệu ứng và khoảng lặng khi ghép." },
   { key: "normalization", label: "Chuẩn hóa TTS", hint: "Quy tắc làm sạch văn bản trước khi đọc." },
   { key: "video", label: "Video", hint: "Khung hình, codec, nền, waveform và phụ đề." },
   { key: "youtube", label: "YouTube", hint: "Tiêu đề, description, timeline, tags và playlist." },
@@ -258,6 +259,31 @@ export function ProductionSettingsPage() {
                   label="Thêm hiệu ứng âm thanh"
                 />
               </div>
+              <Field label="Khoảng lặng giữa chunk (ms)" hint="Nhịp thở giữa hai đoạn liền nhau">
+                <input
+                  className={fieldClass}
+                  type="number"
+                  min="0"
+                  max="30000"
+                  step="50"
+                  value={draft.audio.chunk_pause_ms}
+                  onChange={(event) => patchGroup("audio", { chunk_pause_ms: Number(event.target.value) || 0 })}
+                />
+              </Field>
+              <Field
+                label="Khoảng lặng giữa chương (ms)"
+                hint="Chèn trước mỗi chương trong cùng một patch; cũng là chỗ nhạc nền được chèn vào"
+              >
+                <input
+                  className={fieldClass}
+                  type="number"
+                  min="0"
+                  max="30000"
+                  step="100"
+                  value={draft.audio.chapter_pause_ms}
+                  onChange={(event) => patchGroup("audio", { chapter_pause_ms: Number(event.target.value) || 0 })}
+                />
+              </Field>
             </div>
           )}
 
@@ -555,6 +581,44 @@ export function ProductionSettingsPage() {
                 </Field>
               </div>
 
+              <div className="space-y-3 rounded-md border border-border p-3">
+                <CheckField
+                  checked={video.music_gap_only}
+                  onChange={(value) => setVideo({ music_gap_only: value })}
+                  label="Nhạc nền chỉ chèn vào khoảng lặng"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Bản nhạc của sách chỉ phát ở những quãng im lặng đủ dài (nghỉ giữa chương,
+                  giữa chunk) thay vì lặp nền dưới giọng đọc. Tắt để quay lại kiểu mix cũ.
+                </p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field label="Khoảng lặng tối thiểu (ms)" hint="Ngắn hơn mức này thì bỏ qua">
+                    <input
+                      className={fieldClass}
+                      type="number"
+                      min="200"
+                      max="60000"
+                      step="100"
+                      disabled={!video.music_gap_only}
+                      value={video.music_gap_min_ms}
+                      onChange={(event) => setVideo({ music_gap_min_ms: Number(event.target.value) || 0 })}
+                    />
+                  </Field>
+                  <Field label="Fade nhạc (ms)" hint="Vào/ra ở hai đầu mỗi đoạn nhạc">
+                    <input
+                      className={fieldClass}
+                      type="number"
+                      min="0"
+                      max="5000"
+                      step="50"
+                      disabled={!video.music_gap_only}
+                      value={video.music_gap_fade_ms}
+                      onChange={(event) => setVideo({ music_gap_fade_ms: Number(event.target.value) || 0 })}
+                    />
+                  </Field>
+                </div>
+              </div>
+
               <div className="flex flex-wrap gap-4 rounded-md bg-muted/30 p-3">
                 <CheckField
                   checked={video.crossfade_enabled}
@@ -583,6 +647,9 @@ export function ProductionSettingsPage() {
                     onChange={(value) => setVideo({ waveform_enabled: value })}
                     label="Bật"
                   />
+                </div>
+                <div className={video.waveform_enabled ? undefined : "pointer-events-none opacity-45"}>
+                  <WaveformPreview settings={video} height={240} />
                 </div>
                 <div
                   className={

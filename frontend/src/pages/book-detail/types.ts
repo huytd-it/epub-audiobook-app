@@ -133,6 +133,12 @@ export type VideoConfig = {
   background_mode: "sequential" | "random";
   gameplay: GameplaySelectionConfig;
   image_duration_seconds: number;
+  /** Nhạc nền chỉ chèn vào khoảng lặng của giọng đọc thay vì lặp suốt patch. */
+  music_gap_only: boolean;
+  /** Khoảng lặng tối thiểu (ms) mới được chèn nhạc. */
+  music_gap_min_ms: number;
+  /** Fade in/out (ms) ở hai đầu mỗi đoạn nhạc chèn vào. */
+  music_gap_fade_ms: number;
   resolution: string;
   fps: number;
   image_animation: string;
@@ -216,7 +222,16 @@ export type ProductionSettings = {
   schema_version: number;
   updated_at: string | null;
   defaults: {
-    audio: { model_id: string; voice_id: string; max_chars: number; with_effects: boolean };
+    audio: {
+      model_id: string;
+      voice_id: string;
+      max_chars: number;
+      with_effects: boolean;
+      /** Khoảng lặng (ms) chèn giữa hai chunk liền nhau. */
+      chunk_pause_ms: number;
+      /** Khoảng lặng (ms) chèn trước chunk mở đầu một chương mới. */
+      chapter_pause_ms: number;
+    };
     normalization: NormalizationSettings;
     video: VideoConfig;
     youtube: YouTubeConfig;
@@ -533,6 +548,9 @@ export type AudioSettings = {
   voiceId: string;
   maxChars: string;
   withEffects: boolean;
+  /** Chỉ dùng cho cấu hình TTS của sách (export không có khoảng lặng riêng). */
+  chunkPauseMs?: string;
+  chapterPauseMs?: string;
 };
 
 export type BackgroundItem = { name: string; path: string; is_video: boolean; is_default?: boolean };

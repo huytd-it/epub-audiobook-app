@@ -57,8 +57,11 @@ export type VoiceItem = {
 export type VoiceTag = { value: string; label: string };
 export type VoiceTaxonomy = { genders: VoiceTag[]; genres: VoiceTag[] };
 
-/** GET /voices/{name}/info — metadata plus what ffprobe could read. */
-export type VoiceInfo = VoiceItem & {
+/** What ffprobe could read about one clip — shared by the voice and music
+ *  libraries, which both feed the audio editor. */
+export type AudioClipInfo = {
+  name?: string;
+  size?: number;
   duration_sec?: number | null;
   sample_rate?: number | null;
   channels?: number | null;
@@ -66,8 +69,15 @@ export type VoiceInfo = VoiceItem & {
   bit_rate?: number | null;
 };
 
-/** Body of POST /voices/{name}/process. Omitted fields mean "leave alone". */
-export type VoiceAudioOps = {
+/** GET /voices/{name}/info — clip metadata plus the probe. */
+export type VoiceInfo = VoiceItem & AudioClipInfo;
+
+/** GET /music/{id}/info — track metadata plus the probe. */
+export type MusicInfo = MusicItem & AudioClipInfo;
+
+/** Body of POST /voices/{name}/process and /music/{id}/process. Omitted fields
+ *  mean "leave alone". */
+export type AudioClipOps = {
   trim_start?: number;
   trim_end?: number | null;
   highpass?: boolean;
@@ -82,7 +92,10 @@ export type VoiceAudioOps = {
   sample_rate?: number | null;
 };
 
-export type VoiceProcessResult = VoiceInfo & { applied: string[] };
+/** Result of either library's /process: the re-probed clip plus Vietnamese
+ *  labels for what was applied. */
+export type AudioProcessResult = AudioClipInfo & { applied: string[] };
+
 export type EffectItem = { id: number; marker: string; file_path: string; description: string };
 
 export type YouTubeUploadItem = {

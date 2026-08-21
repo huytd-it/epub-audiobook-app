@@ -18,7 +18,6 @@ from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
 
-_CHUNK_PAUSE_MS = 300
 _engines = {}
 
 _META_FILE = ".tts_meta"
@@ -60,6 +59,7 @@ def handle(ctx) -> dict:
     voice = payload.get("voice") or None
     max_chars = int(payload.get("max_chars") or 0)
     with_effects = bool(payload.get("with_effects"))
+    pause_config = (payload["chunk_pause_ms"], payload["chapter_pause_ms"])
 
     # A retry can be claimed after synthesis succeeded but before the queue row was
     # committed as done (process crash, DB lock, shutdown). The patch audio is the
@@ -80,6 +80,7 @@ def handle(ctx) -> dict:
         (snapshot_dir / ".tts_request.json").write_text(json.dumps({
             "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
             "with_effects": with_effects,
+            "chunk_pause_ms": pause_config[0], "chapter_pause_ms": pause_config[1],
         }), encoding="utf-8")
 
     ctx.log(f"synthesize patch {patch_id} (book {patch.book_id}) engine={engine_id}")
@@ -89,7 +90,7 @@ def handle(ctx) -> dict:
             ctx, patch, engine, Path(settings.data_root),
             engine_id=engine_id,
             effective_max_chars=max_chars if max_chars > 0 else None,
-            with_effects=with_effects,
+            with_effects=with_effects, pause_config=pause_config,
         )
     except asyncio.CancelledError:
         raise
@@ -135,12 +136,19 @@ def _finish_audio_result(ctx, patch, audio_path: str, payload: dict, *,
 def synthesize_patch(
     ctx, patch, engine, data_root: Path, *,
     engine_id: str, effective_max_chars: int | None, with_effects: bool,
+    pause_config: tuple[int, int] | None = None,
 ) -> tuple[str, int]:
     plan_inputs = repository.fetch_patch_chunk_inputs(ctx.conn, patch, max_chars=effective_max_chars)
     book = repository.get_book(ctx.conn, patch.book_id)
     plan = repository.build_chunk_plan_from_inputs(plan_inputs)
     if not plan:
         raise JobFatalError("patch không có nội dung đọc được")
+    chunk_pause_ms, chapter_pause_ms = pause_config or (
+        audio_merge.DEFAULT_CHUNK_PAUSE_MS, audio_merge.DEFAULT_CHAPTER_PAUSE_MS)
+    # One gap per chunk instead of one for the whole patch: a chunk that opens a
+    # chapter gets the longer chapter pause. Timeline, audio and captions all
+    # take the same plan, so they cannot drift apart.
+    pauses = audio_merge.build_pause_plan(plan, chunk_pause_ms, chapter_pause_ms)
 
     ref_wav = book.voice_clip_path if book else None
     ref_text = book.voice_transcript if book else None
@@ -160,11 +168,11 @@ def synthesize_patch(
             wavs.append(engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text))
             ctx.progress(index + 1, total)
         frame_counts = [len(a) for a in wavs]
-        chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, _CHUNK_PAUSE_MS)
-        audio_merge.concat_chunks_to_wav(wavs, engine.sample_rate, audio_path, pause_ms=_CHUNK_PAUSE_MS)
+        chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, pauses)
+        audio_merge.concat_chunks_to_wav(wavs, engine.sample_rate, audio_path, pause_ms=pauses)
         _apply_effects(ctx, with_effects, audio_path, plan)
         audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
-        subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, _CHUNK_PAUSE_MS)
+        subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, pauses)
         ctx.progress(total, total, phase="synthesizing")
         return audio_path, total
 
@@ -207,13 +215,13 @@ def synthesize_patch(
             ctx.progress(index + 1, total)
         frame_counts.append(sf.info(str(chunk_path)).frames)
 
-    chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, _CHUNK_PAUSE_MS)
+    chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, pauses)
     chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
     ctx.progress(total, total, phase="merging")
-    audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
+    audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=pauses)
     _apply_effects(ctx, with_effects, audio_path, plan)
     audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
-    subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, _CHUNK_PAUSE_MS)
+    subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, pauses)
     ctx.progress(total, total, phase="synthesizing")
     return audio_path, total
 

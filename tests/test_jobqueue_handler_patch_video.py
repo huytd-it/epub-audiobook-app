@@ -29,6 +29,11 @@ def test_manual_patch_job_renders_without_pipeline(tmp_path, monkeypatch):
     assert output.read_bytes() == b"new"
     assert seen["out"] != str(output)
     assert seen["kw"]["resolution"] == (1280, 720)
+    # Nhạc nền chỉ chèn vào khoảng lặng: config đi kèm lệnh render, không phải
+    # đọc lại lúc mux.
+    from app import music_bed
+
+    assert music_bed.parse_options(seen["kw"]["music_gaps"]).enabled is True
     assert conn.execute("SELECT patch_id FROM videos WHERE file_path=?", (str(output),)).fetchone()[0] == 2
     assert conn.execute("SELECT phase FROM job WHERE id=?", (job_id,)).fetchone()[0] == "done"
     # Badge "Video" ở bảng Patches đọc patch_pipeline: render xong là hiện ngay, không

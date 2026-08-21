@@ -33,7 +33,7 @@ from app.patch_publishing import (confirm_patch_republish, discard_stale_patch_v
                                   on_patch_audio_ready, resolve_automation_policy,
                                   run_patch_publish_stage, seed_patch_video,
                                   warm_patch_thumbnail)
-from app.youtube_metadata import get_book_youtube_config, get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_book_youtube_config, validate_timeline
+from app.youtube_metadata import audio_duration_seconds, get_book_youtube_config, get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_book_youtube_config, validate_timeline
 from app.production_defaults import get_effective_video_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
@@ -1022,13 +1022,16 @@ async def youtube_metadata_preview_draft(request: Request, book_id: int):
             validated = validate_book_youtube_config(config) if config is not None else None
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        from app.production_defaults import (get_effective_video_config, get_effective_youtube_config,
+                                             resolve_voice_clip)
         if validated is None:
-            from app.production_defaults import get_effective_youtube_config
             validated = get_effective_youtube_config(conn, book)
+        intro = resolve_voice_clip(get_effective_video_config(conn, book), "intro_voice")
+        context = {**repository.build_patch_metadata_context(conn, book, patch),
+                   "intro_seconds": audio_duration_seconds(intro) if intro else 0.0}
         try:
             return resolve_patch_youtube_metadata(
-                book, patch, get_patch_youtube_override(conn, patch.id),
-                repository.build_patch_metadata_context(conn, book, patch), config=validated)
+                book, patch, get_patch_youtube_override(conn, patch.id), context, config=validated)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 

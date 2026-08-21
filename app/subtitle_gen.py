@@ -29,6 +29,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from app import audio_merge
 from app.chunker import split_into_tts_chunks
 
 logger = logging.getLogger(__name__)
@@ -60,26 +61,27 @@ class Cue:
 
 
 def build_cues(
-    plan: list[dict], frame_counts: list[int], sample_rate: int, pause_ms: int,
+    plan: list[dict], frame_counts: list[int], sample_rate: int, pause_ms,
     *, max_chars_per_cue: int = DEFAULT_MAX_CHARS_PER_CUE,
 ) -> list[Cue]:
     """Chunk-exact cue boundaries, sub-split for on-screen readability.
 
-    Mirrors app.audio_merge.build_chapter_marks' layout math exactly (a
-    pause_ms gap between every pair of chunks, none before the first) so the
-    same frame_counts already computed for the chapter-timeline sidecar can
-    be reused here unchanged - but at every chunk, not just chapter starts.
+    Mirrors app.audio_merge.build_chapter_marks' layout math exactly (the gap
+    from pause_ms before every chunk but the first) so the same frame_counts
+    already computed for the chapter-timeline sidecar can be reused here
+    unchanged - but at every chunk, not just chapter starts. ``pause_ms`` takes
+    the same uniform-or-per-chunk shapes audio_merge accepts, so captions stay
+    aligned once chapter breaks get their own longer pause.
     """
     if len(plan) != len(frame_counts):
         raise ValueError("plan and frame_counts must be the same length")
     if sample_rate <= 0:
         raise ValueError("sample_rate must be positive")
-    pause_seconds = pause_ms / 1000
+    pauses = audio_merge.resolve_pauses(pause_ms, len(plan))
     cues: list[Cue] = []
     cursor = 0.0
     for index, (item, frames) in enumerate(zip(plan, frame_counts)):
-        if index:
-            cursor += pause_seconds
+        cursor += pauses[index] / 1000
         chunk_start = cursor
         chunk_duration = frames / sample_rate
         cursor += chunk_duration
@@ -210,7 +212,7 @@ def try_write_ass(path, cues: list[Cue], **style_kwargs) -> None:
 
 
 def try_generate(
-    path, plan: list[dict], frame_counts: list[int], sample_rate: int, pause_ms: int,
+    path, plan: list[dict], frame_counts: list[int], sample_rate: int, pause_ms,
     *, max_chars_per_cue: int = DEFAULT_MAX_CHARS_PER_CUE, **style_kwargs,
 ) -> None:
     """build_cues + write_ass in one best-effort call.

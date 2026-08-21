@@ -18,7 +18,18 @@ ALLOWED_FIELDS = {"book_title", "episode_number", "chapter_start", "chapter_end"
 YOUTUBE_TITLE_LIMIT = 100
 YOUTUBE_DESCRIPTION_LIMIT = 5000
 CHAPTER_SECTION_HEADING = "📖 Nội dung:"
+# Tên chương cho đoạn intro chèn trước nội dung patch trong video.
+INTRO_TIMELINE_TITLE = "Giới thiệu"
 OVERRIDE_FIELDS = {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"}
+
+# --- Playlist link -------------------------------------------------------------
+# Every upload that lands in a playlist advertises that playlist in its own
+# description: the link is the only way a listener can follow the whole book
+# from the video page, so it ships even when the author wrote the description
+# themselves.
+PLAYLIST_URL_PREFIX = "https://www.youtube.com/playlist?list="
+PLAYLIST_LINK_LABEL = "▶ Nghe trọn bộ (playlist):"
+PLAYLIST_FOLLOW_LINE = "🔔 Mở playlist và bấm Lưu/Theo dõi để nhận tập mới."
 
 # --- Extended description ("nội dung mở rộng") ---------------------------------
 # A boilerplate block appended after the description (and the timeline, when it is
@@ -338,6 +349,20 @@ def _chapter_lines(chapter_titles, timeline: str) -> list[str]:
     return [title.strip() for title in chapter_titles if isinstance(title, str) and title.strip()]
 
 
+def playlist_url(playlist_id) -> str:
+    """Watch-page URL of a playlist, or "" when there is no playlist to link."""
+    playlist_id = (playlist_id or "").strip() if isinstance(playlist_id, str) else ""
+    return f"{PLAYLIST_URL_PREFIX}{playlist_id}" if playlist_id else ""
+
+
+def _playlist_lines(playlist) -> list[str]:
+    """The "follow the whole book" block, empty unless a playlist is configured."""
+    if not isinstance(playlist, dict) or playlist.get("mode") != "existing":
+        return []
+    url = playlist_url(playlist.get("playlist_id"))
+    return [f"{PLAYLIST_LINK_LABEL} {url}", PLAYLIST_FOLLOW_LINE] if url else []
+
+
 def _music_lines(music) -> list[str]:
     if not isinstance(music, dict) or not (music.get("name") or "").strip():
         return []
@@ -369,7 +394,7 @@ def _fit_description(blocks: list[list[str]], limit: int = YOUTUBE_DESCRIPTION_L
     return text if len(text) <= limit else text[:limit].rstrip()
 
 
-def _default_description(values: dict, chapter_titles, music, timeline: str, extra: str = "") -> str:
+def _default_description(values: dict, chapter_titles, music, timeline: str, extra: str = "", playlist_lines=()) -> str:
     """Fallback description so videos never upload with an empty one."""
     line = f"Tập {values['episode_number']} - {format_chapter_range(values['chapter_start'], values['chapter_end'])}"
     if values["patch_name"]:
@@ -380,6 +405,7 @@ def _default_description(values: dict, chapter_titles, music, timeline: str, ext
     chapters = _chapter_lines(chapter_titles, timeline)
     return _fit_description([
         header,
+        list(playlist_lines),
         [CHAPTER_SECTION_HEADING, *chapters] if chapters else [],
         _music_lines(music),
         extra.split("\n") if extra else [],
@@ -387,7 +413,24 @@ def _default_description(values: dict, chapter_titles, music, timeline: str, ext
     ])
 
 
-def _timeline_description(patch) -> str:
+def audio_duration_seconds(path) -> float:
+    """Độ dài file audio theo giây, 0.0 nếu không đọc được."""
+    try:
+        info = sf.info(str(path))
+        return info.frames / info.samplerate if info.samplerate else 0.0
+    except (OSError, TypeError, ValueError, RuntimeError, sf.SoundFileError):
+        return 0.0
+
+
+def _timeline_description(patch, intro_seconds: float = 0.0) -> str:
+    """Các dòng "mm:ss Tên chương" cho description, tính theo timeline của *video*.
+
+    Sidecar timeline mô tả file WAV, nhưng video phát intro trước nội dung đó, nên
+    mọi mốc phải dời đi đúng độ dài intro. YouTube chỉ dựng chương khi mốc đầu tiên
+    là 0:00 và mỗi chương dài tối thiểu 10 giây: intro đủ 10 giây thì thành chương
+    "Giới thiệu" mở màn, intro ngắn hơn không đủ làm một chương nên chương đầu giữ
+    0:00 và ôm luôn phần intro.
+    """
     audio_path = getattr(patch, "audio_path", None)
     if not audio_path:
         return ""
@@ -408,6 +451,12 @@ def _timeline_description(patch) -> str:
             titles.append(title.strip())
         if len(starts) < 3 or any(b - a < sample_rate * 10 for a, b in zip(starts, starts[1:])) or total_frames - starts[-1] < sample_rate * 10:
             return ""
+        offset = max(round((intro_seconds or 0) * sample_rate), 0)
+        entries = [(start + offset, title) for start, title in zip(starts, titles)]
+        if offset >= sample_rate * 10:
+            entries.insert(0, (0, INTRO_TIMELINE_TITLE))
+        else:
+            entries[0] = (0, entries[0][1])
 
         def format_time(frame):
             seconds = frame // sample_rate
@@ -415,7 +464,7 @@ def _timeline_description(patch) -> str:
             hours, minutes = divmod(minutes, 60)
             return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
 
-        return "\n".join(f"{format_time(start)} {title}" for start, title in zip(starts, titles))
+        return "\n".join(f"{format_time(start)} {title}" for start, title in entries)
     except (OSError, TypeError, ValueError, UnicodeDecodeError, KeyError, json.JSONDecodeError, sf.SoundFileError):
         return ""
 
@@ -460,14 +509,24 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
         description = description_template.format(**values)
     except (KeyError, ValueError, IndexError) as exc:
         raise ValueError("invalid description template") from exc
-    timeline = _timeline_description(patch) if config["timeline_enabled"] else ""
-    extra = render_description_extra(config["description_extra"])
     context = context if isinstance(context, dict) else {}
+    timeline = _timeline_description(patch, context.get("intro_seconds") or 0) if config["timeline_enabled"] else ""
+    extra = render_description_extra(config["description_extra"])
+    playlist = {**config["playlist"], **(override.get("playlist") or {})}
+    playlist = validate_book_youtube_config({**config, "playlist": playlist})["playlist"]
+    playlist_block = _playlist_lines(playlist)
     if not description.strip():
         # The generated description already places the timeline inside its chapter
         # list, so only an author-written description gets the block appended.
-        description = _default_description(values, context.get("chapter_titles"), context.get("music"), timeline, extra)
+        description = _default_description(
+            values, context.get("chapter_titles"), context.get("music"), timeline, extra, playlist_block)
     else:
+        # An author-written description keeps its own opening; the playlist link is
+        # appended right below it, ahead of the timeline, unless it is already there.
+        if playlist_block and playlist_url(playlist["playlist_id"]) not in description:
+            candidate = f"{description.rstrip()}\n\n" + "\n".join(playlist_block)
+            if len(candidate) <= YOUTUBE_DESCRIPTION_LIMIT:
+                description = candidate
         if timeline:
             if description.rstrip() == timeline or description.endswith(f"\n\n{timeline}"):
                 candidate = description
@@ -488,9 +547,6 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
         raise ValueError("description exceeds 5000 characters")
     if privacy not in {"private", "unlisted", "public"}:
         raise ValueError("invalid privacy status")
-    playlist = {**config["playlist"], **(override.get("playlist") or {})}
-    validated = validate_book_youtube_config({**config, "playlist": playlist})
-    playlist = validated["playlist"]
     return {"title": title, "description": description, "tags": split_tags(genre_value), "privacy_status": privacy, "youtube": playlist}
 
 

@@ -185,6 +185,8 @@ export function BookDetail() {
     voiceId: "",
     maxChars: "400",
     withEffects: false,
+    chunkPauseMs: "300",
+    chapterPauseMs: "1500",
   });
   const [exportSettings, setExportSettings] = useState<AudioSettings>({
     modelId: "omnivoice",
@@ -217,9 +219,10 @@ export function BookDetail() {
   useEffect(() => {
     if (!data) return;
     let cancelled = false;
-    api<{ model_id: string; voice_id: string; max_chars: number; with_effects: boolean }>(
-      `/books/${bookId}/audio-settings`
-    )
+    api<{
+      model_id: string; voice_id: string; max_chars: number; with_effects: boolean;
+      chunk_pause_ms: number; chapter_pause_ms: number;
+    }>(`/books/${bookId}/audio-settings`)
       .then((saved) => {
         if (cancelled) return;
         setSettings({
@@ -227,6 +230,8 @@ export function BookDetail() {
           voiceId: saved.voice_id || "",
           maxChars: saved.max_chars ? String(saved.max_chars) : "",
           withEffects: saved.with_effects,
+          chunkPauseMs: String(saved.chunk_pause_ms ?? 300),
+          chapterPauseMs: String(saved.chapter_pause_ms ?? 1500),
         });
       })
       .catch((err) => !cancelled && setMessage(errorText(err)));

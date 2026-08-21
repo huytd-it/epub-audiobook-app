@@ -14,7 +14,6 @@ from app.config import settings
 from app.jobqueue.models import JobFatalError
 
 logger = logging.getLogger(__name__)
-_CHUNK_PAUSE_MS = 300
 
 
 def dedupe_key(patch_id: int) -> str:
@@ -121,8 +120,10 @@ def handle(ctx) -> dict:
     ctx.progress(total, total, phase="merging")
     audio_path = str(book_dir / f"{patch_id}.wav")
     chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
-    audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
-    _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects)
+    pauses = audio_merge.build_pause_plan(
+        plan, payload["chunk_pause_ms"], payload["chapter_pause_ms"])
+    audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=pauses)
+    _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects, pauses)
     from app.jobqueue.handlers.audiobook_tts import finalize_book_if_ready
     final_path = finalize_book_if_ready(ctx, book_id)
     ctx.emit({"type": "done", "saved": True, "complete": True, "ok": ok_count, "failed": 0})
@@ -130,9 +131,9 @@ def handle(ctx) -> dict:
     return {"audio_path": audio_path, "ok": ok_count, "failed": 0, "final_audio_path": final_path}
 
 
-def _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects) -> None:
+def _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects, pauses) -> None:
     info = sf.info(audio_path)
-    chapters, _ = audio_merge.build_chapter_marks(plan, [sf.info(p).frames for p in chunk_paths], info.samplerate, _CHUNK_PAUSE_MS)
+    chapters, _ = audio_merge.build_chapter_marks(plan, [sf.info(p).frames for p in chunk_paths], info.samplerate, pauses)
     audio_merge.try_write_timeline(Path(audio_path).with_suffix(".timeline.json"), info.samplerate, chapters, info.frames)
     if with_effects:
         from app.routes.text_studio import _mix_effects

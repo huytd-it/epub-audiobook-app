@@ -147,11 +147,18 @@ def enqueue_pending_patch_jobs(
                 "voice": voice if voice else audio.get("voice_id"),
                 "max_chars": audio.get("max_chars") or 0,
                 "with_effects": bool(audio.get("with_effects", False)),
+                "chunk_pause_ms": audio.get("chunk_pause_ms"),
+                "chapter_pause_ms": audio.get("chapter_pause_ms"),
             }
         else:
+            # An operator overriding the engine/voice is not overriding the merge
+            # spacing, so the pauses still come from the book's own audio config.
+            audio = _audio_config(row["book_id"])
             request = {
                 "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
                 "with_effects": with_effects,
+                "chunk_pause_ms": audio.get("chunk_pause_ms"),
+                "chapter_pause_ms": audio.get("chapter_pause_ms"),
             }
         # Cờ tự động hoá chỉ vào payload khi operator truyền RÕ — bỏ trống nghĩa là dùng
         # cột persisted trên sách (auto_create_video/auto_upload_youtube).

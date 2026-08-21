@@ -23,6 +23,33 @@ def test_video_config_defaults_match_video_creator():
     assert config["waveform_background_opacity"] == 0.55
 
 
+def test_music_gap_defaults_are_on_at_1500ms():
+    config = validate_video_config({})
+    assert config["music_gap_only"] is True
+    assert config["music_gap_min_ms"] == 1500
+    assert config["music_gap_fade_ms"] == 400
+
+
+def test_music_gap_settings_round_trip():
+    config = validate_video_config({"music_gap_only": False, "music_gap_min_ms": 2500.0,
+                                    "music_gap_fade_ms": 0})
+    assert config["music_gap_only"] is False
+    assert config["music_gap_min_ms"] == 2500
+    assert config["music_gap_fade_ms"] == 0
+
+
+@pytest.mark.parametrize("field,value", [
+    ("music_gap_only", "yes"),
+    ("music_gap_min_ms", 10),
+    ("music_gap_min_ms", 999999),
+    ("music_gap_fade_ms", -1),
+    ("music_gap_fade_ms", True),
+])
+def test_video_config_rejects_bad_music_gap_values(field, value):
+    with pytest.raises(ValueError):
+        validate_video_config({field: value})
+
+
 @pytest.mark.parametrize("field,value", [("codec", "bad"), ("audio_bitrate", "64k"), ("background_mode", "shuffle")])
 def test_video_config_rejects_invalid_values(field, value):
     with pytest.raises(ValueError):

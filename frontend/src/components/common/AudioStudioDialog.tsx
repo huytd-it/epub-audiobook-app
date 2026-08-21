@@ -8,7 +8,7 @@ import {
   Square,
   Wand2,
 } from "lucide-react";
-import { api, postJson, VoiceAudioOps, VoiceInfo, VoiceItem, VoiceProcessResult } from "@/api";
+import { api, postJson, AudioClipInfo, AudioClipOps, AudioProcessResult } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -77,23 +77,44 @@ function buildPeaks(buffer: AudioBuffer, buckets: number): Peaks {
   return { min, max };
 }
 
+/** What the editor needs to know about the clip it is editing.
+ *
+ *  The dialog is library-agnostic: voice clips are addressed by filename and
+ *  music tracks by row id, so each library builds its own three URLs and the
+ *  editor only ever talks to those. ``overwriteHint`` is the one place the two
+ *  differ in wording - a voice is shared by books through its path, a track
+ *  through its id - and it is shown before an in-place overwrite. */
+export type AudioStudioTarget = {
+  /** Display name, also the default stem for a "save as copy". */
+  name: string;
+  /** GET, returns the raw audio. */
+  fileUrl: string;
+  /** GET, returns ffprobe details (duration/sample rate/channels/codec/size). */
+  infoUrl: string;
+  /** POST {ops, save_as, new_name}. */
+  processUrl: string;
+  overwriteHint?: string;
+  /** One line under the title saying what this library uses the clip for. */
+  hint?: string;
+};
+
 export function AudioStudioDialog({
-  voice,
+  target,
   onClose,
   onSaved,
 }: {
-  voice: VoiceItem;
+  target: AudioStudioTarget;
   onClose: () => void;
   /** Called after a successful render so the library can reload. */
-  onSaved: (result: VoiceProcessResult) => void;
+  onSaved: (result: AudioProcessResult) => void;
 }) {
   // Bumped after an in-place overwrite: the path is unchanged, so without a
   // cache-buster both the <audio> element and the fetch below would replay the
   // stale pre-edit audio.
   const [version, setVersion] = useState(0);
-  const fileUrl = `/voices/file/${encodeURIComponent(voice.name)}${version ? `?v=${version}` : ""}`;
+  const fileUrl = `${target.fileUrl}${version ? `${target.fileUrl.includes("?") ? "&" : "?"}v=${version}` : ""}`;
 
-  const [info, setInfo] = useState<VoiceInfo | null>(null);
+  const [info, setInfo] = useState<AudioClipInfo | null>(null);
   const [peaks, setPeaks] = useState<Peaks | null>(null);
   const [duration, setDuration] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -134,7 +155,7 @@ export function AudioStudioDialog({
     let context: AudioContext | null = null;
     try {
       const [probe, response] = await Promise.all([
-        api<VoiceInfo>(`/voices/${encodeURIComponent(voice.name)}/info`),
+        api<AudioClipInfo>(target.infoUrl),
         fetch(fileUrl),
       ]);
       if (!response.ok) throw new Error(`Không đọc được file (lỗi ${response.status})`);
@@ -154,15 +175,15 @@ export function AudioStudioDialog({
       void context?.close();
       setLoading(false);
     }
-  }, [fileUrl, voice.name]);
+  }, [fileUrl, target.infoUrl]);
 
   useEffect(() => {
     void loadClip();
   }, [loadClip]);
 
   useEffect(() => {
-    setCopyName(voice.name.replace(/\.[^.]+$/, "") + "_edited");
-  }, [voice.name]);
+    setCopyName(target.name.replace(/\.[^.]+$/, "") + "_edited");
+  }, [target.name]);
 
   // ------------------------------------------------------------------ drawing
   const draw = useCallback(() => {
@@ -310,8 +331,8 @@ export function AudioStudioDialog({
   const selectionLength = Math.max(0, selection.end - selection.start);
   const isFullSelection = selection.start <= 0.001 && selection.end >= duration - 0.001;
 
-  const ops = useMemo<VoiceAudioOps>(() => {
-    const payload: VoiceAudioOps = {};
+  const ops = useMemo<AudioClipOps>(() => {
+    const payload: AudioClipOps = {};
     if (!isFullSelection) {
       payload.trim_start = Number(selection.start.toFixed(3));
       payload.trim_end = Number(selection.end.toFixed(3));
@@ -358,7 +379,7 @@ export function AudioStudioDialog({
   const handleApply = async () => {
     if (!hasChanges) return;
     if (!saveAsCopy && !confirm(
-      `Ghi đè trực tiếp lên "${voice.name}"? File gốc sẽ không lấy lại được.`
+      `Ghi đè trực tiếp lên "${target.name}"? File gốc sẽ không lấy lại được.`
     )) return;
 
     setApplying(true);
@@ -366,8 +387,8 @@ export function AudioStudioDialog({
     setApplied(null);
     stop();
     try {
-      const result = await postJson<VoiceProcessResult>(
-        `/voices/${encodeURIComponent(voice.name)}/process`,
+      const result = await postJson<AudioProcessResult>(
+        target.processUrl,
         { ops, save_as: saveAsCopy ? "copy" : "overwrite", new_name: saveAsCopy ? copyName.trim() : "" }
       );
       onSaved(result);
@@ -399,11 +420,11 @@ export function AudioStudioDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <AudioWaveform className="h-4 w-4 text-primary shrink-0" />
-            <span className="truncate">Xử lý âm thanh — {voice.name}</span>
+            <span className="truncate">Xử lý âm thanh — {target.name}</span>
           </DialogTitle>
           <DialogDescription>
-            Cắt lấy đoạn giọng sạch nhất rồi làm sạch trong một lượt. Kéo trên sóng âm để
-            chọn vùng giữ lại.
+            {target.hint || "Cắt lấy đoạn cần dùng rồi làm sạch trong một lượt."} Kéo trên
+            sóng âm để chọn vùng giữ lại.
           </DialogDescription>
         </DialogHeader>
 
@@ -637,7 +658,7 @@ export function AudioStudioDialog({
                 <span>
                   <span className="font-semibold">Ghi đè file gốc</span>
                   <span className="block text-muted-foreground">
-                    Các sách đang dùng giọng này sẽ nhận bản đã xử lý ngay.
+                    {target.overwriteHint || "Các sách đang dùng file này sẽ nhận bản đã xử lý ngay."}
                   </span>
                 </span>
               </label>

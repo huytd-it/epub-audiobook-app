@@ -8,7 +8,7 @@ from app import db
 from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_override,
                                   resolve_patch_youtube_metadata, save_book_youtube_config,
                                   save_patch_youtube_override, validate_book_youtube_config,
-                                  load_timeline, render_description_extra)
+                                  load_timeline, render_description_extra, PLAYLIST_LINK_LABEL)
 
 
 def test_load_timeline_returns_valid_sidecar(tmp_path):
@@ -620,3 +620,71 @@ def test_youtube_config_defaults_expose_timeline_and_extra_block():
 def test_youtube_config_rejects_a_non_boolean_timeline_flag():
     with pytest.raises(ValueError):
         validate_book_youtube_config({"timeline_enabled": "yes"})
+
+
+def test_playlist_link_is_appended_to_an_author_written_description():
+    playlist = {"mode": "existing", "playlist_id": "PL123"}
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(), None, config=_config(playlist=playlist))["description"]
+    assert "https://www.youtube.com/playlist?list=PL123" in description
+    assert description.startswith("book description")
+
+
+def test_playlist_link_reaches_the_generated_fallback_description():
+    playlist = {"mode": "existing", "playlist_id": "PL456"}
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(), None, config=_config(description="", playlist=playlist))["description"]
+    lines = description.split("\n")
+    assert f"{PLAYLIST_LINK_LABEL} https://www.youtube.com/playlist?list=PL456" in lines
+    # Near the top so YouTube shows it without "xem thêm".
+    assert lines.index(f"{PLAYLIST_LINK_LABEL} https://www.youtube.com/playlist?list=PL456") < 6
+
+
+def test_playlist_link_follows_the_patch_override_destination():
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(), {"playlist": {"mode": "existing", "playlist_id": "PLoverride"}},
+        config=_config(playlist={"mode": "existing", "playlist_id": "PLbook"}))["description"]
+    assert "list=PLoverride" in description
+    assert "list=PLbook" not in description
+
+
+def test_playlist_link_is_not_duplicated_when_the_author_already_wrote_it():
+    playlist = {"mode": "existing", "playlist_id": "PL789"}
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(), None,
+        config=_config(description="Nghe tiep: https://www.youtube.com/playlist?list=PL789",
+                       playlist=playlist))["description"]
+    assert description.count("list=PL789") == 1
+
+
+def test_no_playlist_means_no_link_block():
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(), None, config=_config(description=""))["description"]
+    assert "youtube.com/playlist" not in description
+
+
+# --- Intro offset -------------------------------------------------------------
+# Video phát intro trước nội dung patch, nên timeline (đo trên WAV) phải dời theo.
+
+def test_timeline_shifts_by_intro_and_gives_the_intro_its_own_chapter(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(str(audio)), None, {"intro_seconds": 12.0})["description"]
+    assert description == ("book description\n\n00:00 Giới thiệu\n00:12 Intro"
+                           "\n00:22 Chapter 1\n00:32 Chapter 2")
+
+
+def test_short_intro_keeps_the_first_chapter_at_zero(tmp_path):
+    # Dưới 10 giây thì YouTube không nhận intro là một chương riêng; mốc đầu phải
+    # là 0:00 nếu không cả danh sách chương bị bỏ.
+    audio = _timeline_audio(tmp_path)
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(str(audio)), None, {"intro_seconds": 4.0})["description"]
+    assert description == "book description\n\n00:00 Intro\n00:14 Chapter 1\n00:24 Chapter 2"
+
+
+def test_timeline_without_intro_is_unshifted(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    for context in ({}, {"intro_seconds": 0.0}, {"intro_seconds": None}):
+        description = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None, context)["description"]
+        assert description == "book description\n\n00:00 Intro\n00:10 Chapter 1\n00:20 Chapter 2"

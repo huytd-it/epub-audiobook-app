@@ -18,6 +18,12 @@ VIDEO_DEFAULTS = {
         "preset": "calm",
     },
     "image_duration_seconds": 15,
+    # Background music placement. "gap only" is the default: the track fills the
+    # silences in the narration (chapter breaks, chunk pauses) instead of looping
+    # under the voice for the whole patch. See app/music_bed.py.
+    "music_gap_only": True,
+    "music_gap_min_ms": 1500,
+    "music_gap_fade_ms": 400,
     "intro_voice": "",
     "outro_voice": "",
     "codec": "libx264",
@@ -117,6 +123,13 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("invalid fit mode")
     if result["audio_bitrate"] not in _BITRATES:
         raise ValueError("invalid audio bitrate")
+    if not isinstance(result["music_gap_only"], bool):
+        raise ValueError("music_gap_only must be boolean")
+    for field, low, high in (("music_gap_min_ms", 200, 60000), ("music_gap_fade_ms", 0, 5000)):
+        value = result[field]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+            raise ValueError(f"{field} must be {low}-{high} ms")
+        result[field] = int(value)
     if not isinstance(result["quality"], int) or not 18 <= result["quality"] <= 28:
         raise ValueError("quality must be 18-28")
     if not isinstance(result["concurrency"], int) or result["concurrency"] not in {1, 2, 3, 4, 6, 8}:

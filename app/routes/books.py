@@ -19,9 +19,11 @@ from app.epub_parser import parse_epub
 from app.normalization import normalize_text
 from app.youtube_metadata import get_book_youtube_config, save_book_youtube_config
 from app.video_config import save_book_video_config, validate_video_config
+from app.audio_merge import DEFAULT_CHAPTER_PAUSE_MS, DEFAULT_CHUNK_PAUSE_MS
 from app.production_defaults import (get_effective_audio_config, get_effective_normalization_options,
                                      get_effective_video_config, get_effective_youtube_config,
-                                     set_book_group_mode_db)
+                                     save_book_audio_section, set_book_group_mode_db,
+                                     validate_pause_ms)
 from app import youtube
 from app import db as app_db
 
@@ -390,13 +392,21 @@ async def save_audio_settings(request: Request, book_id: int):
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, "max_chars không hợp lệ") from exc
     with_effects = bool(data.get("with_effects", False))
+    chunk_pause_ms = validate_pause_ms(data.get("chunk_pause_ms"), DEFAULT_CHUNK_PAUSE_MS)
+    chapter_pause_ms = validate_pause_ms(data.get("chapter_pause_ms"), DEFAULT_CHAPTER_PAUSE_MS)
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(404, "book not found")
         conn.execute("UPDATE book SET tts_model=?, tts_voice_id=?, tts_max_chars=?, tts_with_effects=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (model_id, voice_id or None, max_chars or None, int(with_effects), book_id))
+        # The pauses have no columns of their own; they live in the book's
+        # automation_config alongside the other per-group sections.
+        save_book_audio_section(conn, book_id, chunk_pause_ms=chunk_pause_ms,
+                                chapter_pause_ms=chapter_pause_ms)
         conn.commit()
         set_book_group_mode_db(conn, book_id, "audio", "custom")
-    return {"model_id": model_id, "voice_id": voice_id, "max_chars": max_chars, "with_effects": with_effects}
+    return {"model_id": model_id, "voice_id": voice_id, "max_chars": max_chars,
+            "with_effects": with_effects, "chunk_pause_ms": chunk_pause_ms,
+            "chapter_pause_ms": chapter_pause_ms}
 
 
 @router.get("/books/{book_id}/export-audio-settings")
