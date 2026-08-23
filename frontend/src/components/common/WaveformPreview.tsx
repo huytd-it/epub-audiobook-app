@@ -117,7 +117,7 @@ function drawBars(
       ctx.arc(cx, mid + amp, dot, 0, Math.PI * 2);
       ctx.fill();
     } else if (style === "line") {
-      // Bars stand on the baseline, the way showwaves=mode=line fills upward.
+      // Bars stand on the baseline, the way the render fills "line" upward.
       const barHeight = Math.max(barWidth, amp * 2);
       roundedBar(ctx, cx - barWidth / 2, y + h - barHeight, barWidth, barHeight);
     } else if (style === "p2p") {
@@ -275,7 +275,7 @@ export function WaveformPreview({
       <p className="text-[11px] leading-4 text-muted-foreground">
         {LAYOUT_LABELS[settings.waveform_layout]} · {STYLE_LABELS[settings.waveform_style]} ·{" "}
         {POSITION_LABELS[settings.waveform_position]} · cao {settings.waveform_height}px trên khung
-        1080p — sóng mô phỏng, bản dựng thật lấy biên độ từ audio narration.
+        1080p — sóng mô phỏng, bản dựng thật lấy độ cao từng cột từ audio narration.
       </p>
     </div>
   );

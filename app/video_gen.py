@@ -209,9 +209,124 @@ def _build_zoompan_filter(image_type: str, width: int, height: int, fps: int, du
         )
 
 
-def _waveform_chains(config: dict, width: int, audio_input: int, video_label: str) -> tuple[list[str], str, str]:
-    """Build a high-contrast waveform overlay and preserve narration for output mixing."""
-    height = int(config.get("waveform_height", 120))
+# --- narration waveform overlay ------------------------------------------------
+# These mirror frontend/src/components/common/WaveformPreview.tsx. The settings
+# dialog animates a *bar* visualiser, so the burned-in overlay has to be built
+# from bars too: one showfreqs column per bar, blown up with nearest-neighbour so
+# each column becomes a solid column, then combed with a transparent grid so the
+# gaps land where the preview draws them. (showwaves, the old source, is a
+# per-frame oscilloscope - a hair-thin trace that looks nothing like the preview.)
+_WAVE_BAR_PITCH = 34        # frame px per bar; a 1920 band lands on the preview's 56-bar cap
+_WAVE_BAR_GAP = 7 / 17      # share of each slot left empty, as in the preview
+_WAVE_MIN_BARS = 14
+_WAVE_MAX_BARS = 56
+_WAVE_RADIAL_BARS = 32
+_WAVE_MARGIN = 0.06         # the preview insets the band by 6% of the stage
+_WAVE_INNER = 0.3           # circular layout: hole radius as a share of the disc
+# The preview draws every style out of the same bars; only "point" swaps the
+# column for a floating cap.
+_WAVE_MODES = {"line": "bar", "cline": "bar", "p2p": "bar", "point": "dot"}
+
+# Wrap a bar strip into the preview's ring: sample the strip by (angle, radius)
+# instead of (x, y). Column -> spoke, height above the strip's baseline -> reach
+# past the inner hole, with a faint stroke on the hole itself. Runs on a single
+# grey plane so it stays one expression per pixel; the colour is painted back on
+# afterwards.
+_WAVE_POLAR = (
+    "geq=lum='"
+    f"if(between(hypot(X-W/2\\,Y-H/2)\\,W*{_WAVE_INNER}\\,W/2)\\,"
+    "max("
+    "lum(mod(atan2(X-W/2\\,H/2-Y)/(2*PI)+1\\,1)*W\\,"
+    f"H-1-(hypot(X-W/2\\,Y-H/2)-W*{_WAVE_INNER})/(W/2-W*{_WAVE_INNER})*H)\\,"
+    f"if(lte(abs(hypot(X-W/2\\,Y-H/2)-W*{_WAVE_INNER})\\,2)\\,115\\,0))\\,"
+    "0)'"
+)
+
+
+def _even(value: float, minimum: int = 2) -> int:
+    """Filter sizes must stay even or swscale rounds them away from the frame."""
+    return max(minimum, int(value) // 2 * 2)
+
+
+def _wave_bar_count(span: int) -> int:
+    return max(_WAVE_MIN_BARS, min(_WAVE_MAX_BARS, round(span / _WAVE_BAR_PITCH)))
+
+
+def _wave_slot(span: int, bars: int) -> int:
+    """Pixels per bar. Kept whole so the nearest-neighbour blow-up and the comb
+    that cuts the gaps land on the same column boundaries, and nudged up when
+    that would leave the strip an odd number of pixels wide."""
+    slot = max(4, round(span / bars))
+    return slot + 1 if (slot * bars) % 2 else slot
+
+
+def _wave_paint(color: str, opacity: float) -> str:
+    """showfreqs paints its bars on solid black, and overlaying that straight drops
+    a black slab over the frame. So the strip is drawn white, that white becomes
+    the alpha channel - antialiased edges included - and the configured colour is
+    stamped back over it. Keying off a coloured strip instead would break on dim
+    colours: colorchannelmixer's gains stop at 2, well short of the 255/peak a
+    near-black waveform would need."""
+    red, green, blue = (int(color[index:index + 2], 16) for index in (0, 2, 4))
+    return (f"format=rgba,colorchannelmixer=ab={opacity:.4f}:aa=0"
+            f",lutrgb=r={red}:g={green}:b={blue}")
+
+
+def _wave_strip(*, bars: int, slot: int, rows: int, thickness: int, mode: str,
+                paint: str | None, fps: int) -> str:
+    """One bar strip, ``bars*slot`` wide, with the bars standing on its bottom edge.
+
+    ``rows`` is the height showfreqs renders at: "point" draws only a cap, so it
+    is rendered short and stretched to make the cap as chunky as the preview's dot.
+    """
+    length = bars * slot
+    gap = max(2, round(slot * _WAVE_BAR_GAP))
+    parts = [
+        f"showfreqs=s={bars}x{rows}:mode={mode}:ascale=log:fscale=log"
+        f":win_size=2048:rate={fps}:colors=0xffffff",
+        paint or "format=gray",
+        f"scale={length}:{thickness}:flags=neighbor",
+        # drawgrid also rules a horizontal line at y=0; a cell twice the strip
+        # height, offset one height up, keeps every horizontal rule off the bars.
+        f"drawgrid=x=0:y=-{thickness}:w={slot}:h={2 * thickness}:t={gap}"
+        f":color={'black@0' if paint else 'black'}:replace=1",
+    ]
+    return ",".join(parts)
+
+
+def _wave_image(style: str, *, bars: int, slot: int, thickness: int, paint: str,
+                fps: int, source: str, label: str) -> tuple[list[str], int]:
+    """Chains turning ``source`` into ``label``, plus the height they produce."""
+    mode = _WAVE_MODES.get(style, "bar")
+    length = bars * slot
+    if style == "line":
+        # Bars stand on the baseline, the way the preview fills "line" upward.
+        strip = _wave_strip(bars=bars, slot=slot, rows=thickness, thickness=thickness,
+                            mode=mode, paint=paint, fps=fps)
+        return [f"{source}{strip}[{label}]"], thickness
+    # cline/p2p/point reach both ways from the centre line, so mirror one half
+    # strip around it. p2p keeps the two halves apart, as the preview does.
+    gap = _even(thickness * 0.06, 0) if style == "p2p" else 0
+    body = _even(thickness / 2 - gap, 4)
+    rows = max(4, body // 5) if mode == "dot" else body
+    strip = _wave_strip(bars=bars, slot=slot, rows=rows, thickness=body,
+                        mode=mode, paint=paint, fps=fps)
+    chains = [f"{source}{strip},split=2[wavetop][wavebotsrc]"]
+    top = "[wavetop]"
+    if gap:
+        chains.append(f"[wavetop]pad={length}:{body + gap}:0:0:color=black@0[wavetoppad]")
+        top = "[wavetoppad]"
+    flip = f"vflip,pad={length}:{body + gap}:0:{gap}:color=black@0" if gap else "vflip"
+    chains.append(f"[wavebotsrc]{flip}[wavebot]")
+    chains.append(f"{top}[wavebot]vstack=inputs=2[{label}]")
+    return chains, 2 * (body + gap)
+
+
+def _waveform_chains(config: dict, width: int, height: int, audio_input: int,
+                     video_label: str, fps: int = 30) -> tuple[list[str], str, str]:
+    """Burn the narration waveform the way WaveformPreview.tsx draws it, and hand
+    the untouched narration back for output mixing."""
+    band = int(config.get("waveform_height", 120))
     style = config.get("waveform_style", "line")
     color = str(config.get("waveform_color", "#ffffff")).lstrip("#")
     opacity = float(config.get("waveform_opacity", 0.85))
@@ -219,32 +334,69 @@ def _waveform_chains(config: dict, width: int, audio_input: int, video_label: st
     background = str(config.get("waveform_background_color", "#050816")).lstrip("#")
     background_opacity = float(config.get("waveform_background_opacity", 0.55))
     position = config.get("waveform_position", "bottom")
-    overlay_width = height if layout in {"vertical", "circular"} else width
-    x = "40" if layout == "vertical" else "(W-w)/2"
-    y = {"top": "40", "center": "(H-h)/2", "bottom": "H-h-40"}.get(position, "H-h-40")
-    panel_x = "0" if layout == "horizontal" else ("16" if layout == "vertical" else "(iw-%d)/2-24" % overlay_width)
-    panel_y = {"top": "16", "center": "(ih-%d)/2-24" % height, "bottom": "ih-%d-64" % height}.get(position, "ih-%d-64" % height)
-    panel_width = width if layout == "horizontal" else overlay_width + 48
-    panel_height = height + 48
+    margin = max(16, round(height * _WAVE_MARGIN))
+    paint = _wave_paint(color, opacity)
+
     if layout == "circular":
+        # One square disc, sized off the band slider but never wider than the
+        # preview's 90%-of-stage cap. The wrap is done on a work canvas that is
+        # never tiny: at the outer radius one strip column stretches over several
+        # pixels, so a strip cut to the final size would leave the bars jagged.
+        size = _even(min(band, width * 0.9, height - 2 * margin), 64)
+        work = max(size, 288)
+        slot = _wave_slot(work, _WAVE_RADIAL_BARS)
+        work = _WAVE_RADIAL_BARS * slot
         red, green, blue = (int(color[index:index + 2], 16) for index in (0, 2, 4))
-        visualizer = (
-            f"avectorscope=s={height}x{height}:mode=polar:draw=aaline:scale=sqrt:"
-            f"rc={red}:gc={green}:bc={blue}:rf=0:gf=0:bf=0,"
-            f"colorkey=0x000000:0.12:0.08,format=rgba,colorchannelmixer=aa={opacity}"
-        )
+        strip = _wave_strip(bars=_WAVE_RADIAL_BARS, slot=slot, rows=work, thickness=work,
+                            mode="bar", paint=None, fps=fps)
+        wave_chains = [
+            f"[waveaudio]{strip},{_WAVE_POLAR}[wavemask]",
+            "[wavemask]split=2[wavemaska][wavemaskb]",
+            f"[wavemaska]format=rgba,lutrgb=r={red}:g={green}:b={blue}[waveplate]",
+            f"[waveplate][wavemaskb]alphamerge,colorchannelmixer=aa={opacity}"
+            f",scale={size}:{size}[wave]",
+        ]
+        wave_w = wave_h = size
+        x = (width - size) // 2
+    elif layout == "vertical":
+        # The preview hugs the left edge and runs the full height under a quarter
+        # turn; cclock puts the bars' baseline on the right and time bottom-to-top.
+        span = _even(height - 2 * margin)
+        bars = _wave_bar_count(span)
+        slot = _wave_slot(span, bars)
+        wave_chains, thickness = _wave_image(
+            style, bars=bars, slot=slot, thickness=_even(band),
+            paint=paint, fps=fps, source="[waveaudio]", label="waveimg")
+        wave_chains.append("[waveimg]transpose=cclock[wave]")
+        wave_w, wave_h = thickness, bars * slot
+        x = round(width * _WAVE_MARGIN)
     else:
-        visualizer = f"showwaves=s={width}x{height}:mode={style}:colors=0x{color}"
-        if layout == "vertical":
-            visualizer += ",transpose=clock,scale=%d:%d" % (overlay_width, height)
-        visualizer += f",format=rgba,colorchannelmixer=aa={opacity}"
-    chains = [
-        f"[{audio_input}:a]asplit=2[narration][waveaudio]",
-        f"{video_label}drawbox=x={panel_x}:y={panel_y}:w={panel_width}:h={panel_height}:color=0x{background}@{background_opacity}:t=fill[withpanel]",
-        f"[waveaudio]{visualizer},split=2[wave][waveglowsrc]",
+        span = _even(width * 0.94)
+        bars = _wave_bar_count(span)
+        slot = _wave_slot(span, bars)
+        wave_chains, wave_h = _wave_image(
+            style, bars=bars, slot=slot, thickness=_even(band),
+            paint=paint, fps=fps, source="[waveaudio]", label="wave")
+        wave_w = bars * slot
+        x = (width - wave_w) // 2
+
+    y = {"top": margin, "center": (height - wave_h) // 2}.get(position, height - wave_h - margin)
+    pad = max(12, round((wave_h if layout == "horizontal" else wave_w) * 0.12))
+    panel_x, panel_w = (0, width) if layout == "horizontal" else (x - pad, wave_w + 2 * pad)
+
+    chains = [f"[{audio_input}:a]asplit=2[narration][waveaudio]", *wave_chains]
+    base = video_label
+    if background_opacity > 0:
+        chains.append(
+            f"{video_label}drawbox=x={panel_x}:y={y - pad}:w={panel_w}:h={wave_h + 2 * pad}"
+            f":color=0x{background}@{background_opacity}:t=fill[withpanel]"
+        )
+        base = "[withpanel]"
+    chains += [
+        "[wave]split=2[waveglowsrc][wavelit]",
         "[waveglowsrc]gblur=sigma=8[waveglow]",
-        f"[withpanel][waveglow]overlay=x={x}:y={y}:shortest=1[withglow]",
-        f"[withglow][wave]overlay=x={x}:y={y}:shortest=1[vout]",
+        f"{base}[waveglow]overlay=x={x}:y={y}:shortest=1[withglow]",
+        f"[withglow][wavelit]overlay=x={x}:y={y}:shortest=1[vout]",
     ]
     return chains, "[vout]", "[narration]"
 
@@ -386,7 +538,8 @@ def generate_segment(
     video_map_label = "[vout]"
     video_chains: list[str] = []
     if waveform:
-        waveform_chains, video_map_label, narration_label = _waveform_chains(waveform, width, 1, "[vbase]")
+        waveform_chains, video_map_label, narration_label = _waveform_chains(
+            waveform, width, height, 1, "[vbase]", fps)
         video_chains = [f"[0:v]{base_vf}[vbase]", *waveform_chains]
     if music_idx is not None:
         audio_chains.append(f"[{music_idx}:a]volume={music_volume}[music]")
@@ -720,7 +873,8 @@ def generate_background_sequence(
         video_map = "0:v:0"
         waveform = waveform_config if waveform_config and waveform_config.get("waveform_enabled") else None
         if waveform:
-            waveform_chains, video_map, audio_map = _waveform_chains(waveform, width, 1, "[0:v]")
+            waveform_chains, video_map, audio_map = _waveform_chains(
+                waveform, width, height, 1, "[0:v]", fps)
             chains.extend(waveform_chains)
         subtitle_filter = _build_subtitle_filter(Path(audio_path).with_suffix(".ass"), waveform_config or {})
         if subtitle_filter:
