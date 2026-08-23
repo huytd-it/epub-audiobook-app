@@ -20,6 +20,7 @@ import { EffectsPage } from "@/pages/EffectsPage";
 import { Tools } from "@/pages/Tools";
 import { ProductionSettingsPage } from "@/pages/ProductionSettingsPage";
 import { GameplayPage } from "@/pages/GameplayPage";
+import { TtsModelsPage } from "@/pages/TtsModelsPage";
 import { NotFound } from "@/pages/NotFound";
 
 function App() {
@@ -46,6 +47,7 @@ function App() {
         <Route path="/effects" element={<EffectsPage />} />
         <Route path="/production-defaults" element={<ProductionSettingsPage />} />
         <Route path="/gameplay" element={<GameplayPage />} />
+        <Route path="/tts-models" element={<TtsModelsPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Shell>

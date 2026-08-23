@@ -23,13 +23,14 @@ _engines = {}
 _META_FILE = ".tts_meta"
 
 
-def get_engine(engine_id: str | None = None, voice: str | None = None):
+def get_engine(engine_id: str | None = None, voice: str | None = None, tts_options: dict | None = None):
     from app.tts_engine import create_tts_engine
 
     engine_id = engine_id or settings.tts_engine
-    key = (engine_id, voice)
+    tts_options = tts_options or {}
+    key = (engine_id, voice, json.dumps(tts_options, sort_keys=True))
     if key not in _engines:
-        _engines[key] = create_tts_engine(engine_id, voice=voice)
+        _engines[key] = create_tts_engine(engine_id, voice=voice, **tts_options)
     return _engines[key]
 
 
@@ -59,6 +60,7 @@ def handle(ctx) -> dict:
     voice = payload.get("voice") or None
     max_chars = int(payload.get("max_chars") or 0)
     with_effects = bool(payload.get("with_effects"))
+    tts_options = payload.get("tts_options") or {}
     pause_config = (payload["chunk_pause_ms"], payload["chapter_pause_ms"])
 
     # A retry can be claimed after synthesis succeeded but before the queue row was
@@ -79,13 +81,13 @@ def handle(ctx) -> dict:
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         (snapshot_dir / ".tts_request.json").write_text(json.dumps({
             "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
-            "with_effects": with_effects,
+            "with_effects": with_effects, "tts_options": tts_options,
             "chunk_pause_ms": pause_config[0], "chapter_pause_ms": pause_config[1],
         }), encoding="utf-8")
 
     ctx.log(f"synthesize patch {patch_id} (book {patch.book_id}) engine={engine_id}")
     try:
-        engine = get_engine(engine_id, voice)
+        engine = get_engine(engine_id, voice, tts_options)
         audio_path, chunk_count = synthesize_patch(
             ctx, patch, engine, Path(settings.data_root),
             engine_id=engine_id,

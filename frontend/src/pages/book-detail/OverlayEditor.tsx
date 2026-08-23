@@ -1,11 +1,22 @@
 import React, { useEffect, useState } from "react";
-import { api, postJson } from "@/api";
+import { api, post, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { CheckField, Field, fieldClass, selectClass } from "./parts";
-import { BackgroundItem, OverlayConfig, OverlayConfigResponse, OverlayLayer, errorText } from "./types";
+import {
+  BackgroundItem,
+  OverlayConfig,
+  OverlayConfigResponse,
+  OverlayLayer,
+  PODCAST_COVER_SIZES,
+  PodcastCover,
+  errorText,
+} from "./types";
+
+/** Backend luôn trả về podcast_cover; giữ default cho cấu hình cũ chưa có khóa này. */
+const DEFAULT_PODCAST_COVER: PodcastCover = { enabled: false, focus_x: 50, focus_y: 50, size: 1280 };
 
 const emptyLayer = (): OverlayLayer => ({
   text: "{book_title} - {patch_name}",
@@ -83,9 +94,11 @@ export function OverlayEditor({
   const [config, setConfig] = useState<OverlayConfig>();
   const [background, setBackground] = useState<BackgroundItem>();
   const [preview, setPreview] = useState("");
+  const [coverPreview, setCoverPreview] = useState("");
   const [thumbnailRevision, setThumbnailRevision] = useState(0);
   const [saving, setSaving] = useState(false);
   const layers = config?.overlays?.length ? config.overlays : config ? [config] : [];
+  const podcast = config?.podcast_cover || DEFAULT_PODCAST_COVER;
 
   useEffect(() => {
     let cancelled = false;
@@ -134,11 +147,58 @@ export function OverlayEditor({
     if (preview) URL.revokeObjectURL(preview);
   }, [preview]);
 
+  // Ảnh bìa podcast là chính thumbnail cắt vuông, nên preview đi theo cùng
+  // cấu hình overlay — chỉ khác khung cắt.
+  useEffect(() => {
+    if (!config || !background || background.is_video || !config.podcast_cover?.enabled) {
+      setCoverPreview((old) => {
+        if (old) URL.revokeObjectURL(old);
+        return "";
+      });
+      return;
+    }
+    const cover = config.podcast_cover;
+    const timer = window.setTimeout(async () => {
+      const params = new URLSearchParams({
+        live: "1",
+        overlays_json: JSON.stringify(config.overlays.length ? config.overlays : [config]),
+        background_path: background.path,
+        podcast_cover_enabled: "on",
+        podcast_focus_x: String(cover.focus_x),
+        podcast_focus_y: String(cover.focus_y),
+        podcast_cover_size: String(cover.size),
+      });
+      try {
+        const blob = await fetch(`/books/${bookId}/podcast-cover-preview?${params}`).then((result) => {
+          if (!result.ok) throw new Error(`Lỗi ${result.status}`);
+          return result.blob();
+        });
+        const url = URL.createObjectURL(blob);
+        setCoverPreview((old) => {
+          if (old) URL.revokeObjectURL(old);
+          return url;
+        });
+      } catch (error) {
+        onMessage(errorText(error));
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [bookId, config, background, onMessage]);
+
+  useEffect(() => () => {
+    if (coverPreview) URL.revokeObjectURL(coverPreview);
+  }, [coverPreview]);
+
   const update = (index: number, patch: Partial<OverlayLayer>) =>
     setConfig((current) =>
       current
         ? { ...current, overlays: layers.map((layer, layerIndex) => layerIndex === index ? { ...layer, ...patch } : layer) }
         : current
+    );
+
+  const updatePodcast = (patch: Partial<PodcastCover>) =>
+    setConfig((current) =>
+      current ? { ...current, podcast_cover: { ...(current.podcast_cover || DEFAULT_PODCAST_COVER), ...patch } } : current
     );
 
   const save = async (regenerate: boolean) => {
@@ -148,13 +208,23 @@ export function OverlayEditor({
       const form = new FormData();
       form.append("overlays_json", JSON.stringify(config.overlays.length ? config.overlays : [config]));
       if (background && !background.is_video) form.append("background_path", background.path);
+      if (podcast.enabled) form.append("podcast_cover_enabled", "on");
+      form.append("podcast_focus_x", String(podcast.focus_x));
+      form.append("podcast_focus_y", String(podcast.focus_y));
+      form.append("podcast_cover_size", String(podcast.size));
       await api(`/books/${bookId}/overlay-config`, { method: "POST", body: form });
       if (regenerate && patchIds.length) {
         await postJson(`/books/${bookId}/thumbnails/regenerate`, { patch_ids: patchIds });
         setThumbnailRevision((current) => current + 1);
       }
+      if (regenerate && podcast.enabled) {
+        await post(`/books/${bookId}/podcast-cover/regenerate`);
+        setThumbnailRevision((current) => current + 1);
+      }
       onMessage(regenerate
-        ? "Đã lưu cấu hình overlay và đưa thumbnail vào hàng đợi tạo lại."
+        ? podcast.enabled
+          ? "Đã lưu cấu hình overlay, tạo lại thumbnail và ảnh bìa podcast."
+          : "Đã lưu cấu hình overlay và đưa thumbnail vào hàng đợi tạo lại."
         : "Đã lưu đầy đủ cấu hình thumbnail overlay.");
       await onSaved();
     } catch (error) {
@@ -212,6 +282,89 @@ export function OverlayEditor({
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">Ảnh bìa Podcast (1:1)</div>
+              <div className="text-xs text-muted-foreground">
+                Dùng chung artwork với thumbnail, chỉ khác khung cắt — YouTube Podcasts chỉ nhận một ảnh vuông.
+              </div>
+            </div>
+            <CheckField
+              label="Tạo ảnh bìa podcast"
+              checked={podcast.enabled}
+              onChange={(enabled) => updatePodcast({ enabled })}
+            />
+          </div>
+
+          {podcast.enabled && (
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,240px)_1fr]">
+              <figure className="overflow-hidden rounded-md border bg-muted/20">
+                <div className="aspect-square bg-muted">
+                  {coverPreview ? (
+                    <img src={coverPreview} alt="Ảnh bìa podcast" className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full items-center justify-center px-3 text-center text-[11px] text-muted-foreground">
+                      {background?.is_video ? "Background video không preview được" : "Đang dựng preview..."}
+                    </div>
+                  )}
+                </div>
+                <figcaption className="border-t px-3 py-2 text-[11px] text-muted-foreground">
+                  {podcast.size}×{podcast.size} px
+                </figcaption>
+              </figure>
+
+              <div className="space-y-3">
+                <Field label="Tâm khung cắt ngang" hint={`${podcast.focus_x}%`}>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    aria-label="Tâm khung cắt ngang"
+                    className="w-full accent-primary"
+                    value={podcast.focus_x}
+                    onChange={(event) => updatePodcast({ focus_x: Number(event.target.value) })}
+                  />
+                </Field>
+                <Field label="Tâm khung cắt dọc" hint={`${podcast.focus_y}%`}>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    aria-label="Tâm khung cắt dọc"
+                    className="w-full accent-primary"
+                    value={podcast.focus_y}
+                    onChange={(event) => updatePodcast({ focus_y: Number(event.target.value) })}
+                  />
+                </Field>
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  Khung cắt là hình vuông lớn nhất lọt trong ảnh, nên chỉ cạnh dài hơn mới trượt được — ảnh 16:9 chỉ
+                  đổi được theo chiều ngang.
+                </p>
+                <Field label="Kích thước ảnh">
+                  <select
+                    className={selectClass}
+                    value={podcast.size}
+                    onChange={(event) => updatePodcast({ size: Number(event.target.value) })}
+                  >
+                    {PODCAST_COVER_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size}×{size} px
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  Ảnh chỉ được đẩy lên khi bật Podcast ở <strong>Cấu hình → YouTube</strong>; playlist của sách sẽ được
+                  đánh dấu là podcast và nhận ảnh này làm bìa.
+                </p>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {layers.map((layer, index) => (
         <Card key={index}>

@@ -185,6 +185,7 @@ export function BookDetail() {
     voiceId: "",
     maxChars: "400",
     withEffects: false,
+    ttsOptions: {},
     chunkPauseMs: "300",
     chapterPauseMs: "1500",
   });
@@ -193,6 +194,7 @@ export function BookDetail() {
     voiceId: "",
     maxChars: "1200",
     withEffects: false,
+    ttsOptions: {},
   });
   const [normalization, setNormalization] = useState<NormalizationSettings>({
     numbers: true,
@@ -220,7 +222,7 @@ export function BookDetail() {
     if (!data) return;
     let cancelled = false;
     api<{
-      model_id: string; voice_id: string; max_chars: number; with_effects: boolean;
+      model_id: string; voice_id: string; max_chars: number; with_effects: boolean; tts_options: Record<string, string | number>;
       chunk_pause_ms: number; chapter_pause_ms: number;
     }>(`/books/${bookId}/audio-settings`)
       .then((saved) => {
@@ -230,6 +232,7 @@ export function BookDetail() {
           voiceId: saved.voice_id || "",
           maxChars: saved.max_chars ? String(saved.max_chars) : "",
           withEffects: saved.with_effects,
+          ttsOptions: saved.tts_options || {},
           chunkPauseMs: String(saved.chunk_pause_ms ?? 300),
           chapterPauseMs: String(saved.chapter_pause_ms ?? 1500),
         });
@@ -253,6 +256,7 @@ export function BookDetail() {
           voiceId: saved.voice_id || "",
           maxChars: saved.max_chars ? String(saved.max_chars) : "",
           withEffects: saved.with_effects,
+          ttsOptions: {},
         });
       })
       .catch((err) => !cancelled && setMessage(errorText(err)));
@@ -437,6 +441,7 @@ export function BookDetail() {
         voice_id: settings.voiceId || undefined,
         max_chars: settings.maxChars ? Number(settings.maxChars) : undefined,
         with_effects: settings.withEffects,
+        tts_options: settings.ttsOptions,
         auto_create_video: nextAutomation.autoCreateVideo,
         auto_upload_youtube: nextAutomation.autoUploadYoutube,
         retry_count: nextAutomation.retryCount,

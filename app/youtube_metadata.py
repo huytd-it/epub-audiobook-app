@@ -59,7 +59,11 @@ DEFAULT_DESCRIPTION_EXTRA = {
     "template": DEFAULT_DESCRIPTION_EXTRA_TEMPLATE,
 }
 
-DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "timeline_enabled": True, "description_extra": DEFAULT_DESCRIPTION_EXTRA, "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}}
+# Podcast: playlist của sách được YouTube đánh dấu là podcast; ảnh bìa 1:1 lấy
+# từ chính thumbnail (app.image_overlay.render_podcast_cover).
+DEFAULT_PODCAST_CONFIG = {"enabled": False, "upload_cover": True}
+
+DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "timeline_enabled": True, "description_extra": DEFAULT_DESCRIPTION_EXTRA, "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}, "podcast": dict(DEFAULT_PODCAST_CONFIG)}
 
 
 def load_timeline(audio_path) -> dict | None:
@@ -272,7 +276,24 @@ def validate_book_youtube_config(config: dict) -> dict:
     if len(result["description"]) > 5000:
         raise ValueError("description exceeds 5000 characters")
     result["playlist"] = playlist
+    # Podcast cần một playlist để đánh dấu, nhưng đó là ràng buộc lúc đẩy lên
+    # YouTube (route /podcast/apply) chứ không phải lúc lưu: patch override có
+    # thể tạm bỏ playlist mà không được phép làm hỏng metadata của cả sách.
+    result["podcast"] = validate_podcast_config(result.get("podcast"))
     return result
+
+
+def validate_podcast_config(config) -> dict:
+    """Normalize the podcast section; anything unset falls back to the default."""
+    if config is None:
+        return dict(DEFAULT_PODCAST_CONFIG)
+    if not isinstance(config, dict):
+        raise ValueError("podcast must be an object")
+    result = {**DEFAULT_PODCAST_CONFIG, **config}
+    for key in ("enabled", "upload_cover"):
+        if not isinstance(result[key], bool):
+            raise ValueError(f"podcast.{key} must be a boolean")
+    return {key: result[key] for key in DEFAULT_PODCAST_CONFIG}
 
 
 def _clean_title(title: str) -> str:

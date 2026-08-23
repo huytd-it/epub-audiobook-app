@@ -390,6 +390,17 @@ CREATE TABLE IF NOT EXISTS youtube_playlist_map (
     UNIQUE (book_id, channel_id)
 );
 
+-- Trạng thái podcast đã đẩy lên YouTube cho playlist của một sách: giữ riêng
+-- khỏi youtube_playlist_map để không đụng vào cơ chế giành quyền tạo playlist.
+CREATE TABLE IF NOT EXISTS youtube_podcast_state (
+    book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+    playlist_id TEXT NOT NULL,
+    podcast_status TEXT NOT NULL DEFAULT '',
+    cover_sha TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (book_id, playlist_id)
+);
+
 CREATE TABLE IF NOT EXISTS job (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     job_type         TEXT NOT NULL,

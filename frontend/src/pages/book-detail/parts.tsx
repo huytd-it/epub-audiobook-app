@@ -3,7 +3,7 @@ import { Pause, Play, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { Severity } from "./types";
+import { Severity, TtsModel } from "./types";
 
 export const fieldClass =
   "h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15";
@@ -56,6 +56,30 @@ export function Field({
       <span className="mt-1.5 block">{children}</span>
     </label>
   );
+}
+
+/** Only models that declare real inference controls receive this panel. */
+export function TtsOptionsFields({ model, value, onChange }: {
+  model: TtsModel | null | undefined;
+  value: Record<string, string | number>;
+  onChange: (value: Record<string, string | number>) => void;
+}) {
+  const schema = model?.options_schema || [];
+  if (!schema.length) return null;
+  return <div className="col-span-full space-y-3 rounded-md border border-border bg-muted/20 p-3">
+    <p className="text-xs font-semibold">Thiết lập nâng cao · {model?.name}</p>
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {schema.map((field) => <Field key={field.key} label={field.label}>
+        {field.type === "select" ? (
+          <select className={selectClass} value={String(value[field.key] ?? field.default)} onChange={(event) => onChange({ ...value, [field.key]: event.target.value })}>
+            {(field.choices || []).map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
+          </select>
+        ) : (
+          <input className={fieldClass} type="number" min={field.min} max={field.max} step={field.step} value={value[field.key] ?? field.default} onChange={(event) => onChange({ ...value, [field.key]: Number(event.target.value) })} />
+        )}
+      </Field>)}
+    </div>
+  </div>;
 }
 
 export function CheckField({

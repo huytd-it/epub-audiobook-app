@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # onnxruntime intra-op threads for ZeroTTS. Measured flat from 4 upward on a 28-core CPU
     # (memory-bandwidth bound, not thread bound), so the package default is kept.
     zerotts_threads: int = 4
+    # Local checkout of netease-youdao/Confucius4-TTS. Upstream has no pip
+    # package yet, so the engine imports from this checkout lazily.
+    confucius4_repo_dir: str = ""
 
     # Lightweight TTS preview
     light_tts_backend: str = "edge-tts"

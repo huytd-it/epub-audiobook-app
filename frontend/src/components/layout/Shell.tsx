@@ -15,6 +15,7 @@ import {
   FileText,
   Sparkles,
   Settings2,
+  Box,
   Menu,
   Activity,
   Moon,
@@ -53,6 +54,7 @@ const navSections: NavSection[] = [
       { to: "/media", label: "Kho tư liệu", icon: FolderKanban },
       { to: "/gameplay", label: "Đấu trường", icon: Swords },
       { to: "/production-defaults", label: "Cấu hình mặc định", icon: Settings2 },
+      { to: "/tts-models", label: "Model TTS", icon: Box },
     ],
   },
   {

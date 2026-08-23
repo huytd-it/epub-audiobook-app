@@ -52,7 +52,24 @@ DEFAULT_OVERLAY_CONFIG: dict[str, Any] = {
     "offset_x": 0,            # px nudge applied after anchoring (drag-to-position)
     "offset_y": 0,
     "overlays": [],
+    # Ảnh bìa podcast YouTube: cùng thumbnail, chỉ cắt vuông 1:1 (xem
+    # DEFAULT_PODCAST_COVER). Sống ở cấp cao nhất chứ không thuộc layer nào.
+    "podcast_cover": {
+        "enabled": False,
+        "focus_x": 50,        # tâm khung cắt theo chiều ngang, 0-100 (%)
+        "focus_y": 50,        # tâm khung cắt theo chiều dọc, 0-100 (%)
+        "size": 1280,         # cạnh ảnh vuông xuất ra (px)
+    },
 }
+
+# Khoá cấu hình chỉ có ở cấp sách, không nhân bản xuống từng text layer.
+_BOOK_LEVEL_KEYS = ("overlays", "podcast_cover")
+
+DEFAULT_PODCAST_COVER: dict[str, Any] = DEFAULT_OVERLAY_CONFIG["podcast_cover"]
+
+# YouTube nhận ảnh bìa playlist tối đa 2MB; cạnh nhỏ nhất còn đọc được là 400px.
+PODCAST_COVER_MIN_SIZE = 400
+PODCAST_COVER_MAX_SIZE = 2048
 
 
 def get_default_overlay_config() -> dict[str, Any]:
@@ -76,8 +93,32 @@ def parse_overlay_config(raw: str | None) -> dict[str, Any]:
         else:
             merged[key] = val
     if not merged.get("overlays"):
-        merged["overlays"] = [{key: value for key, value in merged.items() if key != "overlays"}]
+        merged["overlays"] = [
+            {key: value for key, value in merged.items() if key not in _BOOK_LEVEL_KEYS}
+        ]
+    merged["podcast_cover"] = parse_podcast_cover(merged)
     return merged
+
+
+def parse_podcast_cover(cfg: dict[str, Any] | None) -> dict[str, Any]:
+    """Clamp the podcast-cover section of an overlay config."""
+
+    raw = (cfg or {}).get("podcast_cover")
+    raw = raw if isinstance(raw, dict) else {}
+
+    def _clamped(key: str, lo: int, hi: int) -> int:
+        try:
+            value = int(raw.get(key, DEFAULT_PODCAST_COVER[key]))
+        except (TypeError, ValueError):
+            value = int(DEFAULT_PODCAST_COVER[key])
+        return max(lo, min(hi, value))
+
+    return {
+        "enabled": bool(raw.get("enabled", DEFAULT_PODCAST_COVER["enabled"])),
+        "focus_x": _clamped("focus_x", 0, 100),
+        "focus_y": _clamped("focus_y", 0, 100),
+        "size": _clamped("size", PODCAST_COVER_MIN_SIZE, PODCAST_COVER_MAX_SIZE),
+    }
 
 
 def list_overlay_fonts() -> list[dict[str, str]]:
@@ -430,8 +471,16 @@ def overlay_cfg_from_values(values) -> dict:
             item["text"] = str(raw.get("text") or "")[:500]
             font_path = str(raw.get("font_path") or "")
             item["font_path"] = font_path if font_path in allowed_fonts else ""
+            for key in _BOOK_LEVEL_KEYS:
+                item.pop(key, None)
             overlays.append(item)
         cfg["overlays"] = overlays
+    cfg["podcast_cover"] = parse_podcast_cover({"podcast_cover": {
+        "enabled": values.get("podcast_cover_enabled") in ("on", "1", "true", True),
+        "focus_x": values.get("podcast_focus_x", DEFAULT_PODCAST_COVER["focus_x"]),
+        "focus_y": values.get("podcast_focus_y", DEFAULT_PODCAST_COVER["focus_y"]),
+        "size": values.get("podcast_cover_size", DEFAULT_PODCAST_COVER["size"]),
+    }})
     return cfg
 
 
@@ -500,29 +549,108 @@ def render_overlay(
     return image
 
 
+def compose_patch_overlay(
+    book: Book, patch: Patch, cfg: dict, background_path: str | None = None,
+) -> "Image.Image":
+    """Background + every text layer, rendered in memory.
+
+    Shared by the PNG thumbnail and the square podcast cover so both always
+    show the exact same artwork.
+    """
+    bg = _resolve_background(book, background_path)
+    if bg is None:
+        raise ValueError(f"no background image available for book {book.id}")
+
+    from PIL import Image
+    img = Image.open(str(bg)).convert("RGB")
+    for overlay in cfg.get("overlays") or [cfg]:
+        text = expand_overlay_text(overlay.get("text", ""), book, patch)
+        lines = build_overlay_lines(img, text, overlay)
+        img, _ = render_overlay_with_rect(img, lines, overlay)
+    return img
+
+
 def render_patch_overlay(
     book: Book, patch: Patch, cfg: dict | None = None, out_path: str | None = None,
     background_path: str | None = None,
 ) -> None:
     """Render background + overlay text onto a PNG file."""
     cfg = cfg or parse_overlay_config(book.overlay_config)
-    bg = _resolve_background(book, background_path)
-    if bg is None:
-        raise ValueError(f"no background image available for book {book.id}")
+    img = compose_patch_overlay(book, patch, cfg, background_path)
     if out_path is None:
         out_path = str(get_patch_overlay_path(book.id, patch.patch_index))
-
-    from PIL import Image, ImageDraw
-    img = Image.open(str(bg)).convert("RGB")
-    overlays = cfg.get("overlays") or [cfg]
-    for overlay in overlays:
-        text = expand_overlay_text(overlay.get("text", ""), book, patch)
-        lines = build_overlay_lines(img, text, overlay)
-        img, _ = render_overlay_with_rect(img, lines, overlay)
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(out), "PNG")
+
+
+def pick_cover_patch(patches):
+    """The patch whose text the book-level artwork is rendered with.
+
+    Prefers the first patch that already has audio (it is the one most likely
+    published), then the first patch, and finally a stand-in so a freshly
+    imported book can still preview a cover.
+    """
+    from types import SimpleNamespace
+    return next((patch for patch in patches if patch.audio_path), None) or (
+        patches[0] if patches else SimpleNamespace(
+            name="Patch 1", patch_index=0, chapter_start=0, chapter_end=0,
+        )
+    )
+
+
+def get_podcast_cover_path(book_id: int) -> Path:
+    """Stable podcast cover path: one square image per book."""
+    return Path(settings.data_root) / "books" / str(book_id) / "podcast_cover.png"
+
+
+def crop_square(image: "Image.Image", focus_x: int = 50, focus_y: int = 50, size: int = 1280) -> "Image.Image":
+    """Cut the largest centred-on-focus square out of an image and resize it.
+
+    focus_x/focus_y are percentages of the image: 50/50 keeps the middle, 0
+    hugs the left/top edge, 100 the right/bottom. Only the axis longer than the
+    square actually moves — the other one has no slack to slide along.
+    """
+    from PIL import Image
+    width, height = image.size
+    side = min(width, height)
+    left = int(round((width - side) * max(0, min(100, focus_x)) / 100))
+    top = int(round((height - side) * max(0, min(100, focus_y)) / 100))
+    square = image.crop((left, top, left + side, top + side))
+    size = max(PODCAST_COVER_MIN_SIZE, min(PODCAST_COVER_MAX_SIZE, int(size)))
+    if square.size != (size, size):
+        square = square.resize((size, size), Image.LANCZOS)
+    return square
+
+
+def render_podcast_cover(
+    book: Book, patch: Patch, cfg: dict | None = None, out_path: str | None = None,
+    background_path: str | None = None,
+) -> str:
+    """Render the square (1:1) podcast cover PNG. Returns the written path."""
+    cfg = cfg or parse_overlay_config(book.overlay_config)
+    podcast = parse_podcast_cover(cfg)
+    img = compose_patch_overlay(book, patch, cfg, background_path)
+    cover = crop_square(img, podcast["focus_x"], podcast["focus_y"], podcast["size"])
+    out = Path(out_path or get_podcast_cover_path(book.id))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cover.save(str(out), "PNG")
+    return str(out)
+
+
+def ensure_podcast_cover(book: Book, patch: Patch, *, force: bool = False) -> str | None:
+    """Render the podcast cover if missing/stale. Returns the path, or None."""
+    out = get_podcast_cover_path(book.id)
+    if not force and out.exists() and not needs_rerender(book, patch, out):
+        return str(out)
+    if _resolve_background(book) is None:
+        return None
+    try:
+        return render_podcast_cover(book, patch)
+    except Exception as exc:
+        logger.error("image_overlay: failed to render podcast cover for book %s: %s", book.id, exc)
+        return None
 
 
 def needs_rerender(book: Book, patch: Patch, out_path: Path) -> bool:

@@ -35,6 +35,18 @@ export type TtsModel = {
   /** Giọng có sẵn trong chính model (ZeroTTS). Rỗng với model clone theo audio mẫu
    * và với backend cloud — hai loại đó lấy giọng từ nơi khác. */
   voices?: OnlineVoice[];
+  options_schema?: TtsOptionField[];
+};
+
+export type TtsOptionField = {
+  key: string;
+  label: string;
+  type: "number" | "select";
+  default: string | number;
+  min?: number;
+  max?: number;
+  step?: number;
+  choices?: { value: string; label: string }[];
 };
 
 export type OnlineVoice = { id: string; label: string; language: string };
@@ -197,6 +209,14 @@ export type YouTubeConfig = {
   timeline_enabled: boolean;
   description_extra: DescriptionExtra;
   playlist: { mode: string; playlist_id: string; title_template: string; description_template: string };
+  podcast: PodcastConfig;
+};
+
+/** Cài đặt podcast: playlist của sách được YouTube đánh dấu là podcast và nhận
+ * ảnh bìa vuông 1:1 cắt ra từ chính thumbnail. */
+export type PodcastConfig = {
+  enabled: boolean;
+  upload_cover: boolean;
 };
 
 export type YouTubeSettings = {
@@ -227,6 +247,7 @@ export type ProductionSettings = {
       voice_id: string;
       max_chars: number;
       with_effects: boolean;
+      tts_options: Record<string, string | number>;
       /** Khoảng lặng (ms) chèn giữa hai chunk liền nhau. */
       chunk_pause_ms: number;
       /** Khoảng lặng (ms) chèn trước chunk mở đầu một chương mới. */
@@ -301,7 +322,21 @@ export type OverlayConfig = {
   offset_x: number;
   offset_y: number;
   overlays: OverlayLayer[];
+  podcast_cover: PodcastCover;
 };
+
+/** Khung cắt 1:1 dùng cho ảnh bìa podcast — cùng artwork với thumbnail. */
+export type PodcastCover = {
+  enabled: boolean;
+  /** Tâm khung cắt theo chiều ngang, 0–100 (%). */
+  focus_x: number;
+  /** Tâm khung cắt theo chiều dọc, 0–100 (%). */
+  focus_y: number;
+  /** Cạnh ảnh vuông xuất ra (px). */
+  size: number;
+};
+
+export const PODCAST_COVER_SIZES = [800, 1080, 1280, 1600, 2048] as const;
 
 export type FontDetail = {
   name: string;
@@ -548,6 +583,7 @@ export type AudioSettings = {
   voiceId: string;
   maxChars: string;
   withEffects: boolean;
+  ttsOptions: Record<string, string | number>;
   /** Chỉ dùng cho cấu hình TTS của sách (export không có khoảng lặng riêng). */
   chunkPauseMs?: string;
   chapterPauseMs?: string;

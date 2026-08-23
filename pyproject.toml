@@ -38,11 +38,21 @@ vieneu-fast = [
 zerotts = [
     "zerotts>=0.1.1",
 ]
+confucius4 = [
+    # Install the upstream clone's requirements from its own checkout; it is
+    # not packaged for pip yet. Set CONFUCIUS4_REPO_DIR to that checkout.
+]
+f5-vivoice = [
+    "f5-tts",
+    "cached-path",
+]
 all-tts = [
     "voxcpm",
     "omnivoice",
     "vieneu",
     "zerotts>=0.1.1",
+    "f5-tts",
+    "cached-path",
 ]
 light-tts = [
     "edge-tts>=7.0",

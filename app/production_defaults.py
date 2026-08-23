@@ -40,6 +40,7 @@ DEFAULT_AUDIO_CONFIG = {
     "voice_id": "",
     "max_chars": settings.tts_max_chars,
     "with_effects": False,
+    "tts_options": {},
     # Silence stitched between chunks when a patch is merged. The chapter value
     # is the beat between two chapters inside one patch - long enough to read as
     # a break, and the slot gap music is placed in (app/music_bed.py).
@@ -113,11 +114,17 @@ def validate_audio_config(config) -> dict:
         max_chars = max(0, int(raw_max))
     except (TypeError, ValueError) as exc:
         raise ValueError("max_chars must be a non-negative integer") from exc
+    from app.tts_engine import normalize_tts_options, resolve_engine_id
+    try:
+        model_id = resolve_engine_id(model_id)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
     return {
         "model_id": model_id,
         "voice_id": voice_id,
         "max_chars": max_chars,
         "with_effects": _flag(config.get("with_effects", False), False),
+        "tts_options": normalize_tts_options(model_id, config.get("tts_options")),
         "chunk_pause_ms": validate_pause_ms(config.get("chunk_pause_ms"), audio_merge.DEFAULT_CHUNK_PAUSE_MS),
         "chapter_pause_ms": validate_pause_ms(config.get("chapter_pause_ms"), audio_merge.DEFAULT_CHAPTER_PAUSE_MS),
     }
@@ -386,15 +393,18 @@ def get_effective_audio_config(conn: sqlite3.Connection, book) -> dict:
     config = parse_book_config(book)
     if get_group_mode(config, "audio", book=book) == "inherit":
         return _global_group(conn, "audio")
-    # The four legacy fields live in book columns; the pauses arrived later and
-    # live in the book's automation_config["audio"] section instead of forcing a
-    # migration. A book saved before they existed falls back to the defaults.
+    # The four legacy fields live in book columns; pauses and model-specific
+    # controls arrived later in automation_config["audio"] to avoid a migration.
+    # A book saved before they existed falls back to the defaults.
     stored = config.get("audio") if isinstance(config.get("audio"), dict) else {}
+    model_id = getattr(book, "tts_model", None) or CUSTOM_AUDIO_FALLBACK_MODEL
+    from app.tts_engine import normalize_tts_options
     return {
-        "model_id": getattr(book, "tts_model", None) or CUSTOM_AUDIO_FALLBACK_MODEL,
+        "model_id": model_id,
         "voice_id": getattr(book, "tts_voice_id", None) or "",
         "max_chars": getattr(book, "tts_max_chars", None) or settings.tts_max_chars,
         "with_effects": bool(getattr(book, "tts_with_effects", 0)),
+        "tts_options": normalize_tts_options(model_id, stored.get("tts_options")),
         "chunk_pause_ms": validate_pause_ms(stored.get("chunk_pause_ms"), audio_merge.DEFAULT_CHUNK_PAUSE_MS),
         "chapter_pause_ms": validate_pause_ms(stored.get("chapter_pause_ms"), audio_merge.DEFAULT_CHAPTER_PAUSE_MS),
     }

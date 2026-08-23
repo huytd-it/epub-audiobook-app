@@ -546,6 +546,51 @@ def mark_upload_failed(conn: sqlite3.Connection, upload_id: int, error: str) -> 
 # ---------------------------------------------------------------------------
 
 
+IMAGE_UPLOAD_LIMIT = 2 * 1024 * 1024
+
+
+def _shrink_image_for_upload(source: Path, max_size: tuple[int, int]) -> Path | None:
+    """Write a JPEG copy of `source` under the 2MB API cap.
+
+    Returns the temp file, or None when the original already fits and can be
+    uploaded as-is. The caller owns the temp file and must unlink it.
+    """
+    if source.stat().st_size <= IMAGE_UPLOAD_LIMIT:
+        return None
+    import tempfile
+    from PIL import Image
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as output:
+        temporary_path = Path(output.name)
+    try:
+        with Image.open(source) as image:
+            image = image.convert("RGB")
+            image.thumbnail(max_size)
+            quality = 85
+            image.save(temporary_path, "JPEG", quality=quality, optimize=True)
+            while temporary_path.stat().st_size > IMAGE_UPLOAD_LIMIT and quality > 10:
+                quality -= 10
+                image.save(temporary_path, "JPEG", quality=quality, optimize=True)
+    except Exception:
+        # The caller only unlinks what it was handed back, so a half-written
+        # temp file has to be cleaned up here.
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return temporary_path
+
+
+def _image_media(upload_path: Path, temporary_path: Path | None):
+    mimetype = "image/jpeg" if upload_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+    if temporary_path:
+        # MediaFileUpload keeps its file handle open for the lifetime of the
+        # object, which on Windows makes the unlink below fail with WinError 32.
+        # These images are capped at 2MB, so upload the temp file from memory.
+        import io
+
+        return MediaIoBaseUpload(io.BytesIO(temporary_path.read_bytes()), mimetype=mimetype)
+    return MediaFileUpload(str(upload_path), mimetype=mimetype)
+
+
 def set_thumbnail(conn: sqlite3.Connection, youtube_video_id: str, thumbnail_path: str) -> None:
     """Set the custom thumbnail for a published video."""
     _require_google_imports()
@@ -553,31 +598,10 @@ def set_thumbnail(conn: sqlite3.Connection, youtube_video_id: str, thumbnail_pat
     upload_path = Path(thumbnail_path)
     temporary_path = None
     try:
-        if upload_path.stat().st_size > 2 * 1024 * 1024:
-            import tempfile
-            from PIL import Image
-
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as output:
-                temporary_path = Path(output.name)
-            with Image.open(upload_path) as image:
-                image = image.convert("RGB")
-                image.thumbnail((1280, 720))
-                quality = 85
-                image.save(temporary_path, "JPEG", quality=quality, optimize=True)
-                while temporary_path.stat().st_size > 2 * 1024 * 1024 and quality > 10:
-                    quality -= 10
-                    image.save(temporary_path, "JPEG", quality=quality, optimize=True)
-            upload_path = temporary_path
-        mimetype = "image/jpeg" if upload_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+        temporary_path = _shrink_image_for_upload(upload_path, (1280, 720))
         if temporary_path:
-            # MediaFileUpload keeps its file handle open for the lifetime of the
-            # object, which on Windows makes the unlink below fail with WinError 32.
-            # Thumbnails are capped at 2MB, so upload the temp file from memory.
-            import io
-
-            media = MediaIoBaseUpload(io.BytesIO(temporary_path.read_bytes()), mimetype=mimetype)
-        else:
-            media = MediaFileUpload(str(upload_path), mimetype=mimetype)
+            upload_path = temporary_path
+        media = _image_media(upload_path, temporary_path)
         service.thumbnails().set(videoId=youtube_video_id, media_body=media).execute()
     finally:
         if temporary_path:
@@ -619,6 +643,157 @@ def create_playlist(
         "status": {"privacyStatus": privacy},
     }
     return service.playlists().insert(part="snippet,status", body=body).execute()
+
+
+# ---------------------------------------------------------------------------
+# Podcast: một playlist được YouTube đánh dấu là podcast, kèm ảnh bìa vuông 1:1
+# (playlistImages, type "hero"). Cả hai đều là thiết lập cấp "chương trình" nên
+# chỉ cần đẩy lên khi cấu hình hoặc ảnh bìa đổi — xem sync_playlist_podcast.
+# ---------------------------------------------------------------------------
+
+
+def get_playlist(conn: sqlite3.Connection, playlist_id: str) -> dict | None:
+    """Fetch one playlist (snippet + status), or None when it is gone."""
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    resp = service.playlists().list(part="snippet,status", id=playlist_id, maxResults=1).execute()
+    items = resp.get("items") or []
+    return items[0] if items else None
+
+
+def set_playlist_podcast(conn: sqlite3.Connection, playlist_id: str, enabled: bool = True) -> dict:
+    """Turn YouTube's podcast flag on/off for a playlist. Returns the API response.
+
+    playlists.update replaces the parts it is given, so the current snippet is
+    read back first — sending status alone would blank the title/description.
+    """
+    _require_google_imports()
+    playlist = get_playlist(conn, playlist_id)
+    if playlist is None:
+        raise ValueError(f"playlist {playlist_id} not found")
+    snippet = playlist.get("snippet") or {}
+    status = playlist.get("status") or {}
+    body = {
+        "id": playlist_id,
+        "snippet": {
+            "title": snippet.get("title", ""),
+            "description": snippet.get("description", ""),
+        },
+        "status": {
+            "privacyStatus": status.get("privacyStatus", "private"),
+            "podcastStatus": "enabled" if enabled else "disabled",
+        },
+    }
+    service = get_youtube_service(conn)
+    return service.playlists().update(part="snippet,status", body=body).execute()
+
+
+def get_playlist_cover(conn: sqlite3.Connection, playlist_id: str) -> dict | None:
+    """The playlist's current hero image resource, or None."""
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    resp = service.playlistImages().list(part="snippet", parent=playlist_id, maxResults=5).execute()
+    items = resp.get("items") or []
+    return items[0] if items else None
+
+
+def set_playlist_cover(conn: sqlite3.Connection, playlist_id: str, image_path: str) -> dict:
+    """Upload the square podcast cover for a playlist (insert or replace)."""
+    _require_google_imports()
+    upload_path = Path(image_path)
+    if not upload_path.is_file():
+        raise FileNotFoundError(f"Podcast cover not found: {image_path}")
+    service = get_youtube_service(conn)
+    existing = get_playlist_cover(conn, playlist_id)
+    temporary_path = None
+    try:
+        temporary_path = _shrink_image_for_upload(upload_path, (1280, 1280))
+        if temporary_path:
+            upload_path = temporary_path
+        media = _image_media(upload_path, temporary_path)
+        body: dict = {"snippet": {"playlistId": playlist_id, "type": "hero"}}
+        if existing and existing.get("id"):
+            body["id"] = existing["id"]
+            return service.playlistImages().update(part="snippet", body=body, media_body=media).execute()
+        return service.playlistImages().insert(part="snippet", body=body, media_body=media).execute()
+    finally:
+        if temporary_path:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _file_sha(path: Path) -> str:
+    import hashlib
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def get_podcast_state(conn: sqlite3.Connection, book_id: int, playlist_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM youtube_podcast_state WHERE book_id=? AND playlist_id=?",
+        (book_id, playlist_id),
+    ).fetchone()
+    return _dict(row)
+
+
+def sync_playlist_podcast(
+    conn: sqlite3.Connection,
+    book_id: int,
+    playlist_id: str,
+    *,
+    enabled: bool,
+    cover_path: str | None = None,
+    force: bool = False,
+) -> dict:
+    """Push podcast flag + cover art to a playlist, skipping unchanged work.
+
+    Every published episode would otherwise re-send the same two calls, so the
+    last applied state is recorded per (book, playlist) and compared first.
+    `force` re-sends regardless — that is what the "apply now" button uses.
+    Returns {playlist_id, podcast, cover, changed}.
+    """
+    if not playlist_id:
+        raise ValueError("playlist_id is required")
+    state = get_podcast_state(conn, book_id, playlist_id) or {}
+    want_status = "enabled" if enabled else "disabled"
+    cover_sha = ""
+    cover_file = Path(cover_path) if cover_path else None
+    if enabled and cover_file and cover_file.is_file():
+        cover_sha = _file_sha(cover_file)
+
+    result = {"playlist_id": playlist_id, "podcast": "unchanged", "cover": "unchanged", "changed": False}
+
+    if not enabled:
+        result["cover"] = "skipped"
+    elif cover_file is None:
+        result["cover"] = "disabled"
+    elif not cover_sha:
+        result["cover"] = "missing"
+    elif force or state.get("cover_sha") != cover_sha:
+        set_playlist_cover(conn, playlist_id, str(cover_file))
+        result["cover"] = "uploaded"
+        result["changed"] = True
+
+    # YouTube rejects podcastStatus=enabled until a playlist image exists.
+    # Upload/replace the hero art first, then enable the podcast flag.
+    if force or state.get("podcast_status") != want_status:
+        set_playlist_podcast(conn, playlist_id, enabled)
+        result["podcast"] = want_status
+        result["changed"] = True
+
+    conn.execute(
+        """INSERT INTO youtube_podcast_state (book_id, playlist_id, podcast_status, cover_sha, updated_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(book_id, playlist_id) DO UPDATE SET
+               podcast_status=excluded.podcast_status,
+               cover_sha=excluded.cover_sha,
+               updated_at=excluded.updated_at""",
+        (book_id, playlist_id, want_status, cover_sha or state.get("cover_sha", ""), _now_iso()),
+    )
+    conn.commit()
+    return result
 
 
 def playlist_contains_video(conn: sqlite3.Connection, playlist_id: str, youtube_video_id: str) -> bool:
@@ -1497,6 +1672,37 @@ def resolve_book_playlist(
             memory_lock.release()
 
 
+def apply_book_podcast(conn: sqlite3.Connection, book_id: int | None, playlist_id: str) -> dict | None:
+    """Best-effort podcast sync after an episode lands in the book's playlist.
+
+    Never raises: the video is already public at this point, so a rejected
+    podcast flag must not turn a finished publish into a failure. Does nothing
+    unless the book actually asked for a podcast.
+    """
+    if not book_id or not playlist_id:
+        return None
+    try:
+        from app import image_overlay, repository
+        from app.production_defaults import get_effective_youtube_config
+
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            return None
+        podcast = get_effective_youtube_config(conn, book).get("podcast") or {}
+        if not podcast.get("enabled"):
+            return None
+        cover_path = None
+        if podcast.get("upload_cover", True):
+            patches = repository.list_patches(conn, book_id)
+            cover_path = image_overlay.ensure_podcast_cover(book, image_overlay.pick_cover_patch(patches))
+        return sync_playlist_podcast(conn, book_id, playlist_id, enabled=True, cover_path=cover_path)
+    except Exception:
+        logger.warning(
+            "podcast sync failed for book %s / playlist %s", book_id, playlist_id, exc_info=True
+        )
+        return None
+
+
 def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
     """Set thumbnail and add to playlist for a completed upload.
 
@@ -1592,6 +1798,7 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
                         (playlist_id, upload_id),
                     )
                     conn.commit()
+                    apply_book_podcast(conn, _resolve_book_id(conn, upload_id), playlist_id)
                 else:
                     conn.execute(
                         "UPDATE youtube_uploads SET playlist_status='done' WHERE id=?",

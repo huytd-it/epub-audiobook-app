@@ -79,6 +79,7 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
 def enqueue_pending_patch_jobs(
     conn: sqlite3.Connection, book_id: int | None = None, tts_engine: str | None = None,
     *, voice: str | None = None, max_chars: int = 0, with_effects: bool = False,
+    tts_options: dict | None = None,
     patch_ids: list[int] | None = None, auto_create_video: bool | None = None,
     auto_upload_youtube: bool | None = None, retry_count: int = 2,
     missing_audio_only: bool = False,
@@ -146,7 +147,7 @@ def enqueue_pending_patch_jobs(
                 "tts_engine": audio.get("model_id") or settings.tts_engine,
                 "voice": voice if voice else audio.get("voice_id"),
                 "max_chars": audio.get("max_chars") or 0,
-                "with_effects": bool(audio.get("with_effects", False)),
+                "with_effects": bool(audio.get("with_effects", False)), "tts_options": audio.get("tts_options"),
                 "chunk_pause_ms": audio.get("chunk_pause_ms"),
                 "chapter_pause_ms": audio.get("chapter_pause_ms"),
             }
@@ -156,7 +157,7 @@ def enqueue_pending_patch_jobs(
             audio = _audio_config(row["book_id"])
             request = {
                 "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
-                "with_effects": with_effects,
+                "with_effects": with_effects, "tts_options": tts_options or {},
                 "chunk_pause_ms": audio.get("chunk_pause_ms"),
                 "chapter_pause_ms": audio.get("chapter_pause_ms"),
             }

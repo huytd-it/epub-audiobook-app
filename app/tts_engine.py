@@ -58,6 +58,10 @@ class TTSModel:
     # (app.light_tts) and reference-cloning models have no cast at all. Filled in by
     # list_tts_models() rather than stored here, since it comes off disk.
     voices: list = field(default_factory=list)
+    # Declarative controls rendered by the UI.  Engines without real inference
+    # controls deliberately expose no schema, keeping the advanced section out
+    # of their forms instead of showing misleading disabled inputs.
+    options_schema: list[dict] = field(default_factory=list)
 
 
 _CAP_LOCAL = {
@@ -86,6 +90,26 @@ _CAP_LOCAL_VOICES = {
     "online": False,
 }
 
+_CONFUCIUS_OPTIONS = [
+    {"key": "lang", "label": "Ngôn ngữ", "type": "select", "default": "vi",
+     "choices": [{"value": "vi", "label": "Tiếng Việt"}, {"value": "zh", "label": "Chinese"},
+                 {"value": "en", "label": "English"}, {"value": "ja", "label": "Japanese"},
+                 {"value": "ko", "label": "Korean"}, {"value": "th", "label": "Thai"}]},
+    {"key": "device", "label": "Thiết bị", "type": "select", "default": "auto",
+     "choices": [{"value": "auto", "label": "Tự động"}, {"value": "cuda", "label": "CUDA"},
+                 {"value": "cpu", "label": "CPU"}]},
+]
+
+_F5_VIVOICE_OPTIONS = [
+    {"key": "speed", "label": "Tốc độ", "type": "number", "default": 1.0, "min": 0.3, "max": 2.0, "step": 0.05},
+    {"key": "nfe_step", "label": "Số bước suy luận", "type": "number", "default": 32, "min": 4, "max": 128, "step": 1},
+    {"key": "cfg_strength", "label": "CFG strength", "type": "number", "default": 2.0, "min": 0.0, "max": 10.0, "step": 0.1},
+    {"key": "sway_sampling_coef", "label": "Sway sampling", "type": "number", "default": -1.0, "min": -1.0, "max": 2.0, "step": 0.05},
+    {"key": "device", "label": "Thiết bị", "type": "select", "default": "auto",
+     "choices": [{"value": "auto", "label": "Tự động"}, {"value": "cuda", "label": "CUDA"},
+                 {"value": "cpu", "label": "CPU"}]},
+]
+
 _MODELS = {
     "voxcpm2": TTSModel(
         # 48 kHz: the model takes a 16 kHz reference but its AudioVAE decoder upsamples.
@@ -93,6 +117,14 @@ _MODELS = {
     ),
     "omnivoice": TTSModel(
         "omnivoice", "OmniVoice", "k2-fsa/OmniVoice", "omnivoice", 24000, capabilities=_CAP_LOCAL,
+    ),
+    "confucius4": TTSModel(
+        "confucius4", "Confucius4-TTS", "netease-youdao/Confucius4-TTS", "confuciustts", 22050,
+        capabilities=_CAP_LOCAL, options_schema=_CONFUCIUS_OPTIONS,
+    ),
+    "f5-vivoice": TTSModel(
+        "f5-vivoice", "F5-TTS Vietnamese ViVoice", "hynt/F5-TTS-Vietnamese-ViVoice", "f5-tts", 24000,
+        capabilities=_CAP_LOCAL, options_schema=_F5_VIVOICE_OPTIONS,
     ),
     "vieneu-fast": TTSModel(
         "vieneu-fast", "VieNeu fast", "pnnbao-ump/VieNeu-TTS-v3-Turbo", "vieneu", 48000,
@@ -362,6 +394,8 @@ def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
     factories = {
         "voxcpm2": VoxCPMEngine,
         "omnivoice": OmniVoiceEngine,
+        "confucius4": Confucius4Engine,
+        "f5-vivoice": F5ViVoiceEngine,
         "vieneu-fast": VieNeuFastEngine,
         "zerotts": ZeroTTSEngine,
         "edge-tts": EdgeTTSEngine,
@@ -382,7 +416,7 @@ def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
 def normalize_tt_payload(payload: dict | None, *, default_engine: str | None = None) -> dict:
     """The one canonical TTS job payload used by every engine and entry point:
 
-        {"patch_id", "tts_engine", "voice", "max_chars", "with_effects",
+        {"patch_id", "tts_engine", "voice", "max_chars", "with_effects", "tts_options",
          "chunk_pause_ms", "chapter_pause_ms"}
 
     Accepts the legacy shapes unchanged: voxcpm's bare {"patch_id"} and light_tts's
@@ -398,6 +432,7 @@ def normalize_tt_payload(payload: dict | None, *, default_engine: str | None = N
     p["voice"] = p.get("voice") or None
     p["max_chars"] = int(p.get("max_chars") or 0)
     p["with_effects"] = bool(p.get("with_effects"))
+    p["tts_options"] = normalize_tts_options(engine, p.get("tts_options"))
     # The merge pauses ride along with the rest of the audio config so a job
     # enqueued yesterday keeps the spacing it was queued with. Missing values
     # (every payload written before this shipped) fall back to the defaults.
@@ -406,6 +441,38 @@ def normalize_tt_payload(payload: dict | None, *, default_engine: str | None = N
     p["chunk_pause_ms"] = _pause_value(p.get("chunk_pause_ms"), audio_merge.DEFAULT_CHUNK_PAUSE_MS)
     p["chapter_pause_ms"] = _pause_value(p.get("chapter_pause_ms"), audio_merge.DEFAULT_CHAPTER_PAUSE_MS)
     return p
+
+
+def normalize_tts_options(engine_id: str, raw: object) -> dict:
+    """Keep only documented controls and clamp numeric values to their schema.
+
+    This is also the trust boundary for persisted automation JSON and queue
+    payloads: arbitrary constructor arguments must never be accepted from the UI.
+    """
+    supplied = raw if isinstance(raw, dict) else {}
+    model = _MODELS.get(engine_id)
+    if model is None:
+        return {}
+    schema = model.options_schema
+    result = {}
+    for field_spec in schema:
+        key = field_spec["key"]
+        value = supplied.get(key, field_spec.get("default"))
+        if field_spec.get("type") == "number":
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                value = float(field_spec.get("default", 0))
+            value = max(float(field_spec.get("min", value)), min(float(field_spec.get("max", value)), value))
+            if field_spec.get("step") == 1:
+                value = int(round(value))
+        elif field_spec.get("type") == "select":
+            choices = {str(choice["value"]) for choice in field_spec.get("choices", [])}
+            value = str(value)
+            if value not in choices:
+                value = field_spec.get("default", "")
+        result[key] = value
+    return result
 
 
 def _pause_value(raw, default: int) -> int:
@@ -543,6 +610,137 @@ class OmniVoiceEngine:
         _seed_rng(self.seed)
         audio = self._model.generate(text=text, **kwargs)
         return np.asarray(audio[0] if isinstance(audio, (list, tuple)) else audio, dtype=np.float32)
+
+
+class Confucius4Engine:
+    """Confucius4 zero-shot multilingual cloning.
+
+    The upstream API intentionally has a compact inference surface: language,
+    device and the repository inference YAML.  It does not need a reference
+    transcript, unlike several older cloning engines.
+    """
+
+    sample_rate = 22050
+
+    def __init__(self, voice: str | None = None, lang: str = "vi", device: str = "auto",
+                 config_path: str = "config/inference_config.yaml", **options):
+        self.voice = voice
+        self.lang = lang
+        self.device = device
+        self.config_path = config_path
+        self._model = None
+
+    def config_fingerprint(self) -> str:
+        return f"confucius4:lang={self.lang}:device={self.device}:config={self.config_path}:ref={self.voice or ''}"
+
+    def _ensure_loaded(self) -> None:
+        if self._model is not None:
+            return
+        import torch
+        from app.config import settings
+        try:
+            if settings.confucius4_repo_dir:
+                import sys
+                repo = Path(settings.confucius4_repo_dir)
+                if not repo.is_dir():
+                    raise RuntimeError(f"CONFUCIUS4_REPO_DIR không tồn tại: {repo}")
+                if str(repo) not in sys.path:
+                    sys.path.insert(0, str(repo))
+                if self.config_path == "config/inference_config.yaml":
+                    self.config_path = str(repo / self.config_path)
+            from confuciustts.cli.inference import ConfuciusTTS
+        except ImportError as exc:
+            raise RuntimeError(
+                "Chưa cài Confucius4-TTS. Cài repo netease-youdao/Confucius4-TTS "
+                "và các requirements của nó, rồi chạy lại."
+            ) from exc
+        device = self.device
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model = ConfuciusTTS(config_path=self.config_path, device=device)
+        self.sample_rate = int(self._model.sample_rate)
+
+    def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
+        reference_wav_path, _ = resolve_reference(self.voice, reference_wav_path, prompt_text)
+        if not reference_wav_path:
+            raise ValueError("Confucius4-TTS cần audio mẫu để clone giọng")
+        self._ensure_loaded()
+        audio = self._model.generate(text, self.lang, reference_wav_path, verbose=False)
+        if hasattr(audio, "detach"):
+            audio = audio.detach().cpu().numpy()
+        return np.asarray(audio, dtype=np.float32).reshape(-1)
+
+
+class F5ViVoiceEngine:
+    """hynt's Vietnamese F5-TTS fine-tune, using the installed F5 inference API."""
+
+    sample_rate = 24000
+
+    def __init__(self, voice: str | None = None, speed: float = 1.0, nfe_step: int = 32,
+                 cfg_strength: float = 2.0, sway_sampling_coef: float = -1.0,
+                 device: str = "auto", **options):
+        self.voice = voice
+        self.speed = speed
+        self.nfe_step = nfe_step
+        self.cfg_strength = cfg_strength
+        self.sway_sampling_coef = sway_sampling_coef
+        self.device = device
+        self._model = None
+        self._vocoder = None
+        self._utils = None
+
+    def config_fingerprint(self) -> str:
+        return (f"f5-vivoice:speed={self.speed}:steps={self.nfe_step}:cfg={self.cfg_strength}:"
+                f"sway={self.sway_sampling_coef}:device={self.device}:ref={self.voice or ''}")
+
+    def _ensure_loaded(self) -> None:
+        if self._model is not None:
+            return
+        try:
+            from cached_path import cached_path
+            from f5_tts.model import DiT
+            from f5_tts.infer import utils_infer
+        except ImportError as exc:
+            raise RuntimeError(
+                "Chưa cài F5-TTS Vietnamese. Cài f5-tts và cached_path trước khi dùng model này."
+            ) from exc
+        # This is the exact architecture/checkpoint pairing published by hynt.
+        self._vocoder = utils_infer.load_vocoder()
+        import inspect
+        load_kwargs = {
+            "ckpt_path": str(cached_path("hf://hynt/F5-TTS-Vietnamese-ViVoice/model_last.pt")),
+            "vocab_file": str(cached_path("hf://hynt/F5-TTS-Vietnamese-ViVoice/config.json")),
+        }
+        if self.device != "auto" and "device" in inspect.signature(utils_infer.load_model).parameters:
+            load_kwargs["device"] = self.device
+        self._model = utils_infer.load_model(
+            DiT, dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4), **load_kwargs
+        )
+        self._utils = utils_infer
+
+    def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
+        reference_wav_path, prompt_text = resolve_reference(self.voice, reference_wav_path, prompt_text)
+        if not reference_wav_path:
+            raise ValueError("F5-TTS ViVoice cần audio mẫu để clone giọng")
+        self._ensure_loaded()
+        ref_audio, detected_text = self._utils.preprocess_ref_audio_text(reference_wav_path, prompt_text or "")
+        import inspect
+        kwargs = {
+            "speed": self.speed,
+            "nfe_step": self.nfe_step,
+            "cfg_strength": self.cfg_strength,
+            "sway_sampling_coef": self.sway_sampling_coef,
+        }
+        # F5 forks have changed this signature several times.  Passing only
+        # supported knobs keeps the engine compatible while preserving every
+        # detailed control on current releases.
+        accepted = inspect.signature(self._utils.infer_process).parameters
+        kwargs = {key: value for key, value in kwargs.items() if key in accepted}
+        wave, sample_rate, _ = self._utils.infer_process(
+            ref_audio, str(detected_text).lower(), str(text).lower(), self._model, self._vocoder, **kwargs
+        )
+        self.sample_rate = int(sample_rate)
+        return np.asarray(wave, dtype=np.float32).reshape(-1)
 
 
 class VieNeuFastEngine:

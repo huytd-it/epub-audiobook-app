@@ -392,6 +392,12 @@ async def save_audio_settings(request: Request, book_id: int):
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, "max_chars không hợp lệ") from exc
     with_effects = bool(data.get("with_effects", False))
+    from app.tts_engine import normalize_tts_options, resolve_engine_id
+    try:
+        model_id = resolve_engine_id(model_id)
+        tts_options = normalize_tts_options(model_id, data.get("tts_options"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     chunk_pause_ms = validate_pause_ms(data.get("chunk_pause_ms"), DEFAULT_CHUNK_PAUSE_MS)
     chapter_pause_ms = validate_pause_ms(data.get("chapter_pause_ms"), DEFAULT_CHAPTER_PAUSE_MS)
     with locked_conn(request) as conn:
@@ -401,12 +407,12 @@ async def save_audio_settings(request: Request, book_id: int):
         # The pauses have no columns of their own; they live in the book's
         # automation_config alongside the other per-group sections.
         save_book_audio_section(conn, book_id, chunk_pause_ms=chunk_pause_ms,
-                                chapter_pause_ms=chapter_pause_ms)
+                                chapter_pause_ms=chapter_pause_ms, tts_options=tts_options)
         conn.commit()
         set_book_group_mode_db(conn, book_id, "audio", "custom")
     return {"model_id": model_id, "voice_id": voice_id, "max_chars": max_chars,
             "with_effects": with_effects, "chunk_pause_ms": chunk_pause_ms,
-            "chapter_pause_ms": chapter_pause_ms}
+            "chapter_pause_ms": chapter_pause_ms, "tts_options": tts_options}
 
 
 @router.get("/books/{book_id}/export-audio-settings")
@@ -559,6 +565,13 @@ async def update_overlay_config(request: Request, book_id: int):
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
 
+        # Một form không nhắc gì tới podcast là form cũ, không phải lệnh tắt
+        # ảnh bìa — giữ nguyên thiết lập podcast đã lưu.
+        if not any(str(key).startswith("podcast_") for key in values.keys()):
+            cfg["podcast_cover"] = image_overlay.parse_podcast_cover(
+                image_overlay.parse_overlay_config(book.overlay_config)
+            )
+
         # Save config and the image selected in the live preview. Previously the
         # preview background was sent only to overlay-preview, so pressing Save lost it.
         background_path = str(values.get("background_path") or "").strip()
@@ -587,6 +600,11 @@ async def update_overlay_config(request: Request, book_id: int):
                 if path.exists():
                     path.unlink()
 
+        # Ảnh bìa podcast cắt ra từ chính thumbnail, nên cũng lỗi thời theo.
+        cover = image_overlay.get_podcast_cover_path(book_id)
+        if cover.exists():
+            cover.unlink()
+
         conn.commit()
 
     if request.headers.get("X-Requested-With") == "autosave" or "overlays_json" in values:
@@ -594,20 +612,14 @@ async def update_overlay_config(request: Request, book_id: int):
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
-@router.get("/books/{book_id}/overlay-preview")
-def overlay_preview(request: Request, book_id: int):
-    """Render the overlay preview PNG.
+def _overlay_preview_context(request: Request, book_id: int):
+    """(book, overlay cfg, background path, sample patch) for a preview render.
 
-    Without params it renders the saved config. With `live=1` the remaining
-    query params (same names as the overlay form fields) override the saved
-    config, so the studio can preview unsaved edits. `background_path` (must
-    be a known background) previews a different image before saving it.
-
-    The response carries an `X-Overlay-Rect` header with the drawn text-block
-    rect so the studio can place its drag handle exactly on the text.
+    `live=1` builds the config from the query params so unsaved studio edits
+    show up; otherwise the saved config is used. `background_path` previews a
+    different (whitelisted) background before it is saved on the book.
     """
     from app import image_overlay
-    from io import BytesIO
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
         if book is None:
@@ -633,11 +645,30 @@ def overlay_preview(request: Request, book_id: int):
     if bg is None:
         raise HTTPException(status_code=400, detail="chưa có background image")
 
-    from PIL import Image
-    img = Image.open(str(bg)).convert("RGB")
     preview_patch = sample_patch or SimpleNamespace(
         name=patch_label, patch_index=0, chapter_start=0, chapter_end=0,
     )
+    return book, cfg, bg, preview_patch
+
+
+@router.get("/books/{book_id}/overlay-preview")
+def overlay_preview(request: Request, book_id: int):
+    """Render the overlay preview PNG.
+
+    Without params it renders the saved config. With `live=1` the remaining
+    query params (same names as the overlay form fields) override the saved
+    config, so the studio can preview unsaved edits. `background_path` (must
+    be a known background) previews a different image before saving it.
+
+    The response carries an `X-Overlay-Rect` header with the drawn text-block
+    rect so the studio can place its drag handle exactly on the text.
+    """
+    from io import BytesIO
+    book, cfg, bg, preview_patch = _overlay_preview_context(request, book_id)
+
+    from PIL import Image
+    from app import image_overlay
+    img = Image.open(str(bg)).convert("RGB")
     rects = []
     for overlay in cfg.get("overlays") or [cfg]:
         text = image_overlay.expand_overlay_text(overlay.get("text", ""), book, preview_patch)
@@ -656,6 +687,116 @@ def overlay_preview(request: Request, book_id: int):
         media_type="image/png",
         headers={"X-Overlay-Rect": rect_header, "Cache-Control": "no-store"},
     )
+
+
+@router.get("/books/{book_id}/podcast-cover-preview")
+def podcast_cover_preview(request: Request, book_id: int):
+    """The same artwork as the thumbnail, cropped 1:1 for YouTube Podcasts.
+
+    Takes the same live params as /overlay-preview plus podcast_focus_x,
+    podcast_focus_y and podcast_cover_size, so the studio can drag the crop
+    around before saving.
+    """
+    from io import BytesIO
+    from app import image_overlay
+    book, cfg, bg, preview_patch = _overlay_preview_context(request, book_id)
+    img = image_overlay.compose_patch_overlay(book, preview_patch, cfg, str(bg))
+    podcast = image_overlay.parse_podcast_cover(cfg)
+    cover = image_overlay.crop_square(img, podcast["focus_x"], podcast["focus_y"], podcast["size"])
+    buf = BytesIO()
+    cover.save(buf, "PNG", optimize=True)
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={"X-Podcast-Cover-Size": str(podcast["size"]), "Cache-Control": "no-store"},
+    )
+
+
+@router.post("/books/{book_id}/podcast-cover/regenerate")
+def regenerate_podcast_cover(request: Request, book_id: int):
+    """Write the saved square cover to disk so an upload can pick it up."""
+    from app import image_overlay
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        patches = repository.list_patches(conn, book_id)
+    try:
+        path = image_overlay.render_podcast_cover(book, image_overlay.pick_cover_patch(patches))
+    except (ValueError, OSError) as exc:
+        # Sách chưa có background, hoặc background là video (PIL không mở được).
+        raise HTTPException(400, f"Không tạo được ảnh bìa podcast: {exc}") from exc
+    cover = image_overlay.parse_podcast_cover(image_overlay.parse_overlay_config(book.overlay_config))
+    return {"status": "ok", "path": path, "size": cover["size"]}
+
+
+@router.get("/books/{book_id}/podcast-cover")
+def get_podcast_cover(request: Request, book_id: int):
+    """Serve the saved square cover, rendering it on first use."""
+    from app import image_overlay
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        patches = repository.list_patches(conn, book_id)
+    force = request.query_params.get("force") in {"1", "true"}
+    path = image_overlay.ensure_podcast_cover(book, image_overlay.pick_cover_patch(patches), force=force)
+    if not path or not Path(path).is_file():
+        raise HTTPException(404, "Chưa tạo được ảnh bìa podcast")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@router.post("/books/{book_id}/podcast/apply")
+def apply_podcast_settings(request: Request, book_id: int):
+    """Push the book's podcast settings (flag + 1:1 cover) to its playlist."""
+    from app import image_overlay
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        if youtube.get_creds_from_db(conn) is None:
+            raise HTTPException(400, "Chưa kết nối YouTube")
+        config = get_effective_youtube_config(conn, book)
+        playlist_id = _resolve_book_playlist_id(conn, book_id, config)
+        patches = repository.list_patches(conn, book_id)
+    if not playlist_id:
+        raise HTTPException(400, "Sách chưa có playlist trên YouTube — chọn playlist rồi thử lại")
+
+    podcast = config.get("podcast") or {}
+    cover_path = None
+    if podcast.get("upload_cover", True):
+        cover_path = image_overlay.ensure_podcast_cover(book, image_overlay.pick_cover_patch(patches), force=True)
+        if not cover_path:
+            raise HTTPException(400, "Chưa tạo được ảnh bìa podcast — kiểm tra background của sách")
+
+    api_conn = app_db.connect(settings.db_path)
+    try:
+        result = youtube.sync_playlist_podcast(
+            api_conn, book_id, playlist_id,
+            enabled=bool(podcast.get("enabled")), cover_path=cover_path, force=True,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("podcast apply failed for book %s", book_id)
+        raise HTTPException(502, f"YouTube từ chối cập nhật podcast: {exc}") from exc
+    finally:
+        api_conn.close()
+    return result
+
+
+def _resolve_book_playlist_id(conn, book_id: int, config: dict) -> str:
+    """The playlist a book publishes into: the configured one, else the
+    auto-created one recorded in youtube_playlist_map."""
+    playlist = config.get("playlist") or {}
+    if playlist.get("mode") == "existing" and playlist.get("playlist_id"):
+        return playlist["playlist_id"]
+    row = conn.execute(
+        "SELECT playlist_id FROM youtube_playlist_map WHERE book_id=? AND playlist_id<>'__creating__' "
+        "ORDER BY updated_at DESC LIMIT 1",
+        (book_id,),
+    ).fetchone()
+    return row["playlist_id"] if row else ""
 
 
 @router.post("/books/{book_id}/delete")

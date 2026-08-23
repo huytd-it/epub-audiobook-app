@@ -31,7 +31,7 @@ import {
   YouTubeSettings,
   errorText,
 } from "./types";
-import { CheckField, Field, TabBar, checkboxClass, fieldClass, selectClass } from "./parts";
+import { CheckField, Field, TabBar, TtsOptionsFields, checkboxClass, fieldClass, selectClass } from "./parts";
 import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
 import { YouTubeConfigFields } from "./YouTubeFields";
 
@@ -212,6 +212,7 @@ export function ConfigDialog({
   const [previewChapter, setPreviewChapter] = useState(0);
   const [normalizationPreviewLoading, setNormalizationPreviewLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [applyingPodcast, setApplyingPodcast] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -270,6 +271,7 @@ export function ConfigDialog({
         voice_id: settings.voiceId,
         max_chars: settings.maxChars ? Number(settings.maxChars) : 0,
         with_effects: settings.withEffects,
+        tts_options: settings.ttsOptions,
         chunk_pause_ms: settings.chunkPauseMs === "" ? null : Number(settings.chunkPauseMs),
         chapter_pause_ms: settings.chapterPauseMs === "" ? null : Number(settings.chapterPauseMs),
       });
@@ -344,6 +346,27 @@ export function ConfigDialog({
       onMessage(errorText(error));
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** Đẩy thẳng thiết lập podcast + ảnh bìa lên playlist, không phải chờ tập kế tiếp.
+   * Lưu cấu hình trước để YouTube nhận đúng trạng thái vừa chỉnh trên form. */
+  const applyPodcast = async () => {
+    if (!ytSettings || applyingPodcast) return;
+    setApplyingPodcast(true);
+    try {
+      await postJson(`/books/${bookId}/youtube-settings`, ytSettings.config);
+      const result = await api<{ podcast: string; cover: string }>(`/books/${bookId}/podcast/apply`, {
+        method: "POST",
+      });
+      onMessage(
+        `Đã áp dụng podcast lên playlist (trạng thái: ${result.podcast}` +
+          `${result.cover === "uploaded" ? ", đã tải ảnh bìa mới" : `, ảnh bìa: ${result.cover}`}).`
+      );
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setApplyingPodcast(false);
     }
   };
 
@@ -454,6 +477,8 @@ export function ConfigDialog({
                   onChange={(event) => onSettingsChange({ chapterPauseMs: event.target.value })}
                 />
               </Field>
+              <TtsOptionsFields model={selectedModel} value={settings.ttsOptions}
+                onChange={(ttsOptions) => onSettingsChange({ ttsOptions })} />
             </div>
             {usesReferenceClip && (
               <div className="rounded-md bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -1050,6 +1075,22 @@ export function ConfigDialog({
                 config={ytSettings.config}
                 onChange={(patch) => setYtSettings({ ...ytSettings, config: { ...ytSettings.config, ...patch } })}
                 playlists={ytSettings.playlists}
+                podcastAction={
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={applyingPodcast || !ytSettings.connected}
+                      onClick={applyPodcast}
+                    >
+                      {applyingPodcast ? "Đang áp dụng..." : "Lưu & áp dụng lên YouTube"}
+                    </Button>
+                    <span className="text-[11px] text-muted-foreground">
+                      Đánh dấu playlist là podcast và tải ảnh bìa ngay, không cần chờ tập kế tiếp.
+                    </span>
+                  </div>
+                }
               />
 
               <div className="rounded-md border border-border">

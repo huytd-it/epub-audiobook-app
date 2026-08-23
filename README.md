@@ -6,11 +6,20 @@ Upload `.epub` files, automatically split into chapters and patches, synthesize 
 
 - **EPUB Parsing** — Extract chapters from EPUB files with smart chapter detection
 - **Patch System** — Split books into manageable patches for processing
-- **TTS Synthesis** — Unified VoxCPM2, OmniVoice, VieNeu fast, ZeroTTS, Edge TTS, and gTTS generation
+- **TTS Synthesis** — Unified VoxCPM2, OmniVoice, Confucius4-TTS, F5-TTS Vietnamese ViVoice, VieNeu fast, ZeroTTS, Edge TTS, and gTTS generation
 - **Reference Voice Selection** — VoxCPM2/OmniVoice clone whatever the audio settings' voice id names,
   locally and in Colab/Kaggle exports alike: a clip from the `/voices` library, a VieNeu or ZeroTTS
   preset voice (`preset:<engine>:<voice>`, rendered once and cached under `data/voices/_presets`), or
   the book's own voice clip when nothing is picked
+
+### Confucius4-TTS and F5 ViVoice
+
+Both models are local, zero-shot voice-cloning engines and therefore require a voice clip.
+F5 ViVoice downloads its published `hynt/F5-TTS-Vietnamese-ViVoice` weights on first use;
+install it with `pip install -e ".[f5-vivoice]"`. Confucius4 is currently distributed as a
+repository rather than a pip package: clone `netease-youdao/Confucius4-TTS`, install its
+`requirements.txt`, then set `CONFUCIUS4_REPO_DIR` to that clone. The Audio settings screen
+shows model-specific advanced controls only where they are supported.
 - **Batch Colab/Kaggle Export** — Export one or more selected patches through the shared batch notebook
 - **Audio Merge** — Combine patches into full audiobook files
 - **Video Generation** — Create videos with custom backgrounds per patch/chapter

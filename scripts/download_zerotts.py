@@ -35,7 +35,7 @@ REVISION = "7fdb2342d1242fd84b738223281242e4f149825c"
 BASE = f"https://huggingface.co/{REPO}/resolve/{REVISION}"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEST = PROJECT_ROOT / "data" / "zerotts"
+DEST = Path(settings.zerotts_model_dir or Path(settings.data_root) / "zerotts")
 CHUNK = 8 * 1024 * 1024
 DEFAULT_WORKERS = 24
 RETRIES = 15

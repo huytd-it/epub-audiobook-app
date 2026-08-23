@@ -451,6 +451,7 @@ async def generate_selected_tts(request: Request, book_id: int):
         "voice": body.get("voice_id"),
         "max_chars": body.get("max_chars"),
         "with_effects": body.get("with_effects"),
+        "tts_options": body.get("tts_options"),
     })
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
@@ -470,6 +471,7 @@ async def generate_selected_tts(request: Request, book_id: int):
         queued = enqueue_pending_patch_jobs(
             conn, book_id, payload["tts_engine"], voice=payload["voice"],
             max_chars=payload["max_chars"], with_effects=payload["with_effects"],
+            tts_options=payload["tts_options"],
             patch_ids=patch_ids, auto_create_video=auto_create_video,
             auto_upload_youtube=auto_upload_youtube, retry_count=retry_count,
             missing_audio_only=True,

@@ -18,7 +18,7 @@ import {
   errorText,
   presetVoiceOptions,
 } from "@/pages/book-detail/types";
-import { CheckField, Field, TabBar, checkboxClass, fieldClass, selectClass } from "@/pages/book-detail/parts";
+import { CheckField, Field, TabBar, TtsOptionsFields, checkboxClass, fieldClass, selectClass } from "@/pages/book-detail/parts";
 import { YouTubeConfigFields } from "@/pages/book-detail/YouTubeFields";
 
 type Defaults = ProductionSettings["defaults"];
@@ -284,6 +284,9 @@ export function ProductionSettingsPage() {
                   onChange={(event) => patchGroup("audio", { chapter_pause_ms: Number(event.target.value) || 0 })}
                 />
               </Field>
+              <TtsOptionsFields model={ttsModels.find((model) => model.id === draft.audio.model_id)}
+                value={draft.audio.tts_options || {}}
+                onChange={(tts_options) => patchGroup("audio", { tts_options })} />
             </div>
           )}
 
