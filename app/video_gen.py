@@ -33,6 +33,13 @@ VIDEO_BACKGROUND_EXTENSIONS = {".mp4", ".webm", ".mov"}
 AUDIO_SAMPLE_RATE = 48000
 AUDIO_CHANNELS = 2
 
+# Still-image sources (JPEG/PNG) decode as full-range YUV, and '-pix_fmt yuv420p'
+# keeps that range: x264 tags the stream full-range and ffprobe reports the
+# deprecated alias 'yuvj420p', which the integrity validator rejects. Squeezing
+# every chain into limited range through scale first makes probes report a plain
+# 'yuv420p' stream.
+_LIMITED_RANGE_SUFFIX = ",scale=in_range=auto:out_range=tv"
+
 
 def is_video_background(path: str | Path | None) -> bool:
     """True if the background path points to a loopable video (by extension)."""
@@ -47,6 +54,38 @@ def _emit(on_progress: ProgressCallback | None, event: str, **fields) -> None:
             on_progress(event, fields)
         except Exception:
             pass
+
+
+# Windows kills ffmpeg processes under memory-commit pressure or stray console
+# events before they produce any diagnostic output; the exit status is then a
+# raw NTSTATUS (>= 0x80000000) such as 0xC0000142 DLL_INIT_FAILED or
+# 0xC000013A CONTROL_C_EXIT instead of ffmpeg's own 1/255. The identical
+# command succeeds when rerun moments later, so retry these instead of burning
+# a job-level render attempt (patch renders are capped at MAX_PATCH_RENDER_ATTEMPTS).
+_ENCODER_RETRIES = 2
+
+
+def _run_encoder(cmd: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess:
+    delay = 2.0
+    last_exc: subprocess.CalledProcessError | None = None
+    for attempt in range(_ENCODER_RETRIES + 1):
+        try:
+            return subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=cwd)
+        except subprocess.CalledProcessError as exc:
+            if 0 <= exc.returncode < 0x80000000:
+                logger.warning("ffmpeg failed (%s): %s", exc.returncode,
+                               (exc.stderr or "")[-500:])
+                raise
+            last_exc = exc
+            if attempt < _ENCODER_RETRIES:
+                logger.warning(
+                    "ffmpeg crashed with exit status %s, retrying (%d/%d): %s",
+                    exc.returncode, attempt + 1, _ENCODER_RETRIES, cmd[0],
+                )
+                time.sleep(delay)
+                delay *= 2
+    assert last_exc is not None
+    raise last_exc
 
 
 def _probe_audio_seconds(path: str) -> float | None:
@@ -514,7 +553,7 @@ def generate_segment(
         # 'fps' must be pinned explicitly: '-loop 1' on a still image defaults to
         # 25fps and a video background inherits its own rate. Segments that
         # disagree get time-stretched by concat_segments' stream copy.
-        base_vf = f"{_build_fit_filter(width, height, fit_mode)},fps={fps}"
+        base_vf = f"{_build_fit_filter(width, height, fit_mode)},fps={fps}{_LIMITED_RANGE_SUFFIX}"
     else:
         zp_filter = _build_zoompan_filter(
             image_type, width, height, fps, narration_seconds or 10.0
@@ -527,7 +566,7 @@ def generate_segment(
         # reframe; 'contain' keeps the original full-resolution behaviour.
         resolved = _resolve_fit_mode(fit_mode, width, height)
         prefix = "" if resolved == "contain" else f"{_build_fit_filter(width, height, resolved)},"
-        base_vf = f"{prefix}{zp_filter},format=yuv420p"
+        base_vf = f"{prefix}{zp_filter},scale=in_range=auto:out_range=tv,format=yuv420p"
     if progress_bar and narration_seconds:
         base_vf += f",drawbox=x=0:y=ih-8:w='iw*t/{narration_seconds:.6f}':h=8:color=0xbaff39@0.9:t=fill"
 
@@ -598,7 +637,7 @@ def generate_segment(
     _emit(on_progress, "segment.ffmpeg_start", path=out_path)
     t0 = time.monotonic()
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        _run_encoder(cmd)
     except subprocess.CalledProcessError as exc:
         stderr_tail = (exc.stderr or "")[-500:]
         _emit(on_progress, "segment.failed", path=out_path,
@@ -738,7 +777,7 @@ def concat_segments(
         _emit(on_progress, "concat.ffmpeg_start", count=len(segment_paths))
         t0 = time.monotonic()
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            _run_encoder(cmd)
         except subprocess.CalledProcessError as exc:
             stderr_tail = (exc.stderr or "")[-500:]
             _emit(on_progress, "concat.failed", returncode=exc.returncode,
@@ -765,9 +804,8 @@ def concat_video_segments(segment_paths: list[str], out_path: str) -> None:
             safe = path.replace("\\", "/").replace("'", "'\\''")
             list_file.write(f"file '{safe}'\n")
         list_file.close()
-        subprocess.run([settings.get_ffmpeg_path(), "-y", "-f", "concat", "-safe", "0",
-                        "-i", list_file.name, "-c", "copy", out_path],
-                       check=True, capture_output=True, text=True)
+        _run_encoder([settings.get_ffmpeg_path(), "-y", "-f", "concat", "-safe", "0",
+                      "-i", list_file.name, "-c", "copy", out_path])
     finally:
         Path(list_file.name).unlink(missing_ok=True)
 
@@ -828,6 +866,7 @@ def generate_background_sequence(
                 filters += f",zoompan=z='min(zoom+0.0005,1.15)':d={max(1, int(length * fps))}:s={width}x{height}:fps={fps}"
             if progress_bar:
                 filters += f",drawbox=x=0:y=ih-8:w='iw*t/{max(length, 0.01)}':h=8:color=white@0.85:t=fill"
+            filters += _LIMITED_RANGE_SUFFIX
             cmd = inputs + [
                 "-t", str(length), "-vf", filters,
                 "-an", "-c:v", video_codec,
@@ -835,7 +874,7 @@ def generate_background_sequence(
                 ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality),
                 piece,
             ]
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            _run_encoder(cmd)
             pieces.append(piece)
         visual = str(Path(temp) / "visual.mp4")
         if crossfade and len(pieces) > 1:
@@ -864,7 +903,7 @@ def generate_background_sequence(
                     "-pix_fmt", "yuv420p", "-r", str(fps),
                     ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality),
                     Path(visual).name]
-            subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=temp)
+            _run_encoder(cmd, cwd=temp)
         else:
             concat_segments(pieces, visual)
         inputs = [settings.get_ffmpeg_path(), "-y", "-i", visual, "-i", audio_path]
@@ -905,7 +944,7 @@ def generate_background_sequence(
                 "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
                 "-shortest", out_path]
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            _run_encoder(cmd)
         finally:
             if not loop_music and music_path:
                 Path(music_path).unlink(missing_ok=True)
