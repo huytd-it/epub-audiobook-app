@@ -11,6 +11,7 @@ from app.normalization import (
     remove_cjk,
     remove_dots_in_vietnamese_words,
 )
+from app.text_analysis import expand_abbreviations
 
 
 def test_small_integer_to_words():
@@ -37,6 +38,14 @@ def test_currency_usd():
 def test_date():
     assert normalize_numbers("01/01/2024") == "ngày một tháng một năm hai nghìn không trăm hai mươi tư"
     assert normalize_numbers("1/1/2024") == "ngày một tháng một năm hai nghìn không trăm hai mươi tư"
+
+
+def test_date_does_not_duplicate_ngay_prefix():
+    # vietnormalizer.convert_date chèn thêm "ngày" dù chữ "ngày" đã đứng trước.
+    assert normalize_numbers("ngày 1/3/2024") == "ngày một tháng ba năm hai nghìn không trăm hai mươi tư"
+    assert normalize_numbers("Ngày 01/01/2024") == "Ngày một tháng một năm hai nghìn không trăm hai mươi tư"
+    # Phép lặp từ chủ ý không theo sau bởi cụm ngày thì giữ nguyên.
+    assert normalize_numbers("Ngày ngày em chờ") == "Ngày ngày em chờ"
 
 
 def test_time():
@@ -222,6 +231,62 @@ def test_file_ext_in_pipeline():
 def test_standalone_file_ext_in_pipeline():
     result = normalize_text("đuôi .wav", NormalizationOptions(numbers=False, junk=False, spellcheck=False, punctuation=False))
     assert "chấm wav" in result
+
+
+# --- Viết tắt (docs/toi_uu_tts.md mục 5.3, 8.2) ---
+
+
+def test_expand_common_abbreviations():
+    assert expand_abbreviations("UBND thành phố xử lý vụ việc.").startswith("Ủy ban nhân dân")
+    assert "Thành phố Hồ Chí Minh" in expand_abbreviations("Ông sống ở TP.HCM.")
+    assert "Nhà xuất bản" in expand_abbreviations("Sách do NXB Trẻ phát hành.")
+
+
+def test_expand_inserts_missing_space():
+    assert expand_abbreviations("Nhà ở Q.1 rất đắt.") == "Nhà ở Quận 1 rất đắt."
+
+
+def test_short_abbreviation_needs_numeric_context():
+    # "P." ở đây là chữ cái đầu của tên người, không phải "Phường".
+    assert expand_abbreviations("Ông P. Hùng đến muộn.") == "Ông P. Hùng đến muộn."
+    assert expand_abbreviations("Nhà ở P.5 quận Bình Thạnh.") == "Nhà ở Phường 5 quận Bình Thạnh."
+
+
+def test_unknown_acronym_is_left_alone():
+    assert expand_abbreviations("Anh ấy sống ở U.S.A nhiều năm.") == "Anh ấy sống ở U.S.A nhiều năm."
+
+
+def test_abbreviations_toggle_in_pipeline():
+    text = "UBND xã ra thông báo mới."
+    base = dict(numbers=False, junk=False, spellcheck=False, file_extensions=False, punctuation=False, breaks=False)
+    assert "Ủy ban nhân dân" in normalize_text(text, NormalizationOptions(**base, abbreviations=True))
+    assert normalize_text(text, NormalizationOptions(**base, abbreviations=False)) == text
+
+
+def test_abbreviation_runs_before_number_normalization():
+    result = normalize_text(
+        "Nhà ở Q.1.",
+        NormalizationOptions(junk=False, spellcheck=False, file_extensions=False, punctuation=False, breaks=False),
+    )
+    assert result == "Nhà ở Quận một."
+
+
+# --- Cue ngắt nghỉ (docs/toi_uu_tts.md mục 3, 6) ---
+
+
+def test_breaks_toggle_in_pipeline():
+    text = "Ngày mai chúng ta sẽ họp bàn kế hoạch."
+    base = dict(numbers=False, junk=False, spellcheck=False, file_extensions=False,
+                punctuation=False, abbreviations=False)
+    assert normalize_text(text, NormalizationOptions(**base, breaks=True)) == "Ngày mai, chúng ta sẽ họp bàn kế hoạch."
+    assert normalize_text(text, NormalizationOptions(**base, breaks=False)) == text
+
+
+def test_all_new_flags_off_is_a_no_op():
+    text = "UBND TP.HCM họp ngày mai để bàn kế hoạch."
+    opts = NormalizationOptions(numbers=False, junk=False, spellcheck=False, file_extensions=False,
+                                punctuation=False, abbreviations=False, breaks=False)
+    assert normalize_text(text, opts) == text
 
 
 if __name__ == "__main__":

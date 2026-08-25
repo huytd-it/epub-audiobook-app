@@ -173,6 +173,8 @@ def validate_normalization_config(config) -> dict:
         "spellcheck": _flag(config.get("spellcheck", True), True),
         "dictionary": _flag(config.get("dictionary", False), False),
         "transliteration": _flag(config.get("transliteration", False), False),
+        "abbreviations": _flag(config.get("abbreviations", True), True),
+        "breaks": _flag(config.get("breaks", True), True),
     }
 
 
@@ -351,6 +353,8 @@ def _columns_suggest_custom(book, group: str) -> bool:
             and bool(getattr(book, "normalize_spellcheck_enabled", 1))
             and not bool(getattr(book, "normalize_dictionary_enabled", 0))
             and not bool(getattr(book, "normalize_transliteration_enabled", 0))
+            and bool(getattr(book, "normalize_abbreviations_enabled", 1))
+            and bool(getattr(book, "normalize_breaks_enabled", 1))
         )
     if group == "video":
         return not (
@@ -521,6 +525,8 @@ def get_effective_normalization_config(conn: sqlite3.Connection, book) -> dict:
         "spellcheck": bool(getattr(book, "normalize_spellcheck_enabled", 1)),
         "dictionary": bool(getattr(book, "normalize_dictionary_enabled", 0)),
         "transliteration": bool(getattr(book, "normalize_transliteration_enabled", 0)),
+        "abbreviations": bool(getattr(book, "normalize_abbreviations_enabled", 1)),
+        "breaks": bool(getattr(book, "normalize_breaks_enabled", 1)),
     }
 
 

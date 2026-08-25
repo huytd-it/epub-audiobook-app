@@ -27,6 +27,8 @@ class Book:
     normalize_spellcheck_enabled: int = 1
     normalize_dictionary_enabled: int = 0
     normalize_transliteration_enabled: int = 0
+    normalize_abbreviations_enabled: int = 1
+    normalize_breaks_enabled: int = 1
     music_id: int | None = None
     music_volume: float = 0.15
     overlay_config: str | None = None

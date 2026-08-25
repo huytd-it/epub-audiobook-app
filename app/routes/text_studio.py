@@ -232,6 +232,8 @@ async def normalize_preview(request: Request, book_id: int):
         spellcheck=form.get("spellcheck") == "on",
         dictionary=form.get("dictionary") == "on",
         transliteration=form.get("transliteration") == "on",
+        abbreviations=form.get("abbreviations") == "on",
+        breaks=form.get("breaks") == "on",
     )
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:

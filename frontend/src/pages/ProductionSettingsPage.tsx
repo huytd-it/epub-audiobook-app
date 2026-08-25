@@ -49,6 +49,8 @@ const NORMALIZATION_LABELS: { key: keyof NormalizationSettings; label: string }[
   { key: "spellcheck", label: "Sửa dấu chấm bị chèn trong từ tiếng Việt" },
   { key: "dictionary", label: "Áp dụng từ điển tiếng Việt" },
   { key: "transliteration", label: "Phiên âm từ nước ngoài" },
+  { key: "abbreviations", label: "Mở rộng viết tắt (TP.HCM → Thành phố Hồ Chí Minh)" },
+  { key: "breaks", label: "Thêm cue ngắt nghỉ trong câu" },
 ];
 
 /** Model TTS + voice khả dụng khi không có sách nào trong phạm vi. */

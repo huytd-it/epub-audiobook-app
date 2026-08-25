@@ -10,6 +10,8 @@ export type Book = {
   normalize_spellcheck_enabled?: number;
   normalize_dictionary_enabled?: number;
   normalize_transliteration_enabled?: number;
+  normalize_abbreviations_enabled?: number;
+  normalize_breaks_enabled?: number;
   patches?: { total: number; done: number; active: number; failed: number };
 };
 export type Patch = { id: number; book_id: number; patch_index: number; chapter_start: number; chapter_end: number; chapter_no_start?: number | null; chapter_no_end?: number | null; name: string; status: string; chunk_count: number; next_chunk_index: number; error_message: string | null; audio_path?: string | null };

@@ -269,6 +269,8 @@ export type NormalizationSettings = {
   spellcheck: boolean;
   dictionary: boolean;
   transliteration: boolean;
+  abbreviations: boolean;
+  breaks: boolean;
 };
 
 export type BrandingPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center";

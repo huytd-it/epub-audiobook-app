@@ -545,6 +545,16 @@ export function ConfigDialog({
                 onChange={(value) => onNormalizationChange({ transliteration: value })}
                 label="Phiên âm từ nước ngoài"
               />
+              <CheckField
+                checked={normalization.abbreviations}
+                onChange={(value) => onNormalizationChange({ abbreviations: value })}
+                label="Mở rộng viết tắt (TP.HCM → Thành phố Hồ Chí Minh)"
+              />
+              <CheckField
+                checked={normalization.breaks}
+                onChange={(value) => onNormalizationChange({ breaks: value })}
+                label="Thêm cue ngắt nghỉ trong câu (giảm đọc rời rạc)"
+              />
             </div>
 
             <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">

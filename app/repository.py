@@ -650,6 +650,8 @@ def update_book_normalization(
     spellcheck: bool | None = None,
     dictionary: bool | None = None,
     transliteration: bool | None = None,
+    abbreviations: bool | None = None,
+    breaks: bool | None = None,
 ) -> Book | None:
     """Update one or more TTS normalization toggles for a book."""
     book = get_book(conn, book_id)
@@ -672,6 +674,12 @@ def update_book_normalization(
     if transliteration is not None:
         fields.append("normalize_transliteration_enabled = ?")
         params.append(1 if transliteration else 0)
+    if abbreviations is not None:
+        fields.append("normalize_abbreviations_enabled = ?")
+        params.append(1 if abbreviations else 0)
+    if breaks is not None:
+        fields.append("normalize_breaks_enabled = ?")
+        params.append(1 if breaks else 0)
     if not fields:
         return book
     params.extend([_now(), book_id])

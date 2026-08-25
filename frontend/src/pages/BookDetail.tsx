@@ -202,6 +202,8 @@ export function BookDetail() {
     spellcheck: true,
     dictionary: false,
     transliteration: false,
+    abbreviations: true,
+    breaks: true,
   });
 
   const setBusy = useCallback(
@@ -273,6 +275,14 @@ export function BookDetail() {
       spellcheck: Boolean(data.book.normalize_spellcheck_enabled),
       dictionary: Boolean(data.book.normalize_dictionary_enabled),
       transliteration: Boolean(data.book.normalize_transliteration_enabled),
+      // Sách tạo trước khi có hai cột này không mang giá trị -> mặc định bật,
+      // đúng với default của cột và của NormalizationOptions.
+      abbreviations: data.book.normalize_abbreviations_enabled === undefined
+        ? true
+        : Boolean(data.book.normalize_abbreviations_enabled),
+      breaks: data.book.normalize_breaks_enabled === undefined
+        ? true
+        : Boolean(data.book.normalize_breaks_enabled),
     });
   }, [
     data?.book.id,
@@ -281,6 +291,8 @@ export function BookDetail() {
     data?.book.normalize_spellcheck_enabled,
     data?.book.normalize_dictionary_enabled,
     data?.book.normalize_transliteration_enabled,
+    data?.book.normalize_abbreviations_enabled,
+    data?.book.normalize_breaks_enabled,
   ]);
 
   const updateSettings = useCallback(

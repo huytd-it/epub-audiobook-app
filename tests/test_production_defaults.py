@@ -39,6 +39,7 @@ def _insert_book(conn, book_id=1, config=None, **columns):
             "normalize_numbers_enabled": 1, "normalize_junk_enabled": 1,
             "normalize_spellcheck_enabled": 1, "normalize_dictionary_enabled": 0,
             "normalize_transliteration_enabled": 0,
+            "normalize_abbreviations_enabled": 1, "normalize_breaks_enabled": 1,
             "tts_model": None, "tts_voice_id": None, "tts_max_chars": None,
             "tts_with_effects": 0}
     base.update(columns)
@@ -49,13 +50,15 @@ def _insert_book(conn, book_id=1, config=None, **columns):
                              default_image_animation, normalize_numbers_enabled,
                              normalize_junk_enabled, normalize_spellcheck_enabled,
                              normalize_dictionary_enabled, normalize_transliteration_enabled,
+                             normalize_abbreviations_enabled, normalize_breaks_enabled,
                              tts_model, tts_voice_id, tts_max_chars, tts_with_effects,
                              created_at, updated_at)
-           VALUES (?, 'Book', 'b.epub', 'b.epub', 10, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, 'Book', 'b.epub', 'b.epub', 10, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (book_id, automation, base["video_resolution"], base["video_fps"],
          base["default_image_animation"], base["normalize_numbers_enabled"],
          base["normalize_junk_enabled"], base["normalize_spellcheck_enabled"],
          base["normalize_dictionary_enabled"], base["normalize_transliteration_enabled"],
+         base["normalize_abbreviations_enabled"], base["normalize_breaks_enabled"],
          base["tts_model"], base["tts_voice_id"], base["tts_max_chars"],
          base["tts_with_effects"],
          "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
@@ -146,6 +149,7 @@ def test_global_defaults_return_hardcoded_values_when_unset():
     assert defaults["normalization"] == {
         "numbers": True, "junk": True, "spellcheck": True,
         "dictionary": False, "transliteration": False,
+        "abbreviations": True, "breaks": True,
     }
     assert defaults["video"]["resolution"] == "1920x1080"
     assert defaults["video"]["fps"] == 30
@@ -219,6 +223,32 @@ def test_effective_normalization_follows_mode():
     assert opts.numbers is False
     legacy = _insert_book(conn, book_id=2, normalize_numbers_enabled=0)
     assert get_effective_normalization_options(conn, legacy).numbers is False
+
+
+def test_new_frontend_flags_default_on_and_roundtrip():
+    """abbreviations/breaks mặc định bật ở cả nhánh inherit lẫn nhánh custom."""
+    conn = _conn()
+    fresh = _insert_book(conn)
+    opts = get_effective_normalization_options(conn, fresh)
+    assert opts.abbreviations is True and opts.breaks is True
+
+    save_global_production_defaults(conn, {"normalization": {"breaks": False}})
+    assert get_effective_normalization_options(conn, fresh).breaks is False
+
+    custom = _insert_book(conn, book_id=2, normalize_numbers_enabled=0)
+    assert get_group_mode(parse_book_config(custom), "normalization", book=custom) == "custom"
+    assert get_effective_normalization_options(conn, custom).abbreviations is True
+    repository.update_book_normalization(conn, 2, abbreviations=False, breaks=False)
+    custom = _book(conn, 2)
+    assert get_effective_normalization_options(conn, custom).abbreviations is False
+    assert get_effective_normalization_options(conn, custom).breaks is False
+
+
+def test_turning_a_new_flag_off_marks_the_book_custom():
+    """Sách chỉ tắt cờ mới (không đụng cột cũ) vẫn phải thoát chế độ inherit."""
+    conn = _conn()
+    book = _insert_book(conn, normalize_breaks_enabled=0)
+    assert get_group_mode(parse_book_config(book), "normalization", book=book) == "custom"
 
 
 # ---------------------------------------------------------------------------

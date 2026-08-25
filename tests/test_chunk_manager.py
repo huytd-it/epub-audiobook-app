@@ -221,3 +221,51 @@ def test_build_patch_chunk_plan_empty_title_is_safe():
     pid = _insert_patch(conn)
     plan = repository.build_patch_chunk_plan(conn, repository.get_patch(conn, pid))
     assert plan and plan[0]["chapter_title"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Cue ngắt nghỉ (docs/toi_uu_tts.md) đi vào chunk text mà TTS thực sự đọc
+# ---------------------------------------------------------------------------
+
+
+def _plan_text(conn, pid):
+    plan = repository.build_patch_chunk_plan(conn, repository.get_patch(conn, pid))
+    return " ".join(item["text"] for item in plan)
+
+
+def test_chunk_plan_carries_break_cues():
+    conn = _make_conn()
+    _insert_book(conn)
+    conn.execute(
+        "UPDATE chapter SET text = ?, title = 'Ch0' WHERE book_id = 1",
+        ("Ch0\n\nNgày mai chúng tôi sẽ họp bàn về kế hoạch sản xuất.",),
+    )
+    conn.commit()
+    pid = _insert_patch(conn)
+    assert "Ngày mai, chúng tôi" in _plan_text(conn, pid)
+
+
+def test_chunk_plan_without_breaks_flag_is_unchanged():
+    conn = _make_conn()
+    _insert_book(conn)
+    conn.execute(
+        "UPDATE chapter SET text = ?, title = 'Ch0' WHERE book_id = 1",
+        ("Ch0\n\nNgày mai chúng tôi sẽ họp bàn về kế hoạch sản xuất.",),
+    )
+    conn.execute("UPDATE book SET normalize_breaks_enabled = 0 WHERE id = 1")
+    conn.commit()
+    pid = _insert_patch(conn)
+    assert "Ngày mai, chúng tôi" not in _plan_text(conn, pid)
+    assert "Ngày mai chúng tôi" in _plan_text(conn, pid)
+
+
+def test_chunk_plan_expands_abbreviations():
+    conn = _make_conn()
+    _insert_book(conn)
+    conn.execute(
+        "UPDATE chapter SET text = ?, title = 'Ch0' WHERE book_id = 1",
+        ("Ch0\n\nUBND ra thông báo mới.",),
+    )
+    conn.commit()
+    pid = _insert_patch(conn)
+    assert "Ủy ban nhân dân" in _plan_text(conn, pid)

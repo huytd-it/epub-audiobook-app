@@ -107,6 +107,9 @@ _ABBREVIATION_EXPANSIONS: dict[str, str] = {
     "dr.": "Bác sĩ",
 }
 
+# Tên công khai cho tầng chuẩn hóa dùng chung cùng một bảng với tầng cảnh báo.
+ABBREVIATION_EXPANSIONS = _ABBREVIATION_EXPANSIONS
+
 # Khớp đúng các viết tắt trên (dài trước ngắn để "tp.hcm" không bị "tp." nuốt mất).
 _ABBREVIATION_RE = re.compile(
     r"(?<![\w.])(?:"
@@ -117,6 +120,51 @@ _ABBREVIATION_RE = re.compile(
     + r")(?![\w])",
     re.IGNORECASE,
 )
+
+# Regex riêng cho *thay thế* (khác regex cảnh báo ở trên): viết tắt kết thúc bằng
+# dấu chấm được phép dính liền ký tự tiếp theo, vì dạng thật hay gặp là "Q.1",
+# "TP.Hà Nội" — lookahead `(?![\w])` của regex cảnh báo sẽ trượt hết những ca này.
+_EXPANSION_ALTERNATIVES = [
+    re.escape(key) if key[-1] in ".:" else re.escape(key) + r"(?![\w])"
+    for key in sorted(_ABBREVIATION_EXPANSIONS, key=len, reverse=True)
+]
+_ABBREVIATION_EXPANSION_RE = re.compile(
+    r"(?<![\w.])(?:" + "|".join(_EXPANSION_ALTERNATIVES) + r")",
+    re.IGNORECASE,
+)
+
+# Những viết tắt một/hai chữ cái trùng với chữ cái đầu của tên người ("P. Hưng",
+# "Tr. Nam"). Chỉ mở rộng khi phía sau là con số — dạng địa chỉ/trang thực sự.
+_EXPANSION_NEEDS_DIGIT = frozenset({"q.", "p.", "h.", "tr."})
+# "TP." / "TT." đứng trước tên riêng viết hoa hoặc số mới là địa danh.
+_EXPANSION_NEEDS_NAME = frozenset({"tp.", "tt."})
+
+
+def _expand_one_abbreviation(m: re.Match) -> str:
+    raw = m.group(0)
+    key = raw.lower()
+    expansion = _ABBREVIATION_EXPANSIONS.get(key)
+    if expansion is None:
+        return raw
+    tail = m.string[m.end():]
+    following = tail.lstrip()[:1]
+    if key in _EXPANSION_NEEDS_DIGIT and not following.isdigit():
+        return raw
+    if key in _EXPANSION_NEEDS_NAME and not (following.isdigit() or following.isupper()):
+        return raw
+    # "Q.1" -> "Quận 1": thiếu khoảng trắng thì hai token dính vào nhau.
+    if tail[:1] and not tail[:1].isspace() and expansion[-1] not in ".:":
+        return expansion + " "
+    return expansion
+
+
+def expand_abbreviations(text: str) -> str:
+    """Mở rộng viết tắt thành dạng đọc được (TP.HCM → Thành phố Hồ Chí Minh).
+
+    docs/toi_uu_tts.md mục 5.3 và 8.2: không mở rộng thì TTS đánh vần từng chữ cái
+    hoặc đọc dấu chấm thành "chấm".
+    """
+    return _ABBREVIATION_EXPANSION_RE.sub(_expand_one_abbreviation, text)
 
 # Từ viết hoa toàn bộ 2–6 chữ cái không dấu, không nằm trong danh sách trên: gần như
 # luôn là acronym và TTS sẽ đọc như một từ thay vì đánh vần (hoặc ngược lại).

@@ -34,7 +34,7 @@ Lưu ý tích hợp:
 - Break predictor chỉ được chèn dấu câu (`,` `;` `:` `...`), tuyệt đối không xóa/sửa từ, không đổi thứ tự, không chèn ký hiệu ngoài dấu câu phổ biến.
 - Không bao giờ chèn cue ngay cạnh dấu câu đã tồn tại, không chèn trước từ đơn âm tiết đứng cuối câu, không vượt quá 1 cue mỗi ~8 âm tiết khi rule-based.
 - Mọi hành vi mới phải tắt được qua `NormalizationOptions` flag; flag mặc định: `abbreviations=True`, `breaks=True` (rule-based), `word_segmentation=False`.
-- Flag mới đi vào `automation_config["normalization"]` group JSON (không migration DB), kế thừa pattern `chunk_pause_ms` trong `production_defaults.py:408`.
+- ~~Flag mới đi vào `automation_config["normalization"]` group JSON (không migration DB), kế thừa pattern `chunk_pause_ms` trong `production_defaults.py:408`.~~ **Đã đổi khi thực thi:** dùng cột `normalize_abbreviations_enabled` / `normalize_breaks_enabled` (DEFAULT 1) + ALTER TABLE idempotent trong `db.py`, giống hệt 5 cờ chuẩn hóa đang có. Lý do: nhánh `custom` của `get_effective_normalization_config` đọc *cột*, `update_book_normalization` ghi *cột*, UI hydrate từ *cột* — để 2/7 cờ cùng nhóm nằm ở JSON là cái bẫy chực chờ.
 - `clean_text` của Text Studio không bị đụng tới bởi bất kỳ bước mới nào.
 - Output của `split_into_tts_chunks` không vượt `max_chars` kể cả sau khi chèn cue.
 - Không đổi interface công khai của `normalize_text`, `split_into_tts_chunks`, `build_chunk_plan_from_inputs` (chỉ mở rộng).
@@ -68,7 +68,7 @@ Lưu ý tích hợp:
 - Produces: `_split_paragraph_into_sentences(paragraph: str) -> list[str]` — hành vi mới: không tách bên trong mẫu bảo vệ.
 - Produces: `_PROTECTED_PATTERNS: list[re.Pattern]` (module-level, testable).
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 def test_no_split_inside_abbreviation():
@@ -84,11 +84,11 @@ def test_no_split_on_titles_and_decimals():
     ]
 ```
 
-- [ ] **Step 2: Implement placeholder technique**
+- [x] **Step 2: Implement placeholder technique**
 
 Trong `chunker.py`: biên dịch `_PROTECTED_PATTERNS` theo whitelist của tài liệu (`toi_uu_tts.md` mục 4.1, mở rộng thêm `QĐ-UBND`, `NĐ-CP`, URL/email đã được xử lý riêng ở tầng khác nhưng vẫn giữ mẫu phòng hờ): số thập phân `\d+[.,]\d+`, ngày `\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}`, viết tắt chức danh `(?:GS|PGS|TS|BS|ThS)\.(?:TS|BS|ThS)?`, địa danh `(?:TP|Q|P|TT|H)\.\w+`. Trước khi split: thay từng vùng khớp bằng placeholder `\x00{n}\x00`, split bằng regex cũ, rồi trả lại nội dung.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
 ./.venv/Scripts/python.exe -m pytest tests/test_protected_sentence_split.py tests/test_chunk_manager.py -q
@@ -107,11 +107,11 @@ Chạy thêm `python scripts/test_repo_and_chunker.py <epub>` nếu có epub m�
 - Produces: `expand_abbreviations(text: str) -> str` ở `normalization.py`.
 - Consumes: `NormalizationOptions.abbreviations: bool = True` (field mới).
 
-- [ ] **Step 1: Failing tests** — `"UBND thành phố xử lý vụ việc."` → chứa `"Ủy ban nhân dân thành phố..."`; `"TP.HCM"` → `"Thành phố Hồ Chí Minh"`; bật/tắt được qua `opts.abbreviations`; không đụng `"U.S.A"` dạng acronym chưa có trong dict.
+- [x] **Step 1: Failing tests** — `"UBND thành phố xử lý vụ việc."` → chứa `"Ủy ban nhân dân thành phố..."`; `"TP.HCM"` → `"Thành phố Hồ Chí Minh"`; bật/tắt được qua `opts.abbreviations`; không đụng `"U.S.A"` dạng acronym chưa có trong dict.
 
-- [ ] **Step 2: Implement** — di chuyển regex `_ABBREVIATION_RE` sang `text_analysis.expand_abbreviations` (match dài-trước-ngắn đã có sẵn), gọi trong `normalize_text` ngay sau `remove_dots_in_vietnamese_words`, trước `normalize_numbers` (để `"Q.1"` kịp biến thành `"Quận 1"` trước khi số hóa). Case-preserving không cần thiết — dict đã chứa dạng hoa đúng.
+- [x] **Step 2: Implement** — di chuyển regex `_ABBREVIATION_RE` sang `text_analysis.expand_abbreviations` (match dài-trước-ngắn đã có sẵn), gọi trong `normalize_text` ngay sau `remove_dots_in_vietnamese_words`, trước `normalize_numbers` (để `"Q.1"` kịp biến thành `"Quận 1"` trước khi số hóa). Case-preserving không cần thiết — dict đã chứa dạng hoa đúng.
 
-- [ ] **Step 3: Verify** — `pytest tests/test_normalization.py tests/test_normalization_routes.py tests/test_text_studio.py -q`
+- [x] **Step 3: Verify** — `pytest tests/test_normalization.py tests/test_normalization_routes.py tests/test_text_studio.py -q`
 
 ### Task 3: Break predictor rule-based + cue renderer (mục 3 Cách 1, mục 6)
 
@@ -125,7 +125,7 @@ Chạy thêm `python scripts/test_repo_and_chunker.py <epub>` nếu có epub m�
 - `render_break_cues(text: str, labels: list[int]) -> str` — map: B1→`,` B2→`;` B3→`...`; bỏ qua nếu vị trí đã kề dấu câu; không chèn sau từ cuối câu.
 - `insert_break_cues(text: str, predictor=None) -> str` — façade dùng bởi normalization/repository.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 def test_fronted_adverbial_gets_comma():
@@ -143,9 +143,9 @@ def test_idempotent():
     assert insert_break_cues(once) == once
 ```
 
-- [ ] **Step 2: Implement** — tokenizer nhẹ: tách theo khoảng trắng giữ dấu câu; đếm âm tiết = số token tiếng Việt (syllable). Rule đánh label, render chèn cue, chạy 2 lần để đảm bảo idempotent (lần 2 phát hiện cue cũ là dấu câu nên bỏ qua).
+- [x] **Step 2: Implement** — tokenizer nhẹ: tách theo khoảng trắng giữ dấu câu; đếm âm tiết = số token tiếng Việt (syllable). Rule đánh label, render chèn cue, chạy 2 lần để đảm bảo idempotent (lần 2 phát hiện cue cũ là dấu câu nên bỏ qua).
 
-- [ ] **Step 3: Verify** — `pytest tests/test_breaks.py -q`
+- [x] **Step 3: Verify** — `pytest tests/test_breaks.py -q`
 
 ### Task 4: Cắm predictor vào pipeline + cấu hình + UI
 
@@ -159,10 +159,10 @@ def test_idempotent():
 - `get_effective_normalization_config` trả thêm 2 key; sách cũ không có key → default như trên (không migration).
 - Preview routes nhận form field `abbreviations`/`breaks`.
 
-- [ ] **Step 1: Failing tests** — `build_chunk_plan_from_inputs` với chapter chứa `"Trời mưa nhưng vẫn đến lớp."` tạo chunk text mang dấu phẩy sau mệnh đề đầu khi `breaks=True`; `breaks=False` giữ nguyên; config group roundtrip qua `set_.../get_effective_normalization_config`.
-- [ ] **Step 2: Implement backend plumbing** (thứ tự: production_defaults → repository → routes). Đảm bảo `split_into_tts_chunks` chạy SAU khi chèn cue và cue không làm chunk vượt `max_chars` (nếu vượt, greedy packing tự tách — chấp nhận).
-- [ ] **Step 3: UI** — 2 checkbox mới (mặc định bật cho `abbreviations`, `breaks`; `word_segmentation` chỉ hiện khi Milestone B xong). Build SPA: `npm run build`.
-- [ ] **Step 4: Verify toàn tuyến**
+- [x] **Step 1: Failing tests** — `build_chunk_plan_from_inputs` với chapter chứa `"Trời mưa nhưng vẫn đến lớp."` tạo chunk text mang dấu phẩy sau mệnh đề đầu khi `breaks=True`; `breaks=False` giữ nguyên; config group roundtrip qua `set_.../get_effective_normalization_config`.
+- [x] **Step 2: Implement backend plumbing** (thứ tự: production_defaults → repository → routes). Đảm bảo `split_into_tts_chunks` chạy SAU khi chèn cue và cue không làm chunk vượt `max_chars` (nếu vượt, greedy packing tự tách — chấp nhận).
+- [x] **Step 3: UI** — 2 checkbox mới (mặc định bật cho `abbreviations`, `breaks`; `word_segmentation` chỉ hiện khi Milestone B xong). Build SPA: `npm run build`.
+- [x] **Step 4: Verify toàn tuyến**
 
 ```bash
 ./.venv/Scripts/python.exe -m pytest tests/test_normalization.py tests/test_production_defaults.py tests/test_chunk_manager.py tests/test_text_studio.py tests/test_normalization_routes.py -q

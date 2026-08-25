@@ -1130,6 +1130,8 @@ def update_normalization(
     spellcheck: str = Form(default=""),
     dictionary: str = Form(default=""),
     transliteration: str = Form(default=""),
+    abbreviations: str = Form(default=""),
+    breaks: str = Form(default=""),
 ):
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
@@ -1142,6 +1144,8 @@ def update_normalization(
             spellcheck=spellcheck.lower() == "on",
             dictionary=dictionary.lower() == "on",
             transliteration=transliteration.lower() == "on",
+            abbreviations=abbreviations.lower() == "on",
+            breaks=breaks.lower() == "on",
         )
         set_book_group_mode_db(conn, book_id, "normalization", "custom")
         repository.reset_done_patches_for_book(conn, book_id)

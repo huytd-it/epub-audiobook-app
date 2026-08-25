@@ -4,10 +4,14 @@
 Thứ tự xử lý:
   1. Xóa token rác (ví dụ OO@@ từ EPUB).
   2. Xóa dấu chấm trong từ tiếng Việt (ví dụ ch.ế.t → chết).
-  3. Chuyển số/tiền tệ/ngày tháng/giờ/phần trăm thành chữ.
-  4. Mở rộng đuôi tập tin (.wav, .mp3 ...) thành dạng nói.
-  5. Đảm bảo mỗi dòng kết thúc bằng dấu câu.
-  6. Quy tắc thay thế do người dùng định nghĩa chạy sau để ghi đè kết quả.
+  3. Mở rộng viết tắt (TP.HCM → Thành phố Hồ Chí Minh) — trước bước số hóa để
+     "Q.1" kịp thành "Quận 1".
+  4. Chuyển số/tiền tệ/ngày tháng/giờ/phần trăm thành chữ.
+  5. Mở rộng đuôi tập tin (.wav, .mp3 ...) thành dạng nói.
+  6. Đảm bảo mỗi dòng kết thúc bằng dấu câu.
+  7. Chèn cue ngắt nghỉ trong lòng câu (app/breaks.py) — chạy cuối cùng, khi dấu
+     câu của các bước trên đã hoàn chỉnh.
+  8. Quy tắc thay thế do người dùng định nghĩa chạy sau để ghi đè kết quả.
 """
 from __future__ import annotations
 
@@ -15,6 +19,9 @@ import re
 from dataclasses import dataclass
 
 from vietnormalizer import VietnameseNormalizer, VietnameseTextProcessor
+
+from app.breaks import insert_break_cues
+from app.text_analysis import expand_abbreviations
 
 _VIETNAMESE_PROCESSOR = VietnameseTextProcessor()
 _VIETNAMESE_NORMALIZER = VietnameseNormalizer()
@@ -76,6 +83,8 @@ class NormalizationOptions:
     punctuation: bool = True
     dictionary: bool = False
     transliteration: bool = False
+    abbreviations: bool = True
+    breaks: bool = True
     junk_extra_tokens: list[str] | None = None
 
 
@@ -213,6 +222,16 @@ def _replace_thu_ordinal(m: re.Match) -> str:
     return f" {_THU_ORDINALS.get(num, num)}"
 
 
+# vietnormalizer.convert_date chèn "ngày" trước d/m/y mà không kiểm tra chữ
+# "ngày" đứng sẵn ("ngày 1/3/2024" → "ngày ngày một tháng ba…"). Gom về một,
+# nhưng chỉ khi sau nó là cụm ngày đã chuyển đổi ("<số> tháng …") để giữ nguyên
+# phép lặp từ chủ ý ("Ngày ngày em chờ").
+_DUPLICATED_NGAY_RE = re.compile(
+    rf"(?<![{_VIETNAMESE_LETTERS}])(ngày)\s+ngày\s+(?=[{_VIETNAMESE_LETTERS}]+\s+tháng\b)",
+    re.IGNORECASE,
+)
+
+
 def normalize_numbers(text: str) -> str:
     """Chuyển số, ngày, giờ, tiền tệ và đơn vị thành chữ cho TTS tiếng Việt."""
     processor = _VIETNAMESE_PROCESSOR
@@ -220,6 +239,7 @@ def normalize_numbers(text: str) -> str:
     text = processor.convert_address_number(text)
     text = processor.convert_year_range(text)
     text = processor.convert_date(text)
+    text = _DUPLICATED_NGAY_RE.sub(r"\1 ", text)
     text = processor.convert_time(text)
     text = _THU_ORDINAL_RE.sub(_replace_thu_ordinal, text)
     text = processor.remove_thousand_separators(text)
@@ -241,6 +261,9 @@ def normalize_text(text: str, opts: NormalizationOptions | None = None) -> str:
     text = drop_unspeakable_lines(text)
     if opts.spellcheck:
         text = remove_dots_in_vietnamese_words(text)
+    if opts.abbreviations:
+        # Trước normalize_numbers để "Q.1" kịp thành "Quận 1" rồi mới số hóa.
+        text = expand_abbreviations(text)
     if opts.numbers:
         text = normalize_numbers(text)
     if opts.file_extensions:
@@ -253,6 +276,9 @@ def normalize_text(text: str, opts: NormalizationOptions | None = None) -> str:
         )
     if opts.punctuation:
         text = ensure_sentence_punctuation(text)
+    if opts.breaks:
+        # Cuối cùng: cue ngắt nghỉ đọc theo dấu câu đã hoàn chỉnh của các bước trên.
+        text = insert_break_cues(text)
     return text
 
 
