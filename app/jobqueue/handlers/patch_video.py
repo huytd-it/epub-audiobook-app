@@ -12,11 +12,12 @@ import soundfile as sf
 from app import gameplay_renderer, image_overlay, repository, video_gen
 from app.gameplay_repository import apply_replay_stats, consume_reserved, load_replay
 from app.config import settings
+from app.image_overlay import render_branding_overlay
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
 from app.patch_publishing import (MAX_PATCH_RENDER_ATTEMPTS, audio_fingerprint,
                                   enqueue_patch_publish, seed_patch_video)
-from app.production_defaults import get_effective_video_config, resolve_voice_clip
+from app.production_defaults import get_effective_branding_config, get_effective_video_config, resolve_voice_clip
 from app.video_integrity import (VideoExpectation, validate_video,
                                  validation_report_json)
 from app.video_publish import VideoValidationError, publish_validated_video
@@ -144,6 +145,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     render_config = snapshot.get("render_config")
     if not isinstance(render_config, dict):
         raise JobFatalError("source_unavailable: invalid render config snapshot")
+    branding = snapshot.get("branding") if isinstance(snapshot.get("branding"), dict) else None
     for key in ("music_path", "intro_audio", "outro_audio"):
         value = render_config.get(key)
         if value and not Path(value).is_file():
@@ -164,8 +166,9 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
         raise JobFatalError("source_unavailable: sequence background list empty")
 
     width, height = str(render_config.get("resolution") or "1920x1080").split("x")
+    resolution = (int(width), int(height))
     common = {
-        "resolution": (int(width), int(height)),
+        "resolution": resolution,
         "fps": int(render_config.get("fps") or 30),
         "fit_mode": render_config.get("fit_mode") or "auto",
         "codec": render_config.get("codec") or "libx264",
@@ -186,6 +189,17 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     }
     seq_config = snapshot.get("sequence_config") or {}
     waveform_config = seq_config
+
+    # Render a transparent branding overlay PNG for FFmpeg overlay filter.
+    branding_overlay_path = None
+    if branding:
+        overlay_img = render_branding_overlay(resolution, branding, target="video")
+        if overlay_img is not None:
+            import tempfile as _tf
+            _bo_dir = Path(settings.data_root) / "books" / str(book.id) / ".branding"
+            _bo_dir.mkdir(parents=True, exist_ok=True)
+            branding_overlay_path = str(_bo_dir / f"branding_{patch.id}.png")
+            overlay_img.save(branding_overlay_path, "PNG")
 
     def render_main(target: str) -> None:
         if background_type in {"battle_royale", "gameplay"}:
@@ -219,6 +233,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                     music_gaps=music_gaps, **common,
                     waveform_config=effects,
                     progress_bar=bool(seq_config.get("progress_bar_enabled")),
+                    branding_overlay_path=branding_overlay_path,
                 )
         elif sequence:
             for bg in backgrounds:
@@ -236,6 +251,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                 ken_burns=bool(seq_config.get("ken_burns_enabled")),
                 progress_bar=bool(seq_config.get("progress_bar_enabled")),
                 **common, waveform_config=waveform_config,
+                branding_overlay_path=branding_overlay_path,
             )
         else:
             video_gen.generate_segment(
@@ -244,6 +260,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                 use_nvenc=settings.use_nvenc, music_path=music_path,
                 music_volume=music_volume, music_gaps=music_gaps, **common,
                 waveform_config=waveform_config,
+                branding_overlay_path=branding_overlay_path,
             )
 
     def render(target: str) -> None:
@@ -254,14 +271,14 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
             segments = []
             if intro:
                 intro_video = str(Path(tmp) / "intro.mp4")
-                video_gen.generate_segment(image, intro, intro_video, image_type="none", **common)
+                video_gen.generate_segment(image, intro, intro_video, image_type="none", **common, branding_overlay_path=branding_overlay_path)
                 segments.append(intro_video)
             main_video = str(Path(tmp) / "main.mp4")
             render_main(main_video)
             segments.append(main_video)
             if outro:
                 outro_video = str(Path(tmp) / "outro.mp4")
-                video_gen.generate_segment(image, outro, outro_video, image_type="none", **common)
+                video_gen.generate_segment(image, outro, outro_video, image_type="none", **common, branding_overlay_path=branding_overlay_path)
                 segments.append(outro_video)
             video_gen.concat_segments(segments, target)
 
@@ -367,6 +384,7 @@ def handle(ctx) -> dict:
             _persist_validation_report(ctx, patch_id, result, expected)
         else:
             config = get_effective_video_config(ctx.conn, book)
+            branding = get_effective_branding_config(ctx.conn, book)
             fallback = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
             raw_bg = video_gen.resolve_configured_patch_image(patch, config, fallback or "")
             if not raw_bg:
@@ -379,6 +397,7 @@ def handle(ctx) -> dict:
             else:
                 image = image_overlay.ensure_patch_overlay(
                     book, patch, settings.default_font_path or None, background_path=raw_bg,
+                    branding=branding,
                 ) or raw_bg
                 image_type = patch.image_type if patch.image_type and patch.image_type != "static" else (book.default_image_animation or "none")
             music_path = None
@@ -389,12 +408,23 @@ def handle(ctx) -> dict:
             intro = resolve_voice_clip(config, "intro_voice")
             outro = resolve_voice_clip(config, "outro_voice")
             width, height = (book.video_resolution or "1920x1080").split("x")
+            resolution = (int(width), int(height))
             common = {
-                "resolution": (int(width), int(height)), "fps": book.video_fps or 30,
+                "resolution": resolution, "fps": book.video_fps or 30,
                 "fit_mode": config.get("fit_mode") or "auto",
                 "codec": config["codec"], "quality": config["quality"],
                 "audio_bitrate": config["audio_bitrate"],
             }
+
+            # Render a transparent branding overlay PNG for FFmpeg overlay filter.
+            branding_overlay_path = None
+            if branding:
+                overlay_img = render_branding_overlay(resolution, branding, target="video")
+                if overlay_img is not None:
+                    _bo_dir = Path(settings.data_root) / "books" / str(book.id) / ".branding"
+                    _bo_dir.mkdir(parents=True, exist_ok=True)
+                    branding_overlay_path = str(_bo_dir / f"branding_{patch.id}.png")
+                    overlay_img.save(branding_overlay_path, "PNG")
 
             def render_main(target: str) -> None:
                 if sequence:
@@ -409,6 +439,7 @@ def handle(ctx) -> dict:
                         ken_burns=bool(config.get("ken_burns_enabled")),
                         progress_bar=bool(config.get("progress_bar_enabled")), **common,
                         waveform_config=config,
+                        branding_overlay_path=branding_overlay_path,
                     )
                 else:
                     video_gen.generate_segment(
@@ -416,6 +447,7 @@ def handle(ctx) -> dict:
                         use_nvenc=settings.use_nvenc, music_path=music_path,
                         music_volume=book.music_volume, music_gaps=config, **common,
                         waveform_config=config,
+                        branding_overlay_path=branding_overlay_path,
                     )
 
             def render(target: str) -> None:
@@ -426,13 +458,13 @@ def handle(ctx) -> dict:
                     segments = []
                     if intro:
                         intro_video = str(Path(tmp) / "intro.mp4")
-                        video_gen.generate_segment(raw_bg, intro, intro_video, image_type="none", **common)
+                        video_gen.generate_segment(raw_bg, intro, intro_video, image_type="none", **common, branding_overlay_path=branding_overlay_path)
                         segments.append(intro_video)
                     main_video = str(Path(tmp) / "main.mp4")
                     render_main(main_video); segments.append(main_video)
                     if outro:
                         outro_video = str(Path(tmp) / "outro.mp4")
-                        video_gen.generate_segment(raw_bg, outro, outro_video, image_type="none", **common)
+                        video_gen.generate_segment(raw_bg, outro, outro_video, image_type="none", **common, branding_overlay_path=branding_overlay_path)
                         segments.append(outro_video)
                     video_gen.concat_segments(segments, target)
 

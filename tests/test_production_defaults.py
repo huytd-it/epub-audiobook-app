@@ -239,7 +239,7 @@ def test_production_settings_get_defaults(tmp_path, monkeypatch):
     body = response.json()
     assert body["schema_version"] == 1
     assert body["defaults"]["audio"]["model_id"] == settings.tts_engine
-    assert set(body["defaults"]) == {"audio", "normalization", "video", "youtube"}
+    assert set(body["defaults"]) == {"audio", "normalization", "video", "youtube", "branding"}
 
 
 def test_production_settings_round_trip_the_merge_pauses(tmp_path, monkeypatch):
@@ -313,6 +313,7 @@ def test_audio_settings_save_marks_mode_custom(tmp_path, monkeypatch):
     assert got.json() == {
         "model_id": "omnivoice", "voice_id": "", "max_chars": 500, "with_effects": True,
         "chunk_pause_ms": 300, "chapter_pause_ms": 1500,
+        "tts_options": {},
     }
 
 
@@ -477,3 +478,121 @@ def test_effective_metadata_ignores_an_intro_whose_file_is_gone(tmp_path, monkey
     description = resolve_effective_youtube_metadata(
         conn, _book(conn), _patch_with_timeline(tmp_path), None)["description"]
     assert description == "mo ta\n\n00:00 Mot\n00:10 Hai\n00:20 Ba"
+
+
+# ---------------------------------------------------------------------------
+# Branding
+# ---------------------------------------------------------------------------
+
+
+def test_branding_is_included_in_global_groups():
+    from app.production_defaults import GROUPS, validate_branding_config
+    assert "branding" in GROUPS
+    cfg = validate_branding_config({})
+    assert cfg["watermark"]["enabled"] is False
+    assert cfg["logo"]["enabled"] is False
+    assert cfg["targets"]["thumbnail"] is True
+    assert cfg["targets"]["podcast"] is True
+    assert cfg["targets"]["video"] is True
+
+
+def test_branding_validates_positions():
+    from app.production_defaults import validate_branding_config
+    cfg = validate_branding_config({
+        "watermark": {"position": "invalid", "text": "hi"},
+        "logo": {"position": "invalid"},
+    })
+    assert cfg["watermark"]["position"] == "bottom-right"
+    assert cfg["logo"]["position"] == "bottom-right"
+
+
+def test_branding_validates_ranges():
+    from app.production_defaults import validate_branding_config
+    cfg = validate_branding_config({
+        "watermark": {"font_size": 999, "opacity": 150, "margin": -5},
+        "logo": {"size": 0, "opacity": -10, "margin": 999},
+    })
+    assert cfg["watermark"]["font_size"] == 120
+    assert cfg["watermark"]["opacity"] == 100
+    assert cfg["watermark"]["margin"] == 0
+    assert cfg["logo"]["size"] == 16
+    assert cfg["logo"]["opacity"] == 0
+    assert cfg["logo"]["margin"] == 200
+
+
+def test_fresh_book_inherits_branding():
+    conn = _conn()
+    book = _insert_book(conn)
+    config = parse_book_config(book)
+    assert get_group_mode(config, "branding", book=book) == "inherit"
+
+
+def test_branding_custom_mode_via_inherit_dict():
+    raw = {"inherit": {"branding": False}, "branding": {"watermark": {"enabled": True}}}
+    assert get_group_mode(raw, "branding") == "custom"
+
+
+def test_global_branding_defaults_are_empty():
+    conn = _conn()
+    defaults = get_global_production_defaults(conn)
+    assert defaults["branding"]["watermark"]["enabled"] is False
+    assert defaults["branding"]["logo"]["enabled"] is False
+
+
+def test_save_global_branding_persists():
+    conn = _conn()
+    saved = save_global_production_defaults(conn, {"branding": {
+        "watermark": {"enabled": True, "text": "My Channel"},
+        "logo": {"enabled": True, "path": "/tmp/logo.png"},
+    }})
+    assert saved["branding"]["watermark"]["enabled"] is True
+    assert saved["branding"]["watermark"]["text"] == "My Channel"
+    assert saved["branding"]["logo"]["enabled"] is True
+    assert saved["branding"]["logo"]["path"] == "/tmp/logo.png"
+    reloaded = get_global_production_defaults(conn)
+    assert reloaded["branding"]["watermark"]["text"] == "My Channel"
+
+
+def test_effective_branding_follows_mode():
+    from app.production_defaults import get_effective_branding_config
+    conn = _conn()
+    fresh = _insert_book(conn)
+    save_global_production_defaults(conn, {"branding": {
+        "watermark": {"enabled": True, "text": "Global"},
+    }})
+    assert get_effective_branding_config(conn, fresh)["watermark"]["text"] == "Global"
+    custom = _insert_book(conn, book_id=2, config={
+        "inherit": {"branding": False},
+        "branding": {"watermark": {"enabled": True, "text": "Book"}},
+    })
+    assert get_effective_branding_config(conn, custom)["watermark"]["text"] == "Book"
+
+
+def test_branding_appears_in_production_settings_endpoint(tmp_path, monkeypatch):
+    with _client(monkeypatch, tmp_path) as client:
+        response = client.get("/production-settings")
+    assert response.status_code == 200
+    body = response.json()
+    assert "branding" in body["defaults"]
+    assert body["defaults"]["branding"]["watermark"]["enabled"] is False
+
+
+def test_branding_save_via_production_settings_endpoint(tmp_path, monkeypatch):
+    with _client(monkeypatch, tmp_path) as client:
+        saved = client.post("/production-settings", json={"branding": {
+            "watermark": {"enabled": True, "text": "Test"},
+        }})
+        assert saved.status_code == 200
+        assert saved.json()["defaults"]["branding"]["watermark"]["text"] == "Test"
+        reloaded = client.get("/production-settings")
+    assert reloaded.json()["defaults"]["branding"]["watermark"]["text"] == "Test"
+
+
+def test_book_branding_mode_endpoint(tmp_path, monkeypatch):
+    with _client(monkeypatch, tmp_path) as client:
+        conn = client.app.state.conn
+        _insert_book(conn, book_id=1)
+        response = client.post("/books/1/production-settings-mode",
+                               json={"group": "branding", "mode": "custom"})
+    assert response.status_code == 200
+    assert response.json()["mode"] == "custom"

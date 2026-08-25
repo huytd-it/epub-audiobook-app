@@ -31,7 +31,7 @@ from app import audio_merge
 from app.config import settings
 from app.normalization import NormalizationOptions
 
-GROUPS = ("audio", "normalization", "video", "youtube")
+GROUPS = ("audio", "normalization", "video", "youtube", "branding")
 
 # Global audio defaults: the production default engine is settings.tts_engine, the
 # same value the save route and the bulk queue treat as the canonical default.
@@ -62,6 +62,40 @@ DEFAULT_NORMALIZATION_CONFIG = {
     "dictionary": False,
     "transliteration": False,
 }
+
+# Branding defaults for text watermark and logo overlay on thumbnails, podcast
+# covers, and generated videos.
+DEFAULT_BRANDING_CONFIG = {
+    "watermark": {
+        "enabled": False,
+        "text": "",
+        "position": "bottom-right",  # top-left | top-right | bottom-left | bottom-right | center
+        "font_size": 28,
+        "text_color": "#FFFFFF",
+        "opacity": 80,       # 0-100
+        "margin": 16,
+        "shadow_enabled": True,
+        "shadow_color": "#000000",
+    },
+    "logo": {
+        "enabled": False,
+        "path": "",
+        "position": "bottom-right",  # top-left | top-right | bottom-left | bottom-right | center
+        "size": 80,          # max width/height in px
+        "opacity": 80,       # 0-100
+        "margin": 16,
+    },
+    # Per-target overrides for whether branding is applied. When a target
+    # inherits branding, it inherits from global defaults; this lets a user
+    # disable branding on podcast covers while keeping it on thumbnails.
+    "targets": {
+        "thumbnail": True,
+        "podcast": True,
+        "video": True,
+    },
+}
+
+_BRANDING_POSITIONS = {"top-left", "top-right", "bottom-left", "bottom-right", "center"}
 
 _TABLE = "automation_settings"
 _SINGLE_ROW = "automation_settings WHERE id = 1"
@@ -154,6 +188,51 @@ def validate_youtube_config(config) -> dict:
     return _validate(config)
 
 
+def validate_branding_config(config) -> dict:
+    """Validate and clamp the branding configuration block."""
+    if not isinstance(config, dict):
+        return copy.deepcopy(DEFAULT_BRANDING_CONFIG)
+
+    def _clamped_int(value, default: int, lo: int, hi: int) -> int:
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            v = default
+        return max(lo, min(hi, v))
+
+    watermark_raw = config.get("watermark") if isinstance(config.get("watermark"), dict) else {}
+    watermark = {
+        "enabled": _flag(watermark_raw.get("enabled", False), False),
+        "text": str(watermark_raw.get("text") or "")[:200],
+        "position": watermark_raw.get("position") if watermark_raw.get("position") in _BRANDING_POSITIONS else "bottom-right",
+        "font_size": _clamped_int(watermark_raw.get("font_size"), 28, 12, 120),
+        "text_color": str(watermark_raw.get("text_color") or "#FFFFFF"),
+        "opacity": _clamped_int(watermark_raw.get("opacity"), 80, 0, 100),
+        "margin": _clamped_int(watermark_raw.get("margin"), 16, 0, 200),
+        "shadow_enabled": _flag(watermark_raw.get("shadow_enabled", True), True),
+        "shadow_color": str(watermark_raw.get("shadow_color") or "#000000"),
+    }
+
+    logo_raw = config.get("logo") if isinstance(config.get("logo"), dict) else {}
+    logo = {
+        "enabled": _flag(logo_raw.get("enabled", False), False),
+        "path": str(logo_raw.get("path") or "")[:500],
+        "position": logo_raw.get("position") if logo_raw.get("position") in _BRANDING_POSITIONS else "bottom-right",
+        "size": _clamped_int(logo_raw.get("size"), 80, 16, 500),
+        "opacity": _clamped_int(logo_raw.get("opacity"), 80, 0, 100),
+        "margin": _clamped_int(logo_raw.get("margin"), 16, 0, 200),
+    }
+
+    targets_raw = config.get("targets") if isinstance(config.get("targets"), dict) else {}
+    targets = {
+        "thumbnail": _flag(targets_raw.get("thumbnail", True), True),
+        "podcast": _flag(targets_raw.get("podcast", True), True),
+        "video": _flag(targets_raw.get("video", True), True),
+    }
+
+    return {"watermark": watermark, "logo": logo, "targets": targets}
+
+
 def _group_validator(group: str):
     if group == "audio":
         return validate_audio_config
@@ -161,6 +240,8 @@ def _group_validator(group: str):
         return validate_normalization_config
     if group == "video":
         return validate_video_config
+    if group == "branding":
+        return validate_branding_config
     return validate_youtube_config
 
 
@@ -319,6 +400,26 @@ def set_group_mode(raw: dict, group: str, mode: str) -> dict:
     return raw
 
 
+def save_book_branding_config(conn: sqlite3.Connection, book_id: int, branding: dict) -> dict:
+    """Persist branding into automation_config['branding'] and set mode to custom.
+
+    Returns the validated branding config that was stored.  Runs inside the
+    caller's transaction so the branding write and the mode flag are atomic.
+    """
+    validated = validate_branding_config(branding)
+    row = conn.execute("SELECT automation_config FROM book WHERE id = ?", (book_id,)).fetchone()
+    if row is None:
+        raise ValueError("book not found")
+    raw = _json_object(row["automation_config"], {})
+    raw["branding"] = validated
+    set_group_mode(raw, "branding", "custom")
+    conn.execute(
+        "UPDATE book SET automation_config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (json.dumps(raw), book_id),
+    )
+    return validated
+
+
 def save_book_audio_section(conn: sqlite3.Connection, book_id: int, **values) -> dict:
     """Merge ``values`` into the book's automation_config["audio"] section.
 
@@ -425,6 +526,19 @@ def get_effective_normalization_config(conn: sqlite3.Connection, book) -> dict:
 
 def get_effective_normalization_options(conn: sqlite3.Connection, book) -> NormalizationOptions:
     return NormalizationOptions(**get_effective_normalization_config(conn, book))
+
+
+def get_effective_branding_config(conn: sqlite3.Connection, book) -> dict:
+    """Resolved branding config: global defaults -> per-book override.
+
+    Branding lives entirely in automation_config JSON (no book columns), so
+    resolution is straightforward: check the inherit flag, return global or
+    stored block."""
+    config = parse_book_config(book)
+    if get_group_mode(config, "branding", book=book) == "inherit":
+        return _global_group(conn, "branding")
+    stored = config.get("branding") if isinstance(config.get("branding"), dict) else {}
+    return validate_branding_config(stored)
 
 
 def resolve_voice_clip(video_config: dict | None, key: str) -> str | None:

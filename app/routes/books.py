@@ -20,7 +20,8 @@ from app.normalization import normalize_text
 from app.youtube_metadata import get_book_youtube_config, save_book_youtube_config
 from app.video_config import save_book_video_config, validate_video_config
 from app.audio_merge import DEFAULT_CHAPTER_PAUSE_MS, DEFAULT_CHUNK_PAUSE_MS
-from app.production_defaults import (get_effective_audio_config, get_effective_normalization_options,
+from app.production_defaults import (get_effective_audio_config, get_effective_branding_config,
+                                     get_effective_normalization_options,
                                      get_effective_video_config, get_effective_youtube_config,
                                      save_book_audio_section, set_book_group_mode_db,
                                      validate_pause_ms)
@@ -613,11 +614,15 @@ async def update_overlay_config(request: Request, book_id: int):
 
 
 def _overlay_preview_context(request: Request, book_id: int):
-    """(book, overlay cfg, background path, sample patch) for a preview render.
+    """(book, overlay cfg, background path, sample patch, branding) for a preview render.
 
     `live=1` builds the config from the query params so unsaved studio edits
     show up; otherwise the saved config is used. `background_path` previews a
     different (whitelisted) background before it is saved on the book.
+
+    Branding is resolved from the book's effective branding config.  When
+    `branding_mode=custom` is passed, a `branding_json` query param overrides
+    the saved branding for live preview.
     """
     from app import image_overlay
     with locked_conn(request) as conn:
@@ -625,6 +630,8 @@ def _overlay_preview_context(request: Request, book_id: int):
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
         patches = repository.list_patches(conn, book_id)
+        # Resolve effective branding
+        branding = get_effective_branding_config(conn, book)
     sample_patch = next((p for p in patches if p.audio_path), None) or (patches[0] if patches else None)
     patch_label = (sample_patch.name or str(sample_patch.patch_index)) if sample_patch else "Patch 1"
 
@@ -633,6 +640,14 @@ def _overlay_preview_context(request: Request, book_id: int):
         cfg = image_overlay.overlay_cfg_from_values(params)
     else:
         cfg = image_overlay.parse_overlay_config(book.overlay_config)
+
+    # Live branding override from query params
+    branding_json = params.get("branding_json")
+    if branding_json:
+        try:
+            branding = json.loads(branding_json)
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     bg = None
     requested_bg = params.get("background_path", "").strip()
@@ -648,7 +663,7 @@ def _overlay_preview_context(request: Request, book_id: int):
     preview_patch = sample_patch or SimpleNamespace(
         name=patch_label, patch_index=0, chapter_start=0, chapter_end=0,
     )
-    return book, cfg, bg, preview_patch
+    return book, cfg, bg, preview_patch, branding
 
 
 @router.get("/books/{book_id}/overlay-preview")
@@ -660,11 +675,13 @@ def overlay_preview(request: Request, book_id: int):
     config, so the studio can preview unsaved edits. `background_path` (must
     be a known background) previews a different image before saving it.
 
+    `branding_json` optionally overrides the effective branding for live preview.
+
     The response carries an `X-Overlay-Rect` header with the drawn text-block
     rect so the studio can place its drag handle exactly on the text.
     """
     from io import BytesIO
-    book, cfg, bg, preview_patch = _overlay_preview_context(request, book_id)
+    book, cfg, bg, preview_patch, branding = _overlay_preview_context(request, book_id)
 
     from PIL import Image
     from app import image_overlay
@@ -675,6 +692,9 @@ def overlay_preview(request: Request, book_id: int):
         lines = image_overlay.build_overlay_lines(img, text, overlay)
         img, rect = image_overlay.render_overlay_with_rect(img, lines, overlay)
         rects.append(rect)
+    # Apply branding to preview if targets include thumbnail
+    if branding and branding.get("targets", {}).get("thumbnail", True):
+        img = image_overlay.apply_branding(img, branding, target="thumbnail")
     buf = BytesIO()
     img.save(buf, "PNG", optimize=True)
     rect_header = json.dumps({
@@ -696,13 +716,18 @@ def podcast_cover_preview(request: Request, book_id: int):
     Takes the same live params as /overlay-preview plus podcast_focus_x,
     podcast_focus_y and podcast_cover_size, so the studio can drag the crop
     around before saving.
+
+    Branding is applied after the square crop when the podcast target is enabled.
     """
     from io import BytesIO
     from app import image_overlay
-    book, cfg, bg, preview_patch = _overlay_preview_context(request, book_id)
+    book, cfg, bg, preview_patch, branding = _overlay_preview_context(request, book_id)
     img = image_overlay.compose_patch_overlay(book, preview_patch, cfg, str(bg))
     podcast = image_overlay.parse_podcast_cover(cfg)
     cover = image_overlay.crop_square(img, podcast["focus_x"], podcast["focus_y"], podcast["size"])
+    # Apply branding after square crop for podcast target
+    if branding and branding.get("targets", {}).get("podcast", True):
+        cover = image_overlay.apply_branding(cover, branding, target="podcast")
     buf = BytesIO()
     cover.save(buf, "PNG", optimize=True)
     return Response(

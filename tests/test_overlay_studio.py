@@ -344,12 +344,52 @@ def test_expand_overlay_text_uses_patch_placeholders():
     from app import image_overlay
 
     book = SimpleNamespace(title="My Book")
-    patch = SimpleNamespace(name="Opening", patch_index=2, chapter_start=4, chapter_end=7)
+    patch = SimpleNamespace(name="Opening", patch_index=2, chapter_start=4, chapter_end=7,
+                           chapter_no_start=None, chapter_no_end=None, audio_path=None)
     text = image_overlay.expand_overlay_text(
         "{book_title}|{patch_name}|{episode}|{chapter}|{chapter_start}|{chapter_end}",
         book, patch,
     )
-    assert text == "My Book|Opening|003|4-7|4|7"
+    assert text == "My Book|Opening|003|5-8|5|8"
+
+
+def test_expand_overlay_text_1_based_fallback_no_timeline():
+    """When no timeline or chapter_no_* exists, fallback adds 1 to DB indexes."""
+    from types import SimpleNamespace
+    from app import image_overlay
+
+    book = SimpleNamespace(title="Book")
+    # DB stores 0-based: chapter 1 = index 0
+    patch = SimpleNamespace(name="P1", patch_index=0, chapter_start=0, chapter_end=0,
+                           chapter_no_start=None, chapter_no_end=None, audio_path=None)
+    text = image_overlay.expand_overlay_text("{chapter_start}|{chapter_end}", book, patch)
+    assert text == "1|1"
+
+
+def test_expand_overlay_text_1_based_with_chapter_no():
+    """When chapter_no_start/end are set, they are used directly (already 1-based)."""
+    from types import SimpleNamespace
+    from app import image_overlay
+
+    book = SimpleNamespace(title="Book")
+    patch = SimpleNamespace(name="P1", patch_index=0, chapter_start=5, chapter_end=9,
+                           chapter_no_start=10, chapter_no_end=14, audio_path=None)
+    text = image_overlay.expand_overlay_text("{chapter_start}|{chapter_end}", book, patch)
+    assert text == "10|14"
+
+
+def test_expand_overlay_text_1_based_with_name_number():
+    """When patch name contains a chapter number, it anchors the range."""
+    from types import SimpleNamespace
+    from app import image_overlay
+
+    book = SimpleNamespace(title="Book")
+    patch = SimpleNamespace(name="Chương 3: Khởi đầu", patch_index=0,
+                           chapter_start=2, chapter_end=5,
+                           chapter_no_start=None, chapter_no_end=None, audio_path=None)
+    text = image_overlay.expand_overlay_text("{chapter_start}-{chapter_end}", book, patch)
+    # name says "Chương 3", range spans 4 chapters: 3,4,5,6
+    assert text == "3-6"
 
 
 def test_overlay_config_accepts_multiple_layers():

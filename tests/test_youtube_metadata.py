@@ -95,7 +95,7 @@ def _book():
 
 
 def _patch(audio_path=None):
-    return SimpleNamespace(name="Mua", chapter_start=1, chapter_end=8, patch_index=3, audio_path=audio_path)
+    return SimpleNamespace(name="Mua", chapter_start=0, chapter_end=7, patch_index=3, audio_path=audio_path)
 
 
 def _timeline_audio(tmp_path, *, frames=30 * 10, sample_rate=10, chapters=None):
@@ -270,6 +270,23 @@ def test_single_chapter_patch_shows_one_number():
     result = resolve_patch_youtube_metadata(_book(), patch, None)
     assert "Chương 9: Riêng" in result["title"]
     assert "9-9" not in result["title"]
+
+
+def test_fallback_chapter_range_is_1_based():
+    """When no timeline/name/chapter_no gives real numbers, fallback adds 1."""
+    patch = SimpleNamespace(name="Mua", chapter_start=0, chapter_end=0,
+                            patch_index=0, audio_path=None)
+    result = resolve_patch_youtube_metadata(_book(), patch, None)
+    assert "Chương 1" in result["title"]
+    assert "Chương 0" not in result["title"]
+
+
+def test_fallback_chapter_range_multi_chapter():
+    """Fallback 1-based range for multi-chapter patch."""
+    patch = SimpleNamespace(name="Interlude", chapter_start=3, chapter_end=7,
+                            patch_index=2, audio_path=None)
+    result = resolve_patch_youtube_metadata(_book(), patch, None)
+    assert "Chương 4-8" in result["title"]
 
 
 def test_default_description_is_generated_when_config_empty():

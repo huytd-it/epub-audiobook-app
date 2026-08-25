@@ -56,7 +56,7 @@ def test_seeded_video_is_resumed_not_only_enqueued(monkeypatch):
 
 def test_manual_audio_upload_auto_enqueues_only_when_enabled(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_root", str(tmp_path))
-    monkeypatch.setattr(patch_publishing, "ensure_patch_overlay", lambda *args: "/tmp/thumb.png")
+    monkeypatch.setattr(patch_publishing, "ensure_patch_overlay", lambda *args, **kwargs: "/tmp/thumb.png")
     conn, client = _client(tmp_path)
     book_id, patch_id = _seed(conn, auto_upload=True)
     response = client.post(f"/books/{book_id}/patches/{patch_id}/upload-audio", files={"audio": ("a.wav", b"RIFF", "audio/wav")})
@@ -142,7 +142,7 @@ def test_publish_creates_the_upload_it_enqueues(tmp_path, monkeypatch):
     thumb_path = tmp_path / "thumb.png"; thumb_path.write_bytes(b"thumb")
     video_id = conn.execute("INSERT INTO videos (filename, original_name, file_path, file_size_bytes, created_at, updated_at) VALUES ('v.mp4', 'v.mp4', '/tmp/v.mp4', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)").lastrowid
     conn.commit()
-    monkeypatch.setattr(patch_publishing, "ensure_patch_overlay", lambda *args: str(thumb_path))
+    monkeypatch.setattr(patch_publishing, "ensure_patch_overlay", lambda *args, **kwargs: str(thumb_path))
     seed_patch_video(conn, patch_id, video_id, str(video_path))
     monkeypatch.setattr(patches.youtube, "is_configured", lambda: True)
     monkeypatch.setattr(patches.youtube, "get_creds_from_db", lambda conn: {"id": 1})
@@ -178,7 +178,7 @@ def test_seed_video_retry_creates_one_upload_and_force_new_preserves_video(tmp_p
     thumb_path = tmp_path / "thumb.png"; thumb_path.write_bytes(b"thumb")
     video_id = conn.execute("INSERT INTO videos (filename, original_name, file_path, file_size_bytes, created_at, updated_at) VALUES ('v.mp4', 'v.mp4', '/tmp/v.mp4', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)").lastrowid
     conn.commit()
-    monkeypatch.setattr(patch_publishing, "ensure_patch_overlay", lambda *args: str(thumb_path))
+    monkeypatch.setattr(patch_publishing, "ensure_patch_overlay", lambda *args, **kwargs: str(thumb_path))
     seed_patch_video(conn, patch_id, video_id, str(video_path))
     retry_patch_publish(conn, patch_id)
     assert conn.execute("SELECT COUNT(*) FROM youtube_uploads").fetchone()[0] == 1

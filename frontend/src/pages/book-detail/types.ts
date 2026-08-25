@@ -234,7 +234,7 @@ export type YouTubeMetadataPreview = {
   youtube: { mode: string; playlist_id: string };
 };
 
-export type ConfigTab = "audio" | "normalization" | "video" | "youtube";
+export type ConfigTab = "audio" | "normalization" | "video" | "youtube" | "branding";
 
 export type ProductionGroup = ConfigTab;
 export type ProductionMode = "inherit" | "custom";
@@ -256,6 +256,7 @@ export type ProductionSettings = {
     normalization: NormalizationSettings;
     video: VideoConfig;
     youtube: YouTubeConfig;
+    branding: BrandingConfig;
   };
   book_id?: number;
   modes?: Record<ProductionGroup, ProductionMode>;
@@ -268,6 +269,41 @@ export type NormalizationSettings = {
   spellcheck: boolean;
   dictionary: boolean;
   transliteration: boolean;
+};
+
+export type BrandingPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center";
+
+export type BrandingWatermark = {
+  enabled: boolean;
+  text: string;
+  position: BrandingPosition;
+  font_size: number;
+  text_color: string;
+  opacity: number;
+  margin: number;
+  shadow_enabled: boolean;
+  shadow_color: string;
+};
+
+export type BrandingLogo = {
+  enabled: boolean;
+  path: string;
+  position: BrandingPosition;
+  size: number;
+  opacity: number;
+  margin: number;
+};
+
+export type BrandingTargets = {
+  thumbnail: boolean;
+  podcast: boolean;
+  video: boolean;
+};
+
+export type BrandingConfig = {
+  watermark: BrandingWatermark;
+  logo: BrandingLogo;
+  targets: BrandingTargets;
 };
 
 export type OverlayShadow = {

@@ -158,7 +158,9 @@ def resolve_patch_chapter_range(patch) -> tuple[int, int, str]:
     start = detect_chapter_number(getattr(patch, "name", ""))
     if start is not None:
         return start, start + max(patch.chapter_end - patch.chapter_start, 0), name
-    return patch.chapter_start, patch.chapter_end, name
+    # Fallback: 0-based DB indexes → 1-based display numbers so user-facing
+    # templates never expose zero.
+    return patch.chapter_start + 1, patch.chapter_end + 1, name
 
 
 def format_chapter_range(start: int, end: int) -> str:

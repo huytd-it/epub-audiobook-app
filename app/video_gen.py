@@ -457,6 +457,15 @@ def _prepare_gap_music(
     return music_bed.build_gap_bed(audio_path, music_path, bed_path, music_gaps), False
 
 
+def _branding_overlay_filter(branding_overlay_path: str | None) -> str:
+    """Return the FFmpeg filter fragment that overlays a transparent branding PNG,
+    or an empty string when no overlay is provided."""
+    if not branding_overlay_path:
+        return ""
+    escaped = _escape_ffmpeg_filter_path(branding_overlay_path)
+    return f",overlay={escaped}:shortest=1"
+
+
 def generate_segment(
     image_path: str,
     audio_path: str,
@@ -479,6 +488,7 @@ def generate_segment(
     waveform_config: dict | None = None,
     progress_bar: bool = False,
     on_progress: ProgressCallback | None = None,
+    branding_overlay_path: str | None = None,
 ) -> None:
     """Generate a single video segment from image + audio.
 
@@ -594,6 +604,12 @@ def generate_segment(
         if subtitle_filter:
             chains.append(f"{video_map_label}{subtitle_filter}[vsub]")
             video_map_label = "[vsub]"
+        if branding_overlay_path:
+            branding_input_idx = len(inputs) // 2 + 1  # account for already-added inputs
+            inputs.extend(["-i", branding_overlay_path])
+            escaped_branding = _escape_ffmpeg_filter_path(branding_overlay_path)
+            chains.append(f"{video_map_label}overlay={escaped_branding}:shortest=1[vbranded]")
+            video_map_label = "[vbranded]"
         cmd = [
             settings.get_ffmpeg_path(), "-y",
             *inputs,
@@ -617,6 +633,10 @@ def generate_segment(
         # images have no audio, so default stream selection is fine there.
         map_args = ["-map", "0:v", "-map", "1:a"] if is_video_bg else []
         final_vf = f"{base_vf},{subtitle_filter}" if subtitle_filter else base_vf
+        if branding_overlay_path:
+            escaped_branding = _escape_ffmpeg_filter_path(branding_overlay_path)
+            final_vf += f",overlay={escaped_branding}:shortest=1"
+            inputs.extend(["-i", branding_overlay_path])
         cmd = [
             settings.get_ffmpeg_path(), "-y",
             *inputs,
@@ -831,6 +851,7 @@ def generate_background_sequence(
     crossfade: bool = False, crossfade_seconds: float = 1,
     ken_burns: bool = False, progress_bar: bool = False,
     waveform_config: dict | None = None,
+    branding_overlay_path: str | None = None,
 ) -> None:
     """Render rotating silent backgrounds, then mux narration/music once."""
     duration = _probe_duration(audio_path)
@@ -924,6 +945,13 @@ def generate_background_sequence(
             video_in = video_map if video_map.startswith("[") else f"[{video_map}]"
             chains.append(f"{video_in}{subtitle_filter}[vsub]")
             video_map = "[vsub]"
+        if branding_overlay_path:
+            branding_input_idx = len(inputs) // 2  # each input is -i + path
+            inputs.extend(["-i", branding_overlay_path])
+            escaped_branding = _escape_ffmpeg_filter_path(branding_overlay_path)
+            branding_in = video_map if video_map.startswith("[") else f"[{video_map}]"
+            chains.append(f"{branding_in}overlay={escaped_branding}:shortest=1[vbranded]")
+            video_map = "[vbranded]"
         if music_path:
             inputs += (["-stream_loop", "-1"] if loop_music else []) + ["-i", music_path]
             chains.extend(["[2:a]volume=" + str(music_volume) + "[music]", f"{audio_map}[music]amix=inputs=2:duration=first:normalize=0[aout]"])
@@ -935,7 +963,7 @@ def generate_background_sequence(
         # forces a re-encode; the fast stream-copy path is only valid when
         # neither is active and the concatenated 'visual' can pass through
         # untouched.
-        reencode_video = bool(waveform or subtitle_filter)
+        reencode_video = bool(waveform or subtitle_filter or branding_overlay_path)
         cmd += ["-map", video_map, "-map", audio_map, "-c:v", video_codec if reencode_video else "copy"]
         if reencode_video:
             cmd += ["-pix_fmt", "yuv420p", "-r", str(fps),
@@ -1011,6 +1039,7 @@ def generate_full_video(
     outro_audio: str | None = None,
     font_path: str | None = None,
     on_progress: ProgressCallback | None = None,
+    branding_overlay_path: str | None = None,
 ) -> None:
     """Generate a full video by creating segments per patch and concatenating.
 
@@ -1056,7 +1085,7 @@ def generate_full_video(
             greeting_paths = []
             if raw_for_greeting and intro_audio:
                 intro_path = str(tmp_dir / f"intro_{i:04d}.mp4")
-                generate_segment(raw_for_greeting, intro_audio, intro_path, image_type="none", resolution=resolution, fps=fps, fit_mode=fit_mode, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
+                generate_segment(raw_for_greeting, intro_audio, intro_path, image_type="none", resolution=resolution, fps=fps, fit_mode=fit_mode, codec=codec, quality=quality, audio_bitrate=audio_bitrate, branding_overlay_path=branding_overlay_path)
                 greeting_paths.append(intro_path)
             if len(shared) > 1 and not (getattr(patch, "image_path", None) and Path(patch.image_path).exists()):
                 generate_background_sequence(
@@ -1073,10 +1102,11 @@ def generate_full_video(
                     ken_burns=bool((video_config or {}).get("ken_burns_enabled")),
                     progress_bar=bool((video_config or {}).get("progress_bar_enabled")),
                     waveform_config=video_config,
+                    branding_overlay_path=branding_overlay_path,
                 )
                 if raw_for_greeting and outro_audio:
                     outro_path = str(tmp_dir / f"outro_{i:04d}.mp4")
-                    generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, fit_mode=fit_mode, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
+                    generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, fit_mode=fit_mode, codec=codec, quality=quality, audio_bitrate=audio_bitrate, branding_overlay_path=branding_overlay_path)
                     greeting_paths.append(outro_path)
                 segment_paths.extend(greeting_paths[:1])
                 segment_paths.append(seg_path)
@@ -1096,7 +1126,7 @@ def generate_full_video(
             else:
                 overlay = image_overlay.ensure_patch_overlay(book, patch, font_path, background_path=raw_bg)
                 image = overlay or raw_bg
-                anim = patch.image_type if patch.image_type and patch.image_type != "static" else default_anim
+                anim = patch.image_type if patch.image_type and patch.image_type != "static" else (book.default_image_animation or "none")
 
             generate_segment(
                 image, patch.audio_path, seg_path,
@@ -1113,12 +1143,13 @@ def generate_full_video(
                 audio_bitrate=audio_bitrate,
                 waveform_config=video_config,
                 on_progress=_seg_progress,
+                branding_overlay_path=branding_overlay_path,
             )
             segment_paths.extend(greeting_paths[:1])
             segment_paths.append(seg_path)
             if raw_for_greeting and outro_audio:
                 outro_path = str(tmp_dir / f"outro_{i:04d}.mp4")
-                generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, fit_mode=fit_mode, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
+                generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, fit_mode=fit_mode, codec=codec, quality=quality, audio_bitrate=audio_bitrate, branding_overlay_path=branding_overlay_path)
                 segment_paths.append(outro_path)
             _emit(on_progress, "video.segment_done",
                   patch_index=patch.patch_index, patch_id=patch.id,
@@ -1165,6 +1196,7 @@ def generate_standalone_video(
     intro_audio: str | None = None,
     outro_audio: str | None = None,
     on_progress: ProgressCallback | None = None,
+    branding_overlay_path: str | None = None,
 ) -> None:
     """Generate a standalone video from a single audio + image (Video Creator page)."""
     w, h = resolution.split("x")
@@ -1176,6 +1208,7 @@ def generate_standalone_video(
             fps=fps, fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
             music_path=music_path, music_volume=music_volume, music_gaps=music_gaps,
             on_progress=on_progress,
+            branding_overlay_path=branding_overlay_path,
         )
         return
 
@@ -1185,7 +1218,8 @@ def generate_standalone_video(
             intro_path = str(Path(tmp) / "intro.mp4")
             generate_segment(image_path, intro_audio, intro_path, resolution=res, fps=fps,
                              fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf,
-                             use_nvenc=use_nvenc)
+                             use_nvenc=use_nvenc,
+                             branding_overlay_path=branding_overlay_path)
             segments.append(intro_path)
         main_path = str(Path(tmp) / "main.mp4")
         generate_segment(
@@ -1193,12 +1227,14 @@ def generate_standalone_video(
             fps=fps, fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
             music_path=music_path, music_volume=music_volume, music_gaps=music_gaps,
             on_progress=on_progress,
+            branding_overlay_path=branding_overlay_path,
         )
         segments.append(main_path)
         if outro_audio:
             outro_path = str(Path(tmp) / "outro.mp4")
             generate_segment(image_path, outro_audio, outro_path, resolution=res, fps=fps,
                              fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf,
-                             use_nvenc=use_nvenc)
+                             use_nvenc=use_nvenc,
+                             branding_overlay_path=branding_overlay_path)
             segments.append(outro_path)
         concat_segments(segments, out_path, on_progress=on_progress)

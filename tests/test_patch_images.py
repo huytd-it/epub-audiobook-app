@@ -161,7 +161,7 @@ def test_ensure_patch_overlay_uses_patch_background_and_layer_font(tmp_path, mon
     output = tmp_path / "overlay.png"
     captured = {}
 
-    def fake_render(book_arg, patch_arg, cfg, out_path, background_path):
+    def fake_render(book_arg, patch_arg, cfg, out_path, background_path, branding=None):
         captured["cfg"] = cfg
         captured["background_path"] = background_path
         Image.open(background_path).save(out_path)

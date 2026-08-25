@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +18,56 @@ from app.config import settings
 from app.models import Book, Patch
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_media_path(virtual_path: str) -> str:
+    """Resolve a virtual relative path (from MediaBrowser) to an actual filesystem path.
+
+    MediaBrowser returns paths like '_Nền/image.png' relative to
+    whitelisted roots.  Pillow and other consumers need absolute paths.  This
+    function tries each whitelisted root in order and returns the first match.
+
+    If the path is already absolute and exists, it is returned as-is.
+    """
+    if not virtual_path:
+        return virtual_path
+    p = Path(virtual_path)
+    if p.is_absolute() and p.is_file():
+        return str(p)
+    # Try whitelisted roots matching the MediaBrowser's root keys
+    data_root = Path(settings.data_root)
+    app_root = Path(__file__).resolve().parent.parent
+    roots_map = {
+        "_Nền": data_root / "backgrounds",
+        "_Nhạc": data_root / "music",
+        "_Giọng": data_root / "voices",
+        "_Tải lên": data_root / "uploads",
+        "_Hiệu ứng": data_root / "effects",
+        "_Logo": data_root / "uploads",  # logos are in uploads
+        "_Sách": data_root / "books",
+        "assets": app_root / "assets",
+        # Legacy fallback names
+        "backgrounds": data_root / "backgrounds",
+        "uploads": data_root / "uploads",
+        "voices": data_root / "voices",
+        "effects": data_root / "effects",
+        "music": data_root / "music",
+    }
+    parts = virtual_path.strip("/").split("/", 1)
+    root_name = parts[0] if parts else ""
+    sub = parts[1] if len(parts) > 1 else ""
+    root_dir = roots_map.get(root_name)
+    if root_dir:
+        target = (root_dir / sub).resolve() if sub else root_dir.resolve()
+        if target.is_file():
+            return str(target)
+    # Fallback: try each root directly
+    for root_dir in roots_map.values():
+        target = (root_dir / virtual_path).resolve()
+        if target.is_file():
+            return str(target)
+    logger.warning("image_overlay: cannot resolve virtual path %r", virtual_path)
+    return virtual_path
 
 
 # Default config — also used when book.overlay_config is missing/empty.
@@ -486,14 +535,16 @@ def overlay_cfg_from_values(values) -> dict:
 
 def expand_overlay_text(template: str, book: Book, patch: Patch) -> str:
     patch_name = patch.name or str(patch.patch_index)
+    from app.youtube_metadata import resolve_patch_chapter_range
+    ch_start, ch_end, _ = resolve_patch_chapter_range(patch)
     values = {
         "book_title": book.title,
         "patch_name": patch_name,
         "patch_index": patch.patch_index,
         "episode": f"{patch.patch_index + 1:03d}",
-        "chapter": f"{patch.chapter_start}-{patch.chapter_end}",
-        "chapter_start": patch.chapter_start,
-        "chapter_end": patch.chapter_end,
+        "chapter": f"{ch_start}-{ch_end}",
+        "chapter_start": ch_start,
+        "chapter_end": ch_end,
     }
     text = template or "{book_title} - {patch_name}"
     for key, value in values.items():
@@ -549,13 +600,117 @@ def render_overlay(
     return image
 
 
+def _position_to_xy(position: str, img_w: int, img_h: int, elem_w: int, elem_h: int,
+                     margin: int) -> tuple[int, int]:
+    """Map a named position + margin to (x, y) pixel coordinates."""
+    positions = {
+        "top-left": (margin, margin),
+        "top-right": (img_w - elem_w - margin, margin),
+        "bottom-left": (margin, img_h - elem_h - margin),
+        "bottom-right": (img_w - elem_w - margin, img_h - elem_h - margin),
+        "center": ((img_w - elem_w) // 2, (img_h - elem_h) // 2),
+    }
+    return positions.get(position, positions["bottom-right"])
+
+
+def apply_branding(image: "Image.Image", branding: dict, *, target: str = "thumbnail") -> "Image.Image":
+    """Apply text watermark and logo overlay to an image.
+
+    ``branding`` is the validated branding config (watermark + logo + targets).
+    ``target`` is one of 'thumbnail', 'podcast', 'video' — checked against
+    branding.targets to decide whether branding applies at all.
+
+    Returns a new RGB Image; the original is not mutated.
+    """
+    from PIL import Image, ImageDraw
+
+    targets = branding.get("targets") or {}
+    if not targets.get(target, True):
+        return image
+
+    img = image.convert("RGBA")
+    watermark = branding.get("watermark") or {}
+    logo = branding.get("logo") or {}
+
+    # --- text watermark ---
+    if watermark.get("enabled") and watermark.get("text"):
+        wm_text = str(watermark["text"])[:200]
+        font_size = int(watermark.get("font_size", 28))
+        font_path_cfg = watermark.get("font_path") or None
+        font = _load_font(font_path_cfg, font_size)
+        opacity = max(0, min(100, int(watermark.get("opacity", 80)))) / 100.0
+        color = _hex_to_rgb(watermark.get("text_color", "#FFFFFF"))
+        margin = int(watermark.get("margin", 16))
+        position = watermark.get("position", "bottom-right")
+
+        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+        try:
+            bbox = draw.textbbox((0, 0), wm_text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except AttributeError:
+            tw, th = draw.textlength(wm_text, font=font), font_size
+
+        x, y = _position_to_xy(position, img.size[0], img.size[1], tw, th, margin)
+        fill = (*color, int(255 * opacity))
+
+        if watermark.get("shadow_enabled"):
+            shadow_color = _hex_to_rgb(watermark.get("shadow_color", "#000000"))
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    if dx or dy:
+                        draw.text((x + dx, y + dy), wm_text, font=font,
+                                  fill=(*shadow_color, int(255 * opacity * 0.5)))
+        draw.text((x, y), wm_text, font=font, fill=fill)
+        img = Image.alpha_composite(img, layer)
+
+    # --- logo ---
+    logo_path = logo.get("path") or ""
+    if logo.get("enabled") and logo_path:
+        resolved = resolve_media_path(logo_path)
+        if Path(resolved).is_file():
+            try:
+                logo_img = Image.open(resolved).convert("RGBA")
+            except Exception:
+                logger.warning("image_overlay: cannot load logo %s", logo.get("path"))
+            else:
+                max_size = int(logo.get("size", 80))
+                # Resize logo keeping aspect ratio
+                ratio = min(max_size / logo_img.width, max_size / logo_img.height)
+                if ratio < 1.0:
+                    new_w = max(1, int(logo_img.width * ratio))
+                    new_h = max(1, int(logo_img.height * ratio))
+                    logo_img = logo_img.resize((new_w, new_h), Image.LANCZOS)
+
+                opacity = max(0, min(100, int(logo.get("opacity", 80)))) / 100.0
+                # Apply opacity
+                if opacity < 1.0:
+                    alpha = logo_img.split()[3]
+                    alpha = alpha.point(lambda p: int(p * opacity))
+                    logo_img.putalpha(alpha)
+
+                margin = int(logo.get("margin", 16))
+                position = logo.get("position", "bottom-right")
+                x, y = _position_to_xy(position, img.size[0], img.size[1],
+                                        logo_img.width, logo_img.height, margin)
+                layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+                layer.paste(logo_img, (x, y))
+                img = Image.alpha_composite(img, layer)
+
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    return img
+
+
 def compose_patch_overlay(
     book: Book, patch: Patch, cfg: dict, background_path: str | None = None,
+    branding: dict | None = None,
 ) -> "Image.Image":
-    """Background + every text layer, rendered in memory.
+    """Background + every text layer + branding, rendered in memory.
 
     Shared by the PNG thumbnail and the square podcast cover so both always
-    show the exact same artwork.
+    show the exact same artwork.  ``branding`` is the resolved branding config;
+    when provided and enabled, watermark/logo are applied after text layers.
     """
     bg = _resolve_background(book, background_path)
     if bg is None:
@@ -567,16 +722,18 @@ def compose_patch_overlay(
         text = expand_overlay_text(overlay.get("text", ""), book, patch)
         lines = build_overlay_lines(img, text, overlay)
         img, _ = render_overlay_with_rect(img, lines, overlay)
+    if branding:
+        img = apply_branding(img, branding, target="thumbnail")
     return img
 
 
 def render_patch_overlay(
     book: Book, patch: Patch, cfg: dict | None = None, out_path: str | None = None,
-    background_path: str | None = None,
+    background_path: str | None = None, branding: dict | None = None,
 ) -> None:
     """Render background + overlay text onto a PNG file."""
     cfg = cfg or parse_overlay_config(book.overlay_config)
-    img = compose_patch_overlay(book, patch, cfg, background_path)
+    img = compose_patch_overlay(book, patch, cfg, background_path, branding=branding)
     if out_path is None:
         out_path = str(get_patch_overlay_path(book.id, patch.patch_index))
 
@@ -626,28 +783,119 @@ def crop_square(image: "Image.Image", focus_x: int = 50, focus_y: int = 50, size
 
 def render_podcast_cover(
     book: Book, patch: Patch, cfg: dict | None = None, out_path: str | None = None,
-    background_path: str | None = None,
+    background_path: str | None = None, branding: dict | None = None,
 ) -> str:
-    """Render the square (1:1) podcast cover PNG. Returns the written path."""
+    """Render the square (1:1) podcast cover PNG. Returns the written path.
+
+    Branding is applied *after* the square crop so the watermark/logo sit
+    correctly inside the 1:1 frame regardless of the source aspect ratio.
+    """
     cfg = cfg or parse_overlay_config(book.overlay_config)
     podcast = parse_podcast_cover(cfg)
     img = compose_patch_overlay(book, patch, cfg, background_path)
     cover = crop_square(img, podcast["focus_x"], podcast["focus_y"], podcast["size"])
+    if branding:
+        cover = apply_branding(cover, branding, target="podcast")
     out = Path(out_path or get_podcast_cover_path(book.id))
     out.parent.mkdir(parents=True, exist_ok=True)
     cover.save(str(out), "PNG")
     return str(out)
 
 
-def ensure_podcast_cover(book: Book, patch: Patch, *, force: bool = False) -> str | None:
-    """Render the podcast cover if missing/stale. Returns the path, or None."""
+def render_branding_overlay(resolution: tuple[int, int], branding: dict,
+                            target: str = "video") -> "Image.Image | None":
+    """Render a transparent RGBA image with watermark + logo at video resolution.
+
+    Returns a transparent PNG image sized exactly to ``resolution``, or None
+    when branding is disabled for the given target or when there is nothing to
+    draw.  The caller passes the returned path to an FFmpeg overlay filter so
+    branding appears once on the final video without touching source images.
+    """
+    targets = branding.get("targets") or {}
+    if not targets.get(target, True):
+        return None
+
+    watermark = branding.get("watermark") or {}
+    logo = branding.get("logo") or {}
+    wm_enabled = watermark.get("enabled") and watermark.get("text")
+    logo_enabled = logo.get("enabled") and logo.get("path") and Path(logo.get("path", "")).is_file()
+    if not wm_enabled and not logo_enabled:
+        return None
+
+    width, height = resolution
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+
+    if wm_enabled:
+        wm_text = str(watermark["text"])[:200]
+        font_size = int(watermark.get("font_size", 28))
+        font_path_cfg = watermark.get("font_path") or None
+        font = _load_font(font_path_cfg, font_size)
+        opacity = max(0, min(100, int(watermark.get("opacity", 80)))) / 100.0
+        color = _hex_to_rgb(watermark.get("text_color", "#FFFFFF"))
+        margin = int(watermark.get("margin", 16))
+        position = watermark.get("position", "bottom-right")
+
+        draw = ImageDraw.Draw(img)
+        try:
+            bbox = draw.textbbox((0, 0), wm_text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except AttributeError:
+            tw, th = draw.textlength(wm_text, font=font), font_size
+
+        x, y = _position_to_xy(position, width, height, tw, th, margin)
+        fill = (*color, int(255 * opacity))
+        if watermark.get("shadow_enabled"):
+            shadow_color = _hex_to_rgb(watermark.get("shadow_color", "#000000"))
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    if dx or dy:
+                        draw.text((x + dx, y + dy), wm_text, font=font,
+                                  fill=(*shadow_color, int(255 * opacity * 0.5)))
+        draw.text((x, y), wm_text, font=font, fill=fill)
+
+    if logo_enabled:
+        try:
+            logo_img = Image.open(logo["path"]).convert("RGBA")
+        except Exception:
+            logger.warning("image_overlay: cannot load logo %s", logo.get("path"))
+        else:
+            max_size = int(logo.get("size", 80))
+            ratio = min(max_size / logo_img.width, max_size / logo_img.height)
+            if ratio < 1.0:
+                new_w = max(1, int(logo_img.width * ratio))
+                new_h = max(1, int(logo_img.height * ratio))
+                logo_img = logo_img.resize((new_w, new_h), Image.LANCZOS)
+            logo_opacity = max(0, min(100, int(logo.get("opacity", 80)))) / 100.0
+            if logo_opacity < 1.0:
+                alpha = logo_img.split()[3]
+                alpha = alpha.point(lambda p: int(p * logo_opacity))
+                logo_img.putalpha(alpha)
+            l_margin = int(logo.get("margin", 16))
+            l_position = logo.get("position", "bottom-right")
+            lx, ly = _position_to_xy(l_position, width, height,
+                                     logo_img.width, logo_img.height, l_margin)
+            layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            layer.paste(logo_img, (lx, ly))
+            img = Image.alpha_composite(img, layer)
+
+    return img if (wm_enabled or logo_enabled) else None
+
+
+def ensure_podcast_cover(book: Book, patch: Patch, *, force: bool = False,
+                         branding: dict | None = None) -> str | None:
+    """Render the podcast cover if missing/stale. Returns the path, or None.
+
+    ``branding`` is the resolved branding config; when provided and enabled,
+    watermark/logo are applied after the square crop.
+    """
     out = get_podcast_cover_path(book.id)
     if not force and out.exists() and not needs_rerender(book, patch, out):
         return str(out)
     if _resolve_background(book) is None:
         return None
     try:
-        return render_podcast_cover(book, patch)
+        return render_podcast_cover(book, patch, branding=branding)
     except Exception as exc:
         logger.error("image_overlay: failed to render podcast cover for book %s: %s", book.id, exc)
         return None
@@ -668,8 +916,13 @@ def needs_rerender(book: Book, patch: Patch, out_path: Path) -> bool:
 def ensure_patch_overlay(
     book: Book, patch: Patch, font_path: str | None = None, *,
     background_path: str | None = None, out_path: str | None = None, force: bool = False,
+    branding: dict | None = None,
 ) -> str | None:
-    """Build overlay config from legacy font_path arg and render if stale."""
+    """Build overlay config from legacy font_path arg and render if stale.
+
+    ``branding`` is the resolved branding config; when provided and enabled,
+    watermark/logo are applied after text layers in the resulting PNG.
+    """
     cfg = parse_overlay_config(book.overlay_config)
     if font_path:
         for overlay in cfg.get("overlays") or [cfg]:
@@ -680,7 +933,7 @@ def ensure_patch_overlay(
     output = Path(out_path) if out_path else get_patch_overlay_path(book.id, patch.patch_index)
     if force or background_path or needs_rerender(book, patch, output):
         try:
-            render_patch_overlay(book, patch, cfg, str(output), background_path)
+            render_patch_overlay(book, patch, cfg, str(output), background_path, branding=branding)
         except Exception as exc:
             logger.error("image_overlay: failed to render overlay for patch %s: %s", patch.id, exc)
             return None

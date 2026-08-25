@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
+import sys
 import time
 from typing import Any
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 _BACKENDS: dict[str, dict[str, Any]] = {
     "edge-tts": {
@@ -41,6 +45,40 @@ def _check_backend(name: str) -> None:
 _EDGE_RETRIES = 5
 
 
+def _run_edge_async(coro_factory):
+    """Run an edge-tts async coroutine with a scoped Windows Proactor error handler.
+
+    On Windows the Proactor event-loop transport emits a noisy
+    ``ConnectionResetError`` (WinError 10054) in the ``_call_connection_lost``
+    callback when the Edge endpoint drops the connection.  The default loop
+    exception handler prints this to stderr, which floods logs during long
+    audiobook runs.  Installing a scoped handler that suppresses this specific
+    error keeps retries and normal warnings working while silencing the noise.
+    """
+    if not hasattr(sys, "platform") or sys.platform != "win32":
+        return asyncio.run(coro_factory())
+
+    loop = asyncio.new_event_loop()
+
+    def _suppress_winerror(loop, context):
+        exc = context.get("exception")
+        if exc is not None and isinstance(exc, ConnectionResetError):
+            winerror = getattr(exc, "winerror", None)
+            if winerror == 10054:
+                logger.debug(
+                    "edge-tts: suppressed WinError 10054 ConnectionResetError "
+                    "(transport callback, non-fatal)"
+                )
+                return
+        loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_suppress_winerror)
+    try:
+        return loop.run_until_complete(coro_factory())
+    finally:
+        loop.close()
+
+
 def _edge_tts_synthesize(text: str, voice: str) -> tuple[bytes, int]:
     """Synthesize text via edge-tts, return (wav_bytes, sample_rate).
 
@@ -60,7 +98,7 @@ def _edge_tts_synthesize(text: str, voice: str) -> tuple[bytes, int]:
 
     for attempt in range(_EDGE_RETRIES):
         try:
-            mp3_bytes = asyncio.run(_run())
+            mp3_bytes = _run_edge_async(_run)
         except Exception:
             if attempt == _EDGE_RETRIES - 1:
                 raise
@@ -108,7 +146,7 @@ def _edge_list_voices_raw() -> list[dict[str, Any]]:
     async def _run() -> list[dict[str, Any]]:
         return await edge_tts.list_voices()
 
-    return asyncio.run(_run())
+    return _run_edge_async(_run)
 
 
 def _gtts_langs() -> dict[str, str]:

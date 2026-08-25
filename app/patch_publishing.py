@@ -20,7 +20,8 @@ from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_ove
                                   resolve_patch_chapter_range, resolve_patch_youtube_metadata,
                                   validate_book_youtube_config, validate_timeline)
 from app.video_config import get_book_video_config
-from app.production_defaults import (get_effective_video_config, get_effective_youtube_config,
+from app.production_defaults import (get_effective_branding_config,
+                                     get_effective_video_config, get_effective_youtube_config,
                                      resolve_effective_youtube_metadata, resolve_voice_clip)
 
 STAGES = ("thumbnail", "video", "upload", "thumbnail_setting", "playlist", "published")
@@ -139,7 +140,8 @@ def evaluate_patch_preflight(conn: sqlite3.Connection, patch_id: int, *,
     except ValueError as exc:
         return {"state": "waiting_config", "code": "video_config_invalid",
                 "error": f"cấu hình video không hợp lệ: {exc}", "policy": policy}
-    resolved = {"policy": policy, "video_config": video_config}
+    branding = get_effective_branding_config(conn, book)
+    resolved = {"policy": policy, "video_config": video_config, "branding": branding}
     if policy["auto_upload_youtube"]:
         try:
             youtube_config = validate_book_youtube_config(get_effective_youtube_config(conn, book))
@@ -196,11 +198,14 @@ def preflight_patch(conn: sqlite3.Connection, patch_id: int, *,
     return result
 
 
-def _resolve_sequence_inputs(book, patch, config: dict):
+def _resolve_sequence_inputs(book, patch, config: dict, branding: dict | None = None):
     """Chia chế độ render khi enqueue: chuỗi nhiều ảnh nền hay ảnh đơn.
 
     Trả về (sequence, backgrounds, image, image_type) — các giá trị này được
-    đóng băng vào job payload để render không phụ thuộc config hiện tại."""
+    đóng băng vào job payload để render không phụ thuộc config hiện tại.
+
+    ``branding`` is the resolved branding config, applied to the thumbnail image
+    when a single non-video background is used."""
     if config.get("background_type") in {"battle_royale", "gameplay"}:
         return False, [], None, None, "none"
     fallback = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
@@ -210,7 +215,7 @@ def _resolve_sequence_inputs(book, patch, config: dict):
     image = raw_bg
     if not sequence and raw_bg and not video_gen.is_video_background(raw_bg):
         image = ensure_patch_overlay(book, patch, settings.default_font_path or None,
-                                     background_path=raw_bg) or raw_bg
+                                     background_path=raw_bg, branding=branding) or raw_bg
     image_type = "none" if (sequence or (raw_bg and video_gen.is_video_background(raw_bg))) else (
         patch.image_type if patch.image_type and patch.image_type != "static"
         else (book.default_image_animation or "none"))
@@ -222,8 +227,13 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
     """Đóng băng toàn bộ dữ liệu render cần thiết vào một dict JSON-safe.
 
     render_config/audio lấy từ media_snapshot vừa được enqueue_patch_publish ghi
-    (bất biến từ lúc enqueue); phần chọn chuỗi ảnh nền lấy theo config lúc enqueue."""
+    (bất biến từ lúc enqueue); phần chọn chuỗi ảnh nền lấy theo config lúc enqueue.
+
+    Branding config is frozen into the snapshot so patch video renders use the
+    branding settings that were active at enqueue time, even if the user later
+    changes them."""
     config = resolved["video_config"]
+    branding = resolved.get("branding") or {}
     try:
         media = json.loads(pipeline.get("media_snapshot") or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -233,7 +243,8 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
         render_config = {"resolution": book.video_resolution or "1920x1080",
                          "fps": book.video_fps or 30, "fit_mode": "auto", "codec": "libx264",
                          "crf": 23, "audio_bitrate": "192k"}
-    sequence, backgrounds, raw_bg, image, image_type = _resolve_sequence_inputs(book, patch, config)
+    sequence, backgrounds, raw_bg, image, image_type = _resolve_sequence_inputs(
+        book, patch, config, branding=branding)
     background_type = config.get("background_type", "media")
     if background_type == "media" and not raw_bg:
         raise ValueError("chưa có ảnh nền để tạo video")
@@ -278,6 +289,7 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
         "backgrounds": backgrounds,
         "image": image,
         "image_type": image_type,
+        "branding": branding,
         "sequence_config": {key: config.get(key) for key in (
             "image_duration_seconds", "background_mode", "crossfade_enabled",
             "crossfade_seconds", "ken_burns_enabled", "progress_bar_enabled",
@@ -341,7 +353,14 @@ def warm_patch_thumbnail(inputs) -> None:
         return
     book, patch = inputs
     try:
-        ensure_patch_overlay(book, patch, settings.default_font_path or None)
+        from app.db import connect
+        from app.config import settings as cfg
+        conn = connect(cfg.db_path)
+        try:
+            branding = get_effective_branding_config(conn, book)
+        finally:
+            conn.close()
+        ensure_patch_overlay(book, patch, settings.default_font_path or None, branding=branding)
     except Exception:  # noqa: BLE001 - purely an optimization; the real render still runs
         logging.getLogger(__name__).warning(
             "thumbnail pre-render failed for patch %s; falling back to rendering under the lock",
@@ -412,11 +431,13 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
         "intro_audio": intro,
         "outro_audio": outro,
     }
+    branding = get_effective_branding_config(conn, book)
     media = {"patch_id": patch_id, "audio_path": patch.audio_path,
              "source_image": patch.image_path,
              "thumbnail_path": existing["thumbnail_path"] if existing else None,
              "render_config": render_config}
-    thumbnail = ensure_patch_overlay(book, patch, settings.default_font_path or None) or media["thumbnail_path"]
+    thumbnail = ensure_patch_overlay(book, patch, settings.default_font_path or None,
+                                     branding=branding) or media["thumbnail_path"]
     thumbnail_ready = bool(thumbnail and Path(thumbnail).is_file())
     media["thumbnail_path"] = thumbnail
     now = _now()

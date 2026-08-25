@@ -16,12 +16,14 @@ from fastapi import APIRouter, HTTPException, Request
 from app import repository
 from app.deps import locked_conn
 from app.production_defaults import (GROUPS, get_effective_audio_config,
+                                     get_effective_branding_config,
                                      get_effective_normalization_config,
                                      get_effective_video_config,
                                      get_effective_youtube_config,
                                      get_global_production_defaults,
                                      get_group_mode, parse_book_config, set_book_group_mode_db,
-                                     save_global_production_defaults)
+                                     save_global_production_defaults,
+                                     save_book_branding_config)
 
 router = APIRouter()
 
@@ -33,6 +35,8 @@ def _book_effective(conn, book, group: str) -> dict:
         return get_effective_normalization_config(conn, book)
     if group == "video":
         return get_effective_video_config(conn, book)
+    if group == "branding":
+        return get_effective_branding_config(conn, book)
     return get_effective_youtube_config(conn, book)
 
 
@@ -97,3 +101,58 @@ async def save_book_production_settings_mode(request: Request, book_id: int):
             "mode": mode,
             "effective": _book_effective(conn, book, group),
         }
+
+
+@router.post("/books/{book_id}/branding-config")
+async def save_book_branding(request: Request, book_id: int):
+    """Save per-book branding config into automation_config['branding'].
+
+    Validates the branding payload, stores it atomically with the custom mode
+    flag, invalidates cached thumbnails/podcast covers, and returns the
+    effective branding and a list of patch IDs whose artifacts were purged so
+    the frontend can trigger regeneration.
+    """
+    body = await request.json()
+    if not isinstance(body, dict) or "branding" not in body:
+        raise HTTPException(400, "branding payload is required")
+    branding_input = body["branding"]
+    from app import image_overlay
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        try:
+            validated = save_book_branding_config(conn, book_id, branding_input)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        # Invalidate cached thumbnails
+        patches = repository.list_patches(conn, book_id)
+        purged_patch_ids = []
+        for patch in patches:
+            overlay_path = image_overlay.get_patch_overlay_path(book_id, patch.patch_index)
+            if overlay_path.exists():
+                overlay_path.unlink()
+                purged_patch_ids.append(patch.id)
+
+        # Invalidate podcast cover
+        cover_path = image_overlay.get_podcast_cover_path(book_id)
+        if cover_path.exists():
+            cover_path.unlink()
+
+        # Mark thumbnail pipeline as pending so worker picks it up
+        if purged_patch_ids:
+            conn.execute(
+                f"UPDATE patch_pipeline SET thumbnail_status='pending' WHERE patch_id IN ({','.join(['?'] * len(purged_patch_ids))})",
+                purged_patch_ids,
+            )
+
+        conn.commit()
+        book = repository.get_book(conn, book_id)
+
+    return {
+        "status": "ok",
+        "effective": get_effective_branding_config(conn, book),
+        "mode": "custom",
+        "purged_patch_ids": purged_patch_ids,
+    }

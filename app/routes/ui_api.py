@@ -1,19 +1,73 @@
 from __future__ import annotations
 
+import io
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy as np
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
+from pydantic import BaseModel
 
-from app import repository, voice_taxonomy
+from app import google_drive, repository, voice_taxonomy
 from app.config import settings
 from app.deps import locked_conn
 from app.jobqueue import store
 from app.routes.queue import _job_dict, _pools
-from app import google_drive
-
 
 router = APIRouter(prefix="/api/ui", tags=["ui"])
+
+
+PREVIEW_TEXT = (
+    "Xin chào, đây là giọng nói mẫu. "
+    "Trời vừa hửng sáng, gió mát rượi từ mặt sông thổi vào."
+)
+
+
+class VoicePreviewRequest(BaseModel):
+    model_id: str
+    voice_id: str = ""
+    tts_options: dict = {}
+
+
+@router.post("/voice-preview")
+def voice_preview(body: VoicePreviewRequest):
+    """Synthesize a short sample in-memory and return WAV bytes.
+
+    No persistent file is written. The endpoint uses the same engine catalog
+    as the full audiobook pipeline so the preview sounds identical to the
+    final output for the selected model/voice combination.
+    """
+    from app.tts_engine import create_tts_engine, resolve_engine_id
+
+    try:
+        engine_id = resolve_engine_id(body.model_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    try:
+        engine = create_tts_engine(
+            engine_id,
+            voice=body.voice_id or None,
+            **body.tts_options,
+        )
+        audio = np.asarray(
+            engine.synthesize_chunk(PREVIEW_TEXT),
+            dtype=np.float32,
+        ).reshape(-1)
+        sample_rate = engine.sample_rate
+    except Exception as exc:
+        raise HTTPException(500, f"Lỗi synthesis: {exc}") from exc
+
+    import soundfile as sf
+
+    buf = io.BytesIO()
+    sf.write(buf, audio, sample_rate, format="WAV")
+    return Response(
+        content=buf.getvalue(),
+        media_type="audio/wav",
+        headers={"Content-Disposition": "inline; filename=voice-preview.wav"},
+    )
 
 
 def _book_summary(conn, book) -> dict:

@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { api, post, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -7,13 +8,17 @@ import { cn } from "@/lib/utils";
 import { CheckField, Field, fieldClass, selectClass } from "./parts";
 import {
   BackgroundItem,
+  BrandingConfig,
+  BrandingPosition,
   OverlayConfig,
   OverlayConfigResponse,
   OverlayLayer,
   PODCAST_COVER_SIZES,
   PodcastCover,
+  ProductionMode,
   errorText,
 } from "./types";
+import { MediaBrowser, MediaEntry } from "@/components/media-browser/MediaBrowser";
 
 /** Backend luôn trả về podcast_cover; giữ default cho cấu hình cũ chưa có khóa này. */
 const DEFAULT_PODCAST_COVER: PodcastCover = { enabled: false, focus_x: 50, focus_y: 50, size: 1280 };
@@ -49,7 +54,7 @@ const boxTemplates = [
   {
     name: "Vàng nổi bật",
     description: "Tương phản mạnh",
-    swatch: "bg-amber-300 text-neutral-950",
+    swatch: "bg-amber-300 text-amber-950",
     text_color: "#111111",
     box: { enabled: true, color: "#FACC15", opacity: 96, padding_x: 38, padding_y: 20, radius: 10 },
     shadow: { enabled: false, color: "#000000", offset: 0 },
@@ -79,6 +84,105 @@ const typeTemplates = [
   { name: "Phụ đề", font_size: 68, text_transform: "none", line_spacing: 12, max_width: 90, stroke_width: 2 },
 ] as const;
 
+const BRANDING_POSITIONS: { value: BrandingPosition; label: string }[] = [
+  { value: "top-left", label: "Trên trái" },
+  { value: "top-right", label: "Trên phải" },
+  { value: "bottom-left", label: "Dưới trái" },
+  { value: "bottom-right", label: "Dưới phải" },
+  { value: "center", label: "Giữa" },
+];
+
+function BrandingEditor({
+  branding,
+  onChange,
+  logoBrowserOpen,
+  onLogoBrowserOpenChange,
+}: {
+  branding: BrandingConfig;
+  onChange: (b: BrandingConfig) => void;
+  logoBrowserOpen: boolean;
+  onLogoBrowserOpenChange: (open: boolean) => void;
+}) {
+  const updateWatermark = (patch: Partial<BrandingConfig["watermark"]>) =>
+    onChange({ ...branding, watermark: { ...branding.watermark, ...patch } });
+  const updateLogo = (patch: Partial<BrandingConfig["logo"]>) =>
+    onChange({ ...branding, logo: { ...branding.logo, ...patch } });
+  const updateTargets = (patch: Partial<BrandingConfig["targets"]>) =>
+    onChange({ ...branding, targets: { ...branding.targets, ...patch } });
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-md border border-border p-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold">Watermark văn bản</span>
+          <CheckField label="Bật" checked={branding.watermark.enabled} onChange={(enabled) => updateWatermark({ enabled })} />
+        </div>
+        {branding.watermark.enabled && (
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Field label="Nội dung">
+              <input className={fieldClass} value={branding.watermark.text} onChange={(e) => updateWatermark({ text: e.target.value })} maxLength={200} />
+            </Field>
+            <Field label="Vị trí">
+              <select className={selectClass} value={branding.watermark.position} onChange={(e) => updateWatermark({ position: e.target.value as BrandingPosition })}>
+                {BRANDING_POSITIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </Field>
+            <Field label={`Cỡ chữ: ${branding.watermark.font_size}`}>
+              <input type="range" min={12} max={120} className="w-full accent-primary" value={branding.watermark.font_size} onChange={(e) => updateWatermark({ font_size: Number(e.target.value) })} />
+            </Field>
+            <Field label={`Độ rõ: ${branding.watermark.opacity}%`}>
+              <input type="range" min={0} max={100} className="w-full accent-primary" value={branding.watermark.opacity} onChange={(e) => updateWatermark({ opacity: Number(e.target.value) })} />
+            </Field>
+            <Field label="Màu chữ">
+              <input type="color" className={fieldClass} value={branding.watermark.text_color} onChange={(e) => updateWatermark({ text_color: e.target.value })} />
+            </Field>
+            <Field label="Khoảng cách viền">
+              <input type="number" min={0} max={200} className={fieldClass} value={branding.watermark.margin} onChange={(e) => updateWatermark({ margin: Number(e.target.value) })} />
+            </Field>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-md border border-border p-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold">Logo</span>
+          <CheckField label="Bật" checked={branding.logo.enabled} onChange={(enabled) => updateLogo({ enabled })} />
+        </div>
+        {branding.logo.enabled && (
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Field label="Logo">
+              <div className="flex items-center gap-1">
+                <input className={fieldClass} value={branding.logo.path} readOnly placeholder="Chọn logo..." />
+                <Button type="button" variant="outline" size="sm" onClick={() => onLogoBrowserOpenChange(true)}>Chọn</Button>
+              </div>
+            </Field>
+            <Field label="Vị trí">
+              <select className={selectClass} value={branding.logo.position} onChange={(e) => updateLogo({ position: e.target.value as BrandingPosition })}>
+                {BRANDING_POSITIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </Field>
+            <Field label={`Kích thước: ${branding.logo.size}px`}>
+              <input type="range" min={16} max={500} className="w-full accent-primary" value={branding.logo.size} onChange={(e) => updateLogo({ size: Number(e.target.value) })} />
+            </Field>
+            <Field label={`Độ rõ: ${branding.logo.opacity}%`}>
+              <input type="range" min={0} max={100} className="w-full accent-primary" value={branding.logo.opacity} onChange={(e) => updateLogo({ opacity: Number(e.target.value) })} />
+            </Field>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-md border border-border p-3">
+        <div className="text-xs font-semibold mb-2">Mục tiêu áp dụng</div>
+        <div className="flex flex-wrap gap-4">
+          <CheckField label="Thumbnail" checked={branding.targets.thumbnail} onChange={(v) => updateTargets({ thumbnail: v })} />
+          <CheckField label="Podcast" checked={branding.targets.podcast} onChange={(v) => updateTargets({ podcast: v })} />
+          <CheckField label="Video" checked={branding.targets.video} onChange={(v) => updateTargets({ video: v })} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function OverlayEditor({
   bookId,
   patchIds,
@@ -100,6 +204,16 @@ export function OverlayEditor({
   const layers = config?.overlays?.length ? config.overlays : config ? [config] : [];
   const podcast = config?.podcast_cover || DEFAULT_PODCAST_COVER;
 
+  // Branding state
+  const [brandingMode, setBrandingMode] = useState<ProductionMode>("inherit");
+  const [branding, setBranding] = useState<BrandingConfig | null>(null);
+  const [brandingDraft, setBrandingDraft] = useState<BrandingConfig | null>(null);
+  const [brandingSaving, setBrandingSaving] = useState(false);
+  const [logoBrowserOpen, setLogoBrowserOpen] = useState(false);
+
+  // The branding config to pass to live previews: draft in custom mode, otherwise saved effective
+  const previewBranding = brandingMode === "custom" && brandingDraft ? brandingDraft : branding;
+
   useEffect(() => {
     let cancelled = false;
     api<OverlayConfigResponse>(`/books/${bookId}/overlay-config`)
@@ -118,6 +232,26 @@ export function OverlayEditor({
     };
   }, [bookId, onMessage]);
 
+  // Load branding config for this book
+  useEffect(() => {
+    let cancelled = false;
+    api<{ defaults: { branding: BrandingConfig }; modes?: Record<string, ProductionMode>; effective?: { branding: BrandingConfig } }>(
+      `/production-settings?book_id=${bookId}`
+    )
+      .then((value) => {
+        if (cancelled) return;
+        const mode = value.modes?.branding || "inherit";
+        setBrandingMode(mode);
+        const effective = value.effective?.branding || value.defaults.branding;
+        setBranding(effective);
+        if (mode === "custom") {
+          setBrandingDraft(effective);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [bookId]);
+
   useEffect(() => {
     if (!config || !background || background.is_video) return;
     const timer = window.setTimeout(async () => {
@@ -126,6 +260,9 @@ export function OverlayEditor({
         overlays_json: JSON.stringify(config.overlays.length ? config.overlays : [config]),
         background_path: background.path,
       });
+      if (previewBranding) {
+        params.set("branding_json", JSON.stringify(previewBranding));
+      }
       try {
         const blob = await fetch(`/books/${bookId}/overlay-preview?${params}`).then((result) => {
           if (!result.ok) throw new Error(`Lỗi ${result.status}`);
@@ -141,7 +278,7 @@ export function OverlayEditor({
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [bookId, config, background, onMessage]);
+  }, [bookId, config, background, onMessage, previewBranding]);
 
   useEffect(() => () => {
     if (preview) URL.revokeObjectURL(preview);
@@ -168,6 +305,9 @@ export function OverlayEditor({
         podcast_focus_y: String(cover.focus_y),
         podcast_cover_size: String(cover.size),
       });
+      if (previewBranding) {
+        params.set("branding_json", JSON.stringify(previewBranding));
+      }
       try {
         const blob = await fetch(`/books/${bookId}/podcast-cover-preview?${params}`).then((result) => {
           if (!result.ok) throw new Error(`Lỗi ${result.status}`);
@@ -183,7 +323,7 @@ export function OverlayEditor({
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [bookId, config, background, onMessage]);
+  }, [bookId, config, background, onMessage, previewBranding]);
 
   useEffect(() => () => {
     if (coverPreview) URL.revokeObjectURL(coverPreview);
@@ -231,6 +371,58 @@ export function OverlayEditor({
       onMessage(errorText(error));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveBranding = async () => {
+    if (!brandingDraft) return;
+    setBrandingSaving(true);
+    try {
+      const result = await postJson<{ effective: BrandingConfig; purged_patch_ids: number[] }>(
+        `/books/${bookId}/branding-config`,
+        { branding: brandingDraft },
+      );
+      setBranding(result.effective);
+      setBrandingDraft(result.effective);
+      setBrandingMode("custom");
+      if (result.purged_patch_ids?.length) {
+        setThumbnailRevision((c) => c + 1);
+        if (podcast.enabled) {
+          await post(`/books/${bookId}/podcast-cover/regenerate`);
+          setThumbnailRevision((c) => c + 1);
+        }
+      }
+      onMessage("Đã lưu cấu hình thương hiệu.");
+      await onSaved();
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setBrandingSaving(false);
+    }
+  };
+
+  const resetBrandingToInherit = async () => {
+    try {
+      await postJson(`/books/${bookId}/production-settings-mode`, { group: "branding", mode: "inherit" });
+      const settings = await api<{ defaults: { branding: BrandingConfig }; effective?: { branding: BrandingConfig } }>(
+        `/production-settings?book_id=${bookId}`
+      );
+      const effective = settings.effective?.branding || settings.defaults.branding;
+      setBrandingMode("inherit");
+      setBranding(effective);
+      setBrandingDraft(null);
+      if (patchIds.length) {
+        await postJson(`/books/${bookId}/thumbnails/regenerate`, { patch_ids: patchIds });
+        setThumbnailRevision((c) => c + 1);
+      }
+      if (podcast.enabled) {
+        await post(`/books/${bookId}/podcast-cover/regenerate`);
+        setThumbnailRevision((c) => c + 1);
+      }
+      onMessage("Đã chuyển về mặc định toàn cục.");
+      await onSaved();
+    } catch (error) {
+      onMessage(errorText(error));
     }
   };
 
@@ -462,6 +654,89 @@ export function OverlayEditor({
       ))}
 
       <Button type="button" variant="outline" onClick={() => setConfig({ ...config, overlays: [...layers, emptyLayer()] })}>Thêm text layer</Button>
+
+      {/* Branding section */}
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-semibold">Thương hiệu (Branding)</div>
+              <div className="text-xs text-muted-foreground">
+                {brandingMode === "inherit"
+                  ? "Đang dùng mặc định toàn cục. Chuyển sang tùy chỉnh để riêng sách này."
+                  : "Sách này có cấu hình thương hiệu riêng."}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {brandingMode === "custom" && (
+                <Button type="button" variant="ghost" size="sm" onClick={resetBrandingToInherit}>
+                  Về mặc định
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant={brandingMode === "inherit" ? "default" : "outline"}
+                onClick={() => {
+                  if (brandingMode === "inherit") {
+                    setBrandingDraft(branding ? JSON.parse(JSON.stringify(branding)) : null);
+                    setBrandingMode("custom");
+                  }
+                }}
+              >
+                {brandingMode === "inherit" ? "Tùy chỉnh" : "Đang tùy chỉnh"}
+              </Button>
+            </div>
+          </div>
+
+          {brandingMode === "custom" && brandingDraft && (
+            <BrandingEditor
+              branding={brandingDraft}
+              onChange={setBrandingDraft}
+              logoBrowserOpen={logoBrowserOpen}
+              onLogoBrowserOpenChange={setLogoBrowserOpen}
+            />
+          )}
+          {brandingMode === "inherit" && branding && (
+            <div className="rounded-md bg-muted/30 p-3 text-xs text-muted-foreground">
+              <div className="font-medium text-foreground mb-1">Giá trị hiện tại (inherit):</div>
+              <div>Watermark: {branding.watermark.enabled ? `"${branding.watermark.text}"` : "Tắt"}</div>
+              <div>Logo: {branding.logo.enabled ? (branding.logo.path.split("/").pop() || "Đã chọn") : "Tắt"}</div>
+              <div>Mục tiêu: {[
+                branding.targets.thumbnail && "Thumbnail",
+                branding.targets.podcast && "Podcast",
+                branding.targets.video && "Video",
+              ].filter(Boolean).join(", ") || "Không"}</div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Logo Browser Dialog for per-book branding */}
+      {logoBrowserOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="mx-4 flex h-[80vh] w-full max-w-4xl flex-col rounded-lg border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <span className="text-sm font-semibold">Chọn logo</span>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setLogoBrowserOpen(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <MediaBrowser
+                category="logos"
+                selectedPath={brandingDraft?.logo.path || null}
+                onSelect={(entry: MediaEntry) => {
+                  setBrandingDraft((prev) => prev ? { ...prev, logo: { ...prev.logo, path: entry.path } } : prev);
+                  setLogoBrowserOpen(false);
+                }}
+                height="100%"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       <DialogFooter>
         <Button type="button" variant="outline" disabled={saving} onClick={() => save(false)}>Lưu cấu hình</Button>
         <Button type="button" disabled={saving || !patchIds.length} onClick={() => save(true)}>{saving ? "Đang lưu..." : "Lưu & tạo lại thumbnail"}</Button>

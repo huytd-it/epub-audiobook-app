@@ -21,6 +21,7 @@ import {
   Moon,
   Sun,
   Swords,
+  FolderSearch,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -52,6 +53,7 @@ const navSections: NavSection[] = [
       { to: "/queue", label: "Hàng đợi sản xuất", icon: ListOrdered },
       { to: "/video", label: "Video thành phẩm", icon: Film },
       { to: "/media", label: "Kho tư liệu", icon: FolderKanban },
+      { to: "/media-browser", label: "Duyệt Media", icon: FolderSearch },
       { to: "/gameplay", label: "Đấu trường", icon: Swords },
       { to: "/production-defaults", label: "Cấu hình mặc định", icon: Settings2 },
       { to: "/tts-models", label: "Model TTS", icon: Box },

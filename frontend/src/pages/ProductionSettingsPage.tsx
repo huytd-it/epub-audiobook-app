@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AudioLines, Captions, Save, Settings2, X } from "lucide-react";
+import { AudioLines, Captions, Image, Save, Settings2, X } from "lucide-react";
 import { api, VoiceItem, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { VoicePreviewButton } from "@/components/common/VoicePreviewButton";
 import { WaveformPreview } from "@/components/common/WaveformPreview";
 import {
   BackgroundItem,
+  BrandingConfig,
   NormalizationSettings,
   OnlineVoice,
   ProductionGroup,
@@ -20,6 +22,7 @@ import {
 } from "@/pages/book-detail/types";
 import { CheckField, Field, TabBar, TtsOptionsFields, checkboxClass, fieldClass, selectClass } from "@/pages/book-detail/parts";
 import { YouTubeConfigFields } from "@/pages/book-detail/YouTubeFields";
+import { MediaBrowser, MediaEntry } from "@/components/media-browser/MediaBrowser";
 
 type Defaults = ProductionSettings["defaults"];
 
@@ -28,6 +31,7 @@ const GROUPS: { key: ProductionGroup; label: string; hint: string }[] = [
   { key: "normalization", label: "Chuẩn hóa TTS", hint: "Quy tắc làm sạch văn bản trước khi đọc." },
   { key: "video", label: "Video", hint: "Khung hình, codec, nền, waveform và phụ đề." },
   { key: "youtube", label: "YouTube", hint: "Tiêu đề, description, timeline, tags và playlist." },
+  { key: "branding", label: "Thương hiệu", hint: "Watermark văn bản, logo và mục tiêu áp dụng trên thumbnail, podcast và video." },
 ];
 
 const GAMES = [
@@ -97,6 +101,298 @@ function useGlobalTtsOptions(modelId: string) {
   return { ttsModels, voiceOptions };
 }
 
+const BRANDING_POSITIONS: { value: BrandingConfig["watermark"]["position"]; label: string }[] = [
+  { value: "top-left", label: "Trên trái" },
+  { value: "top-right", label: "Trên phải" },
+  { value: "bottom-left", label: "Dưới trái" },
+  { value: "bottom-right", label: "Dưới phải" },
+  { value: "center", label: "Giữa" },
+];
+
+function BrandingTab({
+  branding,
+  onChange,
+  logoBrowserOpen,
+  onLogoBrowserOpenChange,
+}: {
+  branding: BrandingConfig;
+  onChange: (patch: Partial<BrandingConfig>) => void;
+  logoBrowserOpen: boolean;
+  onLogoBrowserOpenChange: (open: boolean) => void;
+}) {
+  const updateWatermark = useCallback(
+    (patch: Partial<BrandingConfig["watermark"]>) =>
+      onChange({ watermark: { ...branding.watermark, ...patch } }),
+    [branding, onChange]
+  );
+  const updateLogo = useCallback(
+    (patch: Partial<BrandingConfig["logo"]>) =>
+      onChange({ logo: { ...branding.logo, ...patch } }),
+    [branding, onChange]
+  );
+  const updateTargets = useCallback(
+    (patch: Partial<BrandingConfig["targets"]>) =>
+      onChange({ targets: { ...branding.targets, ...patch } }),
+    [branding, onChange]
+  );
+
+  const logoPathDisplay = branding.logo.path
+    ? branding.logo.path.split("/").pop() || branding.logo.path
+    : "Chưa chọn logo";
+
+  return (
+    <div className="space-y-4">
+      {/* Watermark */}
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-semibold">Watermark văn bản</div>
+              <div className="text-xs text-muted-foreground">
+                Chèn chữ lên ảnh thumbnail, ảnh bìa podcast hoặc video.
+              </div>
+            </div>
+            <CheckField
+              label="Bật"
+              checked={branding.watermark.enabled}
+              onChange={(enabled) => updateWatermark({ enabled })}
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Field label="Nội dung">
+              <input
+                className={fieldClass}
+                value={branding.watermark.text}
+                onChange={(event) => updateWatermark({ text: event.target.value })}
+                placeholder="Tên kênh, URL..."
+                maxLength={200}
+              />
+            </Field>
+            <Field label="Vị trí">
+              <select
+                className={selectClass}
+                value={branding.watermark.position}
+                onChange={(event) =>
+                  updateWatermark({ position: event.target.value as BrandingConfig["watermark"]["position"] })
+                }
+              >
+                {BRANDING_POSITIONS.map((pos) => (
+                  <option key={pos.value} value={pos.value}>
+                    {pos.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={`Cỡ chữ: ${branding.watermark.font_size}`}>
+              <input
+                type="range"
+                min={12}
+                max={120}
+                className="w-full accent-primary"
+                value={branding.watermark.font_size}
+                onChange={(event) => updateWatermark({ font_size: Number(event.target.value) })}
+              />
+            </Field>
+            <Field label="Màu chữ">
+              <input
+                type="color"
+                className={fieldClass}
+                value={branding.watermark.text_color}
+                onChange={(event) => updateWatermark({ text_color: event.target.value })}
+              />
+            </Field>
+            <Field label={`Độ rõ: ${branding.watermark.opacity}%`}>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                className="w-full accent-primary"
+                value={branding.watermark.opacity}
+                onChange={(event) => updateWatermark({ opacity: Number(event.target.value) })}
+              />
+            </Field>
+            <Field label="Khoảng cách viền (px)">
+              <input
+                type="number"
+                min={0}
+                max={200}
+                className={fieldClass}
+                value={branding.watermark.margin}
+                onChange={(event) => updateWatermark({ margin: Number(event.target.value) })}
+              />
+            </Field>
+          </div>
+          <div className="flex flex-wrap gap-4 rounded-md bg-muted/30 p-3">
+            <CheckField
+              label="Đổ bóng"
+              checked={branding.watermark.shadow_enabled}
+              onChange={(shadow_enabled) => updateWatermark({ shadow_enabled })}
+            />
+            {branding.watermark.shadow_enabled && (
+              <Field label="Màu bóng">
+                <input
+                  type="color"
+                  className={fieldClass}
+                  value={branding.watermark.shadow_color}
+                  onChange={(event) => updateWatermark({ shadow_color: event.target.value })}
+                />
+              </Field>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Logo */}
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-semibold">Logo</div>
+              <div className="text-xs text-muted-foreground">
+                Chèn ảnh logo lên thumbnail, podcast hoặc video.
+              </div>
+            </div>
+            <CheckField
+              label="Bật"
+              checked={branding.logo.enabled}
+              onChange={(enabled) => updateLogo({ enabled })}
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Field label="Logo path">
+              <div className="flex items-center gap-2">
+                <input
+                  className={fieldClass}
+                  value={branding.logo.path}
+                  readOnly
+                  placeholder="Chưa chọn logo"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onLogoBrowserOpenChange(true)}
+                >
+                  Chọn
+                </Button>
+              </div>
+              {branding.logo.path && (
+                <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                  {logoPathDisplay}
+                </div>
+              )}
+            </Field>
+            <Field label="Vị trí">
+              <select
+                className={selectClass}
+                value={branding.logo.position}
+                onChange={(event) =>
+                  updateLogo({ position: event.target.value as BrandingConfig["logo"]["position"] })
+                }
+              >
+                {BRANDING_POSITIONS.map((pos) => (
+                  <option key={pos.value} value={pos.value}>
+                    {pos.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={`Kích thước: ${branding.logo.size}px`}>
+              <input
+                type="range"
+                min={16}
+                max={500}
+                className="w-full accent-primary"
+                value={branding.logo.size}
+                onChange={(event) => updateLogo({ size: Number(event.target.value) })}
+              />
+            </Field>
+            <Field label={`Độ rõ: ${branding.logo.opacity}%`}>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                className="w-full accent-primary"
+                value={branding.logo.opacity}
+                onChange={(event) => updateLogo({ opacity: Number(event.target.value) })}
+              />
+            </Field>
+            <Field label="Khoảng cách viền (px)">
+              <input
+                type="number"
+                min={0}
+                max={200}
+                className={fieldClass}
+                value={branding.logo.margin}
+                onChange={(event) => updateLogo({ margin: Number(event.target.value) })}
+              />
+            </Field>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Targets */}
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="text-sm font-semibold">Mục tiêu áp dụng</div>
+            <div className="text-xs text-muted-foreground">
+              Chọn loại nội dung sẽ nhận watermark và logo.
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-4">
+            <CheckField
+              label="Thumbnail"
+              checked={branding.targets.thumbnail}
+              onChange={(thumbnail) => updateTargets({ thumbnail })}
+            />
+            <CheckField
+              label="Ảnh bìa Podcast"
+              checked={branding.targets.podcast}
+              onChange={(podcast) => updateTargets({ podcast })}
+            />
+            <CheckField
+              label="Video"
+              checked={branding.targets.video}
+              onChange={(video) => updateTargets({ video })}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Logo Browser Dialog */}
+      {logoBrowserOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="mx-4 flex h-[80vh] w-full max-w-4xl flex-col rounded-lg border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <span className="text-sm font-semibold">Chọn logo</span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => onLogoBrowserOpenChange(false)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <MediaBrowser
+                category="logos"
+                selectedPath={branding.logo.path || null}
+                onSelect={(entry: MediaEntry) => {
+                  updateLogo({ path: entry.path });
+                  onLogoBrowserOpenChange(false);
+                }}
+                height="100%"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProductionSettingsPage() {
   const [tab, setTab] = useState<ProductionGroup>("audio");
   const [saved, setSaved] = useState<Defaults>();
@@ -107,6 +403,7 @@ export function ProductionSettingsPage() {
   const [backgrounds, setBackgrounds] = useState<BackgroundItem[]>([]);
   const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
   const [playlists, setPlaylists] = useState<{ id: string; title: string }[]>([]);
+  const [logoBrowserOpen, setLogoBrowserOpen] = useState(false);
 
   const { ttsModels, voiceOptions } = useGlobalTtsOptions(draft?.audio.model_id || "");
 
@@ -230,18 +527,25 @@ export function ProductionSettingsPage() {
                 </select>
               </Field>
               <Field label="Voice" hint="Bỏ trống = voice mặc định của model">
-                <select
-                  className={selectClass}
-                  value={draft.audio.voice_id}
-                  onChange={(event) => patchGroup("audio", { voice_id: event.target.value })}
-                >
-                  <option value="">—</option>
-                  {voiceOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                <div className="flex items-center gap-1">
+                  <select
+                    className={selectClass}
+                    value={draft.audio.voice_id}
+                    onChange={(event) => patchGroup("audio", { voice_id: event.target.value })}
+                  >
+                    <option value="">—</option>
+                    {voiceOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <VoicePreviewButton
+                    modelId={draft.audio.model_id}
+                    voiceId={draft.audio.voice_id}
+                    ttsOptions={draft.audio.tts_options}
+                  />
+                </div>
               </Field>
               <Field label="Max chars" hint="0 = mặc định">
                 <input
@@ -825,6 +1129,15 @@ export function ProductionSettingsPage() {
                 playlists={playlists}
               />
             </div>
+          )}
+
+          {tab === "branding" && (
+            <BrandingTab
+              branding={draft.branding}
+              onChange={(patch) => patchGroup("branding", patch as Partial<BrandingConfig>)}
+              logoBrowserOpen={logoBrowserOpen}
+              onLogoBrowserOpenChange={setLogoBrowserOpen}
+            />
           )}
 
           <div className="flex items-center justify-end gap-2 border-t border-border pt-4">

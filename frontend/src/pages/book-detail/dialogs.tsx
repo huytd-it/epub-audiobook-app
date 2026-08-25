@@ -5,6 +5,7 @@ import { api, Chapter, Patch, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/common/StatusBadge";
+import { VoicePreviewButton } from "@/components/common/VoicePreviewButton";
 import { WaveformPreview } from "@/components/common/WaveformPreview";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -420,21 +421,28 @@ export function ConfigDialog({
                 </select>
               </Field>
               <Field label="Voice">
-                <select
-                  className={selectClass}
-                  value={settings.voiceId}
-                  onChange={(event) => onSettingsChange({ voiceId: event.target.value })}
-                >
-                  {voiceOptions.length ? (
-                    voiceOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))
-                  ) : (
-                    <option value="">—</option>
-                  )}
-                </select>
+                <div className="flex items-center gap-1">
+                  <select
+                    className={selectClass}
+                    value={settings.voiceId}
+                    onChange={(event) => onSettingsChange({ voiceId: event.target.value })}
+                  >
+                    {voiceOptions.length ? (
+                      voiceOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">—</option>
+                    )}
+                  </select>
+                  <VoicePreviewButton
+                    modelId={settings.modelId}
+                    voiceId={settings.voiceId}
+                    ttsOptions={settings.ttsOptions}
+                  />
+                </div>
               </Field>
               <Field label="Max chars" hint="0 = mặc định">
                 <input

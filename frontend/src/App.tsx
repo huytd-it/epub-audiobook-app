@@ -8,6 +8,7 @@ import { BookDetail } from "@/pages/BookDetail";
 import { Queue } from "@/pages/Queue";
 import { Video } from "@/pages/Video";
 import { MediaPage } from "@/pages/MediaPage";
+import { MediaBrowserPage } from "@/pages/MediaBrowserPage";
 import { MusicPage } from "@/pages/MusicPage";
 import { PhotosPage } from "@/pages/PhotosPage";
 import { VoicesPage } from "@/pages/VoicesPage";
@@ -38,6 +39,7 @@ function App() {
         <Route path="/photos" element={<PhotosPage />} />
         <Route path="/voices" element={<VoicesPage />} />
         <Route path="/media" element={<MediaPage />} />
+        <Route path="/media-browser" element={<MediaBrowserPage />} />
         <Route path="/tools" element={<Tools />} />
         <Route path="/youtube" element={<YouTubePage />} />
         <Route path="/drive" element={<DrivePage />} />

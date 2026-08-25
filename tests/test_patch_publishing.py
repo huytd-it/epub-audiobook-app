@@ -142,7 +142,7 @@ def test_publish_thumbnail_uses_default_font(tmp_path, monkeypatch):
     monkeypatch.setattr("app.config.settings.default_font_path", "default.ttf")
     monkeypatch.setattr(
         "app.patch_publishing.ensure_patch_overlay",
-        lambda book, patch, font: seen.append(font) or "/missing/thumb.png",
+        lambda book, patch, font, **kw: seen.append(font) or "/missing/thumb.png",
     )
 
     enqueue_patch_publish(conn, patch_id)
@@ -169,7 +169,7 @@ def test_batch_publish_keeps_thumbnail_bound_to_patch_id(tmp_path, monkeypatch):
     conn.commit()
     monkeypatch.setattr(
         "app.patch_publishing.ensure_patch_overlay",
-        lambda book, patch, _: f"/tmp/thumb-{patch.id}.png",
+        lambda book, patch, _font, **kw: f"/tmp/thumb-{patch.id}.png",
     )
 
     a = enqueue_patch_publish(conn, patch_a)

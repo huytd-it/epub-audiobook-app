@@ -64,6 +64,7 @@ def test_saved_export_audio_settings_do_not_change_local_config(tmp_path, monkey
         "with_effects": True,
         "chunk_pause_ms": 300,
         "chapter_pause_ms": 1500,
+        "tts_options": {},
     }
 
 

@@ -1,6 +1,8 @@
 """Tests for LightTTSEngine."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 
@@ -126,5 +128,100 @@ class TestListVoices:
             "label": "vi-VN-HoaiMyNeural",
             "language": "",
         }]
+
+
+class TestRunEdgeAsync:
+    """Tests for the scoped Windows Proactor error handler."""
+
+    def test_suppresses_connection_reset_in_callback(self, monkeypatch):
+        """ConnectionResetError(10054) in a transport callback is suppressed."""
+        import app.light_tts as lt
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        async def _coro():
+            # Schedule a callback that raises the Windows error, simulating
+            # _ProactorBasePipeTransport._call_connection_lost
+            def _transport_cleanup():
+                raise ConnectionResetError(10054, "Connection reset by peer")
+
+            loop = asyncio.get_running_loop()
+            loop.call_soon(_transport_cleanup)
+            return "ok"
+
+        # Should NOT raise — the handler suppresses the callback error
+        result = lt._run_edge_async(lambda: _coro())
+        assert result == "ok"
+
+    def test_propagates_coroutine_exception(self):
+        """Exceptions raised directly by the coroutine DO propagate."""
+        import app.light_tts as lt
+
+        async def _boom():
+            raise ValueError("bad input")
+
+        with pytest.raises(ValueError, match="bad input"):
+            lt._run_edge_async(lambda: _boom())
+
+    def test_passes_through_normal_results(self):
+        """Normal return values pass through unchanged."""
+        import app.light_tts as lt
+
+        async def _ok():
+            return 42
+
+        assert lt._run_edge_async(lambda: _ok()) == 42
+
+    def test_non_10054_connection_reset_in_callback_forwards_to_default_handler(self, monkeypatch):
+        """ConnectionResetError without winerror=10054 goes to default handler (logged, not swallowed)."""
+        import app.light_tts as lt
+        import sys
+        import logging
+
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        handler_calls = []
+        _orig_default = lt.asyncio.BaseEventLoop.default_exception_handler
+
+        def _spy_default(self_loop, context):
+            handler_calls.append(context)
+
+        async def _coro():
+            def _bad_callback():
+                raise ConnectionResetError(9999, "other error")
+
+            loop = asyncio.get_running_loop()
+            loop.call_soon(_bad_callback)
+
+        monkeypatch.setattr(lt.asyncio.BaseEventLoop, "default_exception_handler", _spy_default)
+        lt._run_edge_async(lambda: _coro())
+        # The non-10054 error should have been forwarded to default_exception_handler
+        assert len(handler_calls) == 1
+        assert isinstance(handler_calls[0]["exception"], ConnectionResetError)
+
+    def test_non_connection_reset_error_in_callback_forwards_to_default_handler(self, monkeypatch):
+        """Non-ConnectionResetError in callback goes to default handler."""
+        import app.light_tts as lt
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        handler_calls = []
+
+        def _spy_default(self_loop, context):
+            handler_calls.append(context)
+
+        async def _coro():
+            def _bad_callback():
+                raise RuntimeError("something else")
+
+            loop = asyncio.get_running_loop()
+            loop.call_soon(_bad_callback)
+
+        monkeypatch.setattr(lt.asyncio.BaseEventLoop, "default_exception_handler", _spy_default)
+        lt._run_edge_async(lambda: _coro())
+        assert len(handler_calls) == 1
+        assert isinstance(handler_calls[0]["exception"], RuntimeError)
 
 
