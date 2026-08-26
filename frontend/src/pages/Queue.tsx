@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ArrowDownToLine, ArrowUpToLine, Check, ChevronLeft, ChevronRight, Copy, FileText, GripVertical, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered, Settings2 } from "lucide-react";
 import { api, post, put, Job } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
+import { LogLines } from "@/components/common/LogLines";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/common/StatusBadge";
@@ -580,7 +581,7 @@ export function Queue() {
       </Dialog>
 
       <Dialog open={!!logJob} onOpenChange={(open) => !open && setLogJob(null)}>
-        <DialogContent className="flex h-[min(760px,88vh)] w-[calc(100vw-2rem)] max-w-5xl flex-col gap-0 overflow-hidden p-0">
+        <DialogContent className="flex h-[min(920px,94vh)] w-[calc(100vw-2rem)] max-w-7xl flex-col gap-0 overflow-hidden p-0">
           <DialogHeader className="border-b border-border bg-muted/25 px-6 py-5 pr-14 text-left">
             <DialogTitle className="flex items-center gap-3 text-base">
               <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/10 text-primary">
@@ -624,9 +625,7 @@ export function Queue() {
               ) : logError ? (
                 <div className="rounded-md border border-red-900/70 bg-red-950/40 p-4 font-mono text-xs text-red-300">{logError}</div>
               ) : (
-                <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-slate-200">
-                  {logText || "Job chưa có nội dung log."}
-                </pre>
+                <LogLines text={logText} emptyText="Job chưa có nội dung log." />
               )}
             </div>
           </div>

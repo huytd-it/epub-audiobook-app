@@ -9,7 +9,7 @@ import soundfile as sf
 
 from app import db, repository
 from app.config import settings
-from app.jobqueue import store
+from app.jobqueue import joblog, store
 from app.jobqueue.context import JobContext
 from app.jobqueue.joblog import JobLogger
 from app.jobqueue.handlers import audiobook_tts
@@ -151,6 +151,35 @@ def test_progress_is_reported_per_chunk(tmp_path, monkeypatch):
     assert job.progress_total > 0
     assert job.progress_current == job.progress_total
     assert job.phase == "synthesizing"
+
+
+def test_job_log_carries_each_chunks_text_and_synthesized_duration(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn, text="Câu một. Câu hai. Câu ba.")
+    monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: _FakeEngine())
+    ctx, job_id = _ctx(conn, patch_id=patch_id)
+    audiobook_tts.handle(ctx)
+    ctx.close()
+
+    log_text = joblog.tail(job_id)
+    assert "văn bản: Câu một. Câu hai. Câu ba." in log_text
+    assert "xong: 0.1s audio" in log_text
+
+
+def test_job_log_carries_chunk_text_in_the_write_chunk_files_branch(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn, text="Câu một. Câu hai. Câu ba.")
+    monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: _FakeEngine())
+    monkeypatch.setattr(settings, "tts_write_chunk_files", True)
+    ctx, job_id = _ctx(conn, patch_id=patch_id)
+    audiobook_tts.handle(ctx)
+    ctx.close()
+
+    log_text = joblog.tail(job_id)
+    assert "văn bản: Câu một. Câu hai. Câu ba." in log_text
+    assert "xong: 0.1s audio" in log_text
 
 
 def test_next_chunk_index_is_persisted_so_a_rerun_resumes(tmp_path, monkeypatch):

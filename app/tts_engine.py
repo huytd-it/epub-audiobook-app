@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 from dataclasses import asdict, dataclass, field
@@ -19,6 +20,8 @@ from typing import Protocol
 
 import numpy as np
 import soundfile as sf
+
+logger = logging.getLogger(__name__)
 
 from app.chunker import split_into_tts_chunks
 
@@ -794,6 +797,58 @@ class VieNeuFastEngine:
         return np.asarray(self._model.infer(text, voice=self.voice), dtype=np.float32)
 
 
+def _zerotts_codes_loop(codes: np.ndarray, window: int = 15, min_repeats: int = 3) -> bool:
+    """True if some ~window-frame (>=1.2s) stretch of codec tokens repeats verbatim
+    min_repeats+ times anywhere in the sequence.
+
+    zerotts is a from-scratch autoregressive TTS model with no guarantee it will
+    stop cleanly: it occasionally gets stuck re-emitting the same phrase instead of
+    signalling <eoa>, producing long babbling/repeating audio that still "succeeds"
+    (patch 6078 on book 18). Real speech essentially never repeats an exact
+    multi-codebook token window this long by chance, so an exact match is a clean,
+    low-false-positive signal for a stuck loop -- cheaper and more targeted than
+    guessing at a duration cutoff (legitimate slow narration varies 2x+ in duration
+    for similar-length text, so duration alone can't separate the two)."""
+    total_frames = codes.shape[1]
+    if total_frames < window * min_repeats:
+        return False
+    seen: dict[bytes, int] = {}
+    for i in range(total_frames - window + 1):
+        key = codes[:, i:i + window].tobytes()
+        count = seen.get(key, 0) + 1
+        if count >= min_repeats:
+            return True
+        seen[key] = count
+    return False
+
+
+def _zerotts_decode_streaming(codec, codes: np.ndarray) -> np.ndarray:
+    """Decode (K, T) codes through the causal, KV-cached decode_step graph in small
+    fixed-size chunks (mirrors zerotts.Synthesizer.synthesize_stream's own chunk
+    schedule) instead of one decode_full call over the whole sequence -- memory then
+    stays bounded no matter how long T is. decode_full's single-shot full
+    self-attention over the whole time axis is what OOM'd on patch 6078's chunk 2
+    (a ~9.7GB single allocation) when generation ran long."""
+    stream = codec.streaming_decoder()
+    target, cap = 1, 16
+    buf: list[np.ndarray] = []
+    chunks: list[np.ndarray] = []
+    try:
+        for i in range(codes.shape[1]):
+            buf.append(codes[:, i])
+            if len(buf) >= target:
+                chunks.append(stream.decode_chunk(np.stack(buf, axis=-1)))
+                buf = []
+                target = min(cap, target * 2)
+        if buf:
+            chunks.append(stream.decode_chunk(np.stack(buf, axis=-1)))
+    finally:
+        stream.close()
+    if not chunks:
+        return np.zeros((1, 0), dtype=np.float32)
+    return np.concatenate(chunks, axis=-1)
+
+
 class ZeroTTSEngine:
     """ZeroTTS (local, ONNX, CPU-only -- no torch, no GPU).
 
@@ -856,9 +911,36 @@ class ZeroTTSEngine:
         )
         self._voice_emb = self._load_voice_emb(self._model.n_voice_queries)
 
+    _MAX_GENERATION_ATTEMPTS = 3
+
     def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
         self._ensure_loaded()
-        audio = self._model.synthesize(text, voice=self._voice_emb)
+        from zerotts.synthesizer import DEFAULT_MAX_FRAMES
+
+        model = self._model
+        voice_emb = model.resolve_voice(self._voice_emb)
+
+        codes = np.zeros((model.num_codebooks, 0), dtype=np.int64)
+        for attempt in range(1, self._MAX_GENERATION_ATTEMPTS + 1):
+            # min_frames/max_frames/voice_emb match zerotts.Synthesizer.synthesize's
+            # own defaults; every other generation kwarg is left to _generate_frames'
+            # matching defaults.
+            frames = list(model._generate_frames(text, 4, DEFAULT_MAX_FRAMES, voice_emb=voice_emb))
+            if not frames:
+                return np.zeros(0, dtype=np.float32)
+            codes = np.stack(frames, axis=1)[0].transpose(1, 0)  # (K, T)
+            if not _zerotts_codes_loop(codes):
+                break
+            logger.warning(
+                "zerotts synthesize_chunk: đầu ra lặp lại (frames=%d), attempt %d/%d, voice=%s",
+                codes.shape[1], attempt, self._MAX_GENERATION_ATTEMPTS, self.voice,
+            )
+        # synthesize()'s decode_full does one non-causal self-attention pass over the
+        # whole time axis -- memory scales with total length and OOM'd on patch
+        # 6078's chunk 2 (~9.7GB single allocation) when generation ran long.
+        # Decoding through the causal, KV-cached decode_step graph in small fixed
+        # chunks instead keeps memory bounded regardless of how long T is.
+        audio = _zerotts_decode_streaming(model.codec, codes)
         return np.asarray(audio, dtype=np.float32).reshape(-1)
 
 

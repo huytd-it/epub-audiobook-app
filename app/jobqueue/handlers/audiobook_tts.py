@@ -167,7 +167,10 @@ def synthesize_patch(
         for index, item in enumerate(plan):
             if ctx.should_cancel():
                 raise asyncio.CancelledError()
-            wavs.append(engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text))
+            ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
+            arr = engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+            ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / engine.sample_rate:.1f}s audio")
+            wavs.append(arr)
             ctx.progress(index + 1, total)
         frame_counts = [len(a) for a in wavs]
         chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, pauses)
@@ -211,7 +214,9 @@ def synthesize_patch(
         if index >= start_index:
             if ctx.should_cancel():
                 raise asyncio.CancelledError()
+            ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
             arr = engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+            ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / engine.sample_rate:.1f}s audio")
             sf.write(chunk_path, arr, engine.sample_rate)
             repository.update_patch_chunk_progress(ctx.conn, patch.id, index + 1)
             ctx.progress(index + 1, total)

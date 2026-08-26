@@ -125,6 +125,58 @@ def test_parse_epub_keeps_toc_chapter_when_skip_disabled(tmp_path):
     assert chapters[1].title == "Chapter 1"
 
 
+def test_parse_epub_falls_back_to_doc_title_when_no_heading_tags(tmp_path):
+    """Web-novel converters often put the real chapter title only in <head><title>,
+    with just an <h4> (below the h1-h3 threshold) in the body. The parser must use
+    that <title> instead of the generic "Chapter N" fallback.
+
+    ebooklib's writer regenerates each doc's <head><title> from EpubHtml.title at
+    write time (discarding any <title> baked into the content string), so the
+    EpubHtml ``title=`` kwarg is what ends up as the real, on-disk <title> — exactly
+    how a converter-authored EPUB looks once ebooklib reads it back.
+    """
+    toc_html = (
+        "<html><body>"
+        "<h1>Table of Contents</h1>"
+        "<p>Chuong 1 ............ 3</p>\n"
+        "<p>Chuong 2 ............ 25</p>\n"
+        "<p>Chuong 3 ............ 47</p>\n"
+        "<p>Chuong 4 ............ 69</p>\n"
+        "<p>Chuong 5 ............ 91</p>\n"
+        "<p>Chuong 6 ............ 113</p>\n"
+        "</body></html>"
+    )
+    long_para = "x " * 200
+    chapter_html = (
+        "<html><body>"
+        "<div class=\"chuong\">Chương 1</div>"
+        "<h4>Chương Thứ Nhất</h4>"
+        f"<p>{long_para}</p>\n"
+        f"<p>{long_para}</p>\n"
+        f"<p>{long_para}</p>\n"
+        f"<p>{long_para}</p>\n"
+        "</body></html>"
+    )
+    book = epub.EpubBook()
+    book.set_identifier("test")
+    book.set_title("test")
+    book.set_language("en")
+    c1 = epub.EpubHtml(title="TOC", file_name="toc.xhtml", content=toc_html)
+    c2 = epub.EpubHtml(title="Chương 1: Chương Thứ Nhất", file_name="c1.xhtml", content=chapter_html)
+    book.add_item(c1)
+    book.add_item(c2)
+    book.toc = ()
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", c1, c2]
+    epub_path = tmp_path / "book.epub"
+    epub.write_epub(str(epub_path), book)
+
+    chapters = parse_epub(str(epub_path))
+    assert len(chapters) == 1
+    assert chapters[0].title == "Chương 1: Chương Thứ Nhất"
+
+
 def test_parse_epub_does_not_empty_a_single_chapter_book(tmp_path):
     """A book whose only chapter looks like a TOC must not be emptied by the filter."""
     toc_html = (

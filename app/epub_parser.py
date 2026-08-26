@@ -172,11 +172,21 @@ def parse_epub(path: str, *, skip_toc: bool = True) -> list[ParsedChapter]:
             for tag in soup.find_all(("script", "style")):
                 tag.decompose()
 
+            # Some EPUBs (common in web-novel converters) put the real chapter title
+            # only in <head><title>, with no h1-h3 in the body — falling straight to
+            # "Chapter N" would silently discard it. ebooklib's get_content() rebuilds
+            # <head> from item.title (usually empty on read) and drops the original, so
+            # the raw item.content is the only place the real <title> survives.
+            doc_title = ""
+            raw_title_tag = BeautifulSoup(item.content, "lxml").title
+            if raw_title_tag:
+                doc_title = _remove_cjk(raw_title_tag.get_text(strip=True))
+
             for title, text in _split_by_headings(soup):
                 if len(text) < _MIN_CHAPTER_CHARS:
                     continue
                 if not title:
-                    title = f"Chapter {len(chapters) + 1}"
+                    title = doc_title or f"Chapter {len(chapters) + 1}"
                 chapters.append(ParsedChapter(title=title, text=text))
 
         if skip_toc and chapters and _is_toc_chapter(chapters[0]):
