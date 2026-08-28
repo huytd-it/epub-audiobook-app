@@ -5,7 +5,6 @@ import {
   FileAudio2,
   FileSearch,
   Film,
-  FolderOpen,
   Layers,
   RotateCcw,
   ScanText,
@@ -67,7 +66,6 @@ type RowProps = {
   onSelect: (patchId: number, mode: SelectMode) => void;
   onOpen: (patch: Patch) => void;
   onOpenIssues: (patch: Patch) => void;
-  onOpenFolder: (patch: Patch) => void;
   onUploadVideo: (patch: Patch) => void;
   onRetryPublish: (patch: Patch) => void;
   onRepublish: (patch: Patch) => void;
@@ -86,7 +84,6 @@ const PatchRow = React.memo(function PatchRow({
   onSelect,
   onOpen,
   onOpenIssues,
-  onOpenFolder,
   onUploadVideo,
   onRetryPublish,
   onRepublish,
@@ -309,16 +306,10 @@ const PatchRow = React.memo(function PatchRow({
               <span className="hidden lg:inline">Đăng lại</span>
             </Button>
           )}
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-[11px]"
-            disabled={busy}
-            onClick={() => onOpenFolder(patch)}
-            title="Mở thư mục media của patch"
-          >
-            <FolderOpen className="h-3 w-3" />
-            <span className="hidden lg:inline">Media</span>
+          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-[11px]" title="Mở trình duyệt media">
+            <Link to="/media-browser">
+              <span className="hidden lg:inline">Media</span>
+            </Link>
           </Button>
         </div>
       </TableCell>
@@ -511,16 +502,6 @@ export function PatchesPanel({
     [onBusyChange, onMessage, onRefresh]
   );
 
-  const openFolder = useCallback(
-    (patch: Patch) =>
-      runImport(
-        patch,
-        () => post(`/local-bridge/books/${bookId}/patches/${patch.id}/open-folder`),
-        `Đã mở thư mục media của patch ${patch.patch_index + 1}.`
-      ),
-    [bookId, runImport]
-  );
-
   const uploadVideo = useCallback(
     (patch: Patch) =>
       runImport(
@@ -666,7 +647,6 @@ export function PatchesPanel({
                     onSelect={select}
                     onOpen={onOpenPatch}
                     onOpenIssues={openIssues}
-                    onOpenFolder={openFolder}
                     onUploadVideo={uploadVideo}
                     onRetryPublish={retryPublish}
                     onRepublish={(patch) => setRepublishPatch(patch)}
