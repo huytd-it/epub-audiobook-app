@@ -10,7 +10,6 @@ import {
   RefreshCw,
   RotateCcw,
   Upload,
-  Trash2,
   XCircle,
 } from "lucide-react";
 import { api, post, postForm, InboxProcessResult, InboxStatus } from "@/api";
@@ -364,31 +363,8 @@ export function BuildPanel({
     }
   };
 
-  const deleteBook = () => {
-    if (!confirm("Bạn có chắc chắn muốn xóa sách này? Hành động này không thể hoàn tác.")) return;
-
-    post(`/books/${bookId}/delete`)
-      .then(() => (window.location.href = "/books"))
-      .catch((err) => onMessage(errorText(err)));
-  };
-
   return (
     <div className="space-y-5">
-      <Card className="border-red-200">
-        <CardHeader className="border-b border-red-100 bg-red-50/50">
-          <SectionHead
-            icon={Trash2}
-            title="Xóa sách"
-            detail="Hành động này không thể hoàn tác."
-          />
-        </CardHeader>
-        <CardContent className="pt-5">
-          <Button variant="destructive" onClick={deleteBook}>
-            Xóa sách "#{bookId}" và toàn bộ dữ liệu liên quan
-          </Button>
-        </CardContent>
-      </Card>
-
       <Card>
         <CardHeader className="border-b border-border bg-muted/20">
           <SectionHead
