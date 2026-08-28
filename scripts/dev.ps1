@@ -12,6 +12,21 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $Root ".venv\Scripts\python.exe"
 
+function Stop-StaleBackend {
+    $projectPython = [IO.Path]::GetFullPath($venvPython)
+    $backendProcesses = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" |
+        Where-Object {
+            $_.CommandLine -and
+            $_.CommandLine -match "-m\s+uvicorn\s+app\.main:app" -and
+            $_.CommandLine -match [regex]::Escape($projectPython)
+        }
+
+    foreach ($backend in $backendProcesses) {
+        Write-Host "  Stopping stale backend PID $($backend.ProcessId) so .env is reloaded..." -ForegroundColor DarkYellow
+        Stop-Process -Id $backend.ProcessId -Force -ErrorAction Stop
+    }
+}
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  EPUB Audiobook Studio - Dev Mode" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
@@ -28,6 +43,9 @@ $processes = @()
 try {
     # ── 1. Python Backend ─────────────────────────────────────────────────────
     Write-Host "`n[1/2] Starting Python backend on port 8000..." -ForegroundColor Yellow
+    # Settings are loaded once by Pydantic at process startup. Do not reuse a
+    # previous Uvicorn process, or .env edits such as ENABLE_WORKER are ignored.
+    Stop-StaleBackend
     $backendProc = Start-Process -FilePath $venvPython -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload", "--reload-dir", "app" -WorkingDirectory $Root -PassThru -NoNewWindow
     $processes += $backendProc
     Write-Host "  Backend PID: $($backendProc.Id)" -ForegroundColor DarkGray

@@ -22,9 +22,17 @@ const WORKER_TYPES = [
   ["patch_video", "Video phân đoạn"], ["standalone_video", "Video độc lập"],
   ["flow_video", "Flow video"], ["youtube_upload", "YouTube upload"],
   ["flow_youtube", "Flow YouTube"], ["background_gen", "Tạo ảnh nền"],
+  ["gameplay_clip", "Gameplay clip"],
 ] as const;
 type WorkerType = typeof WORKER_TYPES[number][0];
 type WorkerSettings = { concurrency: Record<WorkerType, number>; min: number; max: number; requires_restart: boolean };
+type WorkerHealth = {
+  worker_state: "disabled" | "idle" | "busy" | "paused";
+  current_patch_id: number | null;
+  current_chunk_index: number;
+  current_chunk_count: number;
+  pools: Array<{ job_type: string; running: number; capacity: number; pending: number }>;
+};
 
 function jobTypeLabel(jobType: string) {
   if (jobType.includes("tts") || jobType === "flow_audio") return "TTS";
@@ -58,6 +66,8 @@ export function Queue() {
   const [reordering, setReordering] = useState(false);
   const [draggedJobId, setDraggedJobId] = useState<number | null>(null);
   const [queueError, setQueueError] = useState("");
+  const [workerHealth, setWorkerHealth] = useState<WorkerHealth>();
+  const [workerHealthError, setWorkerHealthError] = useState("");
 
   const load = () => {
     const params = new URLSearchParams({ limit: jobTypeFilter === "all" ? "200" : "1000" });
@@ -66,9 +76,19 @@ export function Queue() {
       params.set("status", "pending");
       params.set("order", "queue");
     }
-    return api<{ jobs: Job[] }>(`/queue/jobs?${params}`)
-      .then((x) => setJobs(x.jobs))
-      .catch((err) => console.error(err))
+    return Promise.all([
+      api<{ jobs: Job[] }>(`/queue/jobs?${params}`),
+      api<WorkerHealth>("/health"),
+    ])
+      .then(([queue, health]) => {
+        setJobs(queue.jobs);
+        setWorkerHealth(health);
+        setWorkerHealthError("");
+      })
+      .catch((err) => {
+        console.error(err);
+        setWorkerHealthError(err instanceof Error ? err.message : "Không đọc được trạng thái worker");
+      })
       .finally(() => setLoading(false));
   };
 
@@ -133,6 +153,14 @@ export function Queue() {
   const visibleSelectableIds = visibleJobs.map((job) => job.id);
   const allVisibleSelected = visibleSelectableIds.length > 0 && visibleSelectableIds.every((id) => selectedIds.has(id));
   const canReorder = jobTypeFilter !== "all" && statusFilter === "pending";
+  const ttsPool = workerHealth?.pools.find((pool) => pool.job_type === "audiobook_tts");
+  const ttsBlockedReason = workerHealth?.worker_state === "disabled"
+    ? "Worker backend đang tắt (ENABLE_WORKER=false), nên các job TTS sẽ không được nhận."
+    : workerHealth?.worker_state === "paused"
+      ? "Hàng đợi đang tạm dừng, nên các job TTS sẽ giữ trạng thái chờ."
+      : ttsPool?.capacity === 0
+        ? "Worker audiobook_tts đang đặt bằng 0. Đặt lại ít nhất 1 rồi khởi động lại backend."
+        : "";
 
   useEffect(() => {
     setPage(1);
@@ -353,6 +381,16 @@ export function Queue() {
         </CardHeader>
 
         <CardContent className="p-0">
+          {ttsBlockedReason && (
+            <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+              <span className="font-semibold">TTS chưa thể chạy. </span>{ttsBlockedReason}
+            </div>
+          )}
+          {workerHealthError && (
+            <div className="border-b border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
+              Không kiểm tra được worker: {workerHealthError}
+            </div>
+          )}
           {!!jobs?.length && (
             <div className="flex flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
               <TabBar<StatusFilter>
@@ -489,7 +527,11 @@ export function Queue() {
                     <TableCell>
                       <div className="space-y-1">
                         <div className="flex justify-between text-[10px] font-mono">
-                          <span className="text-muted-foreground">Phần trăm</span>
+                          <span className="text-muted-foreground">
+                            {job.status === "running" && workerHealth && workerHealth.current_patch_id === job.patch_id && workerHealth.current_chunk_count
+                              ? `Chunk ${workerHealth.current_chunk_index}/${workerHealth.current_chunk_count}`
+                              : "Phần trăm"}
+                          </span>
                           <span className="font-bold text-foreground">{job.percent}%</span>
                         </div>
                         <Progress value={job.percent} className="h-1.5" />

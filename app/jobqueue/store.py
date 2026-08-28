@@ -109,6 +109,39 @@ def find_live_by_dedupe(conn: sqlite3.Connection, dedupe_key: str) -> Job | None
     return Job.from_row(row) if row else None
 
 
+def _suppress_auto_requeues(conn: sqlite3.Connection, job_ids: list[int]) -> None:
+    """Mark only failed/cancelled producer records as cancelled before deleting jobs.
+
+    A queue row is disposable, but startup backfill and automation read their source
+    records. Without this, deleting a failed upload/render job merely makes startup
+    enqueue the same work again.
+    """
+    placeholders = ",".join("?" for _ in job_ids)
+    rows = conn.execute(
+        f"""SELECT job_type, payload_json FROM job WHERE id IN ({placeholders})
+            AND status IN ('pending', 'failed', 'cancelled')""",
+        job_ids,
+    ).fetchall()
+    now = _now()
+    for row in rows:
+        payload = json.loads(row["payload_json"] or "{}")
+        if row["job_type"] == "youtube_upload" and payload.get("upload_id") is not None:
+            conn.execute(
+                "UPDATE youtube_uploads SET status='cancelled' WHERE id=?",
+                (payload["upload_id"],),
+            )
+        elif row["job_type"] == "video" and payload.get("book_job_id") is not None:
+            conn.execute(
+                "UPDATE book_job SET status='cancelled', updated_at=? WHERE id=?",
+                (now, payload["book_job_id"]),
+            )
+        elif row["job_type"] == "patch_video" and payload.get("patch_id") is not None:
+            conn.execute(
+                "UPDATE patch_pipeline SET stage='cancelled', updated_at=? WHERE patch_id=?",
+                (now, payload["patch_id"]),
+            )
+
+
 def update_payload(
     conn: sqlite3.Connection, job_id: int, payload: dict, *,
     worker_id: str | None = None,
@@ -404,6 +437,13 @@ def counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
 
 
 def clear_inactive(conn: sqlite3.Connection) -> int:
+    inactive_ids = [
+        row["id"] for row in conn.execute(
+            "SELECT id FROM job WHERE status IN ('pending', 'failed', 'cancelled')"
+        )
+    ]
+    if inactive_ids:
+        _suppress_auto_requeues(conn, inactive_ids)
     cur = conn.execute("DELETE FROM job WHERE status NOT IN ('running', 'cancelling')")
     conn.commit()
     return cur.rowcount
@@ -414,6 +454,7 @@ def delete_terminal(conn: sqlite3.Connection, job_ids: list[int]) -> int:
     if not ids:
         return 0
     placeholders = ",".join("?" for _ in ids)
+    _suppress_auto_requeues(conn, ids)
     cur = conn.execute(
         f"DELETE FROM job WHERE id IN ({placeholders}) AND status IN ('done', 'failed', 'cancelled')",
         ids,
@@ -446,6 +487,7 @@ def delete_pending(conn: sqlite3.Connection, job_id: int) -> bool:
     if job is None or job.status != PENDING:
         return False
     now = _now()
+    _suppress_auto_requeues(conn, [job_id])
     conn.execute(
         """UPDATE job SET status='cancelled', error_message='upstream job was deleted',
                   finished_at=?, updated_at=? WHERE id IN (

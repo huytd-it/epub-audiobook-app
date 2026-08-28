@@ -46,6 +46,45 @@ def test_enqueue_reuses_a_dedupe_key_after_the_job_finished():
     assert second is not None and second != first
 
 
+def test_delete_terminal_cancels_the_pending_upload_source(tmp_path):
+    conn = _conn(tmp_path)
+    now = _iso()
+    upload_id = conn.execute(
+        """INSERT INTO youtube_uploads (video_path, title, description, tags,
+              privacy_status, status, created_at)
+           VALUES ('/tmp/video.mp4', 'Title', '', '', 'private', 'pending', ?)""",
+        (now,),
+    ).lastrowid
+    conn.commit()
+    job_id = store.enqueue(conn, "youtube_upload", payload={"upload_id": upload_id})
+    store.claim(conn, "youtube_upload", "worker")
+    store.fail(conn, job_id, "upload failed", max_attempts=1)
+
+    assert store.delete_terminal(conn, [job_id]) == 1
+    assert store.get(conn, job_id) is None
+    assert conn.execute("SELECT status FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()[0] == "cancelled"
+
+
+def test_clear_inactive_cancels_pending_book_job_source(tmp_path):
+    conn = _conn(tmp_path)
+    now = _iso()
+    conn.execute(
+        """INSERT INTO book (id, title, original_filename, epub_path, patch_size, status, created_at, updated_at)
+           VALUES (1, 'Book', 'book.epub', '/tmp/book.epub', 10, 'ready', ?, ?)""",
+        (now, now),
+    )
+    book_job_id = conn.execute(
+        """INSERT INTO book_job (book_id, job_type, status, created_at, updated_at)
+           VALUES (1, 'video', 'pending', ?, ?)""",
+        (now, now),
+    ).lastrowid
+    conn.commit()
+    store.enqueue(conn, "video", payload={"book_job_id": book_job_id})
+
+    assert store.clear_inactive(conn) == 1
+    assert conn.execute("SELECT status FROM book_job WHERE id=?", (book_job_id,)).fetchone()[0] == "cancelled"
+
+
 def test_enqueue_dedupes_live_job_by_type_and_payload_patch_id():
     conn = _conn()
     now = _iso()

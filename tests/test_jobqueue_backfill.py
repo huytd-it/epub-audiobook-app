@@ -102,6 +102,26 @@ def test_pending_uploads_become_youtube_jobs(tmp_path):
     assert store.list_jobs(conn, job_type="youtube_upload")[0].payload["upload_id"] == cur.lastrowid
 
 
+def test_cancelled_upload_is_not_backfilled_after_its_job_is_cleared(tmp_path):
+    conn = _conn(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    upload_id = conn.execute(
+        """INSERT INTO youtube_uploads (video_path, title, description, tags,
+              privacy_status, status, created_at)
+           VALUES ('/tmp/v.mp4', 'T', 'D', '', 'private', 'pending', ?)""",
+        (now,),
+    ).lastrowid
+    conn.commit()
+    backfill_pending_jobs(conn)
+    job_id = store.list_jobs(conn, job_type="youtube_upload")[0].id
+    store.claim(conn, "youtube_upload", "worker")
+    store.fail(conn, job_id, "failed", max_attempts=1)
+    store.delete_terminal(conn, [job_id])
+
+    assert backfill_pending_jobs(conn)["youtube_upload"] == 0
+    assert store.list_jobs(conn, job_type="youtube_upload") == []
+
+
 def test_interrupted_validation_returns_to_pending_without_resetting_count(tmp_path):
     conn = _conn(tmp_path); now = datetime.now(timezone.utc).isoformat()
     upload_id = conn.execute("INSERT INTO youtube_uploads (video_path,status,validation_status,integrity_retry_count,created_at) VALUES ('v','pending','validating',1,?)", (now,)).lastrowid; conn.commit()

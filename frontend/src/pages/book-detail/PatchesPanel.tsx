@@ -306,8 +306,8 @@ const PatchRow = React.memo(function PatchRow({
               <span className="hidden lg:inline">Đăng lại</span>
             </Button>
           )}
-          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-[11px]" title="Mở trình duyệt media">
-            <Link to="/media-browser">
+          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-[11px]" title="Mở media của patch">
+            <Link to={`/media-browser?path=${encodeURIComponent(`_Sách/${patch.book_id}/patches/${patch.id}_chunks`)}`}>
               <span className="hidden lg:inline">Media</span>
             </Link>
           </Button>

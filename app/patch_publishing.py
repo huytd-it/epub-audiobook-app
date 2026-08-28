@@ -701,6 +701,9 @@ def reconcile_patch_automation(conn: sqlite3.Connection, *,
                 stats["already_live"] += 1
                 continue
             pipeline = _row(conn, patch_id) or {}
+            if pipeline.get("stage") == "cancelled":
+                stats["skipped"] += 1
+                continue
             upload_id = pipeline.get("youtube_upload_id")
             if upload_id:
                 upload = conn.execute(

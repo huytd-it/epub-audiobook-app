@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { FolderKanban } from "lucide-react";
 import { Header } from "@/components/common/Header";
 import { MediaBrowser, type MediaEntry } from "@/components/media-browser/MediaBrowser";
@@ -19,6 +20,7 @@ const CATEGORY_OPTIONS = [
 ];
 
 export function MediaBrowserPage() {
+  const [searchParams] = useSearchParams();
   const [category, setCategory] = useState("");
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<MediaEntry | null>(null);
@@ -61,6 +63,7 @@ export function MediaBrowserPage() {
 
       <MediaBrowser
         category={category}
+        initialPath={searchParams.get("path") ?? ""}
         onSelect={selectMode ? handleSelect : undefined}
         selectedPath={selected?.path ?? null}
         height="calc(100vh - 260px)"

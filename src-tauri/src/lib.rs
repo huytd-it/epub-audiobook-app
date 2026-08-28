@@ -5,6 +5,7 @@ use tauri::{
 };
 use std::{
     env,
+    io::{Read, Write},
     net::TcpStream,
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -41,11 +42,22 @@ fn project_root() -> Result<PathBuf, String> {
 }
 
 fn backend_is_ready() -> bool {
-    TcpStream::connect_timeout(
+    let mut stream = match TcpStream::connect_timeout(
         &BACKEND_ADDRESS.parse().expect("backend address hợp lệ"),
         Duration::from_millis(250),
-    )
-    .is_ok()
+    ) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    if stream.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response).is_ok()
+        && response.starts_with("HTTP/1.1 200")
+        && response.contains("\"worker_state\"")
 }
 
 fn start_backend() -> Result<Option<BackendProcess>, String> {
