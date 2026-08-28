@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search } from "lucide-react";
+import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search, Square } from "lucide-react";
 import { api, Chapter, Patch, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -75,12 +75,18 @@ export function PatchPreviewDialog({
   const [quickModelId, setQuickModelId] = useState(defaultModelId);
   const [quickVoiceId, setQuickVoiceId] = useState(defaultVoiceId);
   const [quickGenerating, setQuickGenerating] = useState(false);
+  const [chunkPreviewState, setChunkPreviewState] = useState<"idle" | "loading" | "playing">("idle");
+  const [chunkCaption, setChunkCaption] = useState("");
+  const [completedChunksTts, setCompletedChunksTts] = useState<{ engine?: string; voice?: string; source?: string }>();
+  const chunkPreviewAudio = useRef<HTMLAudioElement | null>(null);
+  const chunkPreviewCancelled = useRef(false);
   const quickTts = useTtsOptions(data, quickModelId);
 
   useEffect(() => {
     if (!open || !patch) return;
     let cancelled = false;
     setChapterTexts({});
+    setCompletedChunksTts(undefined);
     setQuickModelId(defaultModelId);
     setQuickVoiceId(defaultVoiceId);
     setLoading(true);
@@ -100,6 +106,16 @@ export function PatchPreviewDialog({
       cancelled = true;
     };
   }, [open, patch, chapters, bookId, onMessage, defaultModelId, defaultVoiceId]);
+
+  const stopChunkPreview = () => {
+    chunkPreviewCancelled.current = true;
+    chunkPreviewAudio.current?.pause();
+    chunkPreviewAudio.current = null;
+    setChunkPreviewState("idle");
+    setChunkCaption("");
+  };
+
+  useEffect(() => stopChunkPreview, [open, patch?.id]);
 
   const percent = patch?.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
   const patchChapters = patch
@@ -153,6 +169,50 @@ export function PatchPreviewDialog({
     }
   };
 
+  const playCompletedChunks = async () => {
+    if (!patch || chunkPreviewState !== "idle") {
+      stopChunkPreview();
+      return;
+    }
+    chunkPreviewCancelled.current = false;
+    setChunkPreviewState("loading");
+    try {
+      const preview = await api<{
+        chunks: { index: number; text: string; pause_ms: number }[];
+        tts: { tts_engine?: string; voice?: string; source?: string };
+      }>(
+        `/books/${bookId}/patches/${patch.id}/completed-chunks-preview`
+      );
+      setCompletedChunksTts({ engine: preview.tts.tts_engine, voice: preview.tts.voice, source: preview.tts.source });
+      if (!preview.chunks.length) {
+        onMessage("Chưa có chunk audio hoàn thành để phát thử.");
+        return;
+      }
+      setChunkPreviewState("playing");
+      for (const chunk of preview.chunks) {
+        if (chunkPreviewCancelled.current) return;
+        if (chunk.pause_ms) await new Promise((resolve) => window.setTimeout(resolve, chunk.pause_ms));
+        if (chunkPreviewCancelled.current) return;
+        setChunkCaption(chunk.text);
+        const audio = new Audio(`/books/${bookId}/patches/${patch.id}/chunk-audio/${chunk.index}`);
+        chunkPreviewAudio.current = audio;
+        await new Promise<void>((resolve, reject) => {
+          audio.onended = () => resolve();
+          audio.onerror = () => reject(new Error(`Không thể phát chunk ${chunk.index + 1}.`));
+          void audio.play().catch(reject);
+        });
+      }
+    } catch (error) {
+      if (!chunkPreviewCancelled.current) onMessage(errorText(error));
+    } finally {
+      if (!chunkPreviewCancelled.current) {
+        chunkPreviewAudio.current = null;
+        setChunkPreviewState("idle");
+        setChunkCaption("");
+      }
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[calc(100%-2rem)] max-w-6xl overflow-hidden">
@@ -188,6 +248,33 @@ export function PatchPreviewDialog({
           <Button size="sm" disabled={!patch || quickGenerating} onClick={generatePatchAudio}>
             {quickGenerating ? "Đang gửi..." : "Tạo audio Patch"}
           </Button>
+        </div>
+
+        <div className="rounded-md border border-border bg-muted/20 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-semibold">Nghe các chunk đã hoàn thành</div>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">Nối liên tục với khoảng nghỉ giống audio/video kết quả.</p>
+              {completedChunksTts && (
+                <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+                  TTS: {completedChunksTts.engine || "mặc định"} · Voice: {completedChunksTts.voice || "mặc định"}
+                  {completedChunksTts.source === "book_settings" ? " (cấu hình sách hiện tại)" : ""}
+                </p>
+              )}
+            </div>
+            <Button size="sm" variant="outline" disabled={!patch || chunkPreviewState === "loading"} onClick={playCompletedChunks}>
+              {chunkPreviewState === "playing" ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+              {chunkPreviewState === "loading" ? "Đang chuẩn bị..." : chunkPreviewState === "playing" ? "Dừng phát" : "Phát tạm"}
+            </Button>
+          </div>
+          {chunkCaption && (
+            <div className="mt-3 rounded bg-background px-3 py-2 text-xs leading-5 text-foreground" aria-live="polite">
+              <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <Captions className="h-3 w-3" /> Phụ đề
+              </div>
+              {chunkCaption}
+            </div>
+          )}
         </div>
 
         <div className="rounded-md border border-border bg-muted/20 p-3">

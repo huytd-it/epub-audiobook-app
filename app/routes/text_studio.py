@@ -22,6 +22,7 @@ from app import audio_merge, repository, text_analysis
 from app.config import settings
 from app.deps import locked_conn
 from app.light_tts import _BACKENDS, LightTTSEngine, _check_backend, list_voices
+from app.production_defaults import get_effective_audio_config
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +369,46 @@ def serve_patch_chunk_audio(request: Request, book_id: int, patch_id: int, index
     if not path.is_file():
         raise HTTPException(status_code=404, detail="chunk not found")
     return FileResponse(str(path), media_type="audio/wav")
+
+
+@router.get("/books/{book_id}/patches/{patch_id}/completed-chunks-preview")
+def completed_chunks_preview(request: Request, book_id: int, patch_id: int):
+    """Describe persisted chunks for the dialog's in-browser progressive preview.
+
+    The client plays these WAVs consecutively instead of creating a temporary merged
+    file. Pauses match the production merge plan and each item carries its caption.
+    """
+    with locked_conn(request) as conn:
+        patch = _require_patch(conn, book_id, patch_id)
+        book = repository.get_book(conn, book_id)
+        inputs = repository.fetch_patch_chunk_inputs(conn, patch)
+        audio_config = get_effective_audio_config(conn, book)
+
+    plan = repository.build_chunk_plan_from_inputs(inputs)
+    chunk_dir = _chunk_dir(book_id, patch_id)
+    try:
+        tts_request = json.loads((chunk_dir / ".tts_request.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        tts_request = {
+            "tts_engine": audio_config.get("model_id"),
+            "voice": audio_config.get("voice_id"),
+            "source": "book_settings",
+        }
+    completed = [
+        {"index": index, "text": item["text"], "pause_ms": pause_ms}
+        for index, (item, pause_ms) in enumerate(
+            zip(
+                plan,
+                audio_merge.build_pause_plan(
+                    plan,
+                    audio_config["chunk_pause_ms"],
+                    audio_config["chapter_pause_ms"],
+                ),
+            )
+        )
+        if (chunk_dir / f"chunk_{index:03d}.wav").is_file()
+    ]
+    return {"chunks": completed, "tts": tts_request}
 
 
 @router.post("/books/{book_id}/text-studio/patches/{patch_id}/preview-paragraph")
