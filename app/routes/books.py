@@ -1169,11 +1169,13 @@ def preview_normalization(
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
-        text = repository.get_chapter_text(conn, book_id, chapter_index)
-        if text is None:
+        chapter = repository.get_chapter(conn, book_id, chapter_index)
+        if chapter is None:
             raise HTTPException(status_code=404, detail=f"chapter {chapter_index} not found")
         opts = get_effective_normalization_options(conn, book)
-        normalized = normalize_text(text, opts)
+        normalized = repository.prepare_chapter_tts_text(
+            chapter, opts, repository.list_replace_rules(conn, book_id)
+        )
     return PlainTextResponse(normalized)
 
 

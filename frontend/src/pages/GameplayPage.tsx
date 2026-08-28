@@ -4,7 +4,7 @@ import { Header, LoadingState } from "@/components/common/Header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-  import { Crown, Gamepad2, Plus, Shield, Sparkles } from "lucide-react";
+import { Crown, Gamepad2, Plus, Shield, Sparkles } from "lucide-react";
 
 type PoolRow = { profile_key: string; game_id?: string | null; status: string; clip_count: number; duration_seconds: number };
 type Fighter = { id: number; name: string; class_name: string; matches: number; wins: number; eliminations: number };
@@ -48,6 +48,8 @@ export function GameplayPage() {
   const [resolution, setResolution] = useState("1920x1080");
   const [count, setCount] = useState(1);
   const [busy, setBusy] = useState(false);
+  const [previewGameId, setPreviewGameId] = useState("");
+  const [previewVersion, setPreviewVersion] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
   const load = () => api<Status>("/gameplay/status").then(setData).catch((e) => setError(String(e)));
   useEffect(() => { load(); }, []);
@@ -70,6 +72,11 @@ export function GameplayPage() {
     setBusy(true); setError(""); const form = new FormData(); form.append("enabled", String(!game.enabled));
     try { await postForm(`/gameplay/games/${game.id}/toggle`, form); await load(); } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
+  const generatePreview = async (id: string) => {
+    setPreviewGameId(id); setError("");
+    try { await postForm(`/gameplay/previews/${id}`, new FormData()); setPreviewVersion((current) => ({ ...current, [id]: Date.now() })); }
+    catch (e) { setError(String(e)); } finally { setPreviewGameId(""); }
+  };
   if (!data) return <><Header title="Gameplay" subtitle="Catalog nền deterministic cho audiobook" />{error ? <p className="text-destructive">{error}</p> : <LoadingState />}</>;
   const available = profilePool.filter((p) => p.status === "available").reduce((sum, p) => sum + p.duration_seconds, 0);
   const statLabels = data.stat_labels?.[gameId] || [];
@@ -82,8 +89,8 @@ export function GameplayPage() {
       {catalog.map((game) => <Card key={game.id} className={game.id === gameId ? "overflow-hidden border-primary" : "overflow-hidden"}>
         <video
           className="aspect-video w-full bg-muted object-cover"
-          src={gameplayPreview(game.id).video}
-          poster={gameplayPreview(game.id).poster}
+          src={`${gameplayPreview(game.id).video}?v=${previewVersion[game.id] || 0}`}
+          poster={`${gameplayPreview(game.id).poster}?v=${previewVersion[game.id] || 0}`}
           muted
           loop
           playsInline
@@ -92,7 +99,7 @@ export function GameplayPage() {
           aria-label={`Preview ${game.name}`}
         />
         <CardHeader><CardTitle className="flex items-center justify-between gap-2"><span>{game.name}</span><Badge variant="outline">{game.family}</Badge></CardTitle></CardHeader>
-        <CardContent className="space-y-3"><p className="min-h-10 text-xs text-muted-foreground">{game.description}</p><div className="flex flex-wrap gap-2 text-[11px]"><Badge variant="secondary">3–5 phút</Badge><Badge variant="secondary">{game.waveform_policy}</Badge>{standings.find((row) => row.game_id === game.id) && <Badge variant="secondary">HI {formatScore(standings.find((row) => row.game_id === game.id)!.best)}</Badge>}</div>{game.family === "retro" && <p className="text-[10px] text-muted-foreground">Máy chơi game cầm tay: bàn cờ ô vuông nhiều màu, HUD điểm số — không dùng ảnh hay theme pack.</p>}{game.family === "procedural" && <p className="text-[10px] text-muted-foreground">Không cần asset — render bằng palette LUT, sóng giải tích và glow cộng dồn.</p>}<div className="flex gap-2"><Button size="sm" variant={game.id === gameId ? "default" : "outline"} onClick={() => setGameId(game.id)} disabled={!game.enabled}>Chọn</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => toggleGame(game)}>{game.enabled ? "Tắt" : "Bật"}</Button></div></CardContent>
+        <CardContent className="space-y-3"><p className="min-h-10 text-xs text-muted-foreground">{game.description}</p><div className="flex flex-wrap gap-2 text-[11px]"><Badge variant="secondary">3–5 phút</Badge><Badge variant="secondary">{game.waveform_policy}</Badge>{standings.find((row) => row.game_id === game.id) && <Badge variant="secondary">HI {formatScore(standings.find((row) => row.game_id === game.id)!.best)}</Badge>}</div>{game.family === "retro" && <p className="text-[10px] text-muted-foreground">Máy chơi game cầm tay: bàn cờ ô vuông nhiều màu, HUD điểm số — không dùng ảnh hay theme pack.</p>}{game.family === "procedural" && <p className="text-[10px] text-muted-foreground">Không cần asset — render bằng palette LUT, sóng giải tích và glow cộng dồn.</p>}<div className="flex flex-wrap gap-2"><Button size="sm" variant={game.id === gameId ? "default" : "outline"} onClick={() => setGameId(game.id)} disabled={!game.enabled}>Chọn</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => toggleGame(game)}>{game.enabled ? "Tắt" : "Bật"}</Button><Button size="sm" variant="outline" disabled={!!previewGameId} onClick={() => generatePreview(game.id)}>{previewGameId === game.id ? "Đang tạo..." : "Tạo video preview"}</Button></div></CardContent>
       </Card>)}
     </section>
     <section className="grid gap-4 lg:grid-cols-3">

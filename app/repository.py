@@ -1110,6 +1110,18 @@ def has_speakable_text(text: str) -> bool:
     return re.search(r"[^\W_]", text, re.UNICODE) is not None
 
 
+def prepare_chapter_tts_text(
+    chapter: Chapter, opts: NormalizationOptions, rules: list[TextReplaceRule]
+) -> str:
+    """Build one chapter's speakable body; its TOC title is not narrated twice."""
+    text = chapter.text
+    title = chapter.title.strip()
+    if title and text.startswith(title):
+        text = text[len(title):].lstrip()
+    text = normalize_chapter_titles(text)
+    return apply_replace_rules(normalize_text(text, opts), rules)
+
+
 def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
     """Return the full text for a patch: included chapter texts joined,
     normalized (if enabled), then with the book's replace rules applied."""
@@ -1117,24 +1129,10 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
         conn, patch.book_id, patch.chapter_start, patch.chapter_end
     )
     included = [ch for ch in chapters if not ch.is_excluded]
-    texts: list[str] = []
-    for ch in included:
-        t = ch.text
-        if ch.title and t.startswith(ch.title) and ch.title[-1] not in _TITLE_END_PUNCTUATION:
-            suffix = t[len(ch.title):].lstrip()
-            if suffix:
-                t = ch.title + ".\n\n" + suffix
-        texts.append(t)
-    raw = "\n\n".join(texts)
-    raw = normalize_chapter_titles(raw)
-
     book = get_book(conn, patch.book_id)
-    if book is not None:
-        opts = get_effective_normalization_options(conn, book)
-        raw = normalize_text(raw, opts)
-
     rules = list_replace_rules(conn, patch.book_id)
-    return apply_replace_rules(raw, rules)
+    opts = get_effective_normalization_options(conn, book) if book else NormalizationOptions()
+    return "\n\n".join(prepare_chapter_tts_text(ch, opts, rules) for ch in included)
 
 
 def fetch_patch_chunk_inputs(
@@ -1173,14 +1171,7 @@ def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
     for chapter in chapters:
         if chapter.is_excluded:
             continue
-        text = chapter.text
-        if chapter.title and text.startswith(chapter.title) and chapter.title[-1] not in _TITLE_END_PUNCTUATION:
-            suffix = text[len(chapter.title):].lstrip()
-            if suffix:
-                text = chapter.title + ".\n\n" + suffix
-        text = normalize_chapter_titles(text)
-        text = normalize_text(text, opts)
-        text = apply_replace_rules(text, rules)
+        text = prepare_chapter_tts_text(chapter, opts, rules)
         if not has_speakable_text(text):
             continue
         chunks = [c for c in split_into_tts_chunks(text, max_chars=limit) if has_speakable_text(c)]

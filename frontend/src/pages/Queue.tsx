@@ -38,6 +38,7 @@ export function Queue() {
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
   const [retryingSelected, setRetryingSelected] = useState(false);
+  const [cancellingSelected, setCancellingSelected] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [jobTypeFilter, setJobTypeFilter] = useState<JobTypeFilter>("all");
@@ -126,7 +127,10 @@ export function Queue() {
   const selectedTerminalIds = jobs
     ?.filter((job) => selectedIds.has(job.id) && ["done", "failed", "cancelled"].includes(job.status))
     .map((job) => job.id) || [];
-  const visibleSelectableIds = visibleJobs.filter((job) => ["done", "failed", "cancelled"].includes(job.status)).map((job) => job.id);
+  const cancellableSelectedIds = jobs
+    ?.filter((job) => selectedIds.has(job.id) && ["pending", "running"].includes(job.status))
+    .map((job) => job.id) || [];
+  const visibleSelectableIds = visibleJobs.map((job) => job.id);
   const allVisibleSelected = visibleSelectableIds.length > 0 && visibleSelectableIds.every((id) => selectedIds.has(id));
   const canReorder = jobTypeFilter !== "all" && statusFilter === "pending";
 
@@ -136,7 +140,7 @@ export function Queue() {
 
   useEffect(() => {
     if (!jobs) return;
-    const selectableIds = new Set(jobs.filter((job) => ["done", "failed", "cancelled"].includes(job.status)).map((job) => job.id));
+    const selectableIds = new Set(jobs.map((job) => job.id));
     setSelectedIds((previous) => new Set([...previous].filter((id) => selectableIds.has(id))));
   }, [jobs]);
 
@@ -156,6 +160,25 @@ export function Queue() {
       await load();
     } finally {
       setRetryingSelected(false);
+    }
+  }
+
+  async function cancelSelected() {
+    const ids = [...cancellableSelectedIds];
+    if (!ids.length) return;
+    setCancellingSelected(true);
+    try {
+      for (const id of ids) {
+        try {
+          await post(`/queue/jobs/${id}/cancel`);
+        } catch (err) {
+          console.error(`Không thể dừng job ${id}`, err);
+        }
+      }
+      setSelectedIds((previous) => new Set([...previous].filter((id) => !ids.includes(id))));
+      await load();
+    } finally {
+      setCancellingSelected(false);
     }
   }
 
@@ -285,11 +308,21 @@ export function Queue() {
               variant="outline"
               size="sm"
               onClick={retrySelected}
-              disabled={retryingSelected || retryableSelectedIds.length === 0}
+              disabled={retryingSelected || cancellingSelected || retryableSelectedIds.length === 0}
               className="text-xs text-emerald-700 hover:bg-emerald-50 disabled:text-muted-foreground"
             >
               <RotateCcw className={`h-3.5 w-3.5 ${retryingSelected ? "animate-spin" : ""}`} />
               {retryingSelected ? "Đang thử lại..." : `Thử lại đã chọn${retryableSelectedIds.length ? ` (${retryableSelectedIds.length})` : ""}`}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={cancelSelected}
+              disabled={cancellingSelected || retryingSelected || cancellableSelectedIds.length === 0}
+              className="text-xs text-red-700 hover:bg-red-50 disabled:text-muted-foreground"
+            >
+              <StopCircle className={`h-3.5 w-3.5 ${cancellingSelected ? "animate-spin" : ""}`} />
+              {cancellingSelected ? "Đang dừng..." : `Dừng đã chọn${cancellableSelectedIds.length ? ` (${cancellableSelectedIds.length})` : ""}`}
             </Button>
             <Button variant="outline" size="sm" onClick={load} title="Làm mới">
               <RefreshCw className="h-3.5 w-3.5" />
@@ -371,9 +404,9 @@ export function Queue() {
                       type="checkbox"
                       className={checkboxClass}
                       checked={allVisibleSelected}
-                      disabled={visibleSelectableIds.length === 0 || retryingSelected}
+                      disabled={visibleSelectableIds.length === 0 || retryingSelected || cancellingSelected || clearing}
                       onChange={(event) => toggleVisibleSelection(event.target.checked)}
-                      aria-label="Chọn tất cả tác vụ có thể thử lại trên trang này"
+                      aria-label="Chọn tất cả tác vụ trên trang này"
                     />
                   </TableHead>
                   <TableHead className="w-16">MÃ JOB</TableHead>
@@ -414,7 +447,7 @@ export function Queue() {
                         type="checkbox"
                         className={checkboxClass}
                         checked={selectedIds.has(job.id)}
-                        disabled={!['done', 'failed', 'cancelled'].includes(job.status) || retryingSelected || clearing}
+                        disabled={retryingSelected || cancellingSelected || clearing}
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => event.stopPropagation()}
                         onChange={(event) => toggleSelection(job.id, event.target.checked)}

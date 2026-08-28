@@ -11,6 +11,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const BACKEND_ADDRESS: &str = "127.0.0.1:8000";
 const BACKEND_URL: &str = "http://127.0.0.1:8000";
@@ -57,12 +59,16 @@ fn start_backend() -> Result<Option<BackendProcess>, String> {
         return Err(format!("Không tìm thấy Python environment: {}", python.display()));
     }
 
-    let child = Command::new(python)
+    let mut command = Command::new(python);
+    command
         .args(["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"])
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let child = command
         .spawn()
         .map_err(|error| format!("Không thể khởi động backend: {error}"))?;
 

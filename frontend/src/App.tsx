@@ -23,10 +23,14 @@ import { ProductionSettingsPage } from "@/pages/ProductionSettingsPage";
 import { GameplayPage } from "@/pages/GameplayPage";
 import { TtsModelsPage } from "@/pages/TtsModelsPage";
 import { NotFound } from "@/pages/NotFound";
+import { ToastViewport } from "@/components/ui/toast";
+import { ConfirmDialogHost } from "@/components/ui/confirm";
 
 function App() {
   return (
     <Shell>
+      <ToastViewport />
+      <ConfirmDialogHost />
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/books" element={<Books />} />

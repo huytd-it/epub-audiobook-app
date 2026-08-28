@@ -12,7 +12,6 @@ import {
   Pencil,
   Settings,
   Video,
-  X,
 } from "lucide-react";
 import { api, Patch, post, postForm, postJson } from "@/api";
 import { Header, LoadingState } from "@/components/common/Header";
@@ -31,6 +30,7 @@ import {
 import { cn } from "@/lib/utils";
 import { AudioSettings, ConfigTab, NormalizationSettings, errorText } from "./book-detail/types";
 import { useBookDetail, useChapterValidation, useTtsOptions } from "./book-detail/useBookDetail";
+import { showToast } from "@/components/ui/toast";
 import { CheckField, LiveIndicator, TabBar } from "./book-detail/parts";
 import { PatchesPanel } from "./book-detail/PatchesPanel";
 import { BuildPanel } from "./book-detail/BuildPanel";
@@ -162,7 +162,6 @@ export function BookDetail() {
   const bookId = id || "";
 
   const [tab, setTab] = useState<MainTab>("patches");
-  const [message, setMessage] = useState("");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [previewPatch, setPreviewPatch] = useState<Patch>();
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -239,7 +238,7 @@ export function BookDetail() {
           chapterPauseMs: String(saved.chapter_pause_ms ?? 1500),
         });
       })
-      .catch((err) => !cancelled && setMessage(errorText(err)));
+      .catch((err) => !cancelled && showToast(errorText(err)));
     return () => {
       cancelled = true;
     };
@@ -261,7 +260,7 @@ export function BookDetail() {
           ttsOptions: {},
         });
       })
-      .catch((err) => !cancelled && setMessage(errorText(err)));
+      .catch((err) => !cancelled && showToast(errorText(err)));
     return () => {
       cancelled = true;
     };
@@ -373,7 +372,7 @@ export function BookDetail() {
         kind === "audio" ? patches : patches.filter((patch) => patch.status === "done");
       const targets = selectedIds.length ? selectedIds : fallback.map((patch) => patch.id);
       if (!targets.length) {
-        setMessage(
+        showToast(
           kind === "audio" ? "Không có patch để tạo âm thanh." : "Không có patch đã có audio để chạy bước này."
         );
         return;
@@ -404,14 +403,14 @@ export function BookDetail() {
             if (!firstError) firstError = err;
           }
         }
-        setMessage(
+        showToast(
           queued === targets.length
             ? `Đã đưa ${queued} patch vào hàng đợi ${label}.`
             : `Đã đưa ${queued}/${targets.length} patch vào hàng đợi ${label}. ${errorText(firstError)}`
         );
         await refresh();
       } catch (err) {
-        setMessage(errorText(err));
+        showToast(errorText(err));
       } finally {
         setRunning(undefined);
         setBusy(false);
@@ -463,14 +462,14 @@ export function BookDetail() {
         : result.auto_create_video
           ? " → tự động dựng video"
           : "";
-      setMessage(
+      showToast(
         `Đã đưa ${result.queued} patch vào hàng đợi TTS${chain}.${
           result.retry_count ? ` Tối đa ${result.retry_count + 1} lần thử mỗi patch.` : ""
         }`
       );
       await refresh();
     } catch (err) {
-      setMessage(errorText(err));
+      showToast(errorText(err));
     } finally {
       setRunning(undefined);
       setBusy(false);
@@ -499,14 +498,14 @@ export function BookDetail() {
         }
       }
       const chain = automation.autoUploadYoutube ? " → tự động upload YouTube" : "";
-      setMessage(
+      showToast(
         queued === targets.length
           ? `Đã đưa ${queued} patch vào hàng đợi video${chain}.`
           : `Đã đưa ${queued}/${targets.length} patch vào hàng đợi video${chain}. ${errorText(firstError)}`
       );
       await refresh();
     } catch (err) {
-      setMessage(errorText(err));
+      showToast(errorText(err));
     } finally {
       setRunning(undefined);
       setBusy(false);
@@ -533,11 +532,11 @@ export function BookDetail() {
       const form = new FormData();
       form.append("title", title);
       await postForm(`/books/${bookId}/rename`, form);
-      setMessage("Đã đổi tên sách.");
+      showToast("Đã đổi tên sách.");
       setRenameOpen(false);
       await refresh();
     } catch (err) {
-      setMessage(errorText(err));
+      showToast(errorText(err));
     } finally {
       setRenaming(false);
     }
@@ -669,18 +668,6 @@ export function BookDetail() {
         }
       />
 
-      {message && (
-        <div
-          role="status"
-          className="flex items-start justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900"
-        >
-          <span>{message}</span>
-          <Button variant="ghost" size="icon" className="-mr-2 -mt-1 h-6 w-6" onClick={() => setMessage("")}>
-            <X className="h-3 w-3" />
-          </Button>
-        </div>
-      )}
-
       {Boolean(data.last_error) && (
         <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
@@ -777,7 +764,7 @@ export function BookDetail() {
             selectedIds={selectedIds}
             onSelectionChange={setSelectedIds}
             onOpenPatch={openPatch}
-            onMessage={setMessage}
+            onMessage={showToast}
             onRefresh={refresh}
             onBusyChange={setBusy}
           />
@@ -791,7 +778,7 @@ export function BookDetail() {
             onSettingsChange={updateExportSettings}
             ttsModels={exportTtsOptions.ttsModels}
             voiceOptions={exportTtsOptions.voiceOptions}
-            onMessage={setMessage}
+            onMessage={showToast}
             onRefresh={refresh}
             onBusyChange={setBusy}
           />
@@ -803,7 +790,7 @@ export function BookDetail() {
           bookId={bookId}
           chapterMax={chapterMax}
           failedCount={stats.failed}
-          onMessage={setMessage}
+          onMessage={showToast}
           onRefresh={refresh}
           onBusyChange={setBusy}
         />
@@ -821,7 +808,7 @@ export function BookDetail() {
       )}
 
       {tab === "thumbnail" && (
-        <OverlayEditor bookId={bookId} patchIds={patchIds} onMessage={setMessage} onSaved={refresh} />
+        <OverlayEditor bookId={bookId} patchIds={patchIds} onMessage={showToast} onSaved={refresh} />
       )}
 
       {/* Thanh hành động theo lựa chọn: chỉ hiện khi có patch được chọn. */}
@@ -853,7 +840,10 @@ export function BookDetail() {
         chapters={data.chapters}
         open={previewOpen}
         onOpenChange={setPreviewOpen}
-        onMessage={setMessage}
+        onMessage={showToast}
+        data={data}
+        defaultModelId={settings.modelId}
+        defaultVoiceId={settings.voiceId}
       />
 
       <BatchRunDialog
@@ -914,7 +904,7 @@ export function BookDetail() {
         ttsModels={ttsModels}
         voiceOptions={voiceOptions}
          voiceClipPath={data.book.voice_clip_path}
-         onMessage={setMessage}
+         onMessage={showToast}
          patchIds={patchIds}
          onSaved={refresh}
        />
@@ -926,7 +916,7 @@ export function BookDetail() {
         open={chapterOpen}
         onOpenChange={setChapterOpen}
         onChapterIndexChange={setChapterIndex}
-        onMessage={setMessage}
+        onMessage={showToast}
         onSaved={onChapterSaved}
       />
 
@@ -934,7 +924,7 @@ export function BookDetail() {
         bookId={bookId}
         open={normalizeOpen}
         onOpenChange={setNormalizeOpen}
-        onMessage={setMessage}
+        onMessage={showToast}
         onOpenChapter={openChapter}
         onApplied={onChapterSaved}
       />

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search } from "lucide-react";
 import { api, Chapter, Patch, postJson, VoiceItem } from "@/api";
@@ -35,6 +35,7 @@ import {
 import { CheckField, Field, TabBar, TtsOptionsFields, checkboxClass, fieldClass, selectClass } from "./parts";
 import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
 import { YouTubeConfigFields } from "./YouTubeFields";
+import { useTtsOptions } from "./useBookDetail";
 
 const WAVEFORM_TEMPLATES = [
   { id: "bold", name: "Dải nổi", description: "Line sáng trên nền tối", style: "line", layout: "horizontal", color: "#ffffff", background: "#050816", backgroundOpacity: 0.68, position: "bottom", height: 150, opacity: 1 },
@@ -50,6 +51,9 @@ export function PatchPreviewDialog({
   open,
   onOpenChange,
   onMessage,
+  data,
+  defaultModelId,
+  defaultVoiceId,
 }: {
   bookId: string;
   patch?: Patch;
@@ -57,6 +61,9 @@ export function PatchPreviewDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onMessage: (message: string) => void;
+  data: import("./types").Detail;
+  defaultModelId: string;
+  defaultVoiceId: string;
 }) {
   const [chapterTexts, setChapterTexts] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(false);
@@ -64,11 +71,18 @@ export function PatchPreviewDialog({
   const [replacement, setReplacement] = useState("");
   const [isRegex, setIsRegex] = useState(false);
   const [replacing, setReplacing] = useState(false);
+  const [tocSearch, setTocSearch] = useState("");
+  const [quickModelId, setQuickModelId] = useState(defaultModelId);
+  const [quickVoiceId, setQuickVoiceId] = useState(defaultVoiceId);
+  const [quickGenerating, setQuickGenerating] = useState(false);
+  const quickTts = useTtsOptions(data, quickModelId);
 
   useEffect(() => {
     if (!open || !patch) return;
     let cancelled = false;
     setChapterTexts({});
+    setQuickModelId(defaultModelId);
+    setQuickVoiceId(defaultVoiceId);
     setLoading(true);
     const patchChapters = chapters.filter(
       (chapter) => chapter.chapter_index >= patch.chapter_start && chapter.chapter_index <= patch.chapter_end
@@ -76,7 +90,7 @@ export function PatchPreviewDialog({
     Promise.all(
       patchChapters.map(async (chapter) => [
         chapter.chapter_index,
-        await api<string>(`/books/${bookId}/chapters/${chapter.chapter_index}/text`),
+        await api<string>(`/books/${bookId}/normalization/preview?chapter_index=${chapter.chapter_index}`),
       ] as const)
     )
       .then((items) => !cancelled && setChapterTexts(Object.fromEntries(items)))
@@ -85,7 +99,7 @@ export function PatchPreviewDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, patch, chapters, bookId, onMessage]);
+  }, [open, patch, chapters, bookId, onMessage, defaultModelId, defaultVoiceId]);
 
   const percent = patch?.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
   const patchChapters = patch
@@ -94,6 +108,13 @@ export function PatchPreviewDialog({
       )
     : [];
   const numberedChapters = patchChapters.filter((chapter) => chapter.chapter_no != null);
+  const visibleTocChapters = useMemo(() => {
+    const needle = tocSearch.trim().toLocaleLowerCase();
+    if (!needle) return patchChapters;
+    return patchChapters.filter((chapter) =>
+      `${chapter.chapter_no ?? chapter.chapter_index + 1} ${chapter.title}`.toLocaleLowerCase().includes(needle)
+    );
+  }, [patchChapters, tocSearch]);
 
   const replaceAllPatches = async () => {
     if (!search) return;
@@ -115,9 +136,26 @@ export function PatchPreviewDialog({
     }
   };
 
+  const generatePatchAudio = async () => {
+    if (!patch || quickGenerating) return;
+    setQuickGenerating(true);
+    try {
+      const result = await postJson<{ queued: number }>(`/books/${bookId}/tts/generate`, {
+        patch_ids: [patch.id],
+        model_id: quickModelId,
+        voice_id: quickVoiceId || undefined,
+      });
+      onMessage(result.queued ? `Đã đưa Patch #${patch.patch_index + 1} vào hàng đợi TTS.` : "Patch đã có audio hoặc đang chờ xử lý.");
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setQuickGenerating(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-3xl overflow-auto">
+      <DialogContent className="w-[calc(100%-2rem)] max-w-6xl overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 pr-8">
             <span className="truncate">
@@ -134,6 +172,23 @@ export function PatchPreviewDialog({
         </DialogHeader>
 
         <Progress value={percent} className="h-1.5" />
+
+        <div className="grid gap-2 rounded-md border border-border bg-muted/20 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+          <Field label="TTS model (chỉ Patch này)">
+            <select className={selectClass} value={quickModelId} onChange={(event) => setQuickModelId(event.target.value)}>
+              {quickTts.ttsModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Voice">
+            <select className={selectClass} value={quickVoiceId} onChange={(event) => setQuickVoiceId(event.target.value)}>
+              <option value="">Mặc định của model</option>
+              {quickTts.voiceOptions.map((voice) => <option key={voice.value} value={voice.value}>{voice.label}</option>)}
+            </select>
+          </Field>
+          <Button size="sm" disabled={!patch || quickGenerating} onClick={generatePatchAudio}>
+            {quickGenerating ? "Đang gửi..." : "Tạo audio Patch"}
+          </Button>
+        </div>
 
         <div className="rounded-md border border-border bg-muted/20 p-3">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold">
@@ -163,35 +218,55 @@ export function PatchPreviewDialog({
           <p className="mt-2 text-[11px] text-muted-foreground">Thao tác này áp dụng cho toàn bộ patch của sách, bao gồm các patch đã sửa thủ công.</p>
         </div>
 
-        {patchChapters.length > 0 && (
-          <nav aria-label="Đi tới chương" className="flex gap-1 overflow-x-auto border-b border-border pb-2">
-            {patchChapters.map((chapter) => (
-              <a
-                key={chapter.id}
-                href={`#patch-chapter-${chapter.chapter_index}`}
-                className="shrink-0 rounded-md border border-border bg-background px-2.5 py-1.5 text-[11px] font-medium hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {chapter.chapter_no != null ? `Chương ${chapter.chapter_no}` : `Mục ${chapter.chapter_index + 1}`}
-              </a>
-            ))}
+        <div className="grid h-[60vh] min-h-[280px] overflow-hidden rounded-md border border-border md:grid-cols-[15rem_minmax(0,1fr)]">
+          <nav aria-label="Mục lục chương" className="overflow-y-auto border-b border-border bg-muted/20 p-2 md:border-b-0 md:border-r">
+            <div className="mb-1 px-2 py-1 text-[11px] font-semibold text-muted-foreground">Mục lục</div>
+            <div className="relative mb-2">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+              <input
+                className="h-8 w-full rounded-md border border-input bg-background pl-7 pr-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+                placeholder="Tìm chương..."
+                value={tocSearch}
+                onChange={(event) => setTocSearch(event.target.value)}
+                aria-label="Tìm trong mục lục"
+              />
+            </div>
+            <div className="flex gap-1 overflow-x-auto md:block md:space-y-1 md:overflow-visible">
+              {visibleTocChapters.map((chapter) => (
+                <button
+                  key={chapter.id}
+                  type="button"
+                  onClick={() => document.getElementById(`patch-chapter-${chapter.chapter_index}`)?.scrollIntoView({ block: "start" })}
+                  title={chapter.title || undefined}
+                  className="shrink-0 max-w-48 rounded-md px-2 py-1.5 text-left text-[11px] font-medium hover:bg-background hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:block md:w-full md:max-w-none"
+                >
+                  <span className="block truncate">
+                    {chapter.title || (chapter.chapter_no != null ? `Chương ${chapter.chapter_no}` : `Mục ${chapter.chapter_index + 1}`)}
+                  </span>
+                </button>
+              ))}
+              {visibleTocChapters.length === 0 && (
+                <div className="px-2 py-3 text-[11px] text-muted-foreground">Không tìm thấy chương.</div>
+              )}
+            </div>
           </nav>
-        )}
 
-        <div className="min-h-[280px] space-y-5 overflow-auto rounded-md border border-border p-4 text-xs leading-5">
-          {loading ? (
-            <div className="py-20 text-center text-muted-foreground">Đang tải nội dung từng chương...</div>
-          ) : patchChapters.length ? (
-            patchChapters.map((chapter) => (
-              <section key={chapter.id} id={`patch-chapter-${chapter.chapter_index}`} className="scroll-mt-4">
-                <h3 className="mb-2 font-semibold text-foreground">{chapter.title || `Chương ${chapter.chapter_no ?? chapter.chapter_index + 1}`}</h3>
-                <div className="whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
-                  {chapterTexts[chapter.chapter_index] || "Chương không có nội dung."}
-                </div>
-              </section>
-            ))
-          ) : (
-            <div className="py-20 text-center text-muted-foreground">Không có chương nào trong patch.</div>
-          )}
+          <div className="min-w-0 space-y-5 overflow-y-auto p-4 text-xs leading-5">
+            {loading ? (
+              <div className="py-20 text-center text-muted-foreground">Đang tải nội dung đã chuẩn hóa TTS và thay thế...</div>
+            ) : patchChapters.length ? (
+              patchChapters.map((chapter) => (
+                <section key={chapter.id} id={`patch-chapter-${chapter.chapter_index}`} className="scroll-mt-4">
+                  <h3 className="mb-2 font-semibold text-foreground">{chapter.title || `Chương ${chapter.chapter_no ?? chapter.chapter_index + 1}`}</h3>
+                  <div className="whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
+                    {chapterTexts[chapter.chapter_index] || "Chương không có nội dung."}
+                  </div>
+                </section>
+              ))
+            ) : (
+              <div className="py-20 text-center text-muted-foreground">Không có chương nào trong patch.</div>
+            )}
+          </div>
         </div>
 
         {patch?.status === "done" && (
@@ -432,7 +507,7 @@ export function ConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-auto">
+      <DialogContent className="flex h-[min(90vh,48rem)] max-w-2xl flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>Cấu hình sản xuất</DialogTitle>
           <DialogDescription>
@@ -452,6 +527,7 @@ export function ConfigDialog({
           ]}
         />
 
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {tab === "audio" && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -561,11 +637,6 @@ export function ConfigDialog({
                 )}
               </div>
             )}
-            <DialogFooter>
-              <Button onClick={saveAudio} disabled={saving}>
-                {saving ? "Đang lưu..." : "Lưu cấu hình âm thanh"}
-              </Button>
-            </DialogFooter>
           </div>
         )}
 
@@ -639,11 +710,6 @@ export function ConfigDialog({
               )}
             </div>
 
-            <DialogFooter>
-              <Button onClick={saveNormalization} disabled={saving}>
-                {saving ? "Đang lưu..." : "Lưu cấu hình chuẩn hóa"}
-              </Button>
-            </DialogFooter>
           </div>
         )}
 
@@ -1118,11 +1184,6 @@ export function ConfigDialog({
                 </div>
               </section>
 
-              <DialogFooter>
-                <Button onClick={saveVideo} disabled={saving}>
-                  {saving ? "Đang lưu..." : "Lưu cấu hình video"}
-                </Button>
-              </DialogFooter>
             </div>
           ) : (
             <div className="py-8 text-center text-xs text-muted-foreground">Đang tải cấu hình video...</div>
@@ -1207,15 +1268,27 @@ export function ConfigDialog({
                 )}
               </div>
 
-              <DialogFooter>
-                <Button onClick={saveYoutube} disabled={saving}>
-                  {saving ? "Đang lưu..." : "Lưu cấu hình YouTube"}
-                </Button>
-              </DialogFooter>
             </div>
           ) : (
             <div className="py-8 text-center text-xs text-muted-foreground">Đang tải cấu hình YouTube...</div>
           ))}
+        </div>
+        <DialogFooter className="shrink-0 border-t border-border pt-4">
+          <Button
+            onClick={tab === "audio" ? saveAudio : tab === "normalization" ? saveNormalization : tab === "video" ? saveVideo : saveYoutube}
+            disabled={saving || (tab === "video" && (!videoConfig || !music)) || (tab === "youtube" && !ytSettings)}
+          >
+            {saving
+              ? "Đang lưu..."
+              : tab === "audio"
+                ? "Lưu cấu hình âm thanh"
+                : tab === "normalization"
+                  ? "Lưu cấu hình chuẩn hóa"
+                  : tab === "video"
+                    ? "Lưu cấu hình video"
+                    : "Lưu cấu hình YouTube"}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

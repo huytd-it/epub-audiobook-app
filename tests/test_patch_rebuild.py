@@ -111,6 +111,25 @@ def test_build_patch_text_skips_excluded(conn):
     assert "chapter bốn" in text
 
 
+def test_build_patch_text_omits_toc_title_from_tts(conn):
+    book_id = _seed_book(conn, 1)
+    conn.execute(
+        "UPDATE chapter SET title = ?, text = ? WHERE book_id = ? AND chapter_index = 0",
+        ("Chương 1: Mở đầu", "Chương 1: Mở đầu\nNội dung chỉ nên được đọc một lần.", book_id),
+    )
+    conn.execute(
+        "INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status, created_at, updated_at) "
+        "VALUES (?, 0, 0, 0, 'pending', '2026-01-01', '2026-01-01')",
+        (book_id,),
+    )
+    conn.commit()
+
+    text = repository.build_patch_text(conn, repository.get_patch(conn, 1))
+
+    assert "Chương 1: Mở đầu" not in text
+    assert "Nội dung chỉ nên được đọc một lần" in text
+
+
 def test_build_patch_text_applies_replace_rules(conn):
     book_id = _seed_book(conn, 3)
     repository.create_replace_rule(conn, book_id, "content", "CONTENT", False, 0)

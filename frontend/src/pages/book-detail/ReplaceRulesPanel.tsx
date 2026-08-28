@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ReplaceRule, ReplaceRuleDeleteResult, ReplaceRuleResult, errorText } from "./types";
 import { checkboxClass, fieldClass } from "./parts";
+import { confirmDialog } from "@/components/ui/confirm";
 
 type Draft = { find: string; replace: string; is_regex: boolean; position: string };
 
@@ -91,7 +92,7 @@ export function ReplaceRulesPanel({ bookId, onMessage }: { bookId: string; onMes
   };
 
   const remove = async (rule: ReplaceRule) => {
-    if (!window.confirm(`Xoá luật thay thế "${rule.find}"?`)) return;
+    if (!(await confirmDialog({ title: `Xoá luật thay thế "${rule.find}"?` }))) return;
     setBusy(true);
     try {
       const result = await postRule<ReplaceRuleDeleteResult>(`/books/${bookId}/replace-rules/${rule.id}/delete`);

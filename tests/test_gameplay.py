@@ -185,6 +185,26 @@ def test_gameplay_api_serves_the_catalog_and_the_boards(tmp_path, monkeypatch):
         assert client.get("/gameplay/leaderboard", params={"game_id": "nope"}).status_code == 404
 
 
+def test_gameplay_preview_api_generates_selected_catalog_preview(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import settings as app_settings
+    from app.main import app
+    from app.routes import gameplay
+
+    monkeypatch.setattr(app_settings, "db_path", str(tmp_path / "api.db"))
+    monkeypatch.setattr(app_settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(app_settings, "enable_worker", False)
+    monkeypatch.setattr(gameplay, "generate_preview", lambda game_id: {
+        "video": f"/gameplay/{game_id}.mp4", "poster": f"/gameplay/{game_id}.jpg",
+    })
+    with TestClient(app) as client:
+        response = client.post("/gameplay/previews/spaceship_voyager")
+        assert response.status_code == 200
+        assert response.json()["video"] == "/gameplay/spaceship_voyager.mp4"
+        assert client.post("/gameplay/previews/nope").status_code == 404
+
+
 def test_books_configured_before_the_retro_catalog_still_render():
     # A book saved against the retired pixel/neon catalog must not fail validation now.
     config = validate_video_config({"background_type": "gameplay", "gameplay": {

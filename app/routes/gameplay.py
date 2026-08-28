@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 
 from app.config import settings
 from app.gameplay_pool import maintain_pool
+from app.gameplay_preview import generate_preview
 from app.gameplay_registry import get_game, list_games
 from app.gameplay_repository import list_themes, pool_status
 from app.gameplay_retro import RETRO_GAMES
@@ -91,6 +92,18 @@ def generate(request: Request, width: int = Form(1920), height: int = Form(1080)
             raise HTTPException(409, "Gameplay game is disabled")
         return maintain_pool(conn, width=width, height=height, fps=fps, game_id=game_id,
                              target_seconds=max(240, count * 240), max_enqueue=max(1, min(count, 10)))
+
+
+@router.post("/previews/{game_id}")
+def generate_gameplay_preview(game_id: str):
+    try:
+        get_game(game_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    try:
+        return generate_preview(game_id)
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @router.get("/themes/prompt", response_class=PlainTextResponse)
