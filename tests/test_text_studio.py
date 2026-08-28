@@ -175,6 +175,22 @@ def test_search_replace_rejects_invalid_regex(client, book_and_patch):
     assert "regex" in response.json()["detail"].lower()
 
 
+def test_book_search_replace_updates_every_patch(client, book_and_patch):
+    book, _ = book_and_patch
+    conn = client.app.state.conn
+    repository.rebuild_patches(conn, book.id, [(0, 0), (1, 1)])
+
+    response = client.post(
+        f"/books/{book.id}/text-studio/replace",
+        json={"search": "Chương", "replace": "Phần"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"replacements": 2, "changed_patches": 2}
+    for patch in repository.list_patches(conn, book.id):
+        assert "Phần" in repository.get_effective_patch_text(conn, patch)
+
+
 def test_analyze_stores_warnings_for_the_patch(client, book_and_patch):
     book, patch = book_and_patch
     base = f"/books/{book.id}/text-studio/patches/{patch.id}"

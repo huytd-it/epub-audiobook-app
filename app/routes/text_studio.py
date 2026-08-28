@@ -209,6 +209,39 @@ async def search_replace(request: Request, book_id: int, patch_id: int):
     return JSONResponse({"text": new_text, "replacements": count})
 
 
+@router.post("/books/{book_id}/text-studio/replace")
+async def replace_book_text(request: Request, book_id: int):
+    """Apply one replacement to every patch, preserving any manual patch edits."""
+    body = await request.json()
+    search = body.get("search", "")
+    replace = body.get("replace", "")
+    is_regex = body.get("is_regex", False)
+    if not search:
+        raise HTTPException(status_code=400, detail="search text required")
+    try:
+        matcher = re.compile(search) if is_regex else None
+    except re.error as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid regex: {exc}") from exc
+
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        replacements = 0
+        changed_patches = 0
+        for patch in repository.list_patches(conn, book_id):
+            text = repository.get_effective_patch_text(conn, patch)
+            if matcher:
+                new_text, count = matcher.subn(replace, text)
+            else:
+                count = text.count(search)
+                new_text = text.replace(search, replace)
+            if count:
+                repository.save_patch_clean_text(conn, patch.id, new_text)
+                replacements += count
+                changed_patches += 1
+    return JSONResponse({"replacements": replacements, "changed_patches": changed_patches})
+
+
 @router.post("/books/{book_id}/text-studio/patches/{patch_id}/reset")
 def reset_patch_text(request: Request, book_id: int, patch_id: int):
     with locked_conn(request) as conn:

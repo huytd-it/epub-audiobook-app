@@ -87,6 +87,7 @@ export type PipelineInfo = {
   playlist_status: string;
   thumbnail_path: string | null;
   youtube_upload_id: number | null;
+  youtube_video_id?: string | null;
   last_error: string | null;
   upload_state: string;
   can_force_new: boolean;

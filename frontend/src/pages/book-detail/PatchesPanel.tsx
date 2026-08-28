@@ -2,20 +2,18 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
-  CloudDownload,
   FileAudio2,
   FileSearch,
   Film,
+  FolderOpen,
   Layers,
-  Replace,
   RotateCcw,
   ScanText,
   ShieldAlert,
-  Upload,
   Video,
   Wrench,
 } from "lucide-react";
-import { api, Chapter, Patch, post, postForm, postJson } from "@/api";
+import { api, Chapter, Patch, post, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/Header";
@@ -42,7 +40,6 @@ import {
 } from "./types";
 import { SectionHead, TabBar, checkboxClass } from "./parts";
 import { PatchIssuesDialog } from "./PatchIssuesDialog";
-import { FindReplaceDialog } from "./FindReplaceDialog";
 
 type Filter = "all" | "processing" | "done" | "failed";
 
@@ -70,9 +67,7 @@ type RowProps = {
   onSelect: (patchId: number, mode: SelectMode) => void;
   onOpen: (patch: Patch) => void;
   onOpenIssues: (patch: Patch) => void;
-  onOpenFindReplace: (patch: Patch) => void;
-  onImportDrive: (patch: Patch) => void;
-  onImportFiles: (patch: Patch, files: FileList | null) => void;
+  onOpenFolder: (patch: Patch) => void;
   onUploadVideo: (patch: Patch) => void;
   onRetryPublish: (patch: Patch) => void;
   onRepublish: (patch: Patch) => void;
@@ -91,9 +86,7 @@ const PatchRow = React.memo(function PatchRow({
   onSelect,
   onOpen,
   onOpenIssues,
-  onOpenFindReplace,
-  onImportDrive,
-  onImportFiles,
+  onOpenFolder,
   onUploadVideo,
   onRetryPublish,
   onRepublish,
@@ -212,19 +205,19 @@ const PatchRow = React.memo(function PatchRow({
       <TableCell className="min-w-28 py-2.5">
         <div className="flex flex-wrap gap-1">
           {patch.status === "done" && (
-            <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+            <button onClick={() => onOpen(patch)} title="Nghe audio patch" className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 hover:bg-emerald-100">
               <FileAudio2 className="h-2.5 w-2.5" /> Audio
-            </span>
+            </button>
           )}
           {pipeline?.video_status === "done" && (
-            <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+            <button onClick={() => window.open(`/books/${patch.book_id}/patches/${patch.id}/video/preview`, "_blank", "noopener,noreferrer")} title="Xem trước video" className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100">
               <Film className="h-2.5 w-2.5" /> Video
-            </span>
+            </button>
           )}
           {pipeline?.upload_state === "published" && (
-            <span className="inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700">
+            <button onClick={() => pipeline.youtube_video_id && window.open(`https://www.youtube.com/watch?v=${pipeline.youtube_video_id}`, "_blank", "noopener,noreferrer")} title="Mở video trên YouTube" className="inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-100">
               <Video className="h-2.5 w-2.5" /> YouTube
-            </span>
+            </button>
           )}
           {pipeline && (stageBlockedReason(pipeline.stage) || pipeline.last_error) && (
             <span
@@ -320,43 +313,13 @@ const PatchRow = React.memo(function PatchRow({
             size="sm"
             variant="ghost"
             className="h-7 px-2 text-[11px]"
-            disabled={busy || patch.status === "processing"}
-            onClick={() => onOpenFindReplace(patch)}
-            title="Tìm & thay trong text của patch"
+            disabled={busy}
+            onClick={() => onOpenFolder(patch)}
+            title="Mở thư mục media của patch"
           >
-            <Replace className="h-3 w-3" />
-            <span className="hidden lg:inline">Tìm & thay</span>
+            <FolderOpen className="h-3 w-3" />
+            <span className="hidden lg:inline">Media</span>
           </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-[11px]"
-            disabled={busy || patch.status === "processing"}
-            onClick={() => onImportDrive(patch)}
-            title="Quét kết quả từ Drive Desktop"
-          >
-            <CloudDownload className="h-3 w-3" />
-            <span className="hidden lg:inline">Drive</span>
-          </Button>
-          <label className="inline-flex">
-            <input
-              className="hidden"
-              type="file"
-              multiple
-              accept=".wav,.zip"
-              onChange={(event) => {
-                onImportFiles(patch, event.target.files);
-                event.currentTarget.value = "";
-              }}
-            />
-            <span
-              className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md px-2 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-              title="Tải chunk WAV lên"
-            >
-              <Upload className="h-3 w-3" />
-              <span className="hidden lg:inline">Upload</span>
-            </span>
-          </label>
         </div>
       </TableCell>
     </TableRow>
@@ -486,13 +449,6 @@ export function PatchesPanel({
     setIssuesOpen(true);
   }, []);
 
-  const [findReplacePatch, setFindReplacePatch] = useState<Patch>();
-  const [findReplaceOpen, setFindReplaceOpen] = useState(false);
-  const openFindReplace = useCallback((patch: Patch) => {
-    setFindReplacePatch(patch);
-    setFindReplaceOpen(true);
-  }, []);
-
   const visible = useMemo(
     () => (filter === "all" ? patches : patches.filter((patch) => patch.status === filter)),
     [patches, filter]
@@ -555,27 +511,13 @@ export function PatchesPanel({
     [onBusyChange, onMessage, onRefresh]
   );
 
-  const importDrive = useCallback(
+  const openFolder = useCallback(
     (patch: Patch) =>
       runImport(
         patch,
-        () => post(`/books/${bookId}/patches/${patch.id}/import`),
-        `Đã quét Drive Desktop cho patch ${patch.patch_index + 1}.`
+        () => post(`/local-bridge/books/${bookId}/patches/${patch.id}/open-folder`),
+        `Đã mở thư mục media của patch ${patch.patch_index + 1}.`
       ),
-    [bookId, runImport]
-  );
-
-  const importFiles = useCallback(
-    (patch: Patch, files: FileList | null) => {
-      if (!files?.length) return;
-      const form = new FormData();
-      Array.from(files).forEach((file) => form.append("files", file));
-      return runImport(
-        patch,
-        () => postForm(`/books/${bookId}/patches/${patch.id}/import-local`, form),
-        `Đã upload ${files.length} chunk cho patch ${patch.patch_index + 1}.`
-      );
-    },
     [bookId, runImport]
   );
 
@@ -724,9 +666,7 @@ export function PatchesPanel({
                     onSelect={select}
                     onOpen={onOpenPatch}
                     onOpenIssues={openIssues}
-                    onOpenFindReplace={openFindReplace}
-                    onImportDrive={importDrive}
-                    onImportFiles={importFiles}
+                    onOpenFolder={openFolder}
                     onUploadVideo={uploadVideo}
                     onRetryPublish={retryPublish}
                     onRepublish={(patch) => setRepublishPatch(patch)}
@@ -753,15 +693,6 @@ export function PatchesPanel({
         open={issuesOpen}
         onOpenChange={setIssuesOpen}
         onMessage={onMessage}
-      />
-
-      <FindReplaceDialog
-        bookId={bookId}
-        patch={findReplacePatch}
-        open={findReplaceOpen}
-        onOpenChange={setFindReplaceOpen}
-        onMessage={onMessage}
-        onSaved={onRefresh}
       />
 
       <Dialog open={Boolean(republishPatch)} onOpenChange={(open) => !open && setRepublishPatch(undefined)}>

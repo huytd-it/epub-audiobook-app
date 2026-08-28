@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play } from "lucide-react";
+import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search } from "lucide-react";
 import { api, Chapter, Patch, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -60,6 +60,10 @@ export function PatchPreviewDialog({
 }) {
   const [chapterTexts, setChapterTexts] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [replacement, setReplacement] = useState("");
+  const [isRegex, setIsRegex] = useState(false);
+  const [replacing, setReplacing] = useState(false);
 
   useEffect(() => {
     if (!open || !patch) return;
@@ -91,6 +95,26 @@ export function PatchPreviewDialog({
     : [];
   const numberedChapters = patchChapters.filter((chapter) => chapter.chapter_no != null);
 
+  const replaceAllPatches = async () => {
+    if (!search) return;
+    setReplacing(true);
+    try {
+      const result = await postJson<{ replacements: number; changed_patches: number }>(
+        `/books/${bookId}/text-studio/replace`,
+        { search, replace: replacement, is_regex: isRegex }
+      );
+      onMessage(
+        result.replacements
+          ? `Đã thay ${result.replacements} chỗ trên ${result.changed_patches} patch.`
+          : "Không tìm thấy chuỗi nào để thay."
+      );
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setReplacing(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-3xl overflow-auto">
@@ -110,6 +134,34 @@ export function PatchPreviewDialog({
         </DialogHeader>
 
         <Progress value={percent} className="h-1.5" />
+
+        <div className="rounded-md border border-border bg-muted/20 p-3">
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold">
+            <Replace className="h-3.5 w-3.5" /> Tìm và thay thế toàn bộ patches
+          </div>
+          <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto] sm:items-center">
+            <input
+              className={cn(fieldClass, "font-mono text-xs")}
+              placeholder="Tìm..."
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <input
+              className={cn(fieldClass, "font-mono text-xs")}
+              placeholder="Thay bằng..."
+              value={replacement}
+              onChange={(event) => setReplacement(event.target.value)}
+            />
+            <label className="flex items-center gap-1.5 text-xs font-medium">
+              <input type="checkbox" className={checkboxClass} checked={isRegex} onChange={(event) => setIsRegex(event.target.checked)} />
+              Regex
+            </label>
+            <Button size="sm" disabled={!search || replacing} onClick={replaceAllPatches}>
+              <Search className="h-3.5 w-3.5" /> {replacing ? "Đang thay..." : "Thay tất cả"}
+            </Button>
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">Thao tác này áp dụng cho toàn bộ patch của sách, bao gồm các patch đã sửa thủ công.</p>
+        </div>
 
         {patchChapters.length > 0 && (
           <nav aria-label="Đi tới chương" className="flex gap-1 overflow-x-auto border-b border-border pb-2">

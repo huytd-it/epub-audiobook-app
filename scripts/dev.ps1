@@ -28,7 +28,7 @@ $processes = @()
 try {
     # ── 1. Python Backend ─────────────────────────────────────────────────────
     Write-Host "`n[1/2] Starting Python backend on port 8000..." -ForegroundColor Yellow
-    $backendProc = Start-Process -FilePath $venvPython -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload" -WorkingDirectory $Root -PassThru -NoNewWindow
+    $backendProc = Start-Process -FilePath $venvPython -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload", "--reload-dir", "app" -WorkingDirectory $Root -PassThru -NoNewWindow
     $processes += $backendProc
     Write-Host "  Backend PID: $($backendProc.Id)" -ForegroundColor DarkGray
 

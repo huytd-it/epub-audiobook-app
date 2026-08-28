@@ -303,6 +303,7 @@ def book_status(request: Request, book_id: int):
                 "playlist_status": row["playlist_status"],
                 "thumbnail_path": row["thumbnail_path"],
                 "youtube_upload_id": row["youtube_upload_id"],
+                "youtube_video_id": row["youtube_video_id"],
                 "last_error": row["last_error"],
                 "upload_state": (
                     "published" if row["stage"] == "published" else
@@ -313,7 +314,11 @@ def book_status(request: Request, book_id: int):
                 "can_force_new": row["stage"] == "published",
             }
             for row in conn.execute(
-                "SELECT patch_id,stage,thumbnail_status,video_status,upload_status,playlist_status,thumbnail_path,youtube_upload_id,last_error FROM patch_pipeline WHERE patch_id IN ({})".format(
+                """SELECT pp.patch_id,pp.stage,pp.thumbnail_status,pp.video_status,pp.upload_status,pp.playlist_status,
+                          pp.thumbnail_path,pp.youtube_upload_id,pp.last_error,yu.youtube_video_id
+                     FROM patch_pipeline pp
+                LEFT JOIN youtube_uploads yu ON yu.id=pp.youtube_upload_id
+                    WHERE pp.patch_id IN ({})""".format(
                     ",".join("?" for _ in patch_list)
                 ),
                 [p.id for p in patch_list],
@@ -1287,6 +1292,19 @@ def get_patch_audio(request: Request, book_id: int, patch_id: int):
             raise HTTPException(status_code=404, detail="audio not available")
         path = patch.audio_path
     return FileResponse(path, media_type="audio/wav")
+
+
+@router.get("/books/{book_id}/patches/{patch_id}/video/preview")
+def get_patch_video_preview(request: Request, book_id: int, patch_id: int):
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        row = conn.execute("SELECT video_path FROM patch_pipeline WHERE patch_id=?", (patch_id,)).fetchone()
+        path = row["video_path"] if row else None
+    if not path or not Path(path).is_file():
+        raise HTTPException(status_code=404, detail="video not available")
+    return FileResponse(path, media_type="video/mp4")
 
 
 
