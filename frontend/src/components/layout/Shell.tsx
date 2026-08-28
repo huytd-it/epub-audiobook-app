@@ -22,6 +22,8 @@ import {
   Music,
   Image,
   Mic,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -73,8 +75,72 @@ const navSections: NavSection[] = [
   },
 ];
 
-function SidebarNav({ onSelect }: { onSelect?: () => void }) {
+function SidebarNav({ onSelect, collapsed = false }: { onSelect?: () => void; collapsed?: boolean }) {
   const location = useLocation();
+
+  if (collapsed) {
+    return (
+      <div className="flex flex-col h-full">
+        {/* Brand Header */}
+        <Link
+          to="/"
+          className="flex items-center justify-center px-2 py-4 border-b border-border hover:opacity-90 transition-opacity"
+          onClick={onSelect}
+        >
+          <div className="h-9 w-9 rounded-md flex items-center justify-center p-1.5 shrink-0">
+            <img src="/studio-mark.svg" alt="Xưởng Sách Nói" className="h-full w-full invert" />
+          </div>
+        </Link>
+
+        {/* Navigation Sections */}
+        <div className="flex-1 overflow-y-auto py-4 px-2 space-y-6">
+          {navSections.map((section) => (
+            <div key={section.title} className="space-y-1">
+              <div className="flex justify-center">
+                <div className="h-px w-6 bg-muted" title={section.title} />
+              </div>
+              <nav className="space-y-0.5">
+                {section.items.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = item.exact
+                    ? location.pathname === item.to
+                    : location.pathname === item.to ||
+                      (item.to !== "/" && location.pathname.startsWith(item.to));
+
+                  return (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      onClick={onSelect}
+                      title={item.label}
+                      aria-label={item.label}
+                      className={`flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition-colors ${
+                        isActive
+                          ? "bg-primary text-primary-foreground font-semibold shadow-xs"
+                          : "text-foreground/80 hover:bg-muted hover:text-foreground"
+                      }`}
+                    >
+                      <Icon className={`h-4 w-4 shrink-0 ${isActive ? "text-primary-foreground" : "text-muted-foreground"}`} />
+                    </NavLink>
+                  );
+                })}
+              </nav>
+            </div>
+          ))}
+        </div>
+
+        {/* Studio Operational Status */}
+        <div className="p-2.5 border-t border-border bg-muted/30 flex justify-center">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground" title="Backend cục bộ">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-lime opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-lime"></span>
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -155,20 +221,40 @@ function getInitialTheme(): Theme {
 export function Shell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const [collapsed, setCollapsed] = useState(() => {
+    const saved = window.localStorage.getItem("studio-sidebar-collapsed");
+    return saved === "1";
+  });
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     window.localStorage.setItem("studio-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    window.localStorage.setItem("studio-sidebar-collapsed", collapsed ? "1" : "0");
+  }, [collapsed]);
+
   const toggleTheme = () => setTheme((current) => current === "dark" ? "light" : "dark");
+  const toggleSidebar = () => setCollapsed((current) => !current);
   const themeLabel = theme === "dark" ? "Chuyển sang giao diện sáng" : "Chuyển sang giao diện tối";
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col md:flex-row">
       {/* Desktop Sidebar */}
-      <aside className="hidden md:flex w-64 flex-col fixed top-0 bottom-0 left-0 border-r border-border bg-card z-30">
-        <SidebarNav />
+      <aside
+        className={`hidden md:flex ${collapsed ? "w-16" : "w-64"} flex-col fixed top-0 bottom-0 left-0 border-r border-border bg-card z-30 transition-[width] duration-300`}
+      >
+        <SidebarNav collapsed={collapsed} />
+        <button
+          onClick={toggleSidebar}
+          aria-label={collapsed ? "Mở rộng panel" : "Thu gọn panel"}
+          title={collapsed ? "Mở rộng panel" : "Thu gọn panel"}
+          className="flex items-center justify-center gap-2 p-2.5 border-t border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        >
+          {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          {!collapsed && <span className="text-[10px] font-mono uppercase tracking-wide">Thu gọn</span>}
+        </button>
       </aside>
 
       {/* Mobile Top Navigation Header */}
@@ -197,7 +283,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 md:ml-64 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
+      <main className={`flex-1 ${collapsed ? "md:ml-16" : "md:ml-64"} min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full transition-[margin] duration-300`}>
         {/* Top Status Bar (Control Room style) */}
         <div className="hidden sm:flex items-center justify-between pb-4 mb-6 border-b border-border text-xs text-muted-foreground font-mono">
           <div className="flex items-center gap-2">
