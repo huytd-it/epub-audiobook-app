@@ -5,13 +5,10 @@ import {
   Library,
   UploadCloud,
   ListOrdered,
-  Film,
-  FolderKanban,
   Wrench,
   Video,
   HardDrive,
   Database,
-  Workflow,
   FileText,
   Sparkles,
   Settings2,
@@ -22,6 +19,9 @@ import {
   Sun,
   Swords,
   FolderSearch,
+  Music,
+  Image,
+  Mic,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -51,12 +51,12 @@ const navSections: NavSection[] = [
     title: "PRODUCTION",
     items: [
       { to: "/queue", label: "Hàng đợi sản xuất", icon: ListOrdered },
-      { to: "/video", label: "Video thành phẩm", icon: Film },
-      { to: "/media", label: "Kho tư liệu", icon: FolderKanban },
       { to: "/media-browser", label: "Duyệt Media", icon: FolderSearch },
-      { to: "/gameplay", label: "Đấu trường", icon: Swords },
-      { to: "/production-defaults", label: "Cấu hình mặc định", icon: Settings2 },
-      { to: "/tts-models", label: "Model TTS", icon: Box },
+      { to: "/music", label: "Âm nhạc & Nhạc nền", icon: Music },
+      { to: "/photos", label: "Hình ảnh & Background", icon: Image },
+      { to: "/voices", label: "Giọng đọc & Voice", icon: Mic },
+      { to: "/effects", label: "Hiệu ứng", icon: Sparkles },
+      { to: "/gameplay", label: "Video Gameplay", icon: Swords },
     ],
   },
   {
@@ -66,9 +66,9 @@ const navSections: NavSection[] = [
       { to: "/youtube", label: "YouTube", icon: Video },
       { to: "/drive", label: "Google Drive", icon: HardDrive },
       { to: "/database-io", label: "Dữ liệu", icon: Database },
-      { to: "/flows", label: "Luồng tự động", icon: Workflow },
       { to: "/logs", label: "Nhật ký", icon: FileText },
-      { to: "/effects", label: "Hiệu ứng", icon: Sparkles },
+      { to: "/production-defaults", label: "Cấu hình mặc định", icon: Settings2 },
+      { to: "/tts-models", label: "Model TTS", icon: Box },
     ],
   },
 ];

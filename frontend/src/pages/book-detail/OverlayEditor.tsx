@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
-import { api, post, postJson } from "@/api";
+import { api, post, postForm, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { DialogFooter } from "@/components/ui/dialog";
@@ -459,18 +459,37 @@ export function OverlayEditor({
           <CardContent className="space-y-3 p-4">
             <div>
               <div className="text-sm font-semibold">Thumbnail các patch</div>
-              <div className="text-xs text-muted-foreground">Ảnh preview của patch đầu tiên, dùng cho video và YouTube.</div>
+              <div className="text-xs text-muted-foreground">Ảnh preview của patch đầu tiên, dùng cho video và YouTube. Nhấn vào ảnh để upload ảnh tùy chỉnh.</div>
             </div>
-            <figure className="max-w-xl overflow-hidden rounded-md border bg-muted/20">
+            <label className="max-w-xl block cursor-pointer overflow-hidden rounded-md border bg-muted/20 hover:ring-2 hover:ring-primary/50 transition-all">
+              <input
+                type="file"
+                className="hidden"
+                accept=".jpg,.jpeg,.png,.webp"
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  const formData = new FormData();
+                  formData.append("image", file);
+                  try {
+                    await postForm(`/books/${bookId}/patches/${patchIds[0]}/image`, formData);
+                    setThumbnailRevision((c) => c + 1);
+                    onMessage("Đã upload ảnh thumbnail tùy chỉnh.");
+                  } catch (error) {
+                    onMessage(errorText(error));
+                  }
+                  event.currentTarget.value = "";
+                }}
+              />
               <div className="aspect-video bg-muted">
                 <img
                   src={`/books/${bookId}/patches/${patchIds[0]}/overlay-image?v=${thumbnailRevision}`}
                   alt="Thumbnail patch 1"
-                  className="h-full w-full object-contain"
+                  className="h-full w-full object-contain pointer-events-none"
                 />
               </div>
-              <figcaption className="border-t px-3 py-2 text-xs font-medium">Patch 1</figcaption>
-            </figure>
+              <figcaption className="border-t px-3 py-2 text-xs font-medium">Patch 1 — Nhấn để upload ảnh</figcaption>
+            </label>
           </CardContent>
         </Card>
       )}

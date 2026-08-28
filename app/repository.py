@@ -1006,9 +1006,16 @@ def rebuild_patches(
     book_id: int,
     ranges: list[tuple[int, int]],
     reset_done: bool = False,
+    skip_excluded_check: bool = False,
 ) -> list[Patch]:
     """Replace all patches for this book. Validates ranges, deletes old patches,
-    inserts new ones. Resets book state."""
+    inserts new ones. Resets book state.
+
+    When *skip_excluded_check* is True the excluded-chapter validation is
+    skipped — callers like ``auto_build_patches`` already filter excluded
+    chapters from the ranges, so checking here would false-positive on gaps
+    between ranges.
+    """
     ranges = list(ranges)
     if not ranges:
         raise ValueError("ranges must not be empty")
@@ -1024,19 +1031,20 @@ def rebuild_patches(
                     f"overlapping ranges: [{a_start},{a_end}] and [{b_start},{b_end}]"
                 )
 
-    excluded_indices = {
-        r["chapter_index"]
-        for r in conn.execute(
-            "SELECT chapter_index FROM chapter WHERE book_id = ? AND is_excluded = 1",
-            (book_id,),
-        )
-    }
-    for i, (start, end) in enumerate(ranges):
-        for ci in range(start, end + 1):
-            if ci in excluded_indices:
-                raise ValueError(
-                    f"range {i} [{start},{end}] includes excluded chapter {ci}"
-                )
+    if not skip_excluded_check:
+        excluded_indices = {
+            r["chapter_index"]
+            for r in conn.execute(
+                "SELECT chapter_index FROM chapter WHERE book_id = ? AND is_excluded = 1",
+                (book_id,),
+            )
+        }
+        for i, (start, end) in enumerate(ranges):
+            for ci in range(start, end + 1):
+                if ci in excluded_indices:
+                    raise ValueError(
+                        f"range {i} [{start},{end}] includes excluded chapter {ci}"
+                    )
 
     existing = conn.execute(
         "SELECT chapter_index FROM chapter WHERE book_id = ?", (book_id,)
@@ -1553,9 +1561,14 @@ def auto_build_patches(
     start_chapter: int,
     end_chapter: int | None = None,
     patch_size: int | None = None,
+    force_rebuild: bool = False,
 ) -> list[Patch]:
     """Generate a patch list from start_chapter to end_chapter (or max chapter)
-    in chunks of patch_size (or book.patch_size), skipping excluded chapters."""
+    in chunks of patch_size (or book.patch_size), skipping excluded chapters.
+
+    When *force_rebuild* is True, existing patches for the affected ranges are
+    deleted and recreated (via ``rebuild_patches`` with ``reset_done=True``).
+    """
 
     book = get_book(conn, book_id)
     if book is None:
@@ -1600,7 +1613,7 @@ def auto_build_patches(
         chunk = included[i : i + patch_size]
         ranges.append((chunk[0], chunk[-1]))
 
-    return rebuild_patches(conn, book_id, ranges, reset_done=True)
+    return rebuild_patches(conn, book_id, ranges, reset_done=True, skip_excluded_check=True)
 
 
 # ---------------------------------------------------------------------------

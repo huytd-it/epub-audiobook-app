@@ -154,6 +154,7 @@ export function BuildPanel({
   const [startChapter, setStartChapter] = useState("0");
   const [endChapter, setEndChapter] = useState("");
   const [patchSize, setPatchSize] = useState("");
+  const [forceRebuild, setForceRebuild] = useState(false);
   const [planned, setPlanned] = useState<PlannedPatch[]>([]);
   const [rangeCheck, setRangeCheck] = useState<PlannedRangeCheck>();
   const [building, setBuilding] = useState(false);
@@ -313,6 +314,7 @@ export function BuildPanel({
       form.set("start_chapter", startChapter);
       if (endChapter) form.set("end_chapter", endChapter);
       if (patchSize) form.set("patch_size", patchSize);
+      if (forceRebuild) form.set("force", "true");
       await post(`/books/${bookId}/patches/auto-build`, form);
       setPlanned([]);
       onMessage("Đã tạo patch.");
@@ -443,6 +445,11 @@ export function BuildPanel({
             <Button onClick={build} disabled={building}>
               {building ? "Đang xây dựng..." : "Build patch"}
             </Button>
+            <CheckField
+              label="Force rebuild"
+              checked={forceRebuild}
+              onChange={setForceRebuild}
+            />
             {failedCount > 0 && (
               <Button variant="outline" onClick={retryFailed}>
                 <RotateCcw className="h-4 w-4" /> Retry lỗi ({failedCount})

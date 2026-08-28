@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { Video, HardDrive, Database, Workflow, FileText, Sparkles, ArrowRight } from "lucide-react";
+import { Video, HardDrive, Database, FileText, ArrowRight } from "lucide-react";
 import { Header } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
@@ -8,9 +8,7 @@ const toolList = [
   { to: "/youtube", title: "YouTube Publishing", desc: "Tự động đăng tải video & quản lý danh sách phát", icon: Video },
   { to: "/drive", title: "Google Drive Sync", desc: "Đồng bộ tư liệu & xuất bản tập tin lên mây", icon: HardDrive },
   { to: "/database-io", title: "Quản trị dữ liệu", desc: "Sao lưu, khôi phục và kiểm tra SQLite DB", icon: Database },
-  { to: "/flows", title: "Luồng tự động", desc: "Cấu hình pipeline xử lý batch chuỗi tác vụ", icon: Workflow },
   { to: "/logs", title: "Nhật ký hệ thống", desc: "Xem dòng log trực tiếp từ backend FastAPI", icon: FileText },
-  { to: "/effects", title: "Bộ hiệu ứng sound", desc: "Tùy chỉnh audio filter, pitch và equalizer", icon: Sparkles },
 ];
 
 export function Tools() {

@@ -525,6 +525,71 @@ def get_pending_uploads(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def set_upload_scheduled_publish(conn: sqlite3.Connection, upload_id: int, scheduled_publish_at: str | None) -> None:
+    """Set or clear the scheduled publish time for an upload."""
+    conn.execute(
+        "UPDATE youtube_uploads SET scheduled_publish_at=? WHERE id=?",
+        (scheduled_publish_at, upload_id),
+    )
+    conn.commit()
+
+
+def set_upload_ai_labels(conn: sqlite3.Connection, upload_id: int, ai_labels: list[str]) -> None:
+    """Set AI-generated labels for an upload and merge into tags."""
+    labels_json = json.dumps(ai_labels)
+    row = conn.execute("SELECT tags FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+    if row is None:
+        return
+    existing_tags = json.loads(row["tags"]) if row["tags"] else []
+    # Merge AI labels into tags (deduplicate)
+    merged = list(dict.fromkeys(existing_tags + ai_labels))
+    conn.execute(
+        "UPDATE youtube_uploads SET ai_labels=?, tags=? WHERE id=?",
+        (labels_json, json.dumps(merged), upload_id),
+    )
+    conn.commit()
+
+
+def generate_ai_labels(title: str, description: str = "") -> list[str]:
+    """Generate AI labels/tags from video title and description.
+
+    Uses simple keyword extraction as a lightweight alternative to a full NLP model.
+    Returns a list of relevant tags.
+    """
+    import re
+    text = f"{title} {description}".lower()
+    # Common Vietnamese audiobook keywords
+    keywords = {
+        "truyện ngắn": ["truyện ngắn", "short story"],
+        "tiểu thuyết": ["tiểu thuyết", "novel"],
+        "trinh thám": ["trinh thám", "mystery", "detective"],
+        "tình cảm": ["tình cảm", "romance", "love"],
+        "hài hước": ["hài hước", "comedy", "funny"],
+        "kinh dị": ["kinh dị", "horror", "scary"],
+        "viễn tưởng": ["viễn tưởng", "sci-fi", "fantasy"],
+        "lịch sử": ["lịch sử", "history"],
+        "đời sống": ["đời sống", "lifestyle"],
+        "tâm lý": ["tâm lý", "psychology"],
+        "sách nói": ["sách nói", "audiobook"],
+        "audio book": ["audiobook", "audio book"],
+        "podcast": ["podcast"],
+        "truyện cười": ["truyện cười", "jokes"],
+        "cổ tích": ["cổ tích", "fairy tale"],
+        "ngôn tình": ["ngôn tình", "romance novel"],
+        "văn học": ["văn học", "literature"],
+        "tiên hiệp": ["tiên hiệp", "xianxia"],
+        "huyền huyễn": ["huyền huyễn", "fantasy"],
+        "đam mỹ": ["đam mỹ", "bl", "boys love"],
+    }
+    found = []
+    for label, triggers in keywords.items():
+        for trigger in triggers:
+            if trigger in text:
+                found.append(label)
+                break
+    return found[:10]  # Cap at 10 labels
+
+
 def mark_upload_done(conn: sqlite3.Connection, upload_id: int, youtube_video_id: str) -> None:
     conn.execute(
         "UPDATE youtube_uploads SET youtube_video_id=?, status='done', uploaded_at=? WHERE id=?",

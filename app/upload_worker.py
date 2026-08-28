@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 import threading
+from datetime import datetime, timezone, timedelta
 
 from app import db, youtube
 from app.patch_publishing import sync_pipeline_from_upload
@@ -13,6 +15,7 @@ from app.video_repository import get_video, update_video
 logger = logging.getLogger(__name__)
 
 UPLOAD_DELAY = 2  # seconds between uploads
+DAILY_UPLOAD_LIMIT = 50  # max uploads per day (YouTube default quota)
 
 
 class UploadWorker:
@@ -73,7 +76,10 @@ class UploadWorker:
                 with self.db_lock:
                     pending = youtube.get_pending_uploads(self.conn)
 
-                for upload in pending:
+                # Filter by daily upload limit and scheduled publish time
+                eligible = self._filter_eligible_uploads(pending)
+
+                for upload in eligible:
                     if not self._running:
                         break
                     await self._process_upload(upload)
@@ -82,6 +88,44 @@ class UploadWorker:
                 logger.error("Upload worker error: %s", e)
 
             await asyncio.sleep(5)  # poll interval
+
+    def _filter_eligible_uploads(self, pending: list[dict]) -> list[dict]:
+        """Filter pending uploads by daily limit and scheduled publish time."""
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+
+        # Count successful uploads today
+        with self.db_lock:
+            row = self.conn.execute(
+                "SELECT COUNT(*) as cnt FROM youtube_uploads WHERE status='done' AND uploaded_at >= ? AND uploaded_at < ?",
+                (today_start.isoformat(), today_end.isoformat()),
+            ).fetchone()
+            uploaded_today = row["cnt"] if row else 0
+
+        remaining_quota = max(0, DAILY_UPLOAD_LIMIT - uploaded_today)
+        eligible = []
+        for upload in pending:
+            if remaining_quota <= 0:
+                logger.info("Daily upload limit reached (%d/%d), deferring remaining uploads",
+                           uploaded_today, DAILY_UPLOAD_LIMIT)
+                break
+
+            # Check scheduled publish time
+            scheduled = upload.get("scheduled_publish_at")
+            if scheduled:
+                try:
+                    sched_dt = datetime.fromisoformat(scheduled.replace("Z", "+00:00"))
+                    if sched_dt > now:
+                        logger.info("Upload %d scheduled for %s, skipping for now", upload["id"], scheduled)
+                        continue
+                except (ValueError, TypeError):
+                    pass  # Invalid schedule, proceed with upload
+
+            eligible.append(upload)
+            remaining_quota -= 1
+
+        return eligible
 
     async def _process_upload(self, upload: dict):
         upload_id = upload["id"]

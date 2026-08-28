@@ -772,3 +772,121 @@ def api_apply_playlist_sort(request: Request, playlist_id: str, body: _PlaylistS
     result = _call_youtube(request, youtube.sort_playlist, playlist_id,
                            body.direction, body.mode)
     return JSONResponse(_mark_partial(result))
+
+
+# ---------------------------------------------------------------------------
+# Bulk actions: standardize title/description, scheduled publish, AI labels
+# ---------------------------------------------------------------------------
+
+
+class _BulkUpdateBody(BaseModel):
+    ids: list[int]
+    title_template: str = ""
+    description_template: str = ""
+    scheduled_publish_at: str | None = None
+    generate_ai_labels: bool = False
+
+
+@router.post("/youtube/uploads/bulk-update")
+def bulk_update_uploads(request: Request, body: _BulkUpdateBody):
+    """Bulk update title/description templates with {episode} placeholder,
+    set scheduled publish time, and optionally generate AI labels."""
+    if not body.ids:
+        raise HTTPException(400, "no upload IDs provided")
+
+    with locked_conn(request) as conn:
+        placeholders = conn.execute(
+            f"SELECT * FROM youtube_uploads WHERE id IN ({','.join(['?'] * len(body.ids))})",
+            body.ids,
+        ).fetchall()
+
+        updated_count = 0
+        for row in placeholders:
+            upload = dict(row)
+            title = upload.get("title") or ""
+            description = upload.get("description") or ""
+
+            # Apply title template with {episode} replacement
+            if body.title_template:
+                episode_num = upload.get("id", 0)
+                new_title = body.title_template.replace("{episode}", str(episode_num))
+                # Also try to extract episode from existing title
+                import re
+                ep_match = re.search(r'(?:episode|tap|chuong|ep)[\s#]*(\d+)', title, re.IGNORECASE)
+                if ep_match:
+                    new_title = new_title.replace("{episode}", ep_match.group(1))
+                conn.execute("UPDATE youtube_uploads SET title=? WHERE id=?", (new_title, upload["id"]))
+                updated_count += 1
+
+            # Apply description template with {episode} replacement
+            if body.description_template:
+                episode_num = upload.get("id", 0)
+                new_desc = body.description_template.replace("{episode}", str(episode_num))
+                import re
+                ep_match = re.search(r'(?:episode|tap|chuong|ep)[\s#]*(\d+)', description, re.IGNORECASE)
+                if ep_match:
+                    new_desc = new_desc.replace("{episode}", ep_match.group(1))
+                conn.execute("UPDATE youtube_uploads SET description=? WHERE id=?", (new_desc, upload["id"]))
+                updated_count += 1
+
+            # Set scheduled publish time
+            if body.scheduled_publish_at is not None:
+                youtube.set_upload_scheduled_publish(conn, upload["id"], body.scheduled_publish_at)
+
+            # Generate AI labels
+            if body.generate_ai_labels:
+                labels = youtube.generate_ai_labels(
+                    upload.get("title") or "",
+                    upload.get("description") or "",
+                )
+                if labels:
+                    youtube.set_upload_ai_labels(conn, upload["id"], labels)
+
+        conn.commit()
+
+    return {"updated": updated_count, "total": len(body.ids)}
+
+
+@router.post("/youtube/uploads/{upload_id}/schedule")
+def set_upload_schedule(request: Request, upload_id: int, body: dict):
+    """Set or clear the scheduled publish time for a single upload."""
+    scheduled_at = body.get("scheduled_publish_at")
+    with locked_conn(request) as conn:
+        youtube.set_upload_scheduled_publish(conn, upload_id, scheduled_at)
+    return {"status": "ok", "upload_id": upload_id, "scheduled_publish_at": scheduled_at}
+
+
+@router.post("/youtube/uploads/{upload_id}/ai-labels")
+def generate_upload_ai_labels(request: Request, upload_id: int):
+    """Generate AI labels for a single upload and merge into tags."""
+    with locked_conn(request) as conn:
+        row = conn.execute("SELECT title, description FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "upload not found")
+        labels = youtube.generate_ai_labels(row["title"] or "", row["description"] or "")
+        if labels:
+            youtube.set_upload_ai_labels(conn, upload_id, labels)
+    return {"upload_id": upload_id, "ai_labels": labels}
+
+
+@router.get("/youtube/uploads/daily-status")
+def get_daily_upload_status(request: Request):
+    """Return the daily upload count and remaining quota."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1)
+
+    with locked_conn(request) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM youtube_uploads WHERE status='done' AND uploaded_at >= ? AND uploaded_at < ?",
+            (today_start.isoformat(), today_end.isoformat()),
+        ).fetchone()
+        uploaded_today = row["cnt"] if row else 0
+
+    daily_limit = 50  # YouTube default
+    return {
+        "uploaded_today": uploaded_today,
+        "daily_limit": daily_limit,
+        "remaining": max(0, daily_limit - uploaded_today),
+    }

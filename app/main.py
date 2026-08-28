@@ -164,7 +164,7 @@ def _spa_index():
 
 _SPA_PATHS = (
     re.compile(r"^/books(?:/upload|/\d+|/\d+/chapters/preview-ui|/\d+/patches/build|/\d+/patches/\d+/chunks|/\d+/text-studio)?$"),
-    re.compile(r"^/(?:queue|video|music|photos|voices|effects|youtube|drive|database-io|logs|flows|production-defaults|gameplay|media-browser)$"),
+    re.compile(r"^/(?:queue|media|music|photos|voices|effects|youtube|drive|database-io|logs|production-defaults|gameplay|media-browser|tts-models)$"),
 )
 
 

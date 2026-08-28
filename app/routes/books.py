@@ -1213,6 +1213,7 @@ async def auto_build_patches(
     start_chapter_str = body.get("start_chapter")
     end_chapter_str = body.get("end_chapter")
     patch_size_str = body.get("patch_size")
+    force_str = body.get("force")
     try:
         start_chapter = int(start_chapter_str) if start_chapter_str else None
     except (TypeError, ValueError):
@@ -1231,13 +1232,14 @@ async def auto_build_patches(
             patch_size = int(patch_size_str)
         except ValueError:
             raise HTTPException(status_code=400, detail="patch_size must be an integer")
+    force_rebuild = force_str in ("true", "1", "on") if force_str else False
 
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         try:
-            repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
+            repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size, force_rebuild=force_rebuild)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -102,6 +102,14 @@ export function YouTubePage() {
   const [importSummary, setImportSummary] = useState<YouTubeImportSummary | null>(null);
   const [importBusy, setImportBusy] = useState(false);
 
+  // Bulk update modal
+  const [showBulkUpdateModal, setShowBulkUpdateModal] = useState(false);
+  const [bulkTitleTemplate, setBulkTitleTemplate] = useState("");
+  const [bulkDescriptionTemplate, setBulkDescriptionTemplate] = useState("");
+  const [bulkScheduledAt, setBulkScheduledAt] = useState("");
+  const [bulkGenerateLabels, setBulkGenerateLabels] = useState(false);
+  const [bulkUpdateBusy, setBulkUpdateBusy] = useState(false);
+
   const loadUploads = () => {
     setLoading(true);
     api<{ uploads: YouTubeUploadItem[] }>("/youtube/uploads")
@@ -186,6 +194,33 @@ export function YouTubePage() {
       loadUploads();
     } catch (err: any) {
       alert(`Thử lại hàng loạt thất bại: ${err.message}`);
+    }
+  };
+
+  const handleBulkUpdate = () => {
+    if (selectedIds.length === 0) return;
+    setShowBulkUpdateModal(true);
+  };
+
+  const runBulkUpdate = async () => {
+    if (selectedIds.length === 0) return;
+    setBulkUpdateBusy(true);
+    try {
+      const result = await postJson<{ updated: number; total: number }>("/youtube/uploads/bulk-update", {
+        ids: selectedIds,
+        title_template: bulkTitleTemplate,
+        description_template: bulkDescriptionTemplate,
+        scheduled_publish_at: bulkScheduledAt || null,
+        generate_ai_labels: bulkGenerateLabels,
+      });
+      setShowBulkUpdateModal(false);
+      setSelectedIds([]);
+      loadUploads();
+      alert(`Đã cập nhật ${result.updated}/${result.total} mục.`);
+    } catch (err: any) {
+      alert(`Cập nhật hàng loạt thất bại: ${err.message}`);
+    } finally {
+      setBulkUpdateBusy(false);
     }
   };
 
@@ -501,6 +536,10 @@ export function YouTubePage() {
                   <Button variant="destructive" size="sm" onClick={handleBulkDelete}>
                     <Trash2 className="h-3.5 w-3.5" />
                     Xóa lịch sử đã chọn
+                  </Button>
+                  <Button variant="default" size="sm" onClick={handleBulkUpdate}>
+                    <Layers className="h-3.5 w-3.5" />
+                    Cập nhật hàng loạt ({selectedIds.length})
                   </Button>
                 </>
               )}
@@ -1111,6 +1150,83 @@ export function YouTubePage() {
                   Áp dụng vào dữ liệu
                 </Button>
               </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Bulk Update Modal */}
+      {showBulkUpdateModal && (
+        <Dialog open={showBulkUpdateModal} onOpenChange={setShowBulkUpdateModal}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Layers className="h-4 w-4 text-primary" />
+                Cập nhật hàng loạt {selectedIds.length} video
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div>
+                <label className="text-xs font-semibold text-foreground mb-1 block">
+                  Template tiêu đề
+                </label>
+                <Input
+                  value={bulkTitleTemplate}
+                  onChange={(e) => setBulkTitleTemplate(e.target.value)}
+                  placeholder="VD: Truyện Kể Đêm Khuya - Tập {episode}"
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Dùng <code className="bg-muted px-0.5 rounded">{"{episode}"}</code> để chèn số tập tự động.
+                </p>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-foreground mb-1 block">
+                  Template mô tả
+                </label>
+                <Textarea
+                  value={bulkDescriptionTemplate}
+                  onChange={(e) => setBulkDescriptionTemplate(e.target.value)}
+                  placeholder="VD: Tập {episode} - Truyện kể đêm khuya hay nhất..."
+                  rows={3}
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Dùng <code className="bg-muted px-0.5 rounded">{"{episode}"}</code> để chèn số tập tự động.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-foreground mb-1 block">
+                    Thời gian đăng (tùy chọn)
+                  </label>
+                  <Input
+                    type="datetime-local"
+                    value={bulkScheduledAt}
+                    onChange={(e) => setBulkScheduledAt(e.target.value)}
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Để trống = đăng ngay khi sẵn sàng.
+                  </p>
+                </div>
+                <div className="flex items-end">
+                  <label className="flex items-center gap-2 text-xs font-medium">
+                    <input
+                      type="checkbox"
+                      checked={bulkGenerateLabels}
+                      onChange={(e) => setBulkGenerateLabels(e.target.checked)}
+                      className="rounded border-input"
+                    />
+                    Tự gán nhãn AI cho video
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border pt-3">
+              <Button variant="outline" onClick={() => setShowBulkUpdateModal(false)}>
+                Hủy
+              </Button>
+              <Button onClick={runBulkUpdate} disabled={bulkUpdateBusy}>
+                {bulkUpdateBusy ? "Đang cập nhật..." : `Áp dụng cho ${selectedIds.length} video`}
+              </Button>
             </div>
           </DialogContent>
         </Dialog>
