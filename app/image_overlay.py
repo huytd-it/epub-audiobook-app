@@ -174,7 +174,7 @@ def list_overlay_fonts() -> list[dict[str, str]]:
     """Return local fonts that load correctly and include Vietnamese glyphs."""
     seen: set[str] = set()
     fonts: list[dict[str, str]] = []
-    bundled_dir = Path(__file__).parent.parent / "assets" / "fonts"
+    bundled_dir = Path(__file__).parent.parent / "frontend" / "public" / "fonts"
     bundled = sorted(
         path for pattern in ("*.ttf", "*.otf", "*.ttc")
         for path in bundled_dir.glob(pattern)
@@ -254,8 +254,8 @@ _FONT_PATHS: list[str] = [
     "C:/Windows/Fonts/candara.ttf",
     "C:/Windows/Fonts/corbel.ttf",
     "C:/Windows/Fonts/verdana.ttf",
-    str(Path(__file__).parent.parent / "assets" / "fonts" / "NotoSansVietnamese.ttf"),
-    str(Path(__file__).parent.parent / "assets" / "fonts" / "NotoSansVietnamese-Regular.ttf"),
+    str(Path(__file__).parent.parent / "frontend" / "public" / "fonts" / "NotoSansVietnamese.ttf"),
+    str(Path(__file__).parent.parent / "frontend" / "public" / "fonts" / "NotoSansVietnamese-Regular.ttf"),
 ]
 
 

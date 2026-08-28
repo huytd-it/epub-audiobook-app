@@ -151,8 +151,16 @@ app.include_router(media_browser.router)
 
 
 SPA_DIR = Path("app/spa_dist")
+PUBLIC_DIR = Path("frontend/public")
 if SPA_DIR.exists():
     app.mount("/assets", StaticFiles(directory=SPA_DIR / "assets"), name="spa-assets")
+
+
+@app.get("/gameplay/{filename}", include_in_schema=False)
+def gameplay_static(filename: str):
+    candidate = (PUBLIC_DIR / "gameplay" / filename).resolve()
+    if (PUBLIC_DIR / "gameplay").resolve() in candidate.parents and candidate.is_file():
+        return FileResponse(candidate)
 
 
 def _spa_index():

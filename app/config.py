@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     default_page_size: int = 20
     tts_max_chars: int = 400
     tts_engine: str = "voxcpm2"
-    default_background_image: str = str(_APP_ROOT / "assets" / "default_background.jpg")
+    default_background_image: str = str(_APP_ROOT / "app" / "assets" / "default_background.jpg")
     use_nvenc: bool = False
     worker_poll_interval: float = 2.0
     worker_shutdown_timeout_seconds: float = 300.0
