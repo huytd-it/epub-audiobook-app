@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Quy trình tạo Audiobook từ EPUB",
+    "viewBox": [1080, 600],
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "upload-to-parse", "label": "Tải lên đến parse", "focus": ["upload", "validate", "parse"], "note": "Theo file EPUB từ lúc tải lên đến khi tách chương." },
+      { "id": "synthesis-to-export", "label": "Tổng hợp và xuất", "focus": ["queue", "synthesize", "produce"], "note": "Nhìn chuỗi TTS, hậu kỳ và xuất file audiobook." },
+      { "id": "failure-path", "label": "Nhánh lỗi", "focus": ["validate", "failed"], "note": "EPUB không hợp lệ bị từ chối ngay tại cổng vào." }
+    ]
+  },
+  "lanes": [
+    { "id": "user", "label": "Người dùng" },
+    { "id": "api", "label": "Backend" },
+    { "id": "worker", "label": "Worker TTS" },
+    { "id": "producer", "label": "Hậu kỳ + Xuất bản" }
+  ],
+  "phases": [
+    { "id": "ingest", "label": "Nhập", "fromCol": 0, "toCol": 1 },
+    { "id": "parse", "label": "Parse EPUB", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "produce", "label": "Sản xuất", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "validation", "label": "Kiểm tra đầu vào", "lane": "api", "fromCol": 2, "toCol": 3, "variant": "emphasis" }
+  ],
+  "mainPath": ["upload", "validate", "parse", "queue", "synthesize", "produce"],
+  "nodes": [
+    { "id": "upload", "lane": "user", "col": 0, "type": "external", "label": "Tải EPUB", "sublabel": "chọn file" },
+    { "id": "validate", "lane": "api", "col": 2, "type": "security", "label": "Kiểm tra", "sublabel": "loại + kích thước", "tag": "chặn" },
+    { "id": "parse", "lane": "api", "col": 3, "type": "backend", "label": "Parse", "sublabel": "tách chương", "tag": "OPF + XHTML" },
+    { "id": "queue", "lane": "worker", "col": 4, "type": "messagebus", "label": "Xếp hàng", "sublabel": "job nền" },
+    { "id": "synthesize", "lane": "worker", "col": 5, "type": "backend", "label": "Tổng hợp", "sublabel": "TTS từng chương", "tag": "Kokoro" },
+    { "id": "produce", "lane": "producer", "col": 5, "type": "cloud", "label": "Xuất bản", "sublabel": "hậu kỳ + M4B/MP3" },
+    { "id": "failed", "lane": "api", "col": 0, "type": "security", "label": "Từ chối", "sublabel": "EPUB không hợp lệ" }
+  ],
+  "edges": [
+    { "from": "upload", "to": "validate", "label": "POST /books", "variant": "emphasis", "route": "drop", "fromSide": "bottom", "toSide": "top" },
+    { "from": "validate", "to": "parse", "label": "OPF", "labelDy": 10 },
+    { "from": "parse", "to": "queue", "label": "enqueue", "labelDy": 11, "route": "drop", "fromSide": "bottom", "toSide": "top" },
+    { "from": "queue", "to": "synthesize" },
+    { "from": "synthesize", "to": "produce", "label": "chunk", "route": "drop", "fromSide": "bottom", "toSide": "top", "labelDy": 11 },
+    { "from": "validate", "to": "failed", "label": "lỗi", "variant": "security", "role": "error", "fromSide": "bottom", "toSide": "bottom", "via": [[300, 290], [88, 290]] }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Một luồng chính", "items": ["Mỗi EPUB được kiểm tra trước khi parse", "Parse tách chương rồi đẩy vào hàng đợi nền", "Xuất bản chỉ sau khi hậu kỳ ffmpeg hoàn tất"] },
+    { "dot": "rose", "title": "Điểm dừng", "items": ["EPUB sai loại hoặc quá lớn bị từ chối ngay", "Lỗi TTS được đẩy lại hàng đợi theo chính sách thử lại", "Nhánh lỗi không giữ chân luồng chính"] },
+    { "dot": "cyan", "title": "Bằng chứng", "items": ["Job, trạng thái và file âm thanh được lưu trong SQLite", "TTS và hậu kỳ tách riêng để cô lập lỗi", "Luồng chính vẫn rõ dù có nhánh lỗi"] }
+  ]
+}

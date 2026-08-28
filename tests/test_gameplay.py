@@ -12,15 +12,14 @@ from PIL import Image
 
 from app import db
 from app.gameplay_config import profile_key
-from app.gameplay_models import Fighter, GameplayReplay, Replay
+from app.gameplay_models import GameplayReplay
 from app.gameplay_procedural import PROCEDURAL_GAMES
 from app.gameplay_registry import list_games, migrate_game_id, resolve_game_id, simulate_game
-from app.gameplay_retro import RETRO_GAMES, rank_tier
+from app.gameplay_retro import RETRO_GAMES, build_engine, rank_tier
 from app.gameplay_retro_render import RetroClip
 from app.gameplay_scores import high_score, leaderboard, standings
-from app.gameplay_repository import (apply_replay_stats, consume_reserved, create_clip, list_fighters,
-                                      load_replay, save_gameplay_replay, save_replay, seed_catalog)
-from app.gameplay_simulation import CLASS_STATS, simulate_match
+from app.gameplay_repository import (apply_replay_stats, consume_reserved, create_clip,
+                                      load_replay, save_gameplay_replay, seed_catalog)
 from app.gameplay_themes import ASSETS, install_theme_zip, theme_prompt
 from app.video_config import validate_video_config
 
@@ -33,35 +32,6 @@ def _conn(path=":memory:"):
 
 def _themes():
     return [{"id": "neon-geometry", "version": 1, "name": "Neon Geometry"}]
-
-
-def test_simulation_is_deterministic_and_bounded():
-    roster = [Fighter(f"f{i}", f"F{i}", ("tank", "assassin", "ranger")[i % 3]) for i in range(48)]
-    first = simulate_match(42, roster, _themes())
-    assert first.to_dict() == simulate_match(42, roster, _themes()).to_dict()
-    assert first.to_dict() != simulate_match(43, roster, _themes()).to_dict()
-    assert 180 <= first.duration_seconds <= 300
-    assert len(first.roster) == 24 and len(first.top3) == 3
-    assert any(event["type"] == "result" for event in first.events)
-
-
-def test_class_roles_are_distinct():
-    assert CLASS_STATS["tank"]["hp"] > CLASS_STATS["ranger"]["hp"] > CLASS_STATS["assassin"]["hp"]
-    assert CLASS_STATS["assassin"]["speed"] > CLASS_STATS["ranger"]["speed"] > CLASS_STATS["tank"]["speed"]
-    assert CLASS_STATS["ranger"]["range"] > CLASS_STATS["tank"]["range"]
-    assert CLASS_STATS["assassin"]["damage"] > CLASS_STATS["tank"]["damage"]
-
-
-def test_catalog_and_stats_are_idempotent():
-    conn = _conn()
-    seed_catalog(conn); seed_catalog(conn)
-    assert conn.execute("SELECT COUNT(*) FROM gameplay_fighter").fetchone()[0] == 48
-    replay = simulate_match(9, list_fighters(conn), _themes())
-    row = save_replay(conn, "test:stats", replay)
-    assert apply_replay_stats(conn, row["id"]) is True
-    assert apply_replay_stats(conn, row["id"]) is False
-    assert conn.execute("SELECT SUM(matches) FROM gameplay_fighter").fetchone()[0] == 24
-    assert conn.execute("SELECT SUM(wins) FROM gameplay_fighter").fetchone()[0] == 1
 
 
 def _theme_zip(*, traversal=False, alpha=True):
@@ -96,15 +66,14 @@ def test_profile_changes_for_every_render_dimension():
 
 def test_old_config_defaults_to_media():
     assert validate_video_config({})["background_type"] == "media"
-    assert validate_video_config({"background_type": "battle_royale"})["background_type"] == "battle_royale"
     with pytest.raises(ValueError):
         validate_video_config({"background_type": "random"})
 
 
 def test_generic_games_are_deterministic_versioned_and_bounded():
-    catalog = [game for game in list_games() if game["family"] != "legacy"]
-    assert len(catalog) == 12
-    assert sum(game["family"] == "retro" for game in catalog) == 6
+    catalog = list_games()
+    assert len(catalog) == 16
+    assert sum(game["family"] == "retro" for game in catalog) == 10
     assert sum(game["family"] == "procedural" for game in catalog) == 6
     # No catalog game may need art any more: every family paints itself.
     assert all(game["sprite_roles"] == [] for game in catalog)
@@ -132,6 +101,18 @@ def test_retro_games_replay_identically_on_a_re_render():
     portrait = simulate_game("snake_arena", 7, {})
     clip = RetroClip("snake_arena", portrait.payload, portrait.duration_seconds, 270, 480, 24)
     assert clip.frame(0, 0.0).size == (270, 480)
+
+
+def test_spaceship_bosses_rotate_and_cast_distinct_skills():
+    engine = build_engine("spaceship_voyager", 77, {})
+    observed = set()
+    for boss_kind in range(3):
+        engine.boss_index = boss_kind
+        engine._spawn_boss()
+        engine._boss_skill()
+        observed.add(engine.events[-1]["skill"])
+    assert observed == {"COMET BARRAGE", "VOID CURTAIN", "NOVA SPIRAL"}
+    assert engine.stats["skills"] == 3
 
 
 def test_retro_runs_are_ranked_and_promoted_once_rendered():
@@ -204,18 +185,6 @@ def test_gameplay_api_serves_the_catalog_and_the_boards(tmp_path, monkeypatch):
         assert client.get("/gameplay/leaderboard", params={"game_id": "nope"}).status_code == 404
 
 
-def test_replay_repository_dual_reads_legacy_and_envelope():
-    conn = _conn()
-    legacy = simulate_match(8, list_fighters(conn), _themes())
-    legacy_row = save_replay(conn, "legacy", legacy)
-    assert isinstance(load_replay(conn, legacy_row["id"]), Replay)
-    modern = simulate_game("snake_arena", 8, {"preset": "calm"})
-    modern_row = save_gameplay_replay(conn, "modern", modern)
-    loaded = load_replay(conn, modern_row["id"])
-    assert isinstance(loaded, GameplayReplay)
-    assert loaded.to_dict() == modern.to_dict()
-
-
 def test_books_configured_before_the_retro_catalog_still_render():
     # A book saved against the retired pixel/neon catalog must not fail validation now.
     config = validate_video_config({"background_type": "gameplay", "gameplay": {
@@ -251,8 +220,8 @@ def test_gameplay_video_config_and_profile_v2():
 def test_clip_reservation_is_atomic_and_retry_stable(tmp_path):
     db_path = str(tmp_path / "gameplay.db")
     conn = _conn(db_path)
-    replay = simulate_match(7, list_fighters(conn), _themes())
-    row = save_replay(conn, "reserve", replay)
+    replay = simulate_game("snake_arena", 7, {"preset": "calm"})
+    row = save_gameplay_replay(conn, "reserve", replay)
     clip = tmp_path / "clip.mp4"; clip.write_bytes(b"clip")
     create_clip(conn, "profile", row["id"], 240, str(clip))
     conn.execute("INSERT INTO book (title,original_filename,epub_path,status,created_at,updated_at) VALUES ('b','b','b','done','n','n')")
@@ -295,3 +264,18 @@ def test_patch_coverage_is_complete_and_retry_stable(tmp_path):
     assert consume_reserved(conn, patch_id, first[0]["reservation_token"])
     assert conn.execute("SELECT COUNT(*) FROM gameplay_clip WHERE reserved_patch_id=? AND status='consumed'",
                         (patch_id,)).fetchone()[0] == len(first)
+
+
+def test_patch_coverage_rotates_selected_games(tmp_path):
+    from app.gameplay_pool import ensure_patch_coverage
+    conn = _conn(str(tmp_path / "rotation-coverage.db"))
+    conn.execute("INSERT INTO book (title,original_filename,epub_path,status,created_at,updated_at) VALUES ('b','b','b','done','n','n')")
+    book_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO patch (book_id,patch_index,chapter_start,chapter_end,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+                 (book_id, 0, 0, 0, "done", "n", "n"))
+    patch_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    clips = ensure_patch_coverage(conn, patch_id, 520, width=854, height=480, fps=24,
+                                  game_ids=["snake_arena", "aurora_veil"], config={"preset": "calm"})
+    assert [clip["game_id"] for clip in clips[:2]] == ["snake_arena", "aurora_veil"]
+    assert {clip["game_id"] for clip in clips} == {"snake_arena", "aurora_veil"}

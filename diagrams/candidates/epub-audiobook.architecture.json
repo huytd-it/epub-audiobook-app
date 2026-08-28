@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Kiến trúc ứng dụng EPUB → Audiobook",
+    "viewBox": [1070, 540],
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "request-path", "label": "Luồng yêu cầu", "focus": ["users", "web", "api", "queue"], "note": "Theo yêu cầu tạo audiobook từ người dùng vào hàng đợi xử lý." },
+      { "id": "synthesis", "label": "Chuỗi tổng hợp", "focus": ["queue", "worker", "tts", "ffmpeg", "storage"], "note": "Cô lập TTS, hậu kỳ ffmpeg và nơi lưu file audiobook." },
+      { "id": "state", "label": "Trạng thái + dữ liệu", "focus": ["api", "db", "queue"], "note": "Xem thư viện sách và trạng thái job ghi vào SQLite." }
+    ]
+  },
+  "components": [
+    { "id": "users", "type": "external", "label": "Người dùng", "sublabel": "trình duyệt / Tauri", "pos": [40, 300], "size": [120, 60] },
+    { "id": "web", "type": "frontend", "label": "Web App", "sublabel": "React + Vite", "pos": [240, 300], "size": [130, 60] },
+    { "id": "api", "type": "backend", "label": "API", "sublabel": "FastAPI :8000", "pos": [450, 300], "size": [130, 60] },
+    { "id": "db", "type": "database", "label": "SQLite", "sublabel": "thư viện + job", "pos": [450, 150], "size": [130, 60] },
+    { "id": "queue", "type": "messagebus", "label": "Job Queue", "sublabel": "background worker", "pos": [450, 450], "size": [130, 60] },
+    { "id": "worker", "type": "backend", "label": "Worker", "sublabel": "audiobook TTS", "pos": [660, 450], "size": [130, 60] },
+    { "id": "tts", "type": "external", "label": "TTS Engine", "sublabel": "Kokoro / cloud", "pos": [870, 450], "size": [130, 60] },
+    { "id": "ffmpeg", "type": "backend", "label": "Audio Processor", "sublabel": "ffmpeg filters", "pos": [660, 150], "size": [130, 60] },
+    { "id": "storage", "type": "cloud", "label": "File Storage", "sublabel": "M4B / MP3", "pos": [870, 150], "size": [130, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Ứng dụng epub-audiobook", "wraps": ["web", "api", "db", "queue", "worker", "ffmpeg", "storage"] },
+    { "kind": "security-group", "label": "sg-api :8000", "wraps": ["api"] }
+  ],
+  "connections": [
+    { "id": "users-web", "from": "users", "to": "web", "label": "HTTPS", "variant": "emphasis" },
+    { "id": "web-api", "from": "web", "to": "api", "label": "REST JSON" },
+    { "id": "api-db", "from": "api", "to": "db", "label": "SQL", "fromSide": "top", "toSide": "bottom" },
+    { "id": "api-queue", "from": "api", "to": "queue", "label": "enqueue", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 22 },
+    { "id": "queue-worker", "from": "queue", "to": "worker", "label": "poll" },
+    { "id": "worker-tts", "from": "worker", "to": "tts", "label": "synthesize" },
+    { "id": "worker-ffmpeg", "from": "worker", "to": "ffmpeg", "label": "render", "fromSide": "top", "toSide": "bottom" },
+    { "id": "ffmpeg-storage", "from": "ffmpeg", "to": "storage", "label": "write M4B" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Luồng chính", "items": ["Người dùng tải EPUB qua web app", "API đẩy job vào hàng đợi nền", "Worker tổng hợp TTS rồi hậu kỳ bằng ffmpeg"] },
+    { "dot": "cyan", "title": "Trạng thái", "items": ["SQLite lưu thư viện sách và trạng thái job", "Hàng đợi chạy nền tách khỏi chuỗi yêu cầu", "File audiobook nằm riêng ở File Storage"] },
+    { "dot": "rose", "title": "Ranh giới", "items": ["TTS chạy ở engine ngoài (Kokoro / cloud)", "API nằm trong security group riêng", "Chuỗi tổng hợp là xử lý bất đồng bộ"] }
+  ]
+}

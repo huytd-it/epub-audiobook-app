@@ -9,7 +9,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # Allow this maintenance script to run directly from the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -25,26 +25,7 @@ OUTPUT_DIR = Path("frontend/public/gameplay")
 SEED = 20260819
 
 
-def _legacy_frame() -> Image.Image:
-    """A compact still matching the built-in Neon Battle Royale palette."""
-    width, height = SIZE
-    image = Image.new("RGB", SIZE, "#050817")
-    draw = ImageDraw.Draw(image)
-    cx, cy, radius = width // 2, height // 2, int(height * 0.36)
-    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill="#0b1431", outline="#1ce8ff", width=4)
-    draw.ellipse((cx - int(radius * 0.74), cy - int(radius * 0.74), cx + int(radius * 0.74), cy + int(radius * 0.74)), outline="#baff39", width=4)
-    colors = ("#20e7ff", "#ff45c8", "#baff39")
-    for index in range(18):
-        x = cx + int(radius * 0.68 * __import__("math").cos(index * 0.95))
-        y = cy + int(radius * 0.68 * __import__("math").sin(index * 0.95))
-        r = 13 + (index % 3) * 3
-        draw.ellipse((x - r, y - r, x + r, y + r), fill=colors[index % len(colors)], outline="white", width=2)
-    return image
-
-
 def _frame(game_id: str) -> Image.Image:
-    if game_id == "battle_royale":
-        return _legacy_frame()
     # A high hi-score keeps the still from claiming a rank the catalog cannot back up.
     replay = simulate_game(game_id, SEED + sum(map(ord, game_id)), {"hi_score": 10_000})
     width, height = SIZE

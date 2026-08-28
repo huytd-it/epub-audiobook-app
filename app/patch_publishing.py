@@ -206,7 +206,7 @@ def _resolve_sequence_inputs(book, patch, config: dict, branding: dict | None = 
 
     ``branding`` is the resolved branding config, applied to the thumbnail image
     when a single non-video background is used."""
-    if config.get("background_type") in {"battle_royale", "gameplay"}:
+    if config.get("background_type") == "gameplay":
         return False, [], None, None, "none"
     fallback = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
     raw_bg = video_gen.resolve_configured_patch_image(patch, config, fallback or "")
@@ -249,30 +249,33 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
     if background_type == "media" and not raw_bg:
         raise ValueError("chưa có ảnh nền để tạo video")
     gameplay = None
-    if background_type in {"battle_royale", "gameplay"}:
+    if background_type == "gameplay":
         from app.gameplay_pool import ensure_patch_coverage
         from app.gameplay_registry import get_game, resolve_game_id
         info = sf.info(str(media.get("audio_path") or patch.audio_path))
         duration = info.frames / info.samplerate
         width, height = (int(v) for v in str(render_config.get("resolution") or "1920x1080").split("x"))
-        gameplay_config = ({"selection_mode": "single", "game_id": "battle_royale", "preset": "calm"}
-                           if background_type == "battle_royale" else config.get("gameplay", {}))
+        gameplay_config = config.get("gameplay", {})
         game_id = resolve_game_id(gameplay_config, book_id=book.id, patch_id=patch.id,
                                   patch_index=patch.patch_index)
-        game = get_game(game_id)
-        if config.get("waveform_enabled") and game.waveform_policy == "forbidden":
-            raise ValueError(f"waveform không tương thích với game {game_id}")
+        game_ids = ([game_id] if gameplay_config.get("selection_mode", "single") == "single"
+                    else list(dict.fromkeys(gameplay_config.get("game_ids") or [])))
+        games = [get_game(selected_game) for selected_game in game_ids]
+        if config.get("waveform_enabled") and any(game.waveform_policy == "forbidden" for game in games):
+            raise ValueError("waveform không tương thích với một game đã chọn trong vòng xoay")
         clips = ensure_patch_coverage(conn, patch.id, duration, width=width, height=height,
-                                      fps=int(render_config.get("fps") or 30), game_id=game_id,
-                                      quality=int(render_config.get("crf") or 23), config=gameplay_config)
+                                       fps=int(render_config.get("fps") or 30), game_id=game_id,
+                                       game_ids=game_ids, quality=int(render_config.get("crf") or 23),
+                                       config=gameplay_config)
         gameplay = {
             "game_id": game_id,
             "selection_mode": gameplay_config.get("selection_mode", "single"),
             "profile_key": clips[0]["profile_key"],
-            "renderer_version": game.renderer_version,
-            "waveform_policy": game.waveform_policy,
+            "game_ids": game_ids,
+            "renderer_version": max(game.renderer_version for game in games),
+            "waveform_policy": "forbidden" if any(game.waveform_policy == "forbidden" for game in games) else "allowed",
             "reservation_token": clips[0].get("reservation_token"),
-            "clips": [{"id": c["id"], "replay_id": c["replay_id"], "game_id": c.get("game_id") or "battle_royale",
+            "clips": [{"id": c["id"], "replay_id": c["replay_id"], "game_id": c.get("game_id"),
                        "profile_key": c["profile_key"], "file_path": c["file_path"],
                        "duration_seconds": c["duration_seconds"]} for c in clips],
         }

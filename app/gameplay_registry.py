@@ -2,7 +2,7 @@
 
 Two asset-free families ship today: ``retro`` (the handheld console games — rắn săn mồi,
 xếp gạch, xe tăng and friends) and ``procedural`` (analytic colour fields). Neither needs a
-theme pack; ``legacy`` keeps Battle Royale renderable for clips produced before the catalog.
+theme pack.
 """
 from __future__ import annotations
 
@@ -16,9 +16,6 @@ from app.gameplay_retro import RETRO_GAMES, simulate_retro
 
 DEFAULT_GAME_ID = "snake_arena"
 
-# The sprite-hungry pixel/neon families were retired when the retro catalog landed. Books
-# configured before that keep rendering: their saved id maps to the closest live game rather
-# than failing validation months after the fact.
 RETIRED_GAMES = {
     "garden_cycle": "snake_arena",
     "aquarium_ecosystem": "brick_breaker",
@@ -52,10 +49,6 @@ def _procedural(game_id: str) -> Callable[[int, dict], GameplayReplay]:
     return lambda seed, config: simulate_procedural(game_id, seed, config)
 
 
-def _legacy_placeholder(seed: int, config: dict) -> GameplayReplay:
-    raise ValueError("battle_royale uses the legacy simulator")
-
-
 # Neither family declares sprite_roles: every pixel is painted from code, so a theme pack has
 # nothing to override and the catalog can never promise art the renderer cannot produce.
 _GAMES = {
@@ -64,8 +57,6 @@ _GAMES = {
                          spec.description, _retro(spec.id)) for spec in RETRO_GAMES),
         *(GameDefinition(spec.id, spec.name, "procedural", "1", "1", spec.waveform_policy,
                          spec.description, _procedural(spec.id)) for spec in PROCEDURAL_GAMES),
-        GameDefinition("battle_royale", "Neon Battle Royale", "legacy", "1", "1",
-                       "forbidden", "Gameplay Battle Royale tương thích ngược.", _legacy_placeholder),
     )
 }
 

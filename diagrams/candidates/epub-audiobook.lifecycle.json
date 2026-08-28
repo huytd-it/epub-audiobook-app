@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Vòng đời job tạo Audiobook",
+    "viewBox": [900, 720],
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "promotion-rail", "label": "Đường thăng tiến", "focus": ["queued", "synth", "render", "ready", "done"], "note": "Theo job từ lúc nhận đến khi xuất bản audiobook." },
+      { "id": "wait-states", "label": "Trạng thái chờ", "focus": ["synth", "render", "retry", "paused"], "note": "Xem chỗ job chờ thử lại hoặc chờ điều kiện." },
+      { "id": "outcomes", "label": "Kết thúc rõ ràng", "focus": ["ready", "retry", "failed", "done", "cancelled"], "note": "Tách kết thúc thành công khỏi kết thúc lỗi." }
+    ]
+  },
+  "lanes": [
+    { "id": "main", "label": "Luồng job chính" },
+    { "id": "waiting", "label": "Chờ + phục hồi" },
+    { "id": "terminal", "label": "Trạng thái cuối" }
+  ],
+  "states": [
+    { "id": "queued", "type": "start", "label": "Chờ xử lý", "sublabel": "EPUB đã nhận", "lane": "main", "col": 0, "step": "01", "tag": "pending" },
+    { "id": "synth", "type": "active", "label": "Tổng hợp TTS", "sublabel": "từng chương", "lane": "main", "col": 1, "step": "02", "tag": "running" },
+    { "id": "render", "type": "active", "label": "Hậu kỳ", "sublabel": "ffmpeg filters", "lane": "main", "col": 2, "step": "03", "tag": "running" },
+    { "id": "ready", "type": "waiting", "label": "Sẵn sàng", "sublabel": "chờ xuất bản", "lane": "main", "col": 3, "step": "04", "tag": "approved" },
+    { "id": "done", "type": "success", "label": "Hoàn tất", "sublabel": "audiobook có sẵn", "lane": "main", "col": 4, "step": "05", "tag": "success" },
+    { "id": "retry", "type": "waiting", "label": "Chờ thử lại", "sublabel": "TTS lỗi", "lane": "waiting", "col": 0, "tag": "pause" },
+    { "id": "paused", "type": "waiting", "label": "Tạm dừng", "sublabel": "đang kiểm tra", "lane": "waiting", "col": 1, "tag": "observe" },
+    { "id": "cancelled", "type": "failure", "label": "Đã hủy", "sublabel": "người dùng hủy", "lane": "terminal", "col": 1, "tag": "terminal" },
+    { "id": "failed", "type": "failure", "label": "Thất bại", "sublabel": "hết số lần thử", "lane": "terminal", "col": 0, "tag": "terminal" }
+  ],
+  "transitions": [
+    { "from": "render", "to": "retry", "variant": "security", "route": "drop", "fromSide": "bottom", "toSide": "top" },
+    { "from": "retry", "to": "failed", "variant": "security", "route": "drop", "fromSide": "bottom", "toSide": "top", "channelY": 385 },
+    { "from": "ready", "to": "paused", "variant": "dashed", "route": "drop", "fromSide": "bottom", "toSide": "top", "channelY": 231 },
+    { "from": "paused", "to": "cancelled", "variant": "security", "route": "drop", "fromSide": "bottom", "toSide": "top", "channelY": 430 }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Đường thăng tiến", "items": ["Job đi qua năm trạng thái có thứ tự", "Tổng hợp và hậu kỳ là hai trạng thái chạy riêng", "Hoàn tất nghĩa là audiobook đã có sẵn"] },
+    { "dot": "amber", "title": "Trạng thái chờ", "items": ["TTS lỗi đẩy job vào trạng thái chờ thử lại", "Tạm dừng diễn ra khi đang kiểm tra", "Mỗi lần chờ lộ ra sự kiện cần để tiếp tục"] },
+    { "dot": "rose", "title": "Kết thúc rõ ràng", "items": ["Hết số lần thử kết thúc Thất bại", "Người dùng hủy kết thúc Đã hủy", "Mỗi kết thúc lỗi đều phân biệt với thành công"] }
+  ]
+}

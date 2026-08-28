@@ -25,6 +25,7 @@ const API_PREFIXES = [
   "/flows",
   "/local-bridge",
   "/production-settings",
+  "/tts-models",
   "/health",
   "/bootstrap",
   "/pick-files",
@@ -109,7 +110,7 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern:
-              /^https?:.*\/(api|books|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|flows|local-bridge)\//,
+              /^https?:.*\/(api|books|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|flows|local-bridge|tts-models)\//,
             handler: "NetworkOnly",
           },
         ],

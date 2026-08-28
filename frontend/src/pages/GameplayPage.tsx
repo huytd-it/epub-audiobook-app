@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 
 type PoolRow = { profile_key: string; game_id?: string | null; status: string; clip_count: number; duration_seconds: number };
 type Fighter = { id: number; name: string; class_name: string; matches: number; wins: number; eliminations: number };
-type Game = { id: string; name: string; family: "retro" | "procedural" | "legacy"; waveform_policy: string; description: string; enabled: boolean; sprite_roles?: string[] };
+type Game = { id: string; name: string; family: "retro" | "procedural"; waveform_policy: string; description: string; enabled: boolean; sprite_roles?: string[] };
 type Entry = { position: number; game_id: string; player_tag: string; score: number; rating: number; rank_tier: string; level: number; games: number; deaths: number; rendered: number; duration_seconds: number; metrics: Record<string, number> };
 type Standing = { game_id: string; runs: number; best: number; average: number; rendered: number; deaths: number; top_level: number; champion: string; last_run_at?: string };
 type Status = { catalog?: Game[]; pool: PoolRow[]; target_seconds: number; fighters: Fighter[]; leaderboard?: Entry[]; standings?: Standing[]; stat_labels?: Record<string, [string, string][]>; health?: { failed_clips: number; oldest_lease_at?: string | null } };
@@ -26,13 +26,16 @@ const fallbackCatalog: Game[] = [
   { id: "brick_breaker", name: "Đập Gạch", family: "retro", waveform_policy: "allowed_with_safe_area", description: "Thanh trượt đỡ bóng, phá sạch tường gạch nhiều màu.", enabled: true },
   { id: "star_defender", name: "Bắn Ruồi", family: "retro", waveform_policy: "default_off", description: "Đội hình địch tiến xuống, phi thuyền né bom và bắn trả.", enabled: true },
   { id: "pixel_dash", name: "Đua Xe", family: "retro", waveform_policy: "forbidden", description: "Xe lách qua dòng xe ngược chiều, càng lâu càng nhanh.", enabled: true },
+  { id: "pacman_maze", name: "Pac-Man", family: "retro", waveform_policy: "allowed_with_safe_area", description: "Ăn chấm trong mê cung, né ma và săn ma khi nhặt viên năng lượng.", enabled: true },
+  { id: "chicken_shooter", name: "Phi Thuyền Bắn Gà", family: "retro", waveform_policy: "default_off", description: "Phi thuyền tự né trứng, bắn đội hình gà không gian theo từng đợt.", enabled: true },
+  { id: "spaceship_voyager", name: "Phi Thuyền", family: "retro", waveform_policy: "default_off", description: "Bay xuyên trường sao, né thiên thạch và đối đầu ba Boss với kỹ năng riêng.", enabled: true },
+  { id: "flappy_bird", name: "Flappy Bird", family: "retro", waveform_policy: "allowed_with_safe_area", description: "Chú chim tự vỗ cánh luồn qua ống nước, tốc độ tăng dần theo quãng bay.", enabled: true },
   { id: "aurora_veil", name: "Aurora Veil", family: "procedural", waveform_policy: "allowed_with_safe_area", description: "Rèm cực quang trôi trên nền sao, sáng dần theo từng đợt.", enabled: true },
   { id: "plasma_tide", name: "Plasma Tide", family: "procedural", waveform_policy: "default_off", description: "Sóng plasma giao thoa với các đường viền phát sáng.", enabled: true },
   { id: "ripple_pond", name: "Ripple Pond", family: "procedural", waveform_policy: "allowed_with_safe_area", description: "Mặt nước tĩnh với những vòng sóng lan và ánh khúc xạ.", enabled: true },
   { id: "lumen_bloom", name: "Lumen Bloom", family: "procedural", waveform_policy: "default_off", description: "Hoa ánh sáng xoè theo dãy Fibonacci, xoay chậm và đổi sắc.", enabled: true },
   { id: "silk_current", name: "Silk Current", family: "procedural", waveform_policy: "default_off", description: "Hàng nghìn hạt sáng chảy theo dòng xoáy, để lại vệt lụa.", enabled: true },
   { id: "starfall_warp", name: "Starfall Warp", family: "procedural", waveform_policy: "forbidden", description: "Bay xuyên trường sao với vệt kéo dài và sao chổi.", enabled: true },
-  { id: "battle_royale", name: "Neon Battle Royale", family: "legacy", waveform_policy: "forbidden", description: "Chế độ tương thích cũ.", enabled: true },
 ];
 
 const formatScore = (value: number) => value.toLocaleString("vi-VN");
@@ -54,7 +57,7 @@ export function GameplayPage() {
   }, [gameId, data]);
   const catalog = data?.catalog?.length ? data.catalog : fallbackCatalog;
   const names = useMemo(() => Object.fromEntries(catalog.map((game) => [game.id, game.name])), [catalog]);
-  const profilePool = useMemo(() => (data?.pool || []).filter((row) => (row.game_id || "battle_royale") === gameId), [data, gameId]);
+  const profilePool = useMemo(() => (data?.pool || []).filter((row) => row.game_id === gameId), [data, gameId]);
   const generate = async () => {
     setBusy(true); setError("");
     const [width, height] = resolution.split("x");
@@ -88,7 +91,7 @@ export function GameplayPage() {
           preload="metadata"
           aria-label={`Preview ${game.name}`}
         />
-        <CardHeader><CardTitle className="flex items-center justify-between gap-2"><span>{game.name}</span><Badge variant={game.family === "legacy" ? "secondary" : "outline"}>{game.family}</Badge></CardTitle></CardHeader>
+        <CardHeader><CardTitle className="flex items-center justify-between gap-2"><span>{game.name}</span><Badge variant="outline">{game.family}</Badge></CardTitle></CardHeader>
         <CardContent className="space-y-3"><p className="min-h-10 text-xs text-muted-foreground">{game.description}</p><div className="flex flex-wrap gap-2 text-[11px]"><Badge variant="secondary">3–5 phút</Badge><Badge variant="secondary">{game.waveform_policy}</Badge>{standings.find((row) => row.game_id === game.id) && <Badge variant="secondary">HI {formatScore(standings.find((row) => row.game_id === game.id)!.best)}</Badge>}</div>{game.family === "retro" && <p className="text-[10px] text-muted-foreground">Máy chơi game cầm tay: bàn cờ ô vuông nhiều màu, HUD điểm số — không dùng ảnh hay theme pack.</p>}{game.family === "procedural" && <p className="text-[10px] text-muted-foreground">Không cần asset — render bằng palette LUT, sóng giải tích và glow cộng dồn.</p>}<div className="flex gap-2"><Button size="sm" variant={game.id === gameId ? "default" : "outline"} onClick={() => setGameId(game.id)} disabled={!game.enabled}>Chọn</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => toggleGame(game)}>{game.enabled ? "Tắt" : "Bật"}</Button></div></CardContent>
       </Card>)}
     </section>

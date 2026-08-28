@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Luồng dữ liệu EPUB → Audiobook",
+    "viewBox": [1080, 760],
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "source-to-parse", "label": "Nguồn đến parse", "focus": ["epub", "storage", "parser"], "note": "Theo file EPUB từ kho lưu trữ đến nội dung sạch." },
+      { "id": "tts-boundary", "label": "Chuỗi TTS", "focus": ["parser", "tts", "clips", "processor"], "note": "Tách TTS sinh âm thanh khỏi hậu kỳ ffmpeg." },
+      { "id": "consume-path", "label": "Đầu ra và người dùng", "focus": ["audiobook", "player", "ebook"], "note": "Nhìn file audiobook xuất bản và các kênh tiêu thụ." }
+    ]
+  },
+  "stages": [
+    { "label": "Nguồn" },
+    { "label": "Lưu trữ" },
+    { "label": "Tổng hợp" },
+    { "label": "Sản xuất" },
+    { "label": "Tiêu thụ" }
+  ],
+  "nodes": [
+    { "id": "epub", "type": "external", "label": "File EPUB", "sublabel": "người dùng tải lên", "stage": 0, "row": 1, "tag": "OPF + XHTML" },
+    { "id": "storage", "type": "cloud", "label": "Kho lưu trữ", "sublabel": "đầu vào", "stage": 1, "row": 1, "tag": "immutable" },
+    { "id": "parser", "type": "backend", "label": "Parser", "sublabel": "tách chương", "stage": 2, "row": 1, "tag": "OPF nav" },
+    { "id": "tts", "type": "external", "label": "TTS Engine", "sublabel": "Kokoro / cloud", "stage": 2, "row": 3, "tag": "giọng đọc" },
+    { "id": "clips", "type": "database", "label": "Audio Clips", "sublabel": "WAV theo chương", "stage": 3, "row": 3, "tag": "staging" },
+    { "id": "processor", "type": "backend", "label": "Audio Proc", "sublabel": "ffmpeg filters", "stage": 3, "row": 1, "tag": "trim + denoise" },
+    { "id": "audiobook", "type": "database", "label": "Audiobook", "sublabel": "M4B / MP3", "stage": 4, "row": 1, "tag": "xuất bản" },
+    { "id": "player", "type": "frontend", "label": "Player", "sublabel": "web / mobile", "stage": 4, "row": 3, "tag": "phát lại" },
+    { "id": "ebook", "type": "backend", "label": "Ebook Sync", "sublabel": "đánh dấu chương", "stage": 4, "row": 4, "tag": "song song" }
+  ],
+  "flows": [
+    { "id": "epub-upload", "from": "epub", "to": "storage", "label": "upload EPUB", "classification": "user file", "variant": "emphasis" },
+    { "id": "store-read", "from": "storage", "to": "parser", "label": "read", "classification": "chapter scan", "variant": "default" },
+    { "id": "chapter-text", "from": "parser", "to": "tts", "label": "chapter text", "classification": "trung gian", "variant": "emphasis" },
+    { "id": "synth-wav", "from": "tts", "to": "clips", "label": "synthesize", "classification": "WAV chunks", "variant": "emphasis" },
+    { "id": "post-produce", "from": "clips", "to": "processor", "label": "render", "classification": "hậu kỳ", "variant": "dashed" },
+    { "id": "master-m4b", "from": "processor", "to": "audiobook", "label": "master M4B", "classification": "xuất bản", "variant": "emphasis" },
+    { "id": "stream-voice", "from": "audiobook", "to": "player", "label": "stream", "classification": "phát lại", "variant": "default" },
+    { "id": "chapter-map", "from": "audiobook", "to": "ebook", "label": "chapter map", "classification": "đồng bộ", "variant": "dashed", "fromSide": "right", "toSide": "right", "via": [[1050, 271], [1050, 613]] }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Luồng dữ liệu chính", "items": ["EPUB đi từ nguồn qua lưu trữ, parse, TTS, hậu kỳ đến xuất bản", "Đường nóng xoay vòng giữ rõ ràng dù có nhánh phụ", "Label đặt tên dữ liệu thay vì động từ API chung"] },
+    { "dot": "rose", "title": "Ranh giới TTS", "items": ["TTS sinh WAV theo chương vào vùng staging", "Hậu kỳ ffmpeg chỉ đọc clips đã có", "File master M4B tách khỏi dữ liệu trung gian"] },
+    { "dot": "orange", "title": "Kênh tiêu thụ", "items": ["Player phát audiobook từ bản xuất bản", "Ebook sync dùng chapter map để đồng bộ tiến độ", "Các kênh tiêu thụ tách biệt khỏi chuỗi sản xuất"] }
+  ]
+}

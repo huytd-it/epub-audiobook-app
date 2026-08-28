@@ -10,7 +10,6 @@ stays well under a few hundred kilobytes per game even at 960x540.
 """
 from __future__ import annotations
 
-import math
 import shutil
 import subprocess
 import sys
@@ -18,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 import imageio_ffmpeg
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # Allow this maintenance script to run directly from the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -38,38 +37,8 @@ FPS = 12
 LOOP_DURATION = int(DURATION_SECONDS * FPS)  # 36 frames per clip is plenty for a card preview
 
 
-def _legacy_frames() -> list[Image.Image]:
-    """A short looping animation that matches the built-in Neon Battle Royale palette."""
-    width, height = SIZE
-    frames: list[Image.Image] = []
-    cx, cy, radius = width // 2, height // 2, int(height * 0.36)
-    for tick in range(LOOP_DURATION):
-        image = Image.new("RGB", SIZE, "#050817")
-        draw = ImageDraw.Draw(image)
-        phase = tick / FPS
-        pulse = 1.0 + 0.04 * math.sin(phase * math.tau)
-        r_main = int(radius * pulse)
-        draw.ellipse((cx - r_main, cy - r_main, cx + r_main, cy + r_main),
-                     fill="#0b1431", outline="#1ce8ff", width=4)
-        draw.ellipse((cx - int(r_main * 0.74), cy - int(r_main * 0.74),
-                      cx + int(r_main * 0.74), cy + int(r_main * 0.74)),
-                     outline="#baff39", width=4)
-        colors = ("#20e7ff", "#ff45c8", "#baff39")
-        for index in range(18):
-            angle = index * 0.95 + phase * 0.6
-            x = cx + int(r_main * 0.68 * math.cos(angle))
-            y = cy + int(r_main * 0.68 * math.sin(angle))
-            r = 13 + (index % 3) * 3
-            draw.ellipse((x - r, y - r, x + r, y + r), fill=colors[index % len(colors)],
-                         outline="white", width=2)
-        frames.append(image)
-    return frames
-
-
 def _frames_for(game_id: str) -> list[Image.Image]:
     """Render the deterministic preview frames for a single game id."""
-    if game_id == "battle_royale":
-        return _legacy_frames()
     width, height = SIZE
     rate = FPS
     # A high hi-score keeps the still from claiming a rank the catalog cannot back up.

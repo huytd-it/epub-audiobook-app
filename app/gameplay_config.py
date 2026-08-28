@@ -18,17 +18,11 @@ def profile_key(width: int, height: int, fps: int, themes: list[dict], *, render
                 game_id: str | None = None, simulation_version: str = "1",
                 ruleset_version: str = "1", quality: int = 23) -> str:
     catalog = sorted((str(t["id"]), int(t["version"]), str(t.get("content_sha256") or "")) for t in themes)
-    if game_id is None:
-        # Preserve the exact legacy profile material for existing Battle Royale callers.
-        material = [width, height, fps, renderer_version,
-                    [(theme_id, version) for theme_id, version, _ in catalog]]
-        length = 24
-    else:
-        material = {"schema_version": 2, "game_id": game_id, "width": width, "height": height,
-                    "fps": fps, "renderer_version": renderer_version,
-                    "simulation_version": simulation_version, "ruleset_version": ruleset_version,
-                    "quality": quality, "codec": "libx264", "pixel_format": "yuv420p",
-                    "themes": catalog}
-        length = 32
+    material = {"schema_version": 2, "game_id": game_id, "width": width, "height": height,
+                "fps": fps, "renderer_version": renderer_version,
+                "simulation_version": simulation_version, "ruleset_version": ruleset_version,
+                "quality": quality, "codec": "libx264", "pixel_format": "yuv420p",
+                "themes": catalog}
+    length = 32
     raw = json.dumps(material, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()[:length]

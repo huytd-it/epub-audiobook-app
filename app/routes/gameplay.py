@@ -1,4 +1,4 @@
-"""Battle Royale administration API."""
+"""Gameplay administration API."""
 from __future__ import annotations
 
 import json
@@ -75,7 +75,7 @@ def toggle_game(request: Request, game_id: str, enabled: bool = Form(...)):
 
 @router.post("/generate")
 def generate(request: Request, width: int = Form(1920), height: int = Form(1080),
-             fps: int = Form(30), count: int = Form(1), game_id: str = Form("battle_royale")):
+             fps: int = Form(30), count: int = Form(1), game_id: str = Form("snake_arena")):
     if (width, height) not in {(1920, 1080), (1280, 720), (854, 480), (1080, 1920), (1080, 1080)}:
         raise HTTPException(400, "Unsupported gameplay resolution")
     if fps not in {24, 30, 60}:

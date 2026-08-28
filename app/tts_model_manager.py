@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+from importlib.util import find_spec
 from pathlib import Path
 
 from app.config import settings
@@ -57,9 +58,24 @@ def _confucius_status() -> dict:
             "detail": "Cần checkout upstream và đặt CONFUCIUS4_REPO_DIR; upstream có thêm dependencies/checkpoints."}
 
 
+def _package_status(module: str, extra: str, detail: str) -> dict:
+    ready = find_spec(module) is not None
+    return {"managed": True, "ready": ready, "path": "", "size_bytes": 0,
+            "detail": detail if ready else f"Chưa cài package {extra}. Chọn Tải model để cài đặt."}
+
+
 def list_models() -> list[dict]:
     from app.tts_engine import list_tts_models
-    statuses = {"zerotts": _zero_status(), "f5-vivoice": _f5_status(), "confucius4": _confucius_status()}
+    statuses = {
+        "voxcpm2": _package_status("voxcpm", "tts", "Package VoxCPM2; weights được tải bởi thư viện khi chạy lần đầu."),
+        "omnivoice": _package_status("omnivoice", "omnivoice", "Package OmniVoice; weights được tải bởi thư viện khi chạy lần đầu."),
+        "vieneu-fast": _package_status("vieneu", "vieneu-fast", "Package VieNeu và voice presets."),
+        "edge-tts": _package_status("edge_tts", "light-tts", "Dịch vụ Edge TTS trực tuyến."),
+        "gtts": _package_status("gtts", "light-tts", "Dịch vụ Google Translate TTS trực tuyến."),
+        "zerotts": _zero_status(),
+        "f5-vivoice": _f5_status(),
+        "confucius4": _confucius_status(),
+    }
     result = []
     for model in list_tts_models():
         status = statuses.get(model["id"], {"managed": False, "ready": None, "path": "", "size_bytes": 0,
@@ -70,9 +86,26 @@ def list_models() -> list[dict]:
     return result
 
 
-def _command(model_id: str, update: bool) -> list[str]:
+def _commands(model_id: str, update: bool) -> list[list[str]]:
+    ensure_pip = [sys.executable, "-m", "ensurepip", "--upgrade"]
+    extras = {
+        "voxcpm2": "tts",
+        "omnivoice": "omnivoice",
+        "vieneu-fast": "vieneu-fast",
+        "edge-tts": "light-tts",
+        "gtts": "light-tts",
+    }
+    if model_id in extras:
+        return [
+            ensure_pip,
+            [sys.executable, "-m", "pip", "install", *( ["--upgrade"] if update else []), f".[{extras[model_id]}]"],
+        ]
     if model_id == "zerotts":
-        return [sys.executable, str(_PROJECT_ROOT / "scripts" / "download_zerotts.py")]
+        return [
+            ensure_pip,
+            [sys.executable, "-m", "pip", "install", *( ["--upgrade"] if update else []), ".[zerotts]"],
+            [sys.executable, str(_PROJECT_ROOT / "scripts" / "download_zerotts.py")],
+        ]
     if model_id == "f5-vivoice":
         code = (
             "from huggingface_hub import hf_hub_download; "
@@ -81,12 +114,16 @@ def _command(model_id: str, update: bool) -> list[str]:
             "[print(hf_hub_download(repo, name, force_download=force)) "
             "for name in ('model_last.pt','config.json')]"
         )
-        return [sys.executable, "-c", code]
+        return [
+            ensure_pip,
+            [sys.executable, "-m", "pip", "install", *( ["--upgrade"] if update else []), ".[f5-vivoice]"],
+            [sys.executable, "-c", code],
+        ]
     raise ValueError("Model này không có quy trình tải tự động trong ứng dụng")
 
 
 def start_download(model_id: str, *, update: bool = False) -> dict:
-    command = _command(model_id, update)
+    commands = _commands(model_id, update)
     with _lock:
         existing = _jobs.get(model_id)
         if existing and existing.get("state") == "running":
@@ -96,15 +133,19 @@ def start_download(model_id: str, *, update: bool = False) -> dict:
 
     def run() -> None:
         try:
-            process = subprocess.Popen(command, cwd=str(_PROJECT_ROOT), stdout=subprocess.PIPE,
-                                       stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
             lines: list[str] = []
-            assert process.stdout is not None
-            for line in process.stdout:
-                lines.append(line.rstrip())
-                with _lock:
-                    job["log"] = "\n".join(lines[-20:])
-            code = process.wait()
+            code = 0
+            for command in commands:
+                process = subprocess.Popen(command, cwd=str(_PROJECT_ROOT), stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+                assert process.stdout is not None
+                for line in process.stdout:
+                    lines.append(line.rstrip())
+                    with _lock:
+                        job["log"] = "\n".join(lines[-20:])
+                code = process.wait()
+                if code:
+                    break
             with _lock:
                 job.update({"state": "done" if code == 0 else "failed", "returncode": code,
                             "log": "\n".join(lines[-20:]) or ("Hoàn tất." if code == 0 else "Tải model thất bại.")})

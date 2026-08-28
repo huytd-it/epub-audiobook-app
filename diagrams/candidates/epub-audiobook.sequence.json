@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Tạo Audiobook: chuỗi yêu cầu đến tổng hợp TTS",
+    "viewBox": [910, 900],
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "request-and-job", "label": "Yêu cầu và enqueue", "focus": ["user", "web", "api", "queue"], "note": "Theo yêu cầu tải EPUB đến khi job vào hàng đợi." },
+      { "id": "synthesis-path", "label": "Chuỗi tổng hợp", "focus": ["queue", "worker", "tts", "ffmpeg"], "note": "Worker poll job, TTS sinh audio và ffmpeg hậu kỳ." },
+      { "id": "state-and-done", "label": "Trạng thái và hoàn tất", "focus": ["api", "db", "worker", "web", "user"], "note": "Trạng thái job được ghi và người dùng nhận audiobook." }
+    ]
+  },
+  "participants": [
+    { "id": "user", "type": "external", "label": "Người dùng", "sublabel": "trình duyệt" },
+    { "id": "web", "type": "frontend", "label": "Web App", "sublabel": "React UI" },
+    { "id": "api", "type": "backend", "label": "API", "sublabel": "FastAPI" },
+    { "id": "queue", "type": "messagebus", "label": "Job Queue", "sublabel": "SQLite" },
+    { "id": "worker", "type": "backend", "label": "Worker", "sublabel": "audiobook TTS" },
+    { "id": "tts", "type": "external", "label": "TTS Engine", "sublabel": "Kokoro / cloud" },
+    { "id": "ffmpeg", "type": "backend", "label": "Audio Procs", "sublabel": "ffmpeg filters" },
+    { "id": "db", "type": "database", "label": "SQLite", "sublabel": "sách + job" }
+  ],
+  "segments": [
+    { "from": 160, "to": 360, "label": "Tải lên" },
+    { "from": 380, "to": 590, "label": "Tổng hợp" },
+    { "from": 610, "to": 820, "label": "Hậu kỳ + hoàn tất" }
+  ],
+  "messages": [
+    { "id": "open-upload", "from": "user", "to": "web", "y": 195, "label": "chọn file EPUB", "variant": "default" },
+    { "id": "upload-book", "from": "web", "to": "api", "y": 240, "label": "POST /books", "variant": "emphasis" },
+    { "id": "validate-file", "from": "api", "to": "db", "y": 282, "label": "tạo bản ghi sách", "variant": "default" },
+    { "id": "enqueue-job", "from": "api", "to": "queue", "y": 325, "label": "enqueue job", "variant": "emphasis" },
+    { "id": "queued-ok", "from": "api", "to": "web", "y": 365, "label": "202 job id", "variant": "return" },
+    { "id": "poll-job", "from": "worker", "to": "queue", "y": 415, "label": "poll job", "variant": "default" },
+    { "id": "claim-job", "from": "queue", "to": "worker", "y": 455, "label": "job chunk 1", "variant": "return" },
+    { "id": "synth-chunk", "from": "worker", "to": "tts", "y": 505, "label": "synthesize(chương)", "variant": "emphasis" },
+    { "id": "audio-chunk", "from": "tts", "to": "worker", "y": 545, "label": "WAV", "variant": "return" },
+    { "id": "apply-filters", "from": "worker", "to": "ffmpeg", "y": 635, "label": "trim + denoise", "variant": "dashed" },
+    { "id": "write-m4b", "from": "ffmpeg", "to": "worker", "y": 675, "label": "M4B", "variant": "return" },
+    { "id": "mark-done", "from": "worker", "to": "db", "y": 725, "label": "job done", "variant": "dashed" },
+    { "id": "notify", "from": "worker", "to": "web", "y": 768, "label": "WS: hoàn tất", "variant": "dashed" },
+    { "id": "render-book", "from": "web", "to": "user", "y": 810, "label": "audiobook sẵn sàng", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "web", "from": 235, "to": 812, "type": "frontend" },
+    { "participant": "api", "from": 240, "to": 370, "type": "backend" },
+    { "participant": "worker", "from": 410, "to": 770, "type": "backend" },
+    { "participant": "tts", "from": 500, "to": 550, "type": "external" },
+    { "participant": "ffmpeg", "from": 630, "to": 680, "type": "backend" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Luồng chính", "items": ["Người dùng tải EPUB, API tạo bản ghi và enqueue job", "Worker poll hàng đợi rồi tổng hợp TTS từng chương", "Hậu kỳ ffmpeg xuất M4B hoàn tất audiobook"] },
+    { "dot": "rose", "title": "Bất đồng bộ", "items": ["Enqueue trả 202 ngay, không chặn người dùng", "Worker chạy nền tách khỏi chuỗi yêu cầu", "Thông báo hoàn tất qua WebSocket"] },
+    { "dot": "cyan", "title": "Trạng thái", "items": ["SQLite ghi bản ghi sách và trạng thái job", "Mỗi chunk TTS là một lần synthesize", "File M4B được ghi sau khi qua bộ lọc ffmpeg"] }
+  ]
+}

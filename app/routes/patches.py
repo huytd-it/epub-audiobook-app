@@ -442,7 +442,7 @@ async def generate_patch_video(
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
         video_config = get_effective_video_config(conn, book)
-        if video_config.get("background_type") == "battle_royale":
+        if video_config.get("background_type") == "gameplay":
             from app.patch_publishing import enqueue_patch_video
             result = enqueue_patch_video(
                 conn, patch_id,

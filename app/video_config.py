@@ -81,7 +81,7 @@ def _json_object(value) -> dict:
 def validate_video_config(config: dict | None) -> dict:
     config = _json_object(config)
     result = {**copy.deepcopy(VIDEO_DEFAULTS), **config}
-    if result["background_type"] not in {"media", "battle_royale", "gameplay"}:
+    if result["background_type"] not in {"media", "gameplay"}:
         raise ValueError("invalid background type")
     gameplay = result.get("gameplay")
     if not isinstance(gameplay, dict):

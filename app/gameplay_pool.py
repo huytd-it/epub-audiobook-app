@@ -10,26 +10,21 @@ from pathlib import Path
 from app.config import settings
 from app.gameplay_config import profile_key
 from app.gameplay_registry import get_game, simulate_game
-from app.gameplay_repository import (create_clip, list_fighters, list_themes, pool_status,
-                                     save_gameplay_replay, save_replay)
+from app.gameplay_repository import (create_clip, list_themes, pool_status,
+                                     save_gameplay_replay)
 from app.gameplay_retro import is_retro
 from app.gameplay_scores import high_score
-from app.gameplay_simulation import simulate_match
 from app.jobqueue import store
 
 
-def active_profile(conn, width: int, height: int, fps: int, *, game_id: str = "battle_royale",
+def active_profile(conn, width: int, height: int, fps: int, *, game_id: str = "snake_arena",
                    quality: int = 23) -> tuple[str, list[dict]]:
     themes = [{"id": row["id"], "version": row["version"], "name": row["name"],
                "asset_dir": row.get("asset_dir"), "manifest_json": row.get("manifest_json", "{}")}
               for row in list_themes(conn, enabled_only=True)]
     if not themes:
         themes = [{"id": "builtin", "version": 1, "name": "Built-in"}]
-    if game_id == "battle_royale":
-        return profile_key(width, height, fps, themes), themes
     game = get_game(game_id)
-    # Every live family paints from code, so there is no pack to select: the profile key
-    # only records which built-in renderer the family uses.
     selected = [{"id": f"builtin-{game.family}", "version": 1,
                  "name": f"Built-in {game.family.title()}"}]
     return profile_key(width, height, fps, selected, game_id=game_id,
@@ -45,8 +40,6 @@ def _run_config(conn, game_id: str, config: dict) -> dict:
 
 
 def _create_replay(conn, game_id: str, seed: int, themes: list[dict], replay_key: str, config: dict) -> dict:
-    if game_id == "battle_royale":
-        return save_replay(conn, replay_key, simulate_match(seed, list_fighters(conn), themes))
     replay = simulate_game(game_id, seed, _run_config(conn, game_id, config))
     if themes:
         replay = dataclasses.replace(replay, themes=themes)
@@ -54,7 +47,7 @@ def _create_replay(conn, game_id: str, seed: int, themes: list[dict], replay_key
 
 
 def enqueue_generation(conn, *, width: int, height: int, fps: int, count: int = 1,
-                       game_id: str = "battle_royale", quality: int = 23,
+                       game_id: str = "snake_arena", quality: int = 23,
                        config: dict | None = None) -> list[int]:
     profile, themes = active_profile(conn, width, height, fps, game_id=game_id, quality=quality)
     request_id = uuid.uuid4().hex
@@ -80,7 +73,7 @@ def enqueue_generation(conn, *, width: int, height: int, fps: int, count: int = 
 
 def maintain_pool(conn, *, width: int, height: int, fps: int,
                   target_seconds: int | None = None, max_enqueue: int = 1,
-                  game_id: str = "battle_royale", quality: int = 23,
+                  game_id: str = "snake_arena", quality: int = 23,
                   config: dict | None = None) -> dict:
     target = settings.gameplay_pool_target_seconds if target_seconds is None else target_seconds
     profile, _ = active_profile(conn, width, height, fps, game_id=game_id, quality=quality)
@@ -96,25 +89,35 @@ def maintain_pool(conn, *, width: int, height: int, fps: int,
 
 
 def ensure_patch_coverage(conn, patch_id: int, required_seconds: float, *, width: int, height: int,
-                          fps: int, game_id: str = "battle_royale", quality: int = 23,
-                          config: dict | None = None) -> list[dict]:
-    """Create or reserve a complete retry-stable clip set for one patch."""
+                           fps: int, game_id: str = "snake_arena", game_ids: list[str] | None = None,
+                           quality: int = 23, config: dict | None = None) -> list[dict]:
+    """Create or reserve a complete retry-stable clip set for one patch.
+
+    When ``game_ids`` contains more than one entry, clips are generated in that
+    order repeatedly. This makes one patch video rotate through the selected
+    games instead of selecting a single game for the entire video.
+    """
     if required_seconds <= 0:
         raise ValueError("required gameplay duration must be positive")
-    profile, themes = active_profile(conn, width, height, fps, game_id=game_id, quality=quality)
+    selected_games = list(dict.fromkeys(game_ids or [game_id]))
+    if not selected_games:
+        raise ValueError("gameplay rotation requires at least one game")
+    for selected_game in selected_games:
+        get_game(selected_game)
     conn.execute("BEGIN IMMEDIATE")
     try:
         existing = conn.execute(
             """SELECT * FROM gameplay_clip WHERE reserved_patch_id=?
                AND status IN ('reserved','consumed') ORDER BY id""", (patch_id,)).fetchall()
         if existing:
-            if any((row["game_id"] or "battle_royale") != game_id or row["profile_key"] != profile for row in existing):
+            if any(row["game_id"] not in selected_games for row in existing):
                 raise ValueError("patch already owns incompatible gameplay clips")
             total = sum(float(row["duration_seconds"]) for row in existing)
         else:
             total = 0.0
         token = existing[0]["reservation_token"] if existing else uuid.uuid4().hex
-        if not existing:
+        if not existing and len(selected_games) == 1:
+            profile, _ = active_profile(conn, width, height, fps, game_id=game_id, quality=quality)
             candidates = conn.execute(
                 """SELECT * FROM gameplay_clip WHERE profile_key=? AND status='available'
                    ORDER BY id""", (profile,),).fetchall()
@@ -134,18 +137,16 @@ def ensure_patch_coverage(conn, patch_id: int, required_seconds: float, *, width
                               reservation_token=?, updated_at=CURRENT_TIMESTAMP
                               WHERE id IN ({placeholders}) AND status='available'""",
                              (patch_id, token, *selected))
-        index = conn.execute(
-            "SELECT COUNT(*) FROM gameplay_clip WHERE reserved_patch_id=? AND profile_key=?",
-            (patch_id, profile)).fetchone()[0]
+        index = len(existing)
         while total < required_seconds:
-            key = f"patch:{patch_id}:{game_id}:{profile}:{index}"
+            current_game = selected_games[index % len(selected_games)]
+            profile, themes = active_profile(conn, width, height, fps, game_id=current_game, quality=quality)
+            key = f"patch:{patch_id}:{current_game}:{profile}:{index}"
             seed = int(hashlib.sha256(key.encode()).hexdigest()[:12], 16)
-            if game_id == "battle_royale":
-                replay = simulate_match(seed, list_fighters(conn), themes)
-                saved = save_replay(conn, key, replay, commit=False)
-            else:
-                replay = simulate_game(game_id, seed, _run_config(conn, game_id, config or {}))
-                saved = save_gameplay_replay(conn, key, replay, commit=False)
+            replay = simulate_game(current_game, seed, _run_config(conn, current_game, config or {}))
+            if themes:
+                replay = dataclasses.replace(replay, themes=themes)
+            saved = save_gameplay_replay(conn, key, replay, commit=False)
             path = str(Path(settings.data_root) / "gameplay" / "clips" / profile / f"{saved['id']}.mp4")
             now = conn.execute("SELECT CURRENT_TIMESTAMP").fetchone()[0]
             existing_clip = conn.execute(
@@ -156,8 +157,8 @@ def ensure_patch_coverage(conn, patch_id: int, required_seconds: float, *, width
                        (profile_key,replay_id,duration_seconds,file_path,status,reserved_patch_id,
                         reservation_token,game_id,render_profile_json,created_at,updated_at)
                        VALUES (?,?,?,?, 'reserved', ?,?,?,?,?,?)""",
-                    (profile, saved["id"], replay.duration_seconds, path, patch_id, token, game_id,
-                     json.dumps({"game_id": game_id, "width": width, "height": height,
+                    (profile, saved["id"], replay.duration_seconds, path, patch_id, token, current_game,
+                      json.dumps({"game_id": current_game, "width": width, "height": height,
                                  "fps": fps, "quality": quality}), now, now))
                 total += replay.duration_seconds
             else:

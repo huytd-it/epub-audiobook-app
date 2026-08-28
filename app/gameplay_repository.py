@@ -9,17 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.gameplay_config import BUILTIN_THEME_ID, BUILTIN_THEME_VERSION
-from app.gameplay_models import Fighter, GameplayReplay, Replay
+from app.gameplay_models import GameplayReplay
 from app.gameplay_scores import mark_rendered, record_score
-
-_NAMES = (
-    "Axel", "Blaze", "Cruz", "Dash", "Echo", "Flint", "Gray", "Hawk",
-    "Ivan", "Jett", "Knox", "Leon", "Mako", "Nash", "Orion", "Pax",
-    "Quinn", "Rex", "Sage", "Troy", "Uma", "Vex", "Wade", "Xeno",
-    "York", "Zane", "Arlo", "Bram", "Cleo", "Duke", "Enzo", "Finn",
-    "Gale", "Hugo", "Iris", "Jax", "Kira", "Luca", "Mira", "Nova",
-    "Odin", "Pia", "Rhea", "Sven", "Tala", "Uri", "Vera", "Wolf",
-)
 
 
 def _now() -> str:
@@ -41,20 +32,7 @@ def seed_catalog(conn: sqlite3.Connection) -> None:
             """INSERT OR IGNORE INTO gameplay_game
                (game_id,enabled,family,display_order,config_json,updated_at)
                VALUES (?,1,?,?, '{}',?)""", (game["id"], game["family"], index, now))
-    classes = ("tank", "assassin", "ranger")
-    for index, name in enumerate(_NAMES):
-        key = name.lower()
-        conn.execute(
-            """INSERT OR IGNORE INTO gameplay_fighter
-               (fighter_key, name, class_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)""",
-            (key, name, classes[index % 3], now, now),
-        )
     conn.commit()
-
-
-def list_fighters(conn: sqlite3.Connection) -> list[Fighter]:
-    return [Fighter(r["fighter_key"], r["name"], r["class_name"]) for r in conn.execute(
-        "SELECT fighter_key, name, class_name FROM gameplay_fighter ORDER BY id")]
 
 
 def list_themes(conn: sqlite3.Connection, *, enabled_only: bool = False) -> list[dict]:
@@ -63,31 +41,11 @@ def list_themes(conn: sqlite3.Connection, *, enabled_only: bool = False) -> list
         f"SELECT * FROM gameplay_theme {where} ORDER BY builtin DESC, name, version DESC")]
 
 
-def save_replay(conn: sqlite3.Connection, replay_key: str, replay: Replay, *, commit: bool = True) -> dict:
-    now = _now()
-    conn.execute(
-        """INSERT OR IGNORE INTO gameplay_replay
-           (replay_key, seed, duration_seconds, roster_json, themes_json, map_json,
-            events_json, top3_json, winner_key, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (replay_key, replay.seed, replay.duration_seconds, json.dumps(replay.roster),
-         json.dumps(replay.themes), json.dumps(replay.map), json.dumps(replay.events),
-         json.dumps(replay.top3), replay.winner_key, now),
-    )
-    row = conn.execute("SELECT * FROM gameplay_replay WHERE replay_key=?", (replay_key,)).fetchone()
-    if commit:
-        conn.commit()
-    return dict(row)
-
-
 def save_gameplay_replay(conn: sqlite3.Connection, replay_key: str, replay: GameplayReplay, *, commit: bool = True) -> dict:
     raw = replay.to_dict()
     canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     now = _now()
-    # The battle-royale columns are NOT NULL on databases migrated from the pre-catalog
-    # schema (no DEFAULT), so they must be written explicitly or INSERT OR IGNORE would
-    # silently drop the row.
     conn.execute(
         """INSERT OR IGNORE INTO gameplay_replay
            (replay_key, seed, duration_seconds, roster_json, themes_json, map_json,
@@ -109,20 +67,16 @@ def save_gameplay_replay(conn: sqlite3.Connection, replay_key: str, replay: Game
     return dict(row)
 
 
-def load_replay(conn: sqlite3.Connection, replay_id: int) -> Replay | GameplayReplay:
+def load_replay(conn: sqlite3.Connection, replay_id: int) -> GameplayReplay:
     row = conn.execute("SELECT * FROM gameplay_replay WHERE id=?", (replay_id,)).fetchone()
     if row is None:
         raise ValueError(f"replay {replay_id} not found")
-    if row["game_id"]:
-        return GameplayReplay(int(row["schema_version"] or 3), row["game_id"], row["seed"],
-                              row["duration_seconds"], 20, row["simulation_version"] or "1",
-                              row["ruleset_version"] or "1", row["renderer_version"] or "1",
-                              json.loads(row["payload_json"] or "{}"),
-                              json.loads(row["result_json"] or "{}"),
-                              json.loads(row["themes_json"] or "[]"))
-    return Replay(row["seed"], row["duration_seconds"], json.loads(row["roster_json"]),
-                  json.loads(row["themes_json"]), json.loads(row["map_json"]),
-                  json.loads(row["events_json"]), json.loads(row["top3_json"]), row["winner_key"])
+    return GameplayReplay(int(row["schema_version"] or 3), row["game_id"], row["seed"],
+                          row["duration_seconds"], 20, row["simulation_version"] or "1",
+                          row["ruleset_version"] or "1", row["renderer_version"] or "1",
+                          json.loads(row["payload_json"] or "{}"),
+                          json.loads(row["result_json"] or "{}"),
+                          json.loads(row["themes_json"] or "[]"))
 
 
 def apply_replay_stats(conn: sqlite3.Connection, replay_id: int) -> bool:
@@ -132,19 +86,7 @@ def apply_replay_stats(conn: sqlite3.Connection, replay_id: int) -> bool:
         if row is None or row["stats_applied"]:
             conn.commit()
             return False
-        if row["game_id"]:
-            mark_rendered(conn, replay_id, commit=False)
-            conn.execute("UPDATE gameplay_replay SET stats_applied=1 WHERE id=? AND stats_applied=0", (replay_id,))
-            conn.commit()
-            return True
-        roster = json.loads(row["roster_json"])
-        for fighter in roster:
-            conn.execute(
-                """UPDATE gameplay_fighter SET matches=matches+1,
-                   wins=wins+?, eliminations=eliminations+?, updated_at=? WHERE fighter_key=?""",
-                (1 if fighter["key"] == row["winner_key"] else 0,
-                 int(fighter.get("eliminations", 0)), _now(), fighter["key"]),
-            )
+        mark_rendered(conn, replay_id, commit=False)
         conn.execute("UPDATE gameplay_replay SET stats_applied=1 WHERE id=? AND stats_applied=0", (replay_id,))
         conn.commit()
         return True
@@ -249,7 +191,7 @@ def recover_reserved_clips(conn: sqlite3.Connection) -> int:
 
 def pool_status(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in conn.execute(
-        """SELECT profile_key, COALESCE(game_id, 'battle_royale') AS game_id, status,
+        """SELECT profile_key, game_id, status,
            COUNT(*) AS clip_count, COALESCE(SUM(duration_seconds),0) AS duration_seconds
-           FROM gameplay_clip GROUP BY profile_key, COALESCE(game_id, 'battle_royale'), status
+           FROM gameplay_clip GROUP BY profile_key, game_id, status
            ORDER BY game_id, profile_key, status""")]

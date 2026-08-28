@@ -43,7 +43,8 @@ PALETTE: dict[str, tuple[int, int, int]] = {
 
 # Milestones worth keeping in the replay; routine points are counted, not logged.
 _EVENT_KINDS = frozenset({"level", "game_over", "stage_clear", "wave_clear", "crash", "top_out",
-                          "ball_lost", "ship_lost", "tank_lost", "base_lost", "overrun"})
+                           "ball_lost", "ship_lost", "tank_lost", "base_lost", "overrun", "boss_down",
+                           "boss_skill"})
 
 
 # Vietnamese catalog copy; the UI shows these verbatim.
@@ -933,6 +934,366 @@ class PixelDashEngine(Engine):
 
 
 # ---------------------------------------------------------------------------
+# Pac-Man
+# ---------------------------------------------------------------------------
+class PacmanEngine(Engine):
+    game_id = "pacman_maze"
+    cols, rows = 25, 19
+
+    def reset_game(self) -> None:
+        self.stats = {"pellets": 0, "ghosts": 0}
+        self._build_maze()
+        self.reset_round()
+
+    def _build_maze(self) -> None:
+        self.walls = {(c, r) for c in range(self.cols) for r in range(self.rows)
+                      if c in (0, self.cols - 1) or r in (0, self.rows - 1)}
+        for c in range(3, self.cols - 3, 4):
+            for r in range(2, self.rows - 2):
+                if r not in (4, 9, 14):
+                    self.walls.add((c, r))
+        for r in (4, 9, 14):
+            for c in range(2, self.cols - 2):
+                if c not in (5, 10, 15, 20):
+                    self.walls.add((c, r))
+        self.start = (1, 1)
+        self.ghost_home = (self.cols // 2, self.rows // 2)
+        self.walls.discard(self.start)
+        self.walls.discard(self.ghost_home)
+        self.pellets = {(c, r) for c in range(1, self.cols - 1) for r in range(1, self.rows - 1)
+                        if (c, r) not in self.walls and (c, r) not in (self.start, self.ghost_home)}
+        self.power = {(1, self.rows - 2), (self.cols - 2, 1),
+                      (self.cols - 2, self.rows - 2), (1, 1)}
+        self.pellets.update(self.power)
+
+    def reset_round(self) -> None:
+        self.player = self.start
+        self.ghosts = [[self.ghost_home[0] - 1, self.ghost_home[1]],
+                       [self.ghost_home[0] + 1, self.ghost_home[1]]]
+        self.frightened_until = 0
+        self.move_at = self.tick
+
+    def _open(self, cell: tuple[int, int]) -> bool:
+        return 0 <= cell[0] < self.cols and 0 <= cell[1] < self.rows and cell not in self.walls
+
+    def _next_step(self, origin: tuple[int, int], target: tuple[int, int], flee: bool = False) -> tuple[int, int]:
+        choices = [(origin[0] + dc, origin[1] + dr) for dc, dr in _DIRS]
+        choices = [cell for cell in choices if self._open(cell)]
+        return min(choices, key=lambda cell: (-(abs(cell[0] - target[0]) + abs(cell[1] - target[1]))
+                                               if flee else abs(cell[0] - target[0]) + abs(cell[1] - target[1]), cell))
+
+    def update(self) -> None:
+        if self.tick < self.move_at:
+            return
+        self.move_at = self.tick + max(2, 5 - self.level // 2)
+        if self.pellets:
+            self.player = self._next_step(self.player, min(self.pellets,
+                key=lambda cell: abs(cell[0] - self.player[0]) + abs(cell[1] - self.player[1])))
+        if self.player in self.pellets:
+            self.pellets.remove(self.player)
+            self.stats["pellets"] += 1
+            self.award(50 if self.player in self.power else 10, "pellet")
+            if self.player in self.power:
+                self.frightened_until = self.tick + 90
+        for ghost in list(self.ghosts):
+            current = (ghost[0], ghost[1])
+            flee = self.tick < self.frightened_until
+            ghost[:] = self._next_step(current, self.player, flee)
+            if tuple(ghost) == self.player:
+                if flee:
+                    self.ghosts.remove(ghost)
+                    self.stats["ghosts"] += 1
+                    self.award(200 * self.level, "ghost")
+                else:
+                    self.lose_life("crash")
+                    return
+        if not self.pellets:
+            self.award(500 * self.level, "stage_clear")
+            self.level_up(min(12, self.level + 1))
+            self.flash("MAZE CLEAR", 1.4)
+            self._build_maze()
+            self.reset_round()
+
+    def frame(self) -> RetroFrame:
+        cells = [(c, r, "wall") for c, r in self.walls]
+        cells.extend((c, r, "food") for c, r in self.pellets)
+        cells.extend((ghost[0], ghost[1], "shield" if self.tick < self.frightened_until else "enemy")
+                     for ghost in self.ghosts)
+        cells.append((*self.player, "player"))
+        return RetroFrame(cells, self.hud(), self.overlay)
+
+
+# ---------------------------------------------------------------------------
+# Phi thuyền bắn gà
+# ---------------------------------------------------------------------------
+class ChickenShooterEngine(Engine):
+    game_id = "chicken_shooter"
+    cols, rows = 24, 18
+
+    def reset_game(self) -> None:
+        self.stats = {"chickens": 0, "waves": 0}
+        self.next_wave()
+        self.reset_round()
+
+    def next_wave(self) -> None:
+        self.chickens = [[c * 3 + 2, r * 2 + 1] for r in range(3) for c in range(7)]
+        self.direction = 1
+        self.move_at = self.tick + 10
+
+    def reset_round(self) -> None:
+        self.ship = self.cols // 2
+        self.shots: list[list[int]] = []
+        self.eggs: list[list[int]] = []
+        self.fire_at = self.tick
+
+    def update(self) -> None:
+        if self.tick >= self.move_at:
+            self.move_at = self.tick + max(3, 12 - self.level)
+            edge = any(chicken[0] + self.direction in (0, self.cols - 1) for chicken in self.chickens)
+            if edge:
+                self.direction *= -1
+                for chicken in self.chickens:
+                    chicken[1] += 1
+            else:
+                for chicken in self.chickens:
+                    chicken[0] += self.direction
+            if self.chickens and self.rng.random() < 0.75:
+                source = min(self.chickens, key=lambda chicken: abs(chicken[0] - self.ship))
+                self.eggs.append([source[0], source[1] + 1])
+        target = min(self.chickens, key=lambda chicken: abs(chicken[0] - self.ship), default=[self.ship, 0])
+        self.ship += 1 if target[0] > self.ship else -1 if target[0] < self.ship else 0
+        self.ship = max(1, min(self.cols - 2, self.ship))
+        if self.tick >= self.fire_at:
+            self.fire_at = self.tick + max(3, 7 - self.level // 2)
+            self.shots.append([self.ship, self.rows - 2])
+        for shot in list(self.shots):
+            shot[1] -= 2
+            hit = next((chicken for chicken in self.chickens if chicken == shot), None)
+            if hit:
+                self.chickens.remove(hit)
+                self.shots.remove(shot)
+                self.stats["chickens"] += 1
+                self.award(25 * self.level, "chicken")
+            elif shot[1] < 0:
+                self.shots.remove(shot)
+        for egg in list(self.eggs):
+            egg[1] += 1
+            if egg[1] >= self.rows - 1:
+                self.eggs.remove(egg)
+                if abs(egg[0] - self.ship) <= 1:
+                    self.lose_life("ship_lost")
+                    return
+        if not self.chickens:
+            self.stats["waves"] += 1
+            self.award(400 * self.level, "wave_clear")
+            self.level_up(min(12, self.level + 1))
+            self.flash("WAVE CLEAR", 1.2)
+            self.next_wave()
+
+    def frame(self) -> RetroFrame:
+        cells = [(*chicken, "enemy") for chicken in self.chickens]
+        cells.extend((shot[0], shot[1], "shot") for shot in self.shots)
+        cells.extend((egg[0], egg[1], "food") for egg in self.eggs)
+        cells.extend(((self.ship - 1, self.rows - 1, "player_dim"), (self.ship, self.rows - 2, "player"),
+                      (self.ship + 1, self.rows - 1, "player_dim")))
+        return RetroFrame(cells, self.hud(), self.overlay)
+
+
+# ---------------------------------------------------------------------------
+# Phi thuyền vượt không gian
+# ---------------------------------------------------------------------------
+class SpaceshipVoyagerEngine(Engine):
+    game_id = "spaceship_voyager"
+    cols, rows = 26, 18
+
+    def reset_game(self) -> None:
+        self.stats = {"distance": 0, "asteroids": 0, "bosses": 0, "skills": 0}
+        self.stars = [[self.rng.randrange(self.cols), self.rng.randrange(self.rows)] for _ in range(28)]
+        self.asteroids: list[list[int]] = []
+        self.shots: list[list[int]] = []
+        self.boss: list[int] | None = None
+        self.boss_kind = 0
+        self.boss_index = 0
+        self.boss_hp = 0
+        self.boss_at = 180
+        self.boss_skill_at = 0
+        self.spawn_at = 0
+        self.fire_at = 0
+        self.reset_round()
+
+    def reset_round(self) -> None:
+        self.ship = [self.cols // 2, self.rows - 4]
+        self.shots = []
+        self.asteroids = []
+        self.boss = None
+        self.boss_hp = 0
+
+    def _spawn_asteroid(self) -> None:
+        lane = self.rng.randrange(1, self.cols - 1)
+        self.asteroids.append([lane, 0, 1 + self.rng.randrange(2)])
+
+    def _spawn_boss(self) -> None:
+        self.boss_kind = self.boss_index % 3
+        self.boss_index += 1
+        self.boss = [self.cols // 2, 2, 1]
+        self.boss_hp = 10 + self.level * 3 + self.boss_kind * 4
+        self.boss_skill_at = self.tick + 12
+        names = ("IRON COMET", "VOID WARDEN", "NOVA HIVE")
+        self.flash(f"BOSS: {names[self.boss_kind]}", 1.2)
+
+    def _boss_skill(self) -> None:
+        """Boss attacks are deterministic patterns, each requiring a distinct evasive route."""
+        if not self.boss:
+            return
+        x, y, _ = self.boss
+        self.stats["skills"] += 1
+        if self.boss_kind == 0:
+            for lane in (x - 2, x, x + 2):
+                self.asteroids.append([max(0, min(self.cols - 1, lane)), y + 2, 1])
+            skill = "COMET BARRAGE"
+        elif self.boss_kind == 1:
+            gap = (self.tick // 7 + self.boss_index * 5) % (self.cols - 4) + 2
+            for lane in range(1, self.cols - 1, 2):
+                if abs(lane - gap) > 1:
+                    self.asteroids.append([lane, y + 1, 1])
+            skill = "VOID CURTAIN"
+        else:
+            for offset in range(-3, 4, 2):
+                self.asteroids.append([max(0, min(self.cols - 1, x + offset)), y + abs(offset) // 2, 2])
+            skill = "NOVA SPIRAL"
+        self.emit("boss_skill", boss=self.boss_kind, skill=skill)
+        self.flash(skill, 0.55)
+
+    def update(self) -> None:
+        # Star and asteroid motion continually pull toward the player, creating forward flight.
+        for star in self.stars:
+            star[1] += 1
+            if star[1] >= self.rows:
+                star[:] = [self.rng.randrange(self.cols), 0]
+        self.stats["distance"] += 1
+        if self.boss is None and self.tick >= self.spawn_at:
+            self.spawn_at = self.tick + max(5, 14 - self.level)
+            self._spawn_asteroid()
+        if self.boss is None and self.tick >= self.boss_at:
+            self._spawn_boss()
+        if self.boss:
+            self.boss[0] += self.boss[2]
+            if self.boss[0] in (2, self.cols - 3):
+                self.boss[2] *= -1
+            if self.tick >= self.boss_skill_at:
+                self.boss_skill_at = self.tick + (12, 18, 15)[self.boss_kind]
+                self._boss_skill()
+        for asteroid in list(self.asteroids):
+            asteroid[1] += asteroid[2]
+            if asteroid[1] >= self.rows:
+                self.asteroids.remove(asteroid)
+                continue
+            if abs(asteroid[0] - self.ship[0]) <= 1 and abs(asteroid[1] - self.ship[1]) <= 1:
+                self.lose_life("crash")
+                return
+        danger = next((rock for rock in self.asteroids if rock[1] >= self.ship[1] - 4
+                       and abs(rock[0] - self.ship[0]) <= 2), None)
+        target_x = (danger[0] + (3 if danger[0] <= self.ship[0] else -3)) if danger else (self.boss[0] if self.boss else self.cols // 2)
+        target_y = self.rows - 6 if danger else self.rows - 4 + (self.tick // 22) % 3
+        if self.boss_kind == 2 and self.boss and self.tick % 30 < 10:
+            target_y = self.rows - 8
+        self.ship[0] += 1 if target_x > self.ship[0] else -1 if target_x < self.ship[0] else 0
+        self.ship[1] += 1 if target_y > self.ship[1] else -1 if target_y < self.ship[1] else 0
+        self.ship[0] = max(1, min(self.cols - 2, self.ship[0]))
+        self.ship[1] = max(3, min(self.rows - 2, self.ship[1]))
+        if self.tick >= self.fire_at:
+            self.fire_at = self.tick + max(2, 6 - self.level // 2)
+            self.shots.append([self.ship[0], self.ship[1] - 1])
+        for shot in list(self.shots):
+            shot[1] -= 2
+            hit = next((rock for rock in self.asteroids if abs(rock[0] - shot[0]) <= 1 and rock[1] == shot[1]), None)
+            if hit:
+                self.asteroids.remove(hit); self.shots.remove(shot)
+                self.stats["asteroids"] += 1; self.award(20 * self.level, "asteroid")
+            elif self.boss and abs(self.boss[0] - shot[0]) <= 2 and abs(self.boss[1] - shot[1]) <= 1:
+                self.shots.remove(shot); self.boss_hp -= 1; self.award(15 * self.level, "boss_hit")
+                if self.boss_hp <= 0:
+                    self.stats["bosses"] += 1; self.award(800 * self.level, "boss_down")
+                    self.level_up(min(12, self.level + 1)); self.flash("BOSS DOWN", 1.4)
+                    self.boss = None; self.boss_at = self.tick + 180
+            elif shot[1] < 0:
+                self.shots.remove(shot)
+
+    def frame(self) -> RetroFrame:
+        cells = [(star[0], star[1], "trail") for star in self.stars]
+        cells.extend((rock[0], rock[1], "food") for rock in self.asteroids)
+        cells.extend((shot[0], shot[1], "shot") for shot in self.shots)
+        if self.boss:
+            boss_color = ("enemy", "shield", "food")[self.boss_kind]
+            cells.extend((self.boss[0] + dx, self.boss[1] + dy, boss_color)
+                         for dx in range(-2, 3) for dy in range(2))
+        x, y = self.ship
+        cells.extend(((x, y - 1, "player"), (x - 1, y, "player_dim"), (x, y, "player"),
+                      (x + 1, y, "player_dim"), (x, y + 1, "trail")))
+        hud = self.hud()
+        if self.boss:
+            hud["stats"] = {**hud["stats"], "boss_hp": self.boss_hp}
+        return RetroFrame(cells, hud, self.overlay)
+
+
+# ---------------------------------------------------------------------------
+# Flappy Bird
+# ---------------------------------------------------------------------------
+class FlappyBirdEngine(Engine):
+    game_id = "flappy_bird"
+    cols, rows = 22, 18
+
+    def reset_game(self) -> None:
+        self.stats = {"pipes": 0, "distance": 0}
+        self.reset_round()
+
+    def reset_round(self) -> None:
+        self.bird_y = self.rows / 2
+        self.velocity = 0.0
+        self.pipes: list[list[int]] = []
+        self.scroll_at = self.tick
+        self.flap_at = self.tick
+        self.spawn_in = 8
+
+    def update(self) -> None:
+        if self.tick >= self.flap_at:
+            self.flap_at = self.tick + max(4, 8 - self.level // 2)
+            next_pipe = next((pipe for pipe in self.pipes if pipe[0] >= 5), None)
+            if next_pipe and self.bird_y > next_pipe[1] + 2:
+                self.velocity = -1.25
+            elif not next_pipe and self.bird_y > self.rows / 2 + 1:
+                self.velocity = -1.1
+        self.velocity = min(1.2, self.velocity + 0.18)
+        self.bird_y += self.velocity
+        if self.tick >= self.scroll_at:
+            self.scroll_at = self.tick + max(2, 5 - self.level // 3)
+            self.stats["distance"] += 1
+            self.spawn_in -= 1
+            if self.spawn_in <= 0:
+                gap = max(4, 6 - self.level // 3)
+                self.pipes.append([self.cols - 1, self.rng.randint(2, self.rows - gap - 2), gap, 0])
+                self.spawn_in = 9
+            for pipe in list(self.pipes):
+                pipe[0] -= 1
+                if pipe[0] == 4 and not pipe[3]:
+                    pipe[3] = 1
+                    self.stats["pipes"] += 1
+                    self.award(100 * self.level, "pipe")
+                    self.level_up(min(12, 1 + self.stats["pipes"] // 8))
+                if pipe[0] < 0:
+                    self.pipes.remove(pipe)
+        bird_row = int(self.bird_y)
+        if bird_row < 0 or bird_row >= self.rows or any(pipe[0] in (4, 5) and not (pipe[1] <= bird_row < pipe[1] + pipe[2]) for pipe in self.pipes):
+            self.lose_life("crash")
+
+    def frame(self) -> RetroFrame:
+        cells = [(c, r, "wall") for c, gap_top, gap, _ in self.pipes for r in range(self.rows)
+                 if c >= 0 and (r < gap_top or r >= gap_top + gap)]
+        cells.append((4, int(self.bird_y), "food"))
+        return RetroFrame(cells, self.hud(), self.overlay)
+
+
+# ---------------------------------------------------------------------------
 # Catalog, tag generation and the deterministic replay envelope
 # ---------------------------------------------------------------------------
 RETRO_GAMES: tuple[RetroSpec, ...] = (
@@ -954,11 +1315,24 @@ RETRO_GAMES: tuple[RetroSpec, ...] = (
     RetroSpec("pixel_dash", "Đua Xe", "forbidden",
               "Xe lách qua dòng xe ngược chiều, càng lâu càng nhanh.",
               (("passed", "Vượt"), ("distance", "Quãng"))),
+    RetroSpec("pacman_maze", "Pac-Man", "allowed_with_safe_area",
+              "Ăn chấm trong mê cung, né ma và săn ma khi nhặt viên năng lượng.",
+              (("pellets", "Chấm"), ("ghosts", "Ma"))),
+    RetroSpec("chicken_shooter", "Phi Thuyền Bắn Gà", "default_off",
+               "Phi thuyền tự né trứng, bắn đội hình gà không gian theo từng đợt.",
+               (("chickens", "Gà hạ"), ("waves", "Đợt"))),
+    RetroSpec("spaceship_voyager", "Phi Thuyền", "default_off",
+              "Bay xuyên trường sao, né thiên thạch và đối đầu ba Boss với kỹ năng riêng.",
+              (("distance", "Quãng bay"), ("asteroids", "Thiên thạch"), ("bosses", "Boss hạ"), ("skills", "Skill né"))),
+    RetroSpec("flappy_bird", "Flappy Bird", "allowed_with_safe_area",
+              "Chú chim tự vỗ cánh luồn qua ống nước, tốc độ tăng dần theo quãng bay.",
+              (("pipes", "Ống qua"), ("distance", "Quãng"))),
 )
 
 _ENGINES: dict[str, type[Engine]] = {engine.game_id: engine for engine in (
     SnakeEngine, BrickStackEngine, TankDuelEngine, BrickBreakerEngine,
-    StarDefenderEngine, PixelDashEngine)}
+    StarDefenderEngine, PixelDashEngine, PacmanEngine, ChickenShooterEngine, SpaceshipVoyagerEngine,
+    FlappyBirdEngine)}
 
 RETRO_IDS = frozenset(_ENGINES)
 SPECS: dict[str, RetroSpec] = {spec.id: spec for spec in RETRO_GAMES}

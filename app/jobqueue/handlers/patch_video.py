@@ -202,12 +202,12 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
             overlay_img.save(branding_overlay_path, "PNG")
 
     def render_main(target: str) -> None:
-        if background_type in {"battle_royale", "gameplay"}:
+        if background_type == "gameplay":
             gameplay = snapshot.get("gameplay") or {}
             clips = gameplay.get("clips") or []
             if not clips:
                 raise JobFatalError("source_unavailable: gameplay replay list empty")
-            with tempfile.TemporaryDirectory(prefix="battle_royale_") as tmp:
+            with tempfile.TemporaryDirectory(prefix="gameplay_") as tmp:
                 paths = []
                 for clip in clips:
                     path = clip.get("file_path")
@@ -323,7 +323,7 @@ def handle(ctx) -> dict:
         video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                    file_path=output, resolution=book.video_resolution)
         _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
-        if snapshot.get("background_type") in {"battle_royale", "gameplay"}:
+        if snapshot.get("background_type") == "gameplay":
             token = (snapshot.get("gameplay") or {}).get("reservation_token") if snapshot.get("schema_version") == 3 else None
             for clip_path in consume_reserved(ctx.conn, patch_id, token):
                 Path(clip_path).unlink(missing_ok=True)
@@ -344,7 +344,7 @@ def handle(ctx) -> dict:
                 video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                            file_path=output, resolution=book.video_resolution)
                 _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
-                if persisted_snapshot.get("background_type") == "battle_royale":
+                if persisted_snapshot.get("background_type") == "gameplay":
                     token = ((persisted_snapshot.get("gameplay") or {}).get("reservation_token")
                              if persisted_snapshot.get("schema_version") == 3 else None)
                     for clip_path in consume_reserved(ctx.conn, patch_id, token):

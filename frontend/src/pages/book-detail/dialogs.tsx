@@ -720,14 +720,8 @@ export function ConfigDialog({
                   >
                     <option value="media">Ảnh/video</option>
                     <option value="gameplay">Catalog gameplay nhẹ nhàng</option>
-                    <option value="battle_royale">Neon Battle Royale (Legacy)</option>
                   </select>
                 </Field>
-                {videoConfig.background_type === "battle_royale" && (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Chế độ tương thích cũ. Waveform bị tắt; phụ đề, tiến độ và thumbnail vẫn giữ cấu hình hiện tại.
-                  </p>
-                )}
                 {videoConfig.background_type === "gameplay" && (
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <Field label="Chế độ chọn game">
@@ -747,12 +741,21 @@ export function ConfigDialog({
                           <option value="brick_breaker">Đập Gạch · Retro</option>
                           <option value="star_defender">Bắn Ruồi · Retro</option>
                           <option value="pixel_dash">Đua Xe · Retro</option>
+                          <option value="pacman_maze">Pac-Man · Retro</option>
+                          <option value="chicken_shooter">Phi Thuyền Bắn Gà · Retro</option>
+                          <option value="flappy_bird">Flappy Bird · Retro</option>
+                          <option value="aurora_veil">Aurora Veil · Procedural</option>
+                          <option value="plasma_tide">Plasma Tide · Procedural</option>
+                          <option value="ripple_pond">Ripple Pond · Procedural</option>
+                          <option value="lumen_bloom">Lumen Bloom · Procedural</option>
+                          <option value="silk_current">Silk Current · Procedural</option>
+                          <option value="starfall_warp">Starfall Warp · Procedural</option>
                         </select>
                       </Field>
                     ) : (
                       <div className="space-y-2">
                         <div className="text-xs font-medium">Game trong vòng xoay</div>
-                        {([ ["snake_arena", "Rắn Săn Mồi · Retro"], ["brick_stack", "Xếp Gạch · Retro"], ["tank_duel", "Xe Tăng 90 · Retro"], ["brick_breaker", "Đập Gạch · Retro"], ["star_defender", "Bắn Ruồi · Retro"], ["pixel_dash", "Đua Xe · Retro"] ] as const).map(([id, label]) => {
+                        {([ ["snake_arena", "Rắn Săn Mồi · Retro"], ["brick_stack", "Xếp Gạch · Retro"], ["tank_duel", "Xe Tăng 90 · Retro"], ["brick_breaker", "Đập Gạch · Retro"], ["star_defender", "Bắn Ruồi · Retro"], ["pixel_dash", "Đua Xe · Retro"], ["pacman_maze", "Pac-Man · Retro"], ["chicken_shooter", "Phi Thuyền Bắn Gà · Retro"], ["flappy_bird", "Flappy Bird · Retro"], ["aurora_veil", "Aurora Veil · Procedural"], ["plasma_tide", "Plasma Tide · Procedural"], ["ripple_pond", "Ripple Pond · Procedural"], ["lumen_bloom", "Lumen Bloom · Procedural"], ["silk_current", "Silk Current · Procedural"], ["starfall_warp", "Starfall Warp · Procedural"] ] as const).map(([id, label]) => {
                           const checked = videoConfig.gameplay.game_ids.includes(id);
                           return <label key={id} className="flex items-center gap-2 text-xs">
                             <input type="checkbox" className={checkboxClass} checked={checked}
@@ -764,7 +767,7 @@ export function ConfigDialog({
                       </div>
                     )}
                     <p className="text-xs text-muted-foreground sm:col-span-2">
-                      Game được chọn deterministic theo patch. Audiobook, phụ đề, tiến độ, thumbnail và pipeline YouTube không thay đổi.
+                      Khi xoay nhiều game, các clip được lặp theo thứ tự đã chọn trong cùng video và được cố định khi retry. Audiobook, phụ đề, tiến độ, thumbnail và pipeline YouTube không thay đổi.
                     </p>
                   </div>
                 )}

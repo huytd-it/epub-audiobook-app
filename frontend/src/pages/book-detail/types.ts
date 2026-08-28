@@ -134,13 +134,13 @@ export type BookStatus = {
 
 export type GameplaySelectionConfig = {
   selection_mode: "single" | "rotation";
-  game_id: "snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp" | "battle_royale";
-  game_ids: ("snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp" | "battle_royale")[];
+  game_id: "snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "pacman_maze" | "chicken_shooter" | "spaceship_voyager" | "flappy_bird" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp";
+  game_ids: ("snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "pacman_maze" | "chicken_shooter" | "spaceship_voyager" | "flappy_bird" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp")[];
   preset: "calm";
 };
 
 export type VideoConfig = {
-  background_type: "media" | "gameplay" | "battle_royale";
+  background_type: "media" | "gameplay";
   backgrounds: string[];
   background_mode: "sequential" | "random";
   gameplay: GameplaySelectionConfig;

@@ -41,6 +41,16 @@ const GAMES = [
   ["brick_breaker", "Đập Gạch · Retro"],
   ["star_defender", "Bắn Ruồi · Retro"],
   ["pixel_dash", "Đua Xe · Retro"],
+  ["pacman_maze", "Pac-Man · Retro"],
+  ["chicken_shooter", "Phi Thuyền Bắn Gà · Retro"],
+  ["spaceship_voyager", "Phi Thuyền · Retro"],
+  ["flappy_bird", "Flappy Bird · Retro"],
+  ["aurora_veil", "Aurora Veil · Procedural"],
+  ["plasma_tide", "Plasma Tide · Procedural"],
+  ["ripple_pond", "Ripple Pond · Procedural"],
+  ["lumen_bloom", "Lumen Bloom · Procedural"],
+  ["silk_current", "Silk Current · Procedural"],
+  ["starfall_warp", "Starfall Warp · Procedural"],
 ] as const;
 
 const NORMALIZATION_LABELS: { key: keyof NormalizationSettings; label: string }[] = [
@@ -730,7 +740,6 @@ export function ProductionSettingsPage() {
                   >
                     <option value="media">Ảnh/video</option>
                     <option value="gameplay">Catalog gameplay nhẹ nhàng</option>
-                    <option value="battle_royale">Neon Battle Royale (Legacy)</option>
                   </select>
                 </Field>
                 {video.background_type === "gameplay" && (
@@ -800,6 +809,11 @@ export function ProductionSettingsPage() {
                           );
                         })}
                       </div>
+                    )}
+                    {video.gameplay.selection_mode === "rotation" && (
+                      <p className="text-xs text-muted-foreground sm:col-span-2">
+                        Các game được chọn sẽ luân phiên theo thứ tự trong cùng một video; thứ tự clip được cố định để retry cho ra cùng kết quả.
+                      </p>
                     )}
                   </div>
                 )}
