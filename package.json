@@ -9,6 +9,7 @@
     "typecheck": "tsc -b --pretty false",
     "tauri": "tauri",
     "setup": "powershell -ExecutionPolicy Bypass -File scripts/setup.ps1",
+    "install:all": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1",
     "dev:desktop": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
     "build:desktop": "powershell -ExecutionPolicy Bypass -File scripts/build-desktop.ps1",
     "build:desktop:debug": "powershell -ExecutionPolicy Bypass -File scripts/build-desktop.ps1 -Debug",

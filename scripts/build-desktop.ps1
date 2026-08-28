@@ -21,6 +21,16 @@ $Root = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $Root ".venv\Scripts\python.exe"
 $tauriConf = Join-Path $Root "src-tauri\tauri.conf.json"
 
+function Write-TauriConfig($config) {
+    # Tauri's JSON parser rejects the UTF-8 BOM emitted by Set-Content in Windows PowerShell 5.1.
+    $json = $config | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($tauriConf, $json, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Read-TauriConfig {
+    [System.IO.File]::ReadAllText($tauriConf, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+}
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  EPUB Audiobook Studio - Build Desktop" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
@@ -32,12 +42,12 @@ if (-not (Test-Path (Join-Path $Root "node_modules"))) {
 }
 
 # ── 0. Kiem tra bundle.active ────────────────────────────────────────────────
-$conf = Get-Content $tauriConf -Raw | ConvertFrom-Json
+$conf = Read-TauriConfig
 if (-not $conf.bundle.active) {
     Write-Host "`n[WARN] bundle.active is false in tauri.conf.json" -ForegroundColor Yellow
     Write-Host "  Enabling for this build..." -ForegroundColor DarkYellow
     $conf.bundle.active = $true
-    $conf | ConvertTo-Json -Depth 10 | Set-Content $tauriConf -Encoding UTF8
+    Write-TauriConfig $conf
     $revertBundle = $true
 }
 
@@ -81,6 +91,12 @@ try {
 
     # ── 4. Output ─────────────────────────────────────────────────────────────
     $bundleDir = Join-Path $Root "src-tauri\target\$buildMode\bundle"
+    $builtExe = Join-Path $Root "src-tauri\target\$buildMode\epub-audiobook-studio.exe"
+    $desktopExe = Join-Path $Root "XuongSachNoi.exe"
+    if (Test-Path $builtExe) {
+        Copy-Item -LiteralPath $builtExe -Destination $desktopExe -Force
+        Write-Host "  Desktop executable: $desktopExe" -ForegroundColor Green
+    }
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "  Build complete!" -ForegroundColor Green
     Write-Host "  Output: $bundleDir" -ForegroundColor White
@@ -103,9 +119,9 @@ try {
 } finally {
     # ── Revert bundle.active ──────────────────────────────────────────────────
     if ($revertBundle) {
-        $conf = Get-Content $tauriConf -Raw | ConvertFrom-Json
+        $conf = Read-TauriConfig
         $conf.bundle.active = $false
-        $conf | ConvertTo-Json -Depth 10 | Set-Content $tauriConf -Encoding UTF8
+        Write-TauriConfig $conf
         Write-Host "`nReverted bundle.active to false." -ForegroundColor DarkGray
     }
 }

@@ -1,28 +1,35 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Xưởng Sách Nói",
-  "version": "1.0.0",
-  "identifier": "vn.xuongsachnoi.studio",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
-    "devUrl": "http://localhost:5173",
-    "frontendDist": "../app/spa_dist"
-  },
-  "app": {
-    "windows": [{
-      "title": "Xưởng Sách Nói",
-      "url": "/",
-      "width": 1440,
-      "height": 920,
-      "minWidth": 980,
-      "minHeight": 680,
-      "resizable": true
-    }],
-    "security": { "csp": null }
-  },
-  "bundle": {
-    "active": false,
-    "targets": "all"
-  }
+    "$schema":  "https://schema.tauri.app/config/2",
+    "productName":  "Xuong Sach Noi",
+    "version":  "1.0.0",
+    "identifier":  "vn.xuongsachnoi.studio",
+    "build":  {
+                  "beforeDevCommand":  "npm run dev",
+                  "beforeBuildCommand":  "npm run build",
+                  "devUrl":  "http://localhost:5173",
+                  "frontendDist":  "../app/spa_dist"
+              },
+    "app":  {
+                "windows":  [
+                                {
+                                    "title":  "Xưởng Sách Nói",
+                                    "url":  "/",
+                                    "width":  1440,
+                                    "height":  920,
+                                    "minWidth":  980,
+                                    "minHeight":  680,
+                                    "resizable":  true
+                                }
+                            ],
+                "security":  {
+                                 "csp":  null
+                             }
+            },
+    "bundle":  {
+                   "active":  false,
+                   "icon":  [
+                                "icons/icon.ico"
+                            ],
+                   "targets":  "all"
+               }
 }
