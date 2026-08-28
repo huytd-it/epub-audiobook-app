@@ -12,7 +12,7 @@
   "app": {
     "windows": [{
       "title": "Xưởng Sách Nói",
-      "url": "http://127.0.0.1:8000",
+      "url": "/",
       "width": 1440,
       "height": 920,
       "minWidth": 980,

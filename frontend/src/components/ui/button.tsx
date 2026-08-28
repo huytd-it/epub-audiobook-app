@@ -19,7 +19,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
       ghost: "hover:bg-accent/10 hover:text-foreground text-muted-foreground",
       link: "text-primary underline-offset-4 hover:underline p-0 h-auto",
-      accent: "bg-lime text-foreground hover:bg-lime/90 font-semibold shadow-xs",
+      accent: "bg-lime text-accent-foreground hover:bg-lime/90 font-semibold shadow-xs",
     };
 
     const sizeClasses = {
