@@ -476,6 +476,34 @@ async def generate_patch_video(
     return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
 
 
+@router.post("/books/{book_id}/patches/{patch_id}/audio/delete")
+def delete_patch_audio(
+    request: Request, book_id: int, patch_id: int,
+    ajax: int = Query(default=0),
+):
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        
+        if patch.audio_path:
+            repository.delete_patch_audio_files(patch.audio_path)
+            conn.execute("UPDATE patch SET audio_path=NULL, status='pending' WHERE id=?", (patch_id,))
+            
+            # Reset pipeline as audio is gone
+            conn.execute(
+                """UPDATE patch_pipeline SET stage='thumbnail', thumbnail_status='pending', 
+                   video_status='pending', upload_status='pending', youtube_upload_id=NULL, 
+                   updated_at=? WHERE patch_id=?""",
+                (datetime.now(timezone.utc).isoformat(), patch_id)
+            )
+            conn.commit()
+
+    if _wants_json(request, ajax):
+        return JSONResponse({"status": "deleted"})
+    return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
+
+
 @router.post("/books/{book_id}/patches/{patch_id}/video/delete")
 def delete_patch_video(
     request: Request, book_id: int, patch_id: int,
@@ -513,6 +541,31 @@ def delete_patch_video(
                     "video_id = NULL, video_path = NULL, updated_at = ? WHERE patch_id = ?",
                     (datetime.now(timezone.utc).isoformat(), patch_id),
                 )
+            conn.commit()
+
+    if _wants_json(request, ajax):
+        return JSONResponse({"status": "deleted"})
+    return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/youtube/delete")
+def delete_patch_youtube(
+    request: Request, book_id: int, patch_id: int,
+    ajax: int = Query(default=0),
+):
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        
+        row = conn.execute("SELECT youtube_upload_id FROM patch_pipeline WHERE patch_id = ?", (patch_id,)).fetchone()
+        if row and row["youtube_upload_id"]:
+            conn.execute(
+                """UPDATE patch_pipeline SET youtube_upload_id=NULL, upload_status='pending', 
+                   playlist_status='pending', stage='upload', updated_at=? 
+                   WHERE patch_id=?""",
+                (datetime.now(timezone.utc).isoformat(), patch_id)
+            )
             conn.commit()
 
     if _wants_json(request, ajax):

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search, Square } from "lucide-react";
-import { api, Chapter, Patch, postJson, VoiceItem } from "@/api";
+import { api, Chapter, Patch, post, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/common/StatusBadge";
@@ -1374,6 +1374,66 @@ export function ConfigDialog({
                   : tab === "video"
                     ? "Lưu cấu hình video"
                     : "Lưu cấu hình YouTube"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function DeletePatchDialog({
+  bookId,
+  patchIds,
+  open,
+  onOpenChange,
+  onMessage,
+  onDeleted,
+}: {
+  bookId: string;
+  patchIds: number[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onMessage: (message: string) => void;
+  onDeleted: () => Promise<void>;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const [toDelete, setToDelete] = useState({ audio: false, video: false, youtube: false });
+
+  const deleteSelected = async () => {
+    if (!toDelete.audio && !toDelete.video && !toDelete.youtube) return;
+    setDeleting(true);
+    try {
+      for (const patchId of patchIds) {
+        if (toDelete.audio) await post(`/books/${bookId}/patches/${patchId}/audio/delete`);
+        if (toDelete.video) await post(`/books/${bookId}/patches/${patchId}/video/delete`);
+        if (toDelete.youtube) await post(`/books/${bookId}/patches/${patchId}/youtube/delete`);
+      }
+      onMessage(`Đã xóa ${patchIds.length} patch thành công.`);
+      await onDeleted();
+      onOpenChange(false);
+    } catch (e) {
+      onMessage(errorText(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Xóa output của {patchIds.length} patch</DialogTitle>
+          <DialogDescription>Chọn những gì muốn xóa sạch khỏi ổ đĩa và trạng thái pipeline.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <CheckField checked={toDelete.audio} onChange={(audio) => setToDelete({ ...toDelete, audio })} label="Xóa Audio (.wav)" />
+          <CheckField checked={toDelete.video} onChange={(video) => setToDelete({ ...toDelete, video })} label="Xóa Video (.mp4)" />
+          <CheckField checked={toDelete.youtube} onChange={(youtube) => setToDelete({ ...toDelete, youtube })} label="Xóa trạng thái YouTube" />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={deleting}>Huỷ</Button>
+          <Button variant="destructive" onClick={deleteSelected} disabled={deleting || !Object.values(toDelete).some(Boolean)}>
+            {deleting ? "Đang xóa..." : "Xóa ngay"}
           </Button>
         </DialogFooter>
       </DialogContent>

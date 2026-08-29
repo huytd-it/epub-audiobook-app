@@ -11,6 +11,7 @@ import {
   Mic,
   Pencil,
   Settings,
+  Trash2,
   Video,
 } from "lucide-react";
 import { api, Patch, post, postForm, postJson } from "@/api";
@@ -37,7 +38,7 @@ import { BuildPanel } from "./book-detail/BuildPanel";
 import { ExportPanel } from "./book-detail/ExportPanel";
 import { ChaptersPanel } from "./book-detail/ChaptersPanel";
 import { ChapterDialog } from "./book-detail/ChapterDialog";
-import { ConfigDialog, PatchPreviewDialog, TitleNormalizeDialog } from "./book-detail/dialogs";
+import { ConfigDialog, DeletePatchDialog, PatchPreviewDialog, TitleNormalizeDialog } from "./book-detail/dialogs";
 import { OverlayEditor } from "./book-detail/OverlayEditor";
 
 type MainTab = "patches" | "build" | "chapters" | "thumbnail";
@@ -178,6 +179,7 @@ export function BookDetail() {
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchKind, setBatchKind] = useState<BatchKind>("audio");
   const [batchTargets, setBatchTargets] = useState<number[]>([]);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [automation, setAutomation] = useState<BatchAutomation>(DEFAULT_AUTOMATION);
   const [settings, setSettings] = useState<AudioSettings>({
     modelId: "edge-tts",
@@ -829,12 +831,24 @@ export function BookDetail() {
               <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => runBatch("youtube")}>
                 <Video className="h-3.5 w-3.5" /> YouTube
               </Button>
+              <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => setDeleteOpen(true)}>
+                <Trash2 className="h-3.5 w-3.5" /> Xóa
+              </Button>
             </div>
           </div>
         </div>
       )}
 
-<PatchPreviewDialog
+      <DeletePatchDialog
+        bookId={bookId}
+        patchIds={selectedIds}
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        onMessage={showToast}
+        onDeleted={refresh}
+      />
+      <PatchPreviewDialog
+
         bookId={bookId}
         patch={previewPatch}
         chapters={data.chapters}
