@@ -1,11 +1,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Tạo tag và push để trigger GitHub Release tự động.
+  Tao tag va push de trigger GitHub Release tu dong.
 .DESCRIPTION
-  1. Đồng bộ version vào package.json / pyproject.toml / src-tauri/tauri.conf.json
-  2. Commit, tạo tag vX.Y.Z, push + push tag => kích hoạt .github/workflows/release.yml
-  3. Release notes được GitHub tự động generate từ .github/release.yml
+  1. Dong bo version vao package.json / pyproject.toml / src-tauri/tauri.conf.json
+  2. Commit, tao tag vX.Y.Z, push + push tag => kich hoat .github/workflows/release.yml
+  3. Release notes duoc GitHub tu dong generate tu .github/release.yml
 .EXAMPLE
   ./scripts/create-release.ps1 -Version 1.1.0
   ./scripts/create-release.ps1 -Version 1.1.0-rc1 -Prerelease
@@ -22,47 +22,57 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 
-# Chuẩn hoá version: cho phép "1.0.1" hoặc "v1.0.1"
+# Chuan hoa version: cho phep "1.0.1" hoac "v1.0.1"
 $raw = $Version.Trim()
 if ($raw.StartsWith("v")) { $raw = $raw.Substring(1) }
 $tag = "v$raw"
-$semver = $raw  # không có v
+$semver = $raw  # khong co v
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Create Release $tag" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Kiểm tra gh CLI (optional)
+# Kiem tra gh CLI (optional)
 $hasGh = $null -ne (Get-Command gh -ErrorAction SilentlyContinue)
 
-# 1. Cập nhật version trong 3 file
+# 1. Cap nhat version trong 3 file
 Write-Host "`n[1/4] Updating version to $semver ..." -ForegroundColor Yellow
 
-# package.json
+# package.json -- regex replace to keep formatting
 $pkgPath = Join-Path $Root "package.json"
-$pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
-$pkg.version = $semver
-($pkg | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $pkgPath -Encoding utf8
-Write-Host "  ✓ package.json" -ForegroundColor Green
+$pkgContent = Get-Content $pkgPath -Raw
+$pkgContentNew = $pkgContent -replace '"version"\s*:\s*".*?"', "`"version`": `"$semver`""
+if ($pkgContentNew -ne $pkgContent) {
+    Set-Content -LiteralPath $pkgPath -Value $pkgContentNew -Encoding utf8 -NoNewline
+    Write-Host "  [OK] package.json" -ForegroundColor Green
+} else {
+    Write-Host "  [OK] package.json (already $semver)" -ForegroundColor DarkGray
+}
 
 # pyproject.toml
 $pyPath = Join-Path $Root "pyproject.toml"
 $pyContent = Get-Content $pyPath -Raw
-$pyContent = $pyContent -replace 'version = ".*?"', "version = `"$semver`""
-Set-Content -LiteralPath $pyPath -Value $pyContent -Encoding utf8 -NoNewline
-Write-Host "  ✓ pyproject.toml" -ForegroundColor Green
+$pyContentNew = $pyContent -replace 'version = ".*?"', "version = `"$semver`""
+if ($pyContentNew -ne $pyContent) {
+    Set-Content -LiteralPath $pyPath -Value $pyContentNew -Encoding utf8 -NoNewline
+    Write-Host "  [OK] pyproject.toml" -ForegroundColor Green
+} else {
+    Write-Host "  [OK] pyproject.toml (already $semver)" -ForegroundColor DarkGray
+}
 
-# src-tauri/tauri.conf.json
+# src-tauri/tauri.conf.json -- regex replace keep formatting, write without BOM
 $tauriPath = Join-Path $Root "src-tauri/tauri.conf.json"
-$tauriJson = Get-Content $tauriPath -Raw | ConvertFrom-Json
-$tauriJson.version = $semver
-# Ghi không BOM (Tauri parser kỵ BOM)
-$json = $tauriJson | ConvertTo-Json -Depth 10
-[System.IO.File]::WriteAllText($tauriPath, $json, [System.Text.UTF8Encoding]::new($false))
-Write-Host "  ✓ src-tauri/tauri.conf.json" -ForegroundColor Green
+$tauriContent = Get-Content $tauriPath -Raw
+$tauriContentNew = $tauriContent -replace '"version"\s*:\s*".*?"', "`"version`": `"$semver`""
+if ($tauriContentNew -ne $tauriContent) {
+    [System.IO.File]::WriteAllText($tauriPath, $tauriContentNew, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "  [OK] src-tauri/tauri.conf.json" -ForegroundColor Green
+} else {
+    Write-Host "  [OK] src-tauri/tauri.conf.json (already $semver)" -ForegroundColor DarkGray
+}
 
 if ($DryRun) {
-    Write-Host "`n[DryRun] Dừng trước commit/tag." -ForegroundColor Magenta
+    Write-Host "`n[DryRun] Dung truoc commit/tag." -ForegroundColor Magenta
     git -C $Root diff --stat
     exit 0
 }
@@ -71,29 +81,29 @@ if ($DryRun) {
 Write-Host "`n[2/4] Committing ..." -ForegroundColor Yellow
 git -C $Root add package.json pyproject.toml src-tauri/tauri.conf.json
 $commitMsg = if ($Message) { "chore(release): $tag - $Message" } else { "chore(release): $tag" }
-# Nếu không có gì để commit (version trùng), bỏ qua
+# Neu khong co gi de commit (version trung), bo qua
 $staged = git -C $Root diff --cached --name-only
 if (-not $staged) {
-    Write-Host "  (no changes to commit — version có thể đã đúng)" -ForegroundColor DarkYellow
+    Write-Host "  (no changes to commit -- version co the da dung)" -ForegroundColor DarkYellow
 } else {
     git -C $Root commit -m $commitMsg
-    Write-Host "  ✓ committed: $commitMsg" -ForegroundColor Green
+    Write-Host "  [OK] committed: $commitMsg" -ForegroundColor Green
 }
 
 # 3. Tag
 Write-Host "`n[3/4] Creating tag $tag ..." -ForegroundColor Yellow
 $existing = git -C $Root tag --list $tag
 if ($existing) {
-    Write-Host "  Tag $tag đã tồn tại — xoá và tạo lại?" -ForegroundColor Yellow
+    Write-Host "  Tag $tag da ton tai -- xoa va tao lai?" -ForegroundColor Yellow
     git -C $Root tag -d $tag
 }
 $tagMsg = if ($Message) { "$tag - $Message" } else { $tag }
 git -C $Root tag -a $tag -m $tagMsg
-Write-Host "  ✓ tag $tag" -ForegroundColor Green
+Write-Host "  [OK] tag $tag" -ForegroundColor Green
 
 if ($SkipPush) {
-    Write-Host "`n[SkipPush] Không push. Chạy thủ công:" -ForegroundColor Magenta
-    Write-Host "  git push origin main && git push origin $tag" -ForegroundColor White
+    Write-Host "`n[SkipPush] Khong push. Chay thu cong:" -ForegroundColor Magenta
+    Write-Host "  git push origin master && git push origin $tag" -ForegroundColor White
     exit 0
 }
 
@@ -102,11 +112,13 @@ Write-Host "`n[4/4] Pushing ..." -ForegroundColor Yellow
 $branch = (git -C $Root rev-parse --abbrev-ref HEAD).Trim()
 git -C $Root push origin $branch
 git -C $Root push origin $tag
-Write-Host "  ✓ pushed $branch + $tag" -ForegroundColor Green
+Write-Host "  [OK] pushed $branch + $tag" -ForegroundColor Green
 
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Done! GitHub Actions sẽ tạo Release" -ForegroundColor Green
-Write-Host "  https://github.com/$(git -C $Root remote get-url origin | ForEach-Object { $_ -replace '.*github.com[:/](.*)\.git.*','$1' })/releases" -ForegroundColor DarkGray
+Write-Host "  Done! GitHub Actions se tao Release" -ForegroundColor Green
+$remoteUrl = git -C $Root remote get-url origin
+$slug = $remoteUrl -replace '.*github.com[:/](.*)\.git.*','$1'
+Write-Host "  https://github.com/$slug/releases" -ForegroundColor DarkGray
 if ($hasGh) {
     Write-Host "`n  Xem log workflow:" -ForegroundColor DarkGray
     Write-Host "  gh run watch" -ForegroundColor White
@@ -114,6 +126,7 @@ if ($hasGh) {
 }
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Gợi ý tạo release thủ công bằng gh nếu workflow không chạy
-Write-Host "`nTip: tạo release thủ công với auto-notes:" -ForegroundColor DarkGray
-Write-Host "  gh release create $tag --generate-notes $(if($Prerelease){'--prerelease'})" -ForegroundColor White
+# Goi y tao release thu cong bang gh neu workflow khong chay
+Write-Host "`nTip: tao release thu cong voi auto-notes:" -ForegroundColor DarkGray
+$preFlag = if ($Prerelease) { "--prerelease" } else { "" }
+Write-Host "  gh release create $tag --generate-notes $preFlag" -ForegroundColor White
