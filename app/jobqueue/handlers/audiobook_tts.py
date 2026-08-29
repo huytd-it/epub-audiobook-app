@@ -77,7 +77,7 @@ def handle(ctx) -> dict:
             ctx.log(f"audio result không đọc được, tạo lại -> {patch.audio_path}")
 
     if settings.tts_write_chunk_files:
-        snapshot_dir = Path(settings.data_root) / "books" / str(patch.book_id) / "patches" / f"{patch.id}_chunks"
+        snapshot_dir = repository.get_patch_chunk_dir(patch.book_id, patch.patch_index)
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         (snapshot_dir / ".tts_request.json").write_text(json.dumps({
             "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
@@ -154,9 +154,9 @@ def synthesize_patch(
 
     ref_wav = book.voice_clip_path if book else None
     ref_text = book.voice_transcript if book else None
-    book_dir = data_root / "books" / str(patch.book_id) / "patches"
-    book_dir.mkdir(parents=True, exist_ok=True)
-    audio_path = str(book_dir / f"{patch.id}.wav")
+    book_dir = data_root / "books" / str(patch.book_id)
+    audio_path = str(repository.get_patch_audio_path(patch.book_id, patch.patch_index))
+    Path(audio_path).parent.mkdir(parents=True, exist_ok=True)
     timeline_path = Path(audio_path).with_suffix(".timeline.json")
     subtitle_path = Path(audio_path).with_suffix(".ass")
     total = len(plan)
@@ -174,14 +174,14 @@ def synthesize_patch(
             ctx.progress(index + 1, total)
         frame_counts = [len(a) for a in wavs]
         chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, pauses)
-        audio_merge.concat_chunks_to_wav(wavs, engine.sample_rate, audio_path, pause_ms=pauses)
+        audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_chunks_to_wav(wavs, engine.sample_rate, p, pause_ms=pauses))
         _apply_effects(ctx, with_effects, audio_path, plan)
         audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
         subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, pauses)
         ctx.progress(total, total, phase="synthesizing")
         return audio_path, total
 
-    chunk_dir = book_dir / f"{patch.id}_chunks"
+    chunk_dir = repository.get_patch_chunk_dir(patch.book_id, patch.patch_index)
     chunk_dir.mkdir(parents=True, exist_ok=True)
     repository.update_patch_chunk_count(ctx.conn, patch.id, total)
 
@@ -225,7 +225,7 @@ def synthesize_patch(
     chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, pauses)
     chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
     ctx.progress(total, total, phase="merging")
-    audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=pauses)
+    audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_wavs(chunk_paths, p, pause_ms=pauses))
     _apply_effects(ctx, with_effects, audio_path, plan)
     audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
     subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, pauses)

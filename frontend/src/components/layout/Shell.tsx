@@ -5,7 +5,6 @@ import {
   Library,
   UploadCloud,
   ListOrdered,
-  Wrench,
   Video,
   HardDrive,
   Database,
@@ -64,7 +63,6 @@ const navSections: NavSection[] = [
   {
     title: "OPERATIONS",
     items: [
-      { to: "/tools", label: "Bộ công cụ", icon: Wrench },
       { to: "/youtube", label: "YouTube", icon: Video },
       { to: "/drive", label: "Google Drive", icon: HardDrive },
       { to: "/database-io", label: "Dữ liệu", icon: Database },

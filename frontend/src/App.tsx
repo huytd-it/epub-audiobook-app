@@ -18,7 +18,6 @@ import { DatabaseIoPage } from "@/pages/DatabaseIoPage";
 import { FlowsPage } from "@/pages/FlowsPage";
 import { LogsPage } from "@/pages/LogsPage";
 import { EffectsPage } from "@/pages/EffectsPage";
-import { Tools } from "@/pages/Tools";
 import { ProductionSettingsPage } from "@/pages/ProductionSettingsPage";
 import { GameplayPage } from "@/pages/GameplayPage";
 import { TtsModelsPage } from "@/pages/TtsModelsPage";
@@ -44,7 +43,6 @@ function App() {
         <Route path="/voices" element={<VoicesPage />} />
         <Route path="/media" element={<MediaPage />} />
         <Route path="/media-browser" element={<MediaBrowserPage />} />
-        <Route path="/tools" element={<Tools />} />
         <Route path="/youtube" element={<YouTubePage />} />
         <Route path="/drive" element={<DrivePage />} />
         <Route path="/database-io" element={<DatabaseIoPage />} />

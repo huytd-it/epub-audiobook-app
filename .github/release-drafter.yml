@@ -1,0 +1,51 @@
+# Cấu hình release-drafter — tự động gom PR/commits thành draft release
+# Docs: https://github.com/release-drafter/release-drafter
+name-template: "v$NEXT_PATCH_VERSION 🌟"
+tag-template: "v$NEXT_PATCH_VERSION"
+autolabeler:
+  - label: "feat"
+    files:
+      - title: "/feat|feature/i"
+  - label: "fix"
+    files:
+      - title: "/fix|hotfix|bugfix/i"
+  - label: "docs"
+    files:
+      - title: "/docs|doc/i"
+  - label: "chore"
+    files:
+      - title: "/chore|refactor|build|ci|test/i"
+
+categories:
+  - title: "🚀 Features"
+    labels: [feat, feature, enhancement]
+  - title: "🐛 Bug Fixes"
+    labels: [fix, bugfix, bug, hotfix]
+  - title: "✨ Improvements"
+    labels: [perf, improvement, refactor, optimize]
+  - title: "📚 Documentation"
+    labels: [docs, documentation]
+  - title: "🧹 Maintenance"
+    labels: [chore, build, ci, test, deps]
+  - title: "⚙️ Other Changes"
+    labels: ["*"]
+
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
+change-title-escapes: '\<*_&'
+
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## Contributors
+  $CONTRIBUTORS
+
+version-resolver:
+  major:
+    labels: [major, breaking]
+  minor:
+    labels: [minor, feature, feat, enhancement]
+  patch:
+    labels: [patch, fix, bugfix, chore, docs]
+  default: patch

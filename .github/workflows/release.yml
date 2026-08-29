@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag để release (vd: v1.0.1)"
+        required: true
+        type: string
+      prerelease:
+        description: "Đánh dấu là prerelease?"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust (Tauri)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build frontend (Vite -> app/spa_dist)
+        run: npm run build
+
+      - name: Build Tauri bundle
+        # Bỏ qua lỗi build để vẫn tạo Release với notes; bỏ `continue-on-error` nếu muốn bắt buộc build pass
+        continue-on-error: true
+        run: npx tauri build
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $bundle = "src-tauri/target/release/bundle"
+          $artifacts = @()
+          if (Test-Path $bundle) {
+            Get-ChildItem $bundle -Recurse -File -Include *.msi,*.exe | ForEach-Object {
+              Write-Host "Found artifact: $($_.FullName) ($([math]::Round($_.Length/1MB,2)) MB)"
+            }
+          }
+          if (Test-Path "XuongSachNoi.exe") {
+            Write-Host "Found: XuongSachNoi.exe"
+          }
+          if (Test-Path "src-tauri/target/release/epub-audiobook-studio.exe") {
+            Copy-Item "src-tauri/target/release/epub-audiobook-studio.exe" -Destination "XuongSachNoi.exe" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Resolve tag
+        id: tag
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          if (-not $tag) { $tag = "${{ github.ref }}".Replace("refs/tags/", "") }
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+          echo "Resolved tag: $tag"
+          $isPre = $tag -match "-"
+          if ("${{ inputs.prerelease }}" -eq "true") { $isPre = "true" } else { $isPre = "$isPre" }
+          if ($tag -match "-(alpha|beta|rc|pre)") { $isPre = "true" }
+          echo "prerelease=$isPre" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release (auto-generate notes)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
+          files: |
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.exe
+            XuongSachNoi.exe
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

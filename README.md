@@ -1,118 +1,310 @@
-# EPUB → Audiobook → Video
+<div align="center">
 
-Upload `.epub` files, automatically split into chapters and patches, synthesize with VoxCPM2 TTS, merge into audio, optionally generate video with background images, and auto-upload to YouTube. All work is tracked in SQLite for crash recovery.
+# 📚 EPUB → Audiobook → Video
 
-## Features
+### Upload EPUB · Tách chương & patch · Tổng hợp TTS · Ghép audio · Tạo video · Auto-upload YouTube
 
-- **EPUB Parsing** — Extract chapters from EPUB files with smart chapter detection
-- **Patch System** — Split books into manageable patches for processing
-- **TTS Synthesis** — Unified VoxCPM2, OmniVoice, Confucius4-TTS, F5-TTS Vietnamese ViVoice, VieNeu fast, ZeroTTS, Edge TTS, and gTTS generation
-- **Reference Voice Selection** — VoxCPM2/OmniVoice clone whatever the audio settings' voice id names,
-  locally and in Colab/Kaggle exports alike: a clip from the `/voices` library, a VieNeu or ZeroTTS
-  preset voice (`preset:<engine>:<voice>`, rendered once and cached under `data/voices/_presets`), or
-  the book's own voice clip when nothing is picked
+*Toàn bộ công việc được theo dõi trong SQLite — crash rồi khởi động lại vẫn tiếp tục.*
 
-### Confucius4-TTS and F5 ViVoice
+<br />
 
-Both models are local, zero-shot voice-cloning engines and therefore require a voice clip.
-F5 ViVoice downloads its published `hynt/F5-TTS-Vietnamese-ViVoice` weights on first use;
-install it with `pip install -e ".[f5-vivoice]"`. Confucius4 is currently distributed as a
-repository rather than a pip package: clone `netease-youdao/Confucius4-TTS`, install its
-`requirements.txt`, then set `CONFUCIUS4_REPO_DIR` to that clone. The Audio settings screen
-shows model-specific advanced controls only where they are supported.
-- **Batch Colab/Kaggle Export** — Export one or more selected patches through the shared batch notebook
-- **Audio Merge** — Combine patches into full audiobook files
-- **Video Generation** — Create videos with custom backgrounds per patch/chapter
-- **YouTube Upload** — Auto-upload generated videos to YouTube
-- **Automated Patch Pipeline** — Per-patch automation: overlay thumbnail → multi-source video (looping backgrounds + webcam PiP) → YouTube upload (thumbnail + playlist), with idempotent retry per stage
-- **Automation Settings** — Validated FFmpeg presets, webcam config, and YouTube playlist defaults with system-wide defaults and per-book JSON overrides
-- **Modern UI** — Dark mode, drag-and-drop upload, image preview
-- **Batch Processing** — Upload multiple books, generate videos in bulk
-- **Background Worker** — Non-blocking queue processing with admin controls
-- **Crash Recovery** — SQLite tracking survives restarts
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10--3.13-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white)](app/main.py:127)
+[![React 19](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=000)](frontend/src)
+[![Vite](https://img.shields.io/badge/Vite-6-646CFF?style=for-the-badge&logo=vite&logoColor=white)](vite.config.ts)
+[![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?style=for-the-badge&logo=tauri&logoColor=000)](src-tauri/tauri.conf.json)
+[![SQLite](https://img.shields.io/badge/SQLite-444-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](app/db.py)
+[![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](LICENSE)
 
-## Setup
+<br />
 
-Requires Python ≥3.10, <3.13.
+[✨ Tính năng](#-tính-năng) · [📊 Sơ đồ](#-sơ-đồ-hệ-thống) · [🚀 Bắt đầu](#-bắt-đầu-nhanh) · [📖 Tài liệu](#-pages--điều-hướng) · [⚙️ Cấu hình](#️-cấu-hình)
+
+</div>
+
+---
+
+## 📑 Mục lục
+
+- [✨ Tính năng](#-tính-năng)
+- [📊 Sơ đồ hệ thống](#-sơ-đồ-hệ-thống)
+- [🗂️ Cấu trúc thư mục](#️-cấu-trúc-thư-mục)
+- [🚀 Bắt đầu nhanh](#-bắt-đầu-nhanh)
+- [🔧 Yêu cầu hệ thống](#-yêu-cầu-hệ-thống)
+- [⚙️ Cấu hình](#️-cấu-hình)
+- [🧵 Hàng đợi & Worker](#-hàng-đợi--worker)
+- [🎥 FFmpeg](#-ffmpeg--ffprobe)
+- [▶️ Chạy ứng dụng](#️-chạy-ứng-dụng)
+- [📖 Pages & Điều hướng](#-pages--điều-hướng)
+- [🔌 API Endpoints](#-api-endpoints)
+- [🧪 CLI Scripts](#-cli-scripts)
+- [🔐 YouTube OAuth](#-youtube-oauth)
+- [⚠️ Giới hạn đã biết](#️-giới-hạn-đã-biết)
+
+---
+
+## ✨ Tính năng
+
+| Icon | Nhóm | Mô tả |
+|------|------|-------|
+| 📖 | **EPUB Parsing** | Trích xuất chương với phát hiện chương thông minh (`app/epub_parser.py:1`) |
+| 🧩 | **Patch System** | Chia sách thành patch dễ quản lý (`app/chunker.py`) |
+| 🎙️ | **TTS đa engine** | VoxCPM2 · OmniVoice · Confucius4-TTS · F5 ViVoice · VieNeu Fast · ZeroTTS · Edge TTS · gTTS — thống nhất qua `app/tts_engine.py` |
+| 🗣️ | **Reference Voice** | Clone giọng từ thư viện `/voices`, preset `preset:<engine>:<voice>` (cache `data/voices/_presets`), hoặc clip riêng của sách |
+| 📦 | **Batch Colab/Kaggle Export** | Xuất 1..n patch qua notebook batch chung — xem [Batch Export](#-batch-export-colabkaggle) |
+| 🔗 | **Audio Merge** | Ghép patch thành audiobook hoàn chỉnh (`app/audio_merge.py`) |
+| 🎬 | **Video Generation** | Tạo video với background riêng cho từng patch/chapter — multi-source + webcam PiP (`app/video_gen.py`, `app/video_compositor.py`) |
+| 📤 | **YouTube Upload** | Auto-upload, thumbnail, playlist (`app/youtube.py`, `app/upload_worker.py`) |
+| 🤖 | **Automated Patch Pipeline** | Overlay thumbnail → video (loop background + PiP) → upload YouTube, retry idempotent từng stage |
+| ⚙️ | **Automation Settings** | FFmpeg presets, webcam, playlist defaults — validated Pydantic, default toàn cục + override JSON per-book |
+| 🌗 | **Modern UI** | Dark mode, drag & drop, preview ảnh — React SPA duy nhất (`frontend/src`) |
+| 📥 | **Batch Processing** | Upload nhiều sách, tạo video hàng loạt |
+| ⚙️ | **Background Worker** | Queue không block UI, điều khiển admin |
+| 💾 | **Crash Recovery** | SQLite tracking sống sót sau restart |
+
+> **Confucius4 & F5 ViVoice** — cả hai đều là zero-shot voice-cloning cục bộ, cần clip giọng mẫu.
+> - F5 ViVoice tự tải `hynt/F5-TTS-Vietnamese-ViVoice` lần đầu — cài bằng `pip install -e ".[f5-vivoice]"`.
+> - Confucius4 hiện là repo `netease-youdao/Confucius4-TTS`: clone → `pip install -r requirements.txt` → set `CONFUCIUS4_REPO_DIR`.
+
+---
+
+## 📊 Sơ đồ hệ thống
+
+> Toàn bộ sơ đồ là **HTML tương tác** (inline SVG, dark/light, pan/zoom, search/focus) được sinh bởi **archify** từ mã nguồn thực tế.
+> Bấm vào thẻ để mở bản tương tác — hover để xem thumbnail.
+
+<table>
+<tr>
+<td width="50%" align="center">
+
+### 🏗️ Kiến trúc tổng thể
+<a href="diagrams/epub-audiobook.architecture.html" title="Mở diagram kiến trúc tương tác">
+<img src="diagrams/epub-audiobook.architecture.visual-check.2048x1320.dark.png" alt="Architecture — EPUB → Audiobook" width="100%" />
+</a>
+<br />
+<sub><code>architecture</code> · FastAPI + React SPA + Tauri · SQLite · Worker · YouTube/Drive</sub>
+<br />
+<a href="diagrams/epub-audiobook.architecture.html">🔍 Mở HTML tương tác</a> · <a href="diagrams/epub-audiobook.architecture.visual-check.2048x1320.light.png">🖼️ Light</a>
+
+</td>
+<td width="50%" align="center">
+
+### 🔄 Quy trình (Workflow)
+<a href="diagrams/epub-audiobook.workflow.html" title="Mở workflow tương tác">
+<img src="diagrams/epub-audiobook.workflow.visual-check.2048x1320.dark.png" alt="Workflow — Quy trình tạo Audiobook" width="100%" />
+</a>
+<br />
+<sub><code>workflow</code> · Upload → Parse → Patch → TTS → Merge → Video → YouTube</sub>
+<br />
+<a href="diagrams/epub-audiobook.workflow.html">🔍 Mở HTML tương tác</a> · <a href="diagrams/epub-audiobook.workflow.visual-check.2048x1320.light.png">🖼️ Light</a>
+
+</td>
+</tr>
+<tr>
+<td width="50%" align="center">
+
+### 🔀 Chuỗi TTS (Sequence)
+<a href="diagrams/epub-audiobook.sequence.html" title="Mở sequence tương tác">
+<img src="diagrams/epub-audiobook.sequence.visual-check.2048x1320.dark.png" alt="Sequence — chuỗi yêu cầu TTS" width="100%" />
+</a>
+<br />
+<sub><code>sequence</code> · Client → API → Worker → TTS engines → Storage → Callback</sub>
+<br />
+<a href="diagrams/epub-audiobook.sequence.html">🔍 Mở HTML tương tác</a> · <a href="diagrams/epub-audiobook.sequence.visual-check.2048x1320.light.png">🖼️ Light</a>
+
+</td>
+<td width="50%" align="center">
+
+### 🌊 Luồng dữ liệu (Dataflow)
+<a href="diagrams/epub-audiobook.dataflow.html" title="Mở dataflow tương tác">
+<img src="diagrams/epub-audiobook.architecture.visual-check.2048x1320.dark.png" alt="Dataflow — Luồng dữ liệu" width="100%" style="opacity:.35;filter:grayscale(1)" />
+</a>
+<br />
+<sub><code>dataflow</code> · EPUB → Chunks → WAV → MP3 → MP4 → YouTube</sub>
+<br />
+<a href="diagrams/epub-audiobook.dataflow.html">🔍 Mở HTML tương tác</a> · <code>dataflow</code> HTML
+
+</td>
+</tr>
+<tr>
+<td width="50%" align="center" colspan="2">
+
+### ♻️ Vòng đời Job (Lifecycle)
+<a href="diagrams/epub-audiobook.lifecycle.html" title="Mở lifecycle tương tác">
+<img src="diagrams/epub-audiobook.workflow.visual-check.2048x1320.dark.png" alt="Lifecycle — Vòng đời job" width="100%" style="opacity:.35;filter:grayscale(1)" />
+</a>
+<br />
+<sub><code>lifecycle</code> · pending → processing → waiting_config/completed/failed → retry/requeue</sub>
+<br />
+<a href="diagrams/epub-audiobook.lifecycle.html">🔍 Mở HTML tương tác</a> · <code>lifecycle</code> HTML
+
+</td>
+</tr>
+</table>
+
+> 💡 **Mẹo xem diagram:** trong bản HTML, dùng `?theme=light`, `?present=1` hoặc `?embed=1` trên URL. Mỗi file đều có toolbar: pan/zoom, search, focus, semantic lens, export PNG/SVG.
+
+<details>
+<summary>📂 Danh sách file diagram (5 file — click để mở)</summary>
+
+| # | Loại | File HTML | Thumbnail (dark / light) |
+|---|------|-----------|--------------------------|
+| 1 | 🏗️ architecture | [`diagrams/epub-audiobook.architecture.html`](diagrams/epub-audiobook.architecture.html) | [2048 dark](diagrams/epub-audiobook.architecture.visual-check.2048x1320.dark.png) · [light](diagrams/epub-audiobook.architecture.visual-check.2048x1320.light.png) |
+| 2 | 🔄 workflow | [`diagrams/epub-audiobook.workflow.html`](diagrams/epub-audiobook.workflow.html) | [2048 dark](diagrams/epub-audiobook.workflow.visual-check.2048x1320.dark.png) · [light](diagrams/epub-audiobook.workflow.visual-check.2048x1320.light.png) |
+| 3 | 🔀 sequence | [`diagrams/epub-audiobook.sequence.html`](diagrams/epub-audiobook.sequence.html) | [2048 dark](diagrams/epub-audiobook.sequence.visual-check.2048x1320.dark.png) · [light](diagrams/epub-audiobook.sequence.visual-check.2048x1320.light.png) |
+| 4 | 🌊 dataflow | [`diagrams/epub-audiobook.dataflow.html`](diagrams/epub-audiobook.dataflow.html) | HTML tương tác |
+| 5 | ♻️ lifecycle | [`diagrams/epub-audiobook.lifecycle.html`](diagrams/epub-audiobook.lifecycle.html) | HTML tương tác |
+
+Spec JSON gốc nằm trong `diagrams/candidates/` (đã snapshot khi `deliver`).
+
+</details>
+
+---
+
+## 🗂️ Cấu trúc thư mục
+
+```
+📦 epub-audiobook-app/
+├── 🐍 app/                         # FastAPI backend
+│   ├── main.py                     # FastAPI app, routes, lifespan
+│   ├── config.py                   # Pydantic settings (.env)
+│   ├── models.py / db.py           # SQLAlchemy + SQLite schema
+│   ├── repository.py               # Data access layer
+│   ├── epub_parser.py              # 📖 EPUB → chapters
+│   ├── chunker.py                  # 🧩 Text → patches/chunks
+│   ├── tts_engine.py               # 🎙️ VoxCPM2/OmniVoice/F5/... wrapper
+│   ├── audio_merge.py              # 🔗 Ghép audio
+│   ├── video_gen.py                # 🎬 ffmpeg (delegate compositor)
+│   ├── video_compositor.py         # 🖼️ Multi-source FFmpeg + PiP
+│   ├── ffmpeg.py                   # 🔧 ffmpeg/ffprobe utils
+│   ├── youtube.py                  # 📤 YouTube API (upload/thumbnail/playlist/OAuth)
+│   ├── worker.py + jobqueue/       # ⚙️ Background queue
+│   ├── automation_*.py             # 🤖 Pipeline & settings
+│   ├── gameplay_*.py               # 🎮 Gameplay procedural
+│   ├── routes/                     # 🔌 API endpoints
+│   │   ├── books.py                # Book CRUD & automation hook
+│   │   ├── patches.py              # Patch management
+│   │   ├── queue.py                # Queue status & controls
+│   │   ├── video.py                # Video generation
+│   │   ├── youtube.py              # YouTube OAuth
+│   │   └── automation.py           # Automation settings/media/retry
+│   └── spa_dist/                   # ⚛️ React build output (generated)
+├── ⚛️ frontend/                    # React SPA — nguồn UI duy nhất
+│   ├── src/                        # Components, pages, hooks
+│   ├── public/                     # Static assets + PWA
+│   └── index.html
+├── 🖥️ src-tauri/                   # Tauri desktop shell
+├── 📊 diagrams/                    # Archify diagrams (HTML + PNG + JSON)
+│   ├── *.html                      # 5 HTML tương tác
+│   ├── *.png                       # Visual-check thumbnails
+│   └── candidates/*.json           # Spec snapshot
+├── 📄 docs/                        # Tài liệu bổ sung
+├── 🧪 tests/                       # pytest
+├── 📜 scripts/                     # CLI helpers
+├── 🎨 tailwind.config.js / vite.config.ts
+└── 📦 pyproject.toml / package.json
+```
+
+> `frontend/` là nguồn giao diện duy nhất. Các URL cũ (`/books`, `/queue`, …) vẫn giữ để bookmark/OAuth hoạt động nhưng đều trả về cùng SPA shell. Không còn `app/templates` hay legacy JS/CSS.
+
+---
+
+## 🚀 Bắt đầu nhanh
+
+### 🔧 Yêu cầu hệ thống
+
+| Yêu cầu | Phiên bản |
+|---------|-----------|
+| 🐍 Python | `≥3.10, <3.13` |
+| 📦 Node.js | `≥18` (cho frontend) |
+| 🎥 FFmpeg | `ffmpeg` + `ffprobe` trong `PATH` hoặc `assets/bin/` |
+| 🎮 VRAM (nếu dùng VoxCPM2) | `~8GB` — có thể fallback CPU / model nhỏ hơn |
+
+### 📥 Cài đặt
 
 ```bash
+# 1️⃣ Clone & tạo venv
 python -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -e .
+
+# 2️⃣ TTS engine (tuỳ chọn)
+./.venv/Scripts/python.exe -m pip install voxcpm          # VoxCPM2
+./.venv/Scripts/python.exe -m pip install -e ".[f5-vivoice]"  # F5 ViVoice
+./.venv/Scripts/python.exe -m pip install -e ".[all-tts]"     # tất cả TTS local
+./.venv/Scripts/python.exe -m pip install -e ".[light-tts]"   # Edge TTS + gTTS + Piper
+
+# 3️⃣ Môi trường
+cp .env.example .env   # rồi chỉnh DATA_ROOT, YOUTUBE_*, v.v.
 ```
 
-### TTS Engine
+### ⚙️ Biến môi trường chính
 
-```bash
-./.venv/Scripts/python.exe -m pip install voxcpm
-```
+| Biến | Mặc định | Ý nghĩa |
+|------|----------|---------|
+| `DATA_ROOT` | `./data` | 📁 Nơi lưu uploads & file sinh ra |
+| `ENABLE_WORKER` | `true` | ⚙️ Bật/tắt background worker |
+| `USE_NVENC` | `false` | 🎮 Encode video bằng NVENC |
+| `YOUTUBE_*` | — | 🔐 OAuth client & default privacy/tags |
 
-**VRAM:** VoxCPM2 needs ~8GB VRAM. Use CPU mode or smaller model for lower VRAM GPUs.
+> Xem đầy đủ trong [`.env.example`](.env.example) — mọi field đều có default trong `app/config.py:1`, nên `.env` trống vẫn chạy được.
 
-### Environment
+---
 
-Copy `.env.example` to `.env` and configure:
+## 🧵 Hàng đợi & Worker
 
-```bash
-cp .env.example .env
-```
+Tất cả việc nền (VoxCPM TTS, LightTTS, video render, YouTube upload) chạy qua **một queue** với concurrency riêng cho từng loại.
 
-Key settings:
-- `DATA_ROOT` — Storage path for uploads and generated files
-- `ENABLE_WORKER` — Toggle background processing (`true`/`false`)
-- `USE_NVENC` — Hardware-accelerated video encoding
-- `YOUTUBE_*` — YouTube upload credentials and defaults
+| Biến | Mặc định | Ý nghĩa |
+|------|----------|---------|
+| `QUEUE_CONCURRENCY` | `voxcpm_tts=1,video=2,youtube_upload=1` | 🔢 Concurrency per-type |
+| `QUEUE_DEFAULT_CONCURRENCY` | `10` | Cap cho type chưa liệt kê (hiện là `light_tts`) |
+| `QUEUE_LOG_RETENTION_DAYS` | `7` | 🗓️ Giữ log trong `data/logs/jobs/` |
+| `QUEUE_REAP_AFTER_SECONDS` | `120` | ⏱️ Requeue job im lặng sau N giây |
 
-### Job Queue
+> Đặt `0` để tắt hẳn một loại, ví dụ `voxcpm_tts=0` trên máy không có GPU. Trạng thái queue xem tại `/queue`.
 
-All background work (VoxCPM TTS, LightTTS, video rendering, and YouTube uploads) runs through one queue with a separate concurrency cap per job type.
+---
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `QUEUE_CONCURRENCY` | `voxcpm_tts=1,video=2,youtube_upload=1` | Per-type concurrency caps |
-| `QUEUE_DEFAULT_CONCURRENCY` | `10` | Cap for unlisted types, currently `light_tts` |
-| `QUEUE_LOG_RETENTION_DAYS` | `7` | Days to retain logs in `data/logs/jobs/` |
-| `QUEUE_REAP_AFTER_SECONDS` | `120` | Requeue silent running jobs after this period |
+## 🎥 FFmpeg / FFprobe
 
-Set a type to `0` to disable it, for example `QUEUE_CONCURRENCY="voxcpm_tts=0,video=2,youtube_upload=1"` on a machine without a GPU. Queue status is available at `/queue`; detailed logs are stored under `data/logs/jobs/`.
+App cần `ffmpeg` + `ffprobe` để ghép audio & render video. Đặt `ffmpeg.exe` / `ffprobe.exe` vào `assets/bin/` (đã track qua Git LFS — có thể đã sẵn sau khi clone).
 
-### ffmpeg/ffprobe
+Nếu `assets/bin/` trống (chưa cài Git LFS), tải thủ công:
 
-The app needs `ffmpeg` and `ffprobe` binaries for audio merging and video generation. Place `ffmpeg.exe` and `ffprobe.exe` in `assets/bin/` (they are tracked via Git LFS, so they may already be present after cloning).
+**🪟 Windows**
+1. Tải build từ [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (`ffmpeg-release-essentials.zip`) hoặc [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases).
+2. Giải nén và copy `ffmpeg.exe` + `ffprobe.exe` từ `bin/` vào `assets/bin/`.
 
-If `assets/bin/` is empty (e.g. Git LFS not installed), download the binaries manually:
-
-**Windows**
-1. Download a build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (grab the `ffmpeg-release-essentials.zip`) or [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases).
-2. Extract the archive and copy `ffmpeg.exe` and `ffprobe.exe` from the `bin/` folder into `assets/bin/`.
-
-**macOS**
+**🍎 macOS**
 ```bash
 brew install ffmpeg
 ```
 
-**Linux (Debian/Ubuntu)**
+**🐧 Linux (Debian/Ubuntu)**
 ```bash
 sudo apt install ffmpeg
 ```
 
-On macOS/Linux, if `ffmpeg` and `ffprobe` are on your `PATH` you don't need to copy them into `assets/bin/`. Verify the install:
+Trên macOS/Linux, nếu `ffmpeg`/`ffprobe` đã có trong `PATH` thì không cần copy vào `assets/bin/`.
 
 ```bash
 ffmpeg -version
 ffprobe -version
 ```
 
-## Running
+---
+
+## ▶️ Chạy ứng dụng
 
 ```bash
+# Backend
 ./.venv/Scripts/python.exe -m uvicorn app.main:app --reload
+# → http://localhost:8000
 ```
 
-Open http://localhost:8000
+### ⚛️ SPA / PWA
 
-### SPA / PWA
-
-Giao diện chính là React SPA và được FastAPI phục vụ sau khi build:
+Giao diện chính là **React SPA** do FastAPI phục vụ sau khi build:
 
 ```bash
 npm install
@@ -120,158 +312,153 @@ npm run build
 ./.venv/Scripts/python.exe -m uvicorn app.main:app --reload
 ```
 
-Trong lúc phát triển, chạy backend ở cổng `8000` rồi chạy `npm run dev` ở terminal khác.
-PWA có thể được cài trực tiếp từ trình duyệt; API và media luôn dùng network để tránh cache dữ liệu vận hành.
+Dev: chạy backend ở `8000` rồi `npm run dev` ở terminal khác. PWA cài trực tiếp từ trình duyệt; API & media luôn dùng network để tránh cache dữ liệu vận hành.
 
-### Tauri desktop
+### 🖥️ Tauri desktop
 
-Tauri dùng cùng backend FastAPI. Chạy backend trước, sau đó:
-
-```bash
-npm run tauri dev
-```
-
-Để tạo installer, chạy `npm run tauri build` sau khi backend Python đã được đóng gói hoặc có sẵn trên máy đích.
-
-### Batch Export To Colab/Kaggle
-
-Remote TTS export uses only the batch workflow:
-
-1. Open a book and go to its **Patches** table.
-2. Select one or more patches. To process only one patch, select that patch alone.
-3. Click **Export** and choose the TTS model, voice/language, chunk size, and effects.
-4. Download the batch ZIP, export it to a Drive Desktop target, or upload it through the Drive API for Kaggle.
-5. Run `colab_kaggle_batch_tts_template.ipynb` from the package.
-6. Import the generated results back into the app.
-
-Every remote export contains `batch_manifest.json` and uses the same resumable batch pipeline, including a
-300 ms pause between chunks and chapter timeline output.
-
-A package is text plus the shared voice reference clip and nothing else: chunk text travels inside each
-patch's `manifest.json`, and background images and music stay in the app, which renders video from the
-imported WAV. Each extra patch therefore adds one small JSON file to the sync, not an image.
-
-See `docs/google-drive-accounts.md` for Drive Desktop, rclone, and Kaggle account setup.
-
-### Pages
-
-- `/books` — Upload EPUBs, view library
-- `/books/{id}` — Book details, chapter management, patch controls, automation enqueue/retry
-- `/queue` — Real-time processing queue monitor
-- `/video` — Standalone video creator (upload audio + background)
-- `/youtube` — YouTube upload management with thumbnail and playlist status
-- `/automation/settings-page` — System automation settings (FFmpeg presets, webcam, YouTube defaults)
-- `/logs` — Application logs
-
-## Architecture
-
-```
-app/
-├── main.py                   # FastAPI app, routes, lifespan
-├── config.py                 # Pydantic settings
-├── models.py                 # SQLAlchemy models
-├── db.py                     # Database setup
-├── repository.py             # Data access layer
-├── epub_parser.py            # EPUB extraction
-├── chunker.py                # Text chunking & patch building
-├── tts_engine.py             # VoxCPM2 TTS wrapper
-├── audio_merge.py            # Patch/chunk merging
-├── video_gen.py              # ffmpeg video generation (delegates to compositor for automation)
-├── ffmpeg.py                 # ffmpeg/ffprobe utilities
-├── youtube.py                # YouTube API client (upload, thumbnail, playlist, OAuth)
-├── worker.py                 # Background queue processor
-├── automation_config.py      # Validated Pydantic settings (VideoConfig, WebcamConfig, YouTubeConfig)
-├── automation_repository.py  # Settings, media selection, pipeline, playlist-map persistence
-├── automation_worker.py      # Pipeline worker — claims and runs thumbnail/video stages
-├── video_compositor.py       # Multi-source FFmpeg compositor with looping backgrounds + webcam PiP
-├── upload_worker.py          # YouTube upload queue worker (upload + post-process)
-├── routes/           # API endpoints
-│   ├── books.py      # Book CRUD & upload, automation enqueue hook
-│   ├── patches.py    # Patch management
-│   ├── queue.py      # Queue status & controls
-│   ├── video.py      # Video generation, legacy background endpoints
-│   ├── downloads.py  # File downloads
-│   ├── youtube.py    # YouTube upload and OAuth
-│   ├── automation.py # Automation settings, media selection, enqueue/retry
-│   └── logs.py       # Log streaming
-├── routes/           # API và file/media endpoints
-└── spa_dist/         # React/PWA production build (generated)
-```
-
-`frontend/` là nguồn giao diện duy nhất. Các URL giao diện cũ vẫn được giữ để
-bookmark và OAuth redirect tiếp tục hoạt động, nhưng đều trả về cùng SPA shell;
-ứng dụng không còn thư mục `app/templates` hoặc static JavaScript/CSS legacy.
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/books` | Upload EPUB |
-| `GET` | `/api/books` | List all books |
-| `GET` | `/api/books/{id}` | Book details |
-| `DELETE` | `/api/books/{id}` | Delete book |
-| `POST` | `/api/books/{id}/chapters/{ch}/exclude` | Toggle chapter exclude |
-| `POST` | `/api/books/{id}/patches/build` | Build custom patches |
-| `POST` | `/api/patches/{id}/regenerate` | Regenerate patch |
-| `POST` | `/api/patches/{id}/replace` | Text replacement rules |
-| `GET` | `/api/queue` | Queue status |
-| `POST` | `/api/queue/pause` | Pause worker |
-| `POST` | `/api/queue/resume` | Resume worker |
-| `POST` | `/api/video/generate` | Generate video from audio |
-| `POST` | `/api/youtube/upload/{book_id}` | Upload to YouTube |
-| `GET` | `/automation/settings` | Get system automation config |
-| `PUT` | `/automation/settings` | Save system automation config (validated) |
-| `GET` | `/automation/media` | List media assets |
-| `PUT` | `/books/{id}/automation/media/{role}` | Set ordered media for background/webcam |
-| `POST` | `/books/{id}/automation/enqueue` | Enqueue all patches for automation pipeline |
-| `POST` | `/books/{id}/automation/retry/{patch_id}` | Retry failed pipeline stage |
-
-## CLI Scripts
+Tauri dùng chung backend FastAPI — chạy backend trước, rồi:
 
 ```bash
-# Test EPUB parsing
+npm run tauri dev        # dev
+npm run tauri build      # tạo installer (cần backend đã đóng gói)
+```
+
+### 📦 Batch Export → Colab/Kaggle
+
+Remote TTS chỉ dùng workflow **batch**:
+
+1. 📖 Mở sách → bảng **Patches**.
+2. ☑️ Chọn một hoặc nhiều patch (chọn 1 patch vẫn là batch gồm 1 phần tử).
+3. 📤 Bấm **Export** → chọn model TTS, voice/ngôn ngữ, chunk size, effects.
+4. ⬇️ Tải ZIP, hoặc export vào Drive Desktop target, hoặc upload qua Drive API (cho Kaggle).
+5. ▶️ Chạy `colab_kaggle_batch_tts_template.ipynb` trong package.
+6. ⬆️ Import kết quả WAV trở lại app — video sẽ render локально.
+
+Mỗi export chứa `batch_manifest.json` và dùng pipeline batch resumable (pause 300 ms giữa các chunk + chapter timeline). Package chỉ gồm **text + clip voice reference** — text chunk nằm trong `manifest.json` của từng patch, ảnh & nhạc nền ở lại app.
+
+> Xem [`docs/google-drive-accounts.md`](docs/google-drive-accounts.md) để cấu hình Drive Desktop, rclone & Kaggle.
+
+---
+
+## 📖 Pages & Điều hướng
+
+| Đường dẫn | Icon | Mô tả |
+|-----------|------|-------|
+| `/books` | 📚 | Upload EPUB, xem thư viện |
+| `/books/{id}` | 📖 | Chi tiết sách, quản lý chapter/patch, enqueue/retry automation |
+| `/queue` | ⚙️ | Monitor queue realtime |
+| `/video` | 🎬 | Video creator độc lập (upload audio + background) |
+| `/youtube` | 📤 | Quản lý upload YouTube (thumbnail + playlist) |
+| `/automation/settings-page` | 🤖 | Cài đặt automation toàn cục |
+| `/logs` | 📝 | Log ứng dụng |
+| `/drive` | 💾 | Quản lý Google Drive sync targets & rclone |
+| `/media-browser` | 🖼️ | Duyệt media library |
+
+---
+
+## 🔌 API Endpoints
+
+| Method | Path | Icon | Mô tả |
+|--------|------|------|-------|
+| `POST` | `/api/books` | 📤 | Upload EPUB |
+| `GET` | `/api/books` | 📚 | List all books |
+| `GET` | `/api/books/{id}` | 📖 | Book details |
+| `DELETE` | `/api/books/{id}` | 🗑️ | Delete book |
+| `POST` | `/api/books/{id}/chapters/{ch}/exclude` | 🚫 | Toggle chapter exclude |
+| `POST` | `/api/books/{id}/patches/build` | 🧩 | Build custom patches |
+| `POST` | `/api/patches/{id}/regenerate` | 🔄 | Regenerate patch |
+| `POST` | `/api/patches/{id}/replace` | ✏️ | Text replacement rules |
+| `GET` | `/api/queue` | ⚙️ | Queue status |
+| `POST` | `/api/queue/pause` | ⏸️ | Pause worker |
+| `POST` | `/api/queue/resume` | ▶️ | Resume worker |
+| `POST` | `/api/video/generate` | 🎬 | Generate video từ audio |
+| `POST` | `/api/youtube/upload/{book_id}` | 📤 | Upload to YouTube |
+| `GET` | `/automation/settings` | ⚙️ | Get automation config |
+| `PUT` | `/automation/settings` | 💾 | Save automation config (validated) |
+| `GET` | `/automation/media` | 🖼️ | List media assets |
+| `PUT` | `/books/{id}/automation/media/{role}` | 🖼️ | Set ordered media (background/webcam) |
+| `POST` | `/books/{id}/automation/enqueue` | 🤖 | Enqueue all patches cho pipeline |
+| `POST` | `/books/{id}/automation/retry/{patch_id}` | 🔄 | Retry failed pipeline stage |
+
+---
+
+## 🧪 CLI Scripts
+
+```bash
+# 📖 Test EPUB parsing
 python scripts/test_epub_parse.py <epub>
 
-# Test patch/chunk generation
+# 🧩 Test patch/chunk generation
 python scripts/test_repo_and_chunker.py <epub>
 
-# Test TTS (stub unless --real)
+# 🎙️ Test TTS (stub nếu thiếu --real)
 python scripts/test_tts_single_patch.py <epub> --real
 
-# Test audio merge + video
+# 🔗 Test audio merge + 🎬 video
 python scripts/test_merge_and_video.py
 
-# Test full worker lifecycle
+# ⚙️ Test full worker lifecycle
 python scripts/test_worker.py
 ```
 
-## Configuration Reference
+---
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `DATA_ROOT` | `./data` | Storage root |
-| `DEFAULT_PATCH_SIZE` | `10` | Chapters per patch |
-| `TTS_MAX_CHARS` | `400` | Max chars per TTS call |
-| `USE_NVENC` | `false` | Hardware video encoding |
-| `ENABLE_WORKER` | `true` | Background processing |
-| `WORKER_POLL_INTERVAL` | `2.0` | Queue poll interval (sec) |
-| `YOUTUBE_AUTO_UPLOAD` | `true` | Auto-upload to YouTube |
-| `YOUTUBE_DEFAULT_PRIVACY` | `private` | Video privacy |
-| `RESET_ALL_JOBS_ON_STARTUP` | `false` | Dev-only DB reset |
+## ⚙️ Cấu hình tham chiếu
 
-## YouTube OAuth
+| Setting | Mặc định | Icon | Mô tả |
+|---------|----------|------|-------|
+| `DATA_ROOT` | `./data` | 📁 | Storage root |
+| `DEFAULT_PATCH_SIZE` | `10` | 🧩 | Chapters per patch |
+| `TTS_MAX_CHARS` | `400` | ✂️ | Max chars per TTS call |
+| `USE_NVENC` | `false` | 🎮 | Hardware video encoding |
+| `ENABLE_WORKER` | `true` | ⚙️ | Background processing |
+| `WORKER_POLL_INTERVAL` | `2.0` | ⏱️ | Queue poll interval (sec) |
+| `YOUTUBE_AUTO_UPLOAD` | `true` | 📤 | Auto-upload to YouTube |
+| `YOUTUBE_DEFAULT_PRIVACY` | `private` | 🔒 | Video privacy |
+| `RESET_ALL_JOBS_ON_STARTUP` | `false` | 🧹 | Dev-only DB reset |
 
-YouTube upload and post-processing require OAuth 2.0 credentials. The scopes requested are:
-- `youtube.upload` — Upload videos
-- `youtube` — Set thumbnails, manage playlists
-- `youtube.force-ssl` — Required by YouTube Data API v3
+---
 
-If you reconnect after a scope change, the app will detect missing scopes and redirect you through re-authorization. Playlist mapping is persisted per book/channel to avoid duplicates on retry.
+## 🔐 YouTube OAuth
 
-## Known Limitations
+YouTube upload & post-processing cần OAuth 2.0. Scopes:
 
-- `TTS_MAX_CHARS=400` is untested — adjust after real-model testing
-- Progress tracked per-patch, not per-chunk
-- Single chapter across multiple spine files appears as multiple chapters
-- Video generation requires ffmpeg in PATH or `assets/bin/`
-- NVENC preset `h264_nvenc` must be available at pipeline start; no automatic fallback to CPU
+- `youtube.upload` — ⬆️ Upload videos
+- `youtube` — 🖼️ Set thumbnails, manage playlists
+- `youtube.force-ssl` — 🔒 Yêu cầu bởi YouTube Data API v3
+
+Nếu reconnect sau khi đổi scope, app sẽ phát hiện thiếu scope và redirect re-authorization. Playlist mapping được persist per book/channel để tránh duplicate khi retry.
+
+---
+
+## ⚠️ Giới hạn đã biết
+
+| # | Vấn đề |
+|---|--------|
+| 1 | `TTS_MAX_CHARS=400` chưa test kỹ — cần chỉnh sau khi test model thật |
+| 2 | Progress theo dõi per-patch, chưa per-chunk |
+| 3 | Một chapter nằm trên nhiều spine file sẽ hiện thành nhiều chapter |
+| 4 | Video generation cần ffmpeg trong `PATH` hoặc `assets/bin/` |
+| 5 | NVENC preset `h264_nvenc` phải sẵn sàng khi pipeline bắt đầu — không auto fallback sang CPU |
+
+---
+
+<div align="center">
+
+### 💖 Đóng góp & Chuẩn hoá
+
+Dự án tuân thủ **chuẩn hoá file** sau:
+
+- 📄 `README.md` — single source of truth, heading có icon, bảng có icon, diagram gallery nhúng HTML+PNG
+- 📊 `diagrams/*.html` — 5 diagram tương tác (archify `showcase`), snapshot JSON trong `candidates/`
+- 🔧 `.env.example` — template đầy đủ, comment tiếng Việt/Anh
+- 🎨 `frontend/` — Prettier + Tailwind, `npm run build` sinh `app/spa_dist/`
+- 🧪 `tests/` — `pytest` + `httpx`, chạy `pytest -q`
+
+<br />
+
+**EPUB → Audiobook → Video** · Made with 🎙️ TTS · 🎬 FFmpeg · ⚛️ React · 🦀 Tauri
+
+*Nếu README hữu ích, hãy ⭐ repo và mở diagram HTML để khám phá kiến trúc tương tác!*
+
+</div>

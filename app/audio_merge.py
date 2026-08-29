@@ -175,4 +175,24 @@ def cleanup_chunk_dir(chunk_dir: str) -> None:
         logger.warning("failed to clean up chunk directory %s", chunk_dir, exc_info=True)
 
 
+def atomic_write_wav(out_path: str, write_func) -> None:
+    """Run ``write_func(temp_path)`` to materialise a wav in a sibling temp file, then
+    ``os.replace`` it onto the destination atomically. Mirrors the timeline sidecar
+    pattern so a half-written patch wav can never replace a still-readable older one.
+    Raises on any failure and removes the temp file.
+    """
+    path = Path(out_path)
+    fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    os.close(fd)
+    try:
+        write_func(temp_path)
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            Path(temp_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 

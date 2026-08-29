@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
+import shutil
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,10 +32,60 @@ def _now() -> str:
 
 
 def _chunk_dir_for(book_id: int, patch_id: int) -> Path:
+    # NOTE: Legacy. Use new helper get_patch_chunk_dir(book_id, patch_index)
     return Path("data") / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
 
 
-def _delete_chunk_dir(book_id: int, patch_id: int) -> None:
+def get_patch_audio_path(book_id: int, patch_index: int) -> Path:
+    episode = f"{patch_index + 1:03d}"
+    return Path("data") / "books" / str(book_id) / "audio" / f"{book_id}_{episode}.wav"
+
+
+def get_patch_chunk_dir(book_id: int, patch_index: int) -> Path:
+    episode = f"{patch_index + 1:03d}"
+    return Path("data") / "books" / str(book_id) / "audio" / f"{book_id}_{episode}_chunks"
+
+
+def get_backup_path(book_id: int, patch_index: int, extension: str, timestamp: str) -> Path:
+    episode = f"{patch_index + 1:03d}"
+    return Path("data") / "books" / str(book_id) / "backup_audio" / f"{book_id}_{episode}_{timestamp}{extension}"
+
+
+def backup_patch_audio_files(book_id: int, patch_index: int, old_audio_path: str) -> None:
+    old_path = Path(old_audio_path)
+    if not old_path.exists():
+        return
+
+    timestamp = datetime.now().strftime("%Y_%m_%d_%H%M%S")
+    backup_dir = Path("data") / "books" / str(book_id) / "backup_audio"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    for ext in (".wav", ".timeline.json", ".ass"):
+        src = old_path.with_suffix(ext)
+        if src.exists():
+            dst = get_backup_path(book_id, patch_index, ext, timestamp)
+            shutil.copy2(src, dst)  # Use copy2 to keep metadata
+
+
+def backup_all_book_audio(book_id: int) -> None:
+    """Backup every wav+sidecar under data/books/{book_id}/audio/ into backup_audio/.
+    Used by rebuild_patches and reset_all_jobs, which wipe the whole audio folder."""
+    audio_dir = Path("data") / "books" / str(book_id) / "audio"
+    if not audio_dir.exists():
+        return
+    backup_dir = Path("data") / "books" / str(book_id) / "backup_audio"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y_%m_%d_%H%M%S")
+    for src in audio_dir.glob("*.wav"):
+        for ext in (".wav", ".timeline.json", ".ass"):
+            side = src.with_suffix(ext)
+            if side.exists():
+                shutil.copy2(side, backup_dir / f"{side.stem}_{timestamp}{side.suffix}")
+
+
+def _delete_chunk_dir(book_id: int, patch_index: int, patch_id: int) -> None:
+    # Handle both new and legacy locations.
+    cleanup_chunk_dir(str(get_patch_chunk_dir(book_id, patch_index)))
     cleanup_chunk_dir(str(_chunk_dir_for(book_id, patch_id)))
 
 
@@ -40,15 +93,12 @@ def delete_patch_audio_files(audio_path: str | None) -> None:
     if not audio_path:
         return
     path = Path(audio_path)
-    first_error = None
-    for target in (path, path.with_suffix(".timeline.json")):
+    # Also delete sidecars (.timeline.json, .ass)
+    for ext in (".wav", ".timeline.json", ".ass"):
         try:
-            target.unlink(missing_ok=True)
-        except OSError as exc:
-            if first_error is None:
-                first_error = exc
-    if first_error is not None:
-        raise first_error
+            path.with_suffix(ext).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _update_status(conn, table, id, *, status=None, **extra):
@@ -561,6 +611,7 @@ def reset_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
         return False
 
     if patch.audio_path:
+        backup_patch_audio_files(patch.book_id, patch.patch_index, patch.audio_path)
         delete_patch_audio_files(patch.audio_path)
 
     video_dir = Path("data") / "books" / str(patch.book_id) / "patch_videos"
@@ -568,7 +619,7 @@ def reset_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
     if video_file.exists():
         video_file.unlink(missing_ok=True)
 
-    _delete_chunk_dir(patch.book_id, patch_id)
+    _delete_chunk_dir(patch.book_id, patch.patch_index, patch.id)
 
     conn.execute(
         """UPDATE patch SET status = 'pending', audio_path = NULL, error_message = NULL,
@@ -599,6 +650,7 @@ def delete_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
     book_id = patch.book_id
 
     if patch.audio_path:
+        backup_patch_audio_files(patch.book_id, patch.patch_index, patch.audio_path)
         delete_patch_audio_files(patch.audio_path)
     if patch.image_path:
         Path(patch.image_path).unlink(missing_ok=True)
@@ -607,7 +659,7 @@ def delete_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
     if video_file.exists():
         video_file.unlink(missing_ok=True)
 
-    _delete_chunk_dir(book_id, patch_id)
+    _delete_chunk_dir(book_id, patch.patch_index, patch.id)
 
     conn.execute("DELETE FROM patch WHERE id = ?", (patch_id,))
 
@@ -974,7 +1026,7 @@ def rename_book(conn: sqlite3.Connection, book_id: int, new_title: str) -> bool:
 def reset_done_patches_for_book(conn: sqlite3.Connection, book_id: int) -> int:
     done_rows = [
         r for r in conn.execute(
-            "SELECT id, audio_path FROM patch WHERE book_id = ? AND status = 'done'",
+            "SELECT id, book_id, patch_index, audio_path FROM patch WHERE book_id = ? AND status = 'done'",
             (book_id,),
         ).fetchall()
     ]
@@ -985,8 +1037,10 @@ def reset_done_patches_for_book(conn: sqlite3.Connection, book_id: int) -> int:
         (now, book_id),
     )
     for row in done_rows:
-        delete_patch_audio_files(row["audio_path"])
-        _delete_chunk_dir(book_id, row["id"])
+        if row["audio_path"]:
+            backup_patch_audio_files(row["book_id"], row["patch_index"], row["audio_path"])
+            delete_patch_audio_files(row["audio_path"])
+        _delete_chunk_dir(row["book_id"], row["patch_index"], row["id"])
     conn.execute(
         """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,
            status = 'ready', updated_at = ? WHERE id = ?""",
@@ -1057,13 +1111,23 @@ def rebuild_patches(
             )
 
     if reset_done:
+        # Backup everything in audio/ before wiping the book.
+        backup_all_book_audio(book_id)
+        # Wipe audio directory completely.
+        audio_dir = Path("data") / "books" / str(book_id) / "audio"
+        if audio_dir.exists():
+            for f in audio_dir.glob("*"):
+                f.unlink(missing_ok=True)
+            # Remove empty dirs.
+            for chunk_dir in audio_dir.glob("*_chunks"):
+                cleanup_chunk_dir(str(chunk_dir))
+        
         patterns = list_patches(conn, book_id)
         for p in patterns:
-            if p.status == "done" and p.audio_path:
-                delete_patch_audio_files(p.audio_path)
+            # Need to clean up what's referenced in DB.
             if p.image_path:
                 Path(p.image_path).unlink(missing_ok=True)
-            _delete_chunk_dir(book_id, p.id)
+            _delete_chunk_dir(book_id, p.patch_index, p.id)
     conn.execute("DELETE FROM patch WHERE book_id = ?", (book_id,))
     now = _now()
     patch_rows = []
@@ -1803,7 +1867,7 @@ def retry_all_failed_patches_for_book(conn: sqlite3.Connection, book_id: int) ->
     now = _now()
     failed_rows = [
         r for r in conn.execute(
-            "SELECT id, audio_path FROM patch WHERE book_id = ? AND status = 'failed'",
+            "SELECT id, book_id, patch_index, audio_path FROM patch WHERE book_id = ? AND status = 'failed'",
             (book_id,),
         ).fetchall()
     ]
@@ -1813,8 +1877,10 @@ def retry_all_failed_patches_for_book(conn: sqlite3.Connection, book_id: int) ->
         (now, book_id),
     )
     for row in failed_rows:
-        delete_patch_audio_files(row["audio_path"])
-        _delete_chunk_dir(book_id, row["id"])
+        if row["audio_path"]:
+            backup_patch_audio_files(row["book_id"], row["patch_index"], row["audio_path"])
+            delete_patch_audio_files(row["audio_path"])
+        _delete_chunk_dir(row["book_id"], row["patch_index"], row["id"])
     if cur.rowcount > 0:
         conn.execute(
             """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,

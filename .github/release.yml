@@ -1,0 +1,55 @@
+# Cấu hình auto-generated release notes của GitHub
+# Docs: https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+      - skip-changelog
+    authors:
+      - dependabot[bot]
+      - github-actions[bot]
+  categories:
+    - title: "🚀 Features"
+      labels:
+        - feat
+        - feature
+        - enhancement
+    - title: "🐛 Bug Fixes"
+      labels:
+        - fix
+        - bugfix
+        - bug
+        - hotfix
+    - title: "✨ Improvements"
+      labels:
+        - perf
+        - improvement
+        - refactor
+        - optimize
+    - title: "📚 Documentation"
+      labels:
+        - docs
+        - documentation
+    - title: "🧹 Chores & CI"
+      labels:
+        - chore
+        - build
+        - ci
+        - test
+        - style
+        - deps
+        - dependency
+    - title: "🎨 UI / Frontend"
+      labels:
+        - ui
+        - frontend
+        - design
+    - title: "🔊 TTS / Audio / Video"
+      labels:
+        - tts
+        - audio
+        - video
+        - youtube
+    - title: "⚙️ Other Changes"
+      labels:
+        - "*"
