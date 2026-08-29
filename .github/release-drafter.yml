@@ -4,17 +4,13 @@ name-template: "v$NEXT_PATCH_VERSION 🌟"
 tag-template: "v$NEXT_PATCH_VERSION"
 autolabeler:
   - label: "feat"
-    files:
-      - title: "/feat|feature/i"
+    title: "/feat|feature/i"
   - label: "fix"
-    files:
-      - title: "/fix|hotfix|bugfix/i"
+    title: "/fix|hotfix|bugfix/i"
   - label: "docs"
-    files:
-      - title: "/docs|doc/i"
+    title: "/docs|doc/i"
   - label: "chore"
-    files:
-      - title: "/chore|refactor|build|ci|test/i"
+    title: "/chore|refactor|build|ci|test/i"
 
 categories:
   - title: "🚀 Features"
