@@ -152,7 +152,7 @@ function SidebarNav({ onSelect, collapsed = false }: { onSelect?: () => void; co
           <img src="/studio-mark.svg" alt="Xưởng Sách Nói" className="h-full w-full invert" />
         </div>
         <div className="flex flex-col leading-tight">
-          <span className="font-bold tracking-wider text-sm text-foreground uppercase">XƯỞNG SÁCH NÓI</span>
+          <span className="font-display font-extrabold tracking-tight text-sm text-foreground leading-none">Xưởng Sách Nói</span>
           <span className="text-[10px] text-muted-foreground font-mono tracking-tight">CONTROL ROOM v1.0</span>
         </div>
       </Link>
@@ -261,7 +261,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="h-7 w-7 rounded bg-foreground flex items-center justify-center p-1 shrink-0">
             <img src="/studio-mark.svg" alt="Xưởng Sách Nói" className="h-full w-full invert" />
           </div>
-          <span className="font-bold text-xs tracking-wider uppercase">XƯỞNG SÁCH NÓI</span>
+          <span className="font-display font-extrabold text-xs tracking-tight leading-none">Xưởng Sách Nói</span>
         </Link>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label={themeLabel} title={themeLabel}>

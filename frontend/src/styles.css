@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@600;700;800&family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Manrope:wght@400;500;600;700;800&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -76,6 +76,21 @@
 
   body {
     @apply bg-background text-foreground antialiased font-sans min-h-screen selection:bg-accent selection:text-foreground;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-variant-ligatures: common-ligatures;
+    font-feature-settings: "kern" 1, "liga" 1;
+  }
+
+  /* Brand title — use Vietnamese-optimized display font with proper diacritic stacking */
+  .font-display {
+    font-variant-ligatures: common-ligatures;
+    font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+    text-rendering: optimizeLegibility;
+    /* prevent diacritic clipping on tall Vietnamese vowels (Ư, Ở, Ể) */
+    line-height: 1.1;
+    padding-top: 0.05em;
   }
 }
 

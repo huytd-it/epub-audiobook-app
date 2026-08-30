@@ -55,8 +55,9 @@ export default {
         sm: "calc(var(--radius) - 4px)",
       },
       fontFamily: {
-        sans: ["Manrope", "Plus Jakarta Sans", "-apple-system", "BlinkMacSystemFont", "sans-serif"],
+        sans: ["Manrope", "Be Vietnam Pro", "Plus Jakarta Sans", "-apple-system", "BlinkMacSystemFont", "sans-serif"],
         mono: ["DM Mono", "JetBrains Mono", "monospace"],
+        display: ["Be Vietnam Pro", "Manrope", "sans-serif"],
       },
     },
   },
