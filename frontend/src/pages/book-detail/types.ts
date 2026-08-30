@@ -211,6 +211,9 @@ export type YouTubeConfig = {
   description_extra: DescriptionExtra;
   playlist: { mode: string; playlist_id: string; title_template: string; description_template: string };
   podcast: PodcastConfig;
+  auto_ai_labels: boolean;
+  playlist_sort_mode: "manual" | "natural" | "episode";
+  auto_sort_episode: boolean;
 };
 
 /** Cài đặt podcast: playlist của sách được YouTube đánh dấu là podcast và nhận

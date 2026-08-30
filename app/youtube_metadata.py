@@ -63,7 +63,7 @@ DEFAULT_DESCRIPTION_EXTRA = {
 # từ chính thumbnail (app.image_overlay.render_podcast_cover).
 DEFAULT_PODCAST_CONFIG = {"enabled": False, "upload_cover": True}
 
-DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "timeline_enabled": True, "description_extra": DEFAULT_DESCRIPTION_EXTRA, "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}, "podcast": dict(DEFAULT_PODCAST_CONFIG)}
+DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "timeline_enabled": True, "description_extra": DEFAULT_DESCRIPTION_EXTRA, "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}, "podcast": dict(DEFAULT_PODCAST_CONFIG), "auto_ai_labels": False, "playlist_sort_mode": "manual", "auto_sort_episode": False}
 
 
 def load_timeline(audio_path) -> dict | None:
@@ -282,6 +282,12 @@ def validate_book_youtube_config(config: dict) -> dict:
     # YouTube (route /podcast/apply) chứ không phải lúc lưu: patch override có
     # thể tạm bỏ playlist mà không được phép làm hỏng metadata của cả sách.
     result["podcast"] = validate_podcast_config(result.get("podcast"))
+    if not isinstance(result.get("auto_ai_labels"), bool):
+        raise ValueError("auto_ai_labels must be a boolean")
+    if result.get("playlist_sort_mode") not in {"manual", "natural", "episode"}:
+        raise ValueError("playlist_sort_mode must be 'manual', 'natural' or 'episode'")
+    if not isinstance(result.get("auto_sort_episode"), bool):
+        raise ValueError("auto_sort_episode must be a boolean")
     return result
 
 
@@ -570,7 +576,17 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
         raise ValueError("description exceeds 5000 characters")
     if privacy not in {"private", "unlisted", "public"}:
         raise ValueError("invalid privacy status")
-    return {"title": title, "description": description, "tags": split_tags(genre_value), "privacy_status": privacy, "youtube": playlist}
+    tags = split_tags(genre_value)
+    # Tự động gắn nhãn AI nếu cấu hình bật — sinh nhãn từ tiêu đề + mô tả rồi gộp
+    # vào tags (khử trùng lặp, giữ thứ tự).
+    if config.get("auto_ai_labels"):
+        try:
+            from app.youtube import generate_ai_labels
+            ai_labels = generate_ai_labels(title, description)
+            tags = list(dict.fromkeys(tags + ai_labels))
+        except Exception:
+            pass
+    return {"title": title, "description": description, "tags": tags, "privacy_status": privacy, "youtube": playlist}
 
 
 def get_book_youtube_config(conn, book_id: int) -> dict:

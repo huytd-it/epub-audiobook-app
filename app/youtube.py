@@ -699,12 +699,13 @@ def create_playlist(
     title: str,
     description: str = "",
     privacy: str = "private",
+    default_language: str = "vi",
 ) -> dict:
     """Create a new playlist. Returns the API response dict."""
     _require_google_imports()
     service = get_youtube_service(conn)
     body = {
-        "snippet": {"title": title, "description": description},
+        "snippet": {"title": title, "description": description, "defaultLanguage": default_language or "vi"},
         "status": {"privacyStatus": privacy},
     }
     return service.playlists().insert(part="snippet,status", body=body).execute()
@@ -749,6 +750,29 @@ def set_playlist_podcast(conn: sqlite3.Connection, playlist_id: str, enabled: bo
             "podcastStatus": "enabled" if enabled else "disabled",
         },
     }
+    service = get_youtube_service(conn)
+    return service.playlists().update(part="snippet,status", body=body).execute()
+
+
+def update_playlist_title(conn: sqlite3.Connection, playlist_id: str, title: str, description: str | None = None) -> dict:
+    """Update a playlist's title (and optionally description), preserving other fields."""
+    _require_google_imports()
+    playlist = get_playlist(conn, playlist_id)
+    if playlist is None:
+        raise ValueError(f"playlist {playlist_id} not found")
+    snippet = playlist.get("snippet") or {}
+    status = playlist.get("status") or {}
+    body = {
+        "id": playlist_id,
+        "snippet": {
+            "title": title[:150],
+            "description": description if description is not None else snippet.get("description", ""),
+        },
+        "status": {"privacyStatus": status.get("privacyStatus", "private")},
+    }
+    # preserve podcast flag if present
+    if status.get("podcastStatus"):
+        body["status"]["podcastStatus"] = status["podcastStatus"]
     service = get_youtube_service(conn)
     return service.playlists().update(part="snippet,status", body=body).execute()
 
@@ -1327,13 +1351,15 @@ def _episode_sort_key(title: str):
     )
 
 
-SORT_MODES = ("natural", "episode")
+SORT_MODES = ("natural", "episode", "manual")
 
 _SORT_KEYS = {"natural": _natural_sort_key, "episode": _episode_sort_key}
 
 
 def _sort_key_for(mode: str):
     """Return the title sort key for a sort mode (unknown modes fall back to natural)."""
+    if str(mode or "").lower() == "manual":
+        return None
     return _SORT_KEYS.get(str(mode or "natural").lower(), _natural_sort_key)
 
 
@@ -1360,6 +1386,11 @@ def _new_order(items: list[dict], order: list[str] | None, direction: str,
         ordered.extend(i for i in items if i["video_id"] not in placed)
         return ordered
     key = _sort_key_for(mode)
+    if key is None:
+        # manual: giữ nguyên thứ tự hiện tại (không sắp xếp), chỉ đảo nếu desc
+        if str(direction).lower() == "desc":
+            return list(reversed(items))
+        return list(items)
     return sorted(
         items,
         key=lambda i: key(i.get("title", "")),
@@ -1864,6 +1895,20 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
                     )
                     conn.commit()
                     apply_book_podcast(conn, _resolve_book_id(conn, upload_id), playlist_id)
+                    # Tự động sắp xếp playlist theo episode sau khi thêm video mới
+                    try:
+                        book_id_for_sort = _resolve_book_id(conn, upload_id)
+                        if book_id_for_sort:
+                            from app import repository as _repo
+                            _book_for_sort = _repo.get_book(conn, book_id_for_sort)
+                            if _book_for_sort is not None:
+                                from app.production_defaults import get_effective_youtube_config as _get_yt
+                                _cfg = _get_yt(conn, _book_for_sort)
+                                should_sort = bool(_cfg.get("auto_sort_episode")) or _cfg.get("playlist_sort_mode") == "episode"
+                                if should_sort:
+                                    sort_playlist(conn, playlist_id, direction="asc", mode="episode")
+                    except Exception:
+                        logger.warning("auto sort episode failed for playlist %s", playlist_id, exc_info=True)
                 else:
                     conn.execute(
                         "UPDATE youtube_uploads SET playlist_status='done' WHERE id=?",

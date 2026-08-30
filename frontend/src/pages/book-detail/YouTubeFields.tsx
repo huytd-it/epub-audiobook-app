@@ -89,14 +89,46 @@ export function YouTubeConfigFields({
         <PlaylistLinkNote playlistId={config.playlist.playlist_id} />
       </div>
 
-      <div className="rounded-md border border-border p-3">
+      <div className="rounded-md border border-border p-3 space-y-3">
         <CheckField
           checked={config.timeline_enabled}
           onChange={(value) => onChange({ timeline_enabled: value })}
           label="Hiển thị timeline chương trong description"
         />
-        <p className="mt-1.5 pl-6 text-[11px] leading-4 text-muted-foreground">
+        <p className="pl-6 text-[11px] leading-4 text-muted-foreground">
           Timeline chỉ xuất hiện khi audio có đủ mốc chương. Tắt để description không kèm danh sách mốc thời gian.
+        </p>
+        <CheckField
+          checked={Boolean((config as any).auto_ai_labels)}
+          onChange={(value) => onChange({ auto_ai_labels: value } as Partial<YouTubeConfig>)}
+          label="Tự động gắn nhãn AI (AI-generated tags)"
+        />
+        <p className="pl-6 text-[11px] leading-4 text-muted-foreground">
+          Khi bật, hệ thống tự sinh nhãn AI từ tiêu đề + mô tả và gộp vào tags trước khi upload (ví dụ: sách nói, audiobook, thể loại).
+        </p>
+      </div>
+
+      <div className="rounded-md border border-border p-3 space-y-3">
+        <div className="text-xs font-semibold">Sắp xếp playlist</div>
+        <Field label="Chế độ sắp xếp">
+          <select
+            className={selectClass}
+            value={(config as any).playlist_sort_mode || "manual"}
+            onChange={(event) => onChange({ playlist_sort_mode: event.target.value as YouTubeConfig["playlist_sort_mode"] } as Partial<YouTubeConfig>)}
+          >
+            <option value="manual">Thủ công (giữ nguyên thứ tự upload)</option>
+            <option value="natural">Số tự nhiên (tên video)</option>
+            <option value="episode">Theo tập (Episode)</option>
+          </select>
+        </Field>
+        <CheckField
+          checked={Boolean((config as any).auto_sort_episode)}
+          onChange={(value) => onChange({ auto_sort_episode: value } as Partial<YouTubeConfig>)}
+          label="Tự động sắp xếp theo episode khi upload YouTube"
+        />
+        <p className="text-[11px] leading-4 text-muted-foreground">
+          Khi bật, mỗi video mới thêm vào playlist sẽ được sắp xếp lại theo số tập (Tập 1, Tập 2…) để playlist luôn đúng thứ tự.
+          Nếu chế độ là “Thủ công” và không bật tự động, playlist giữ nguyên thứ tự chèn.
         </p>
       </div>
 

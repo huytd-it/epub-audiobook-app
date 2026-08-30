@@ -92,7 +92,7 @@ export function YouTubePage() {
   const [showAddVideosModal, setShowAddVideosModal] = useState(false);
   const [selectedAddVideoIds, setSelectedAddVideoIds] = useState<string[]>([]);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
-  const [sortMode, setSortMode] = useState<"natural" | "episode">("natural");
+  const [sortMode, setSortMode] = useState<"natural" | "episode" | "manual">("natural");
 
   // Import / export of the upload queue (edit the sheet in Excel, push it back)
   const [ioFormat, setIoFormat] = useState<"csv" | "json">("csv");
@@ -879,6 +879,7 @@ export function YouTubePage() {
                         onChange={(e) => setSortMode(e.target.value as any)}
                         className="h-7 rounded border border-input bg-background px-2 text-xs"
                       >
+                        <option value="manual">Thủ công</option>
                         <option value="natural">Số tự nhiên</option>
                         <option value="episode">Theo tập (Episode)</option>
                       </select>
