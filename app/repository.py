@@ -15,10 +15,10 @@ from app.audio_merge import cleanup_chunk_dir
 from app.chunker import group_into_patches, split_into_tts_chunks
 from app.epub_parser import ParsedChapter
 from app.models import Book, BookJob, Chapter, Music, Patch, PatchExport, TextReplaceRule
-from app.normalization import NormalizationOptions, normalize_chapter_titles, normalize_text
+from app.normalization import NormalizationOptions, clean_junk_tokens, normalize_chapter_titles, normalize_text, remove_cjk
 from app.production_defaults import get_effective_normalization_options
 from app.text_analysis import text_hash
-from app.validation import detect_chapter_number
+from app.validation import canonical_chapter_title, detect_chapter_number, split_chapter_title
 from app.youtube_metadata import format_chapter_range, resolve_patch_chapter_range
 
 logger = logging.getLogger(__name__)
@@ -1221,6 +1221,40 @@ def fetch_patch_chunk_inputs(
     }
 
 
+def _normalize_chapter_title_for_plan(
+    title: str | None, opts: NormalizationOptions, rules: list[TextReplaceRule], chapter_no: int | None = None
+) -> str | None:
+    """Title as it should appear in chunk plan / manifest / timeline: cleaned and
+    with user replace rules applied, plus canonical ``Chương N: Tên`` shape when a
+    number+name can be parsed. Keeps the number as digits (display form) and preserves
+    the normalized name — this is the ``tên sau khi normalize`` the manifest was missing."""
+    if title is None:
+        return None
+    raw = title.strip()
+    if not raw:
+        return f"Chương {chapter_no}" if chapter_no is not None else ""
+    # Mirror normalize_text's early junk/CJK cleanup so a title like "OO@@ Chương 1"
+    # or "Chương 1\u3000" does not propagate the junk into the manifest.
+    cleaned = raw
+    if opts.junk:
+        cleaned = clean_junk_tokens(cleaned, opts.junk_extra_tokens)
+    cleaned = remove_cjk(cleaned).strip()
+    if not cleaned:
+        cleaned = raw.strip()
+    # User-defined replacements (the same ones applied to body text) must also
+    # apply to the title so "AI" -> "trí tuệ nhân tạo" is reflected in chapter_titles.
+    replaced = apply_replace_rules(cleaned, rules)
+    # Canonicalize "Chương 12 - Bão" / "12: Bão" -> "Chương 12: Bão" so the name
+    # after normalize is not lost to a dash/colon variation.
+    number, name = split_chapter_title(replaced)
+    if number is not None and name:
+        return canonical_chapter_title(number, name)
+    # If title was empty/no-name but we know the chapter number, keep the number form.
+    if not replaced.strip() and chapter_no is not None:
+        return f"Chương {chapter_no}"
+    return replaced.strip()
+
+
 def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
     """Pure-CPU half of build_patch_chunk_plan: touches no database."""
     limit = inputs["limit"]
@@ -1239,11 +1273,12 @@ def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
         if not has_speakable_text(text):
             continue
         chunks = [c for c in split_into_tts_chunks(text, max_chars=limit) if has_speakable_text(c)]
+        normalized_title = _normalize_chapter_title_for_plan(chapter.title, opts, rules, getattr(chapter, "chapter_no", None))
         for i, chunk in enumerate(chunks):
             plan.append({
                 "text": chunk,
                 "chapter_index": chapter.chapter_index,
-                "chapter_title": chapter.title,
+                "chapter_title": normalized_title,
                 "is_chapter_start": i == 0,
             })
     return plan
