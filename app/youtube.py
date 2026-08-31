@@ -330,7 +330,7 @@ def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
             },
             "status": {
                 "privacyStatus": privacy_status,
-                "selfDeclaredMadeForKids": False,
+                "selfDeclaredMadeForKids": not bool(row.get("not_for_kids", 1)),
             },
         }
 
@@ -430,6 +430,8 @@ def enqueue_upload(
     *,
     render_source_type: str = "external",
     render_source_id: int | None = None,
+    not_for_kids: bool = True,
+    ai_labels_enabled: bool = False,
 ) -> int:
     """Create a pending youtube_uploads record. Returns upload_id.
 
@@ -446,10 +448,12 @@ def enqueue_upload(
     cursor = conn.execute(
         """INSERT INTO youtube_uploads
            (video_id, video_path, title, description, tags, privacy_status, status,
-            metadata_snapshot, render_source_type, render_source_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+            metadata_snapshot, render_source_type, render_source_id, not_for_kids,
+            ai_labels_enabled, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)""",
         (video_id, video_path, title, description, json.dumps(tags or []), privacy_status,
-         metadata_snapshot, render_source_type, render_source_id, now),
+         metadata_snapshot, render_source_type, render_source_id,
+         1 if not_for_kids else 0, 1 if ai_labels_enabled else 0, now),
     )
     conn.commit()
     return cursor.lastrowid
@@ -481,11 +485,90 @@ def mark_validation_failed(conn: sqlite3.Connection, upload_id: int, code: str, 
     conn.commit()
 
 
-def list_uploads(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM youtube_uploads ORDER BY id DESC LIMIT ?", (limit,)
-    ).fetchall()
-    return [dict(r) for r in rows]
+def _upload_has_playlist(row: dict) -> bool:
+    """Whether an upload row is (or will be) assigned to a playlist.
+
+    `playlist_id` is filled in once the auto-playlist step actually runs;
+    `metadata_snapshot` carries the *intended* playlist before that.
+    """
+    if row.get("playlist_id"):
+        return True
+    raw = row.get("metadata_snapshot")
+    if not raw:
+        return False
+    try:
+        snapshot = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(snapshot, dict):
+        return False
+    config = snapshot.get("automation", {}).get("youtube", {})
+    return bool(isinstance(config, dict) and config.get("playlist_id"))
+
+
+_UPLOAD_SORT_COLUMNS = {"created_at", "title", "status", "privacy_status"}
+
+
+def list_uploads(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 1000,
+    search: str = "",
+    status: str = "",
+    privacy_status: str = "",
+    has_playlist: str = "",
+    not_for_kids: str = "",
+    ai_labels_enabled: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    sort: str = "created_at",
+    order: str = "desc",
+) -> list[dict]:
+    """List upload-queue rows with optional search/filter/sort.
+
+    `has_playlist` ('yes'/'no') is applied in Python via `_upload_has_playlist`
+    since playlist intent can live in either the `playlist_id` column or
+    `metadata_snapshot`; every other filter is a plain SQL predicate.
+    """
+    sort_col = sort if sort in _UPLOAD_SORT_COLUMNS else "created_at"
+    sort_dir = "ASC" if order == "asc" else "DESC"
+
+    where: list[str] = []
+    params: list = []
+    if search:
+        where.append("(title LIKE ? OR description LIKE ?)")
+        like = f"%{search}%"
+        params.extend([like, like])
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    if privacy_status:
+        where.append("privacy_status = ?")
+        params.append(privacy_status)
+    if not_for_kids in ("0", "1"):
+        where.append("not_for_kids = ?")
+        params.append(int(not_for_kids))
+    if ai_labels_enabled in ("0", "1"):
+        where.append("ai_labels_enabled = ?")
+        params.append(int(ai_labels_enabled))
+    if date_from:
+        where.append("created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("created_at <= ?")
+        params.append(date_to)
+
+    sql = "SELECT * FROM youtube_uploads"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += f" ORDER BY {sort_col} {sort_dir} LIMIT ?"
+    params.append(limit)
+
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    if has_playlist in ("yes", "no"):
+        want = has_playlist == "yes"
+        rows = [r for r in rows if _upload_has_playlist(r) == want]
+    return rows
 
 
 def delete_upload(conn: sqlite3.Connection, upload_id: int) -> bool:
@@ -535,7 +618,8 @@ def set_upload_scheduled_publish(conn: sqlite3.Connection, upload_id: int, sched
 
 
 def set_upload_ai_labels(conn: sqlite3.Connection, upload_id: int, ai_labels: list[str]) -> None:
-    """Set AI-generated labels for an upload and merge into tags."""
+    """Set AI-generated labels for an upload, merge into tags, and mark the
+    AI-labels feature as enabled for this upload."""
     labels_json = json.dumps(ai_labels)
     row = conn.execute("SELECT tags FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
     if row is None:
@@ -544,10 +628,37 @@ def set_upload_ai_labels(conn: sqlite3.Connection, upload_id: int, ai_labels: li
     # Merge AI labels into tags (deduplicate)
     merged = list(dict.fromkeys(existing_tags + ai_labels))
     conn.execute(
-        "UPDATE youtube_uploads SET ai_labels=?, tags=? WHERE id=?",
+        "UPDATE youtube_uploads SET ai_labels=?, tags=?, ai_labels_enabled=1 WHERE id=?",
         (labels_json, json.dumps(merged), upload_id),
     )
     conn.commit()
+
+
+_UPLOAD_EDITABLE_FIELDS = {
+    "title", "description", "tags", "privacy_status", "not_for_kids", "ai_labels_enabled",
+}
+
+
+def update_upload_fields(conn: sqlite3.Connection, upload_id: int, **fields) -> dict | None:
+    """Generic column updater for a youtube_uploads row.
+
+    Only keys in `_UPLOAD_EDITABLE_FIELDS` are written; `tags` is JSON-encoded
+    and the two boolean flags are coerced to 0/1. Returns the updated row, or
+    None if `upload_id` doesn't exist.
+    """
+    updates = {k: v for k, v in fields.items() if k in _UPLOAD_EDITABLE_FIELDS and v is not None}
+    if updates:
+        if "tags" in updates:
+            updates["tags"] = json.dumps(updates["tags"])
+        for boolean_field in ("not_for_kids", "ai_labels_enabled"):
+            if boolean_field in updates:
+                updates[boolean_field] = 1 if updates[boolean_field] else 0
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        params = list(updates.values()) + [upload_id]
+        conn.execute(f"UPDATE youtube_uploads SET {set_clause} WHERE id=?", params)
+        conn.commit()
+    row = conn.execute("SELECT * FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+    return dict(row) if row else None
 
 
 def generate_ai_labels(title: str, description: str = "") -> list[str]:
@@ -777,6 +888,28 @@ def update_playlist_title(conn: sqlite3.Connection, playlist_id: str, title: str
     return service.playlists().update(part="snippet,status", body=body).execute()
 
 
+def update_video_metadata(conn: sqlite3.Connection, video_id: str, title: str,
+                          description: str | None = None) -> dict:
+    """Rename a video already live on the channel (and optionally re-describe it).
+
+    videos.update replaces the whole snippet part it is given (categoryId included),
+    so the current snippet is read back first - sending just a title would blank
+    everything else.
+    """
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    resp = service.videos().list(part="snippet", id=video_id, maxResults=1).execute()
+    items = resp.get("items") or []
+    if not items:
+        raise ValueError(f"video {video_id} not found")
+    snippet = items[0]["snippet"]
+    snippet["title"] = title[:100]
+    if description is not None:
+        snippet["description"] = description[:5000]
+    body = {"id": video_id, "snippet": snippet}
+    return service.videos().update(part="snippet", body=body).execute()
+
+
 def get_playlist_cover(conn: sqlite3.Connection, playlist_id: str) -> dict | None:
     """The playlist's current hero image resource, or None."""
     _require_google_imports()
@@ -961,6 +1094,7 @@ def _normalize_playlist_item(item: dict, playlist_id: str | None = None) -> dict
         "playlist_id": snippet.get("playlistId") or playlist_id or "",
         "video_id": resource.get("videoId") or content.get("videoId") or "",
         "title": snippet.get("title", "") or "",
+        "description": snippet.get("description", "") or "",
         "thumbnail": thumbnail,
         "position": snippet.get("position", 0),
         "published_at": content.get("videoPublishedAt"),
@@ -1177,9 +1311,11 @@ def bulk_add_to_playlist(
             _add_playlist_item(service, playlist_id, video_id, position=position)
             if existing is not None:
                 existing.add(video_id)
+            _cache_add_video_to_playlists(conn, video_id, playlist_id)
             _batch_add(result, video_id, "succeeded")
         except Exception as exc:
             _batch_add(result, video_id, "failed", str(exc)[:500])
+    _commit_if_real(conn)
     return result
 
 
@@ -1213,9 +1349,15 @@ def bulk_remove_from_playlist(
     for key, item_id in targets:
         try:
             _delete_playlist_item(service, item_id)
+            # `key` is the video id only when we resolved it above (the by-video-id
+            # branch); the by-item-id branch doesn't know the video id, so the cache
+            # just won't reflect that removal until the next full sync.
+            if playlist_id and video_ids:
+                _cache_remove_video_from_playlist(conn, key, playlist_id)
             _batch_add(result, key, "succeeded")
         except Exception as exc:
             _batch_add(result, key, "failed", str(exc)[:500])
+    _commit_if_real(conn)
     return result
 
 
@@ -1251,9 +1393,11 @@ def copy_playlist_items(
             continue
         try:
             _add_playlist_item(service, target_playlist_id, video_id)
+            _cache_add_video_to_playlists(conn, video_id, target_playlist_id)
             _batch_add(result, video_id, "succeeded")
         except Exception as exc:
             _batch_add(result, video_id, "failed", str(exc)[:500])
+    _commit_if_real(conn)
     return result
 
 
@@ -1282,14 +1426,17 @@ def move_playlist_items(
             continue
         try:
             _add_playlist_item(service, target_playlist_id, video_id)
+            _cache_add_video_to_playlists(conn, video_id, target_playlist_id)
         except Exception as exc:
             _batch_add(result, video_id, "failed", f"add failed; source retained: {str(exc)[:400]}")
             continue
         try:
             _delete_playlist_item(service, item["playlist_item_id"])
+            _cache_remove_video_from_playlist(conn, video_id, source_playlist_id)
             _batch_add(result, video_id, "succeeded")
         except Exception as exc:
             _batch_add(result, video_id, "succeeded", f"added to target; source removal failed: {str(exc)[:300]}")
+    _commit_if_real(conn)
     return result
 
 
@@ -1669,6 +1816,392 @@ def find_channel_videos_by_title(
         "prev_page_token": None,
         "total": len(matches),
     }
+
+
+# ---------------------------------------------------------------------------
+# Channel-videos cache (Videos-kênh tab)
+#
+# The tab needs to browse, search, filter, sort and paginate over *every* video on
+# the channel - including ones in no playlist - which the YouTube Data API has no
+# single cheap endpoint for (playlist membership has to be cross-referenced against
+# every playlist separately). sync_channel_videos() does that cross-reference once
+# and snapshots the result into youtube_channel_videos; every other function here
+# reads/writes that local cache, so browsing is instant and free of API quota.
+# ---------------------------------------------------------------------------
+
+_ISO8601_DURATION_RE = re.compile(
+    r"P(?:\d+Y)?(?:\d+M)?(?:\d+D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?"
+)
+
+_CHANNEL_VIDEO_SORT_COLUMNS = {
+    "title": "title", "published_at": "published_at",
+    "view_count": "view_count", "duration_sec": "duration_sec",
+}
+
+
+def _parse_iso8601_duration(text: str | None) -> int | None:
+    """'PT1H2M3S' -> 3723 (seconds). None/unparseable input -> None."""
+    if not text:
+        return None
+    match = _ISO8601_DURATION_RE.fullmatch(text.strip())
+    if not match:
+        return None
+    hours, minutes, seconds = (int(g) if g else 0 for g in match.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _video_details_by_id(service, video_ids: list[str]) -> dict[str, dict]:
+    """videos.list in batches of 50, keyed by video id.
+
+    Fetches the fields the uploads-playlist listing doesn't carry: full
+    description, tags, privacy, category, duration and view count.
+    """
+    details: dict[str, dict] = {}
+    for start in range(0, len(video_ids), 50):
+        chunk = video_ids[start:start + 50]
+        resp = service.videos().list(
+            part="snippet,status,contentDetails,statistics", id=",".join(chunk), maxResults=50,
+        ).execute()
+        for item in resp.get("items", []):
+            snippet = item.get("snippet") or {}
+            status = item.get("status") or {}
+            content = item.get("contentDetails") or {}
+            stats = item.get("statistics") or {}
+            details[item["id"]] = {
+                "description": snippet.get("description", "") or "",
+                "tags": snippet.get("tags") or [],
+                "privacy_status": status.get("privacyStatus", "private"),
+                "category_id": snippet.get("categoryId"),
+                "duration_sec": _parse_iso8601_duration(content.get("duration")),
+                "view_count": int(stats["viewCount"]) if stats.get("viewCount") is not None else None,
+            }
+    return details
+
+
+def sync_channel_videos(conn: sqlite3.Connection, channel_id: str) -> dict:
+    """Refresh the local cache of every video on the channel plus its playlist membership.
+
+    Pages the channel's uploads playlist for the video list, batches videos.list for
+    the fields that listing omits, then pages every playlist on the channel to know
+    which ones (if any) contain each video. The cache table is fully replaced in one
+    transaction so a video removed from the channel since the last sync disappears too.
+    """
+    _require_google_imports()
+    service = get_youtube_service(conn)
+
+    uploads_id = _channel_uploads_playlist_id(channel_id)
+    base_items = (
+        _get_all_playlist_items(service, uploads_id) if uploads_id
+        else _search_videos_page(service, channel_id, "", 50, None)["items"]
+    )
+    by_id = {item["video_id"]: item for item in base_items if item.get("video_id")}
+    video_ids = list(by_id.keys())
+    details = _video_details_by_id(service, video_ids)
+
+    membership: dict[str, list[str]] = {vid: [] for vid in video_ids}
+    playlists = list_playlists(conn, max_results=50)
+    for playlist in playlists:
+        playlist_id = playlist.get("id")
+        if not playlist_id:
+            continue
+        for item in _get_all_playlist_items(service, playlist_id):
+            vid = item.get("video_id")
+            if vid in membership:
+                membership[vid].append(playlist_id)
+
+    now = _now_iso()
+    rows = []
+    for vid in video_ids:
+        base = by_id[vid]
+        extra = details.get(vid, {})
+        rows.append((
+            vid,
+            base.get("title", "") or "",
+            extra.get("description", ""),
+            json.dumps(extra.get("tags") or []),
+            extra.get("privacy_status", "private"),
+            extra.get("category_id"),
+            base.get("thumbnail"),
+            extra.get("duration_sec"),
+            extra.get("view_count"),
+            base.get("published_at"),
+            json.dumps(membership.get(vid, [])),
+            now,
+        ))
+
+    conn.execute("DELETE FROM youtube_channel_videos")
+    conn.executemany(
+        "INSERT INTO youtube_channel_videos "
+        "(video_id, title, description, tags, privacy_status, category_id, thumbnail, "
+        " duration_sec, view_count, published_at, playlist_ids, synced_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    return {"synced": len(rows), "playlists_scanned": len(playlists), "synced_at": now}
+
+
+def channel_videos_sync_status(conn: sqlite3.Connection) -> dict:
+    """Last sync time and cached row count, for the "Đồng bộ lần cuối" banner."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt, MAX(synced_at) AS synced_at FROM youtube_channel_videos"
+    ).fetchone()
+    return {"count": row["cnt"] if row else 0, "synced_at": row["synced_at"] if row else None}
+
+
+def _row_to_channel_video(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    data["tags"] = json.loads(data.get("tags") or "[]")
+    data["playlist_ids"] = json.loads(data.get("playlist_ids") or "[]")
+    return data
+
+
+def list_cached_channel_videos(
+    conn: sqlite3.Connection,
+    *,
+    search: str = "",
+    privacy_status: str = "",
+    has_playlist: str = "",
+    playlist_id: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    sort: str = "published_at",
+    order: str = "desc",
+    page: int = 1,
+    page_size: int = 50,
+) -> dict:
+    """Search/filter/sort/paginate the cached channel-videos snapshot.
+
+    Returns {items, total, page, page_size}. `has_playlist` is 'yes'/'no'; when
+    `playlist_id` is set it also implies membership in that specific playlist.
+    """
+    sort_col = _CHANNEL_VIDEO_SORT_COLUMNS.get(sort, "published_at")
+    sort_dir = "ASC" if order == "asc" else "DESC"
+
+    where: list[str] = []
+    params: list = []
+    if search:
+        where.append("(title LIKE ? OR description LIKE ?)")
+        like = f"%{search}%"
+        params.extend([like, like])
+    if privacy_status:
+        where.append("privacy_status = ?")
+        params.append(privacy_status)
+    if date_from:
+        where.append("published_at >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("published_at <= ?")
+        params.append(date_to)
+    if playlist_id:
+        where.append("EXISTS (SELECT 1 FROM json_each(playlist_ids) WHERE value = ?)")
+        params.append(playlist_id)
+    elif has_playlist in ("yes", "no"):
+        exists = "EXISTS (SELECT 1 FROM json_each(playlist_ids))"
+        where.append(exists if has_playlist == "yes" else f"NOT {exists}")
+
+    where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM youtube_channel_videos{where_sql}", params
+    ).fetchone()[0]
+
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+    offset = (page - 1) * page_size
+    rows = conn.execute(
+        f"SELECT * FROM youtube_channel_videos{where_sql} "
+        f"ORDER BY {sort_col} {sort_dir} LIMIT ? OFFSET ?",
+        [*params, page_size, offset],
+    ).fetchall()
+    return {
+        "items": [_row_to_channel_video(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def get_cached_channel_videos(conn: sqlite3.Connection, video_ids: list[str]) -> list[dict]:
+    """Cached rows for exactly these video ids, in no particular order."""
+    if not video_ids:
+        return []
+    placeholders = ",".join("?" * len(video_ids))
+    rows = conn.execute(
+        f"SELECT * FROM youtube_channel_videos WHERE video_id IN ({placeholders})", video_ids
+    ).fetchall()
+    return [_row_to_channel_video(r) for r in rows]
+
+
+def delete_channel_videos(conn: sqlite3.Connection, video_ids: list[str]) -> dict:
+    """Permanently delete videos from YouTube (videos.delete) and drop them from the cache.
+
+    Irreversible on YouTube's side - the route this backs requires the caller to
+    confirm explicitly before calling it.
+    """
+    result = _new_batch_result()
+    if not video_ids:
+        return result
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    for video_id in video_ids:
+        try:
+            service.videos().delete(id=video_id).execute()
+            conn.execute("DELETE FROM youtube_channel_videos WHERE video_id=?", (video_id,))
+            _batch_add(result, video_id, "succeeded")
+        except Exception as exc:
+            _batch_add(result, video_id, "failed", str(exc)[:500])
+    conn.commit()
+    return result
+
+
+def bulk_update_channel_videos(conn: sqlite3.Connection, updates: list[dict]) -> dict:
+    """Apply per-video metadata edits to live YouTube videos.
+
+    Each item in `updates` is {video_id, title?, description?, tags?, privacy_status?} -
+    omitted fields are left alone. videos.update replaces the whole snippet/status part
+    it is given, so the current one is read back first. Successful edits also refresh
+    the matching cache row so the table reflects the change without a full re-sync.
+    """
+    result = _new_batch_result()
+    if not updates:
+        return result
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    for item in updates:
+        video_id = item["video_id"]
+        try:
+            resp = service.videos().list(part="snippet,status", id=video_id, maxResults=1).execute()
+            found = resp.get("items") or []
+            if not found:
+                _batch_add(result, video_id, "failed", "video not found")
+                continue
+            snippet, status = found[0]["snippet"], found[0]["status"]
+            if item.get("title") is not None:
+                snippet["title"] = item["title"][:100]
+            if item.get("description") is not None:
+                snippet["description"] = item["description"][:5000]
+            if item.get("tags") is not None:
+                snippet["tags"] = item["tags"]
+            if item.get("privacy_status"):
+                status["privacyStatus"] = item["privacy_status"]
+            body = {"id": video_id, "snippet": snippet, "status": status}
+            service.videos().update(part="snippet,status", body=body).execute()
+            conn.execute(
+                "UPDATE youtube_channel_videos SET title=?, description=?, tags=?, privacy_status=? "
+                "WHERE video_id=?",
+                (snippet.get("title", ""), snippet.get("description", ""),
+                 json.dumps(snippet.get("tags") or []), status.get("privacyStatus", "private"), video_id),
+            )
+            _batch_add(result, video_id, "succeeded")
+        except Exception as exc:
+            _batch_add(result, video_id, "failed", str(exc)[:500])
+    conn.commit()
+    return result
+
+
+def _cache_add_video_to_playlists(conn: sqlite3.Connection | None, video_id: str, playlist_id: str) -> None:
+    """Best-effort: keep the channel-videos cache's playlist membership in sync.
+
+    A no-op (never raises) when there is no real connection - unit tests exercise the
+    batch playlist functions with conn=None since they monkeypatch get_youtube_service
+    to ignore it - or when the cache write itself fails for any reason; this mirror is
+    a convenience for the Videos-kênh tab, never load-bearing for the playlist op itself.
+    """
+    if conn is None:
+        return
+    try:
+        row = conn.execute("SELECT playlist_ids FROM youtube_channel_videos WHERE video_id=?",
+                           (video_id,)).fetchone()
+        if row is None:
+            return
+        ids = set(json.loads(row["playlist_ids"] or "[]"))
+        ids.add(playlist_id)
+        conn.execute("UPDATE youtube_channel_videos SET playlist_ids=? WHERE video_id=?",
+                     (json.dumps(sorted(ids)), video_id))
+    except sqlite3.Error:
+        logger.debug("channel-videos cache update failed (add)", exc_info=True)
+
+
+def _cache_remove_video_from_playlist(conn: sqlite3.Connection | None, video_id: str, playlist_id: str) -> None:
+    """Best-effort mirror of `_cache_add_video_to_playlists`; see its docstring."""
+    if conn is None:
+        return
+    try:
+        row = conn.execute("SELECT playlist_ids FROM youtube_channel_videos WHERE video_id=?",
+                           (video_id,)).fetchone()
+        if row is None:
+            return
+        ids = set(json.loads(row["playlist_ids"] or "[]"))
+        ids.discard(playlist_id)
+        conn.execute("UPDATE youtube_channel_videos SET playlist_ids=? WHERE video_id=?",
+                     (json.dumps(sorted(ids)), video_id))
+    except sqlite3.Error:
+        logger.debug("channel-videos cache update failed (remove)", exc_info=True)
+
+
+def _commit_if_real(conn: sqlite3.Connection | None) -> None:
+    """conn.commit(), skipped for the conn=None stand-in the playlist unit tests use."""
+    if conn is not None:
+        conn.commit()
+
+
+def delete_playlist(conn: sqlite3.Connection, playlist_id: str) -> dict:
+    """Delete a playlist from the channel. Does not delete the videos it contained."""
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    service.playlists().delete(id=playlist_id).execute()
+    rows = conn.execute("SELECT video_id FROM youtube_channel_videos").fetchall()
+    for row in rows:
+        _cache_remove_video_from_playlist(conn, row["video_id"], playlist_id)
+    conn.commit()
+    return {"deleted": playlist_id}
+
+
+def bulk_update_playlists(
+    conn: sqlite3.Connection,
+    playlist_ids: list[str],
+    *,
+    privacy_status: str | None = None,
+    title_prefix: str = "",
+    title_suffix: str = "",
+    description_template: str | None = None,
+) -> dict:
+    """Apply the same privacy/title-affix/description change to several playlists.
+
+    `title_prefix`/`title_suffix` are prepended/appended to each playlist's current
+    title (not a replacement); `description_template` replaces the description
+    outright when given. Every other field the playlist has is preserved.
+    """
+    result = _new_batch_result()
+    if not playlist_ids:
+        return result
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    for playlist_id in playlist_ids:
+        try:
+            playlist = get_playlist(conn, playlist_id)
+            if playlist is None:
+                _batch_add(result, playlist_id, "failed", "playlist not found")
+                continue
+            snippet = playlist.get("snippet") or {}
+            status = playlist.get("status") or {}
+            new_title = f"{title_prefix}{snippet.get('title', '')}{title_suffix}"[:150]
+            body = {
+                "id": playlist_id,
+                "snippet": {
+                    "title": new_title,
+                    "description": description_template if description_template is not None
+                    else snippet.get("description", ""),
+                },
+                "status": {"privacyStatus": privacy_status or status.get("privacyStatus", "private")},
+            }
+            if status.get("podcastStatus"):
+                body["status"]["podcastStatus"] = status["podcastStatus"]
+            service.playlists().update(part="snippet,status", body=body).execute()
+            _batch_add(result, playlist_id, "succeeded")
+        except Exception as exc:
+            _batch_add(result, playlist_id, "failed", str(exc)[:500])
+    return result
 
 
 def _playlist_marker(book_id: int) -> str:

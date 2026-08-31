@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from app import db as app_db
 from app import youtube
 from app import youtube_io
+from app import youtube_metadata
 from app.config import settings
 from app.deps import locked_conn
 
@@ -30,7 +32,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _enqueue(request: Request, video_path: str, title: str, description: str, tags: str, privacy_status: str, playlist_id: str = "") -> dict:
+def _enqueue(request: Request, video_path: str, title: str, description: str, tags: str, privacy_status: str,
+            playlist_id: str = "", not_for_kids: bool = True, ai_labels_enabled: bool = False) -> dict:
     """Queue a video for the upload worker and return immediately.
 
     The upload itself must not run here: these handlers hold the shared db_lock via
@@ -53,6 +56,8 @@ def _enqueue(request: Request, video_path: str, title: str, description: str, ta
             tags=tag_list,
             privacy_status=privacy_status,
             playlist_id=playlist_id,
+            not_for_kids=not_for_kids,
+            ai_labels_enabled=ai_labels_enabled,
         )
         store.enqueue(conn, "youtube_upload", payload={"upload_id": upload_id},
                       dedupe_key=f"youtube_upload:upload={upload_id}")
@@ -305,11 +310,14 @@ async def youtube_upload_manual(
     tags: str = Form(default=""),
     privacy_status: str = Form(default="private"),
     playlist_id: str = Form(default=""),
+    not_for_kids: bool = Form(default=True),
+    ai_labels_enabled: bool = Form(default=False),
 ):
     if not youtube.is_configured():
         raise HTTPException(status_code=400, detail="YouTube not configured")
 
-    return JSONResponse(_enqueue(request, video_path, title, description, tags, privacy_status, playlist_id))
+    return JSONResponse(_enqueue(request, video_path, title, description, tags, privacy_status, playlist_id,
+                                 not_for_kids, ai_labels_enabled))
 
 
 @router.post("/youtube/upload-file")
@@ -321,6 +329,8 @@ async def youtube_upload_file(
     tags: str = Form(default=""),
     privacy_status: str = Form(default="private"),
     playlist_id: str = Form(default=""),
+    not_for_kids: bool = Form(default=True),
+    ai_labels_enabled: bool = Form(default=False),
 ):
     """Upload a video file directly (for standalone videos not yet on disk)."""
     if not youtube.is_configured():
@@ -341,14 +351,71 @@ async def youtube_upload_file(
     # Off the event loop: a large file otherwise stalls every concurrent request.
     await asyncio.to_thread(_save)
 
-    return JSONResponse(_enqueue(request, str(tmp_path), title, description, tags, privacy_status, playlist_id))
+    return JSONResponse(_enqueue(request, str(tmp_path), title, description, tags, privacy_status, playlist_id,
+                                 not_for_kids, ai_labels_enabled))
 
 
 @router.get("/youtube/uploads")
-def youtube_uploads_list(request: Request):
+def youtube_uploads_list(
+    request: Request,
+    search: str = "",
+    status: str = "",
+    privacy_status: str = "",
+    has_playlist: str = "",
+    not_for_kids: str = "",
+    ai_labels_enabled: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    sort: str = "created_at",
+    order: str = "desc",
+):
     with locked_conn(request) as conn:
-        uploads = youtube.list_uploads(conn)
+        uploads = youtube.list_uploads(
+            conn,
+            search=search,
+            status=status,
+            privacy_status=privacy_status,
+            has_playlist=has_playlist,
+            not_for_kids=not_for_kids,
+            ai_labels_enabled=ai_labels_enabled,
+            date_from=date_from,
+            date_to=date_to,
+            sort=sort,
+            order=order,
+        )
     return JSONResponse({"uploads": uploads})
+
+
+class _UploadUpdateBody(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    privacy_status: str | None = None
+    not_for_kids: bool | None = None
+    ai_labels_enabled: bool | None = None
+
+
+@router.patch("/youtube/uploads/{upload_id}")
+def youtube_update_upload(request: Request, upload_id: int, body: _UploadUpdateBody):
+    """Edit an upload-queue row's own fields (title/description/tags/privacy/flags).
+
+    This never touches YouTube itself - once `status='done'` the row edit is local
+    only, matching the existing import/export behavior (see youtube_io.apply_import).
+    """
+    if body.title is not None and (not body.title.strip() or len(body.title) > youtube_metadata.YOUTUBE_TITLE_LIMIT):
+        raise HTTPException(status_code=400,
+                            detail=f"title phải có nội dung và tối đa {youtube_metadata.YOUTUBE_TITLE_LIMIT} ký tự")
+    if body.description is not None and len(body.description) > youtube_metadata.YOUTUBE_DESCRIPTION_LIMIT:
+        raise HTTPException(status_code=400,
+                            detail=f"description tối đa {youtube_metadata.YOUTUBE_DESCRIPTION_LIMIT} ký tự")
+    if body.privacy_status is not None and body.privacy_status not in youtube_io.PRIVACY_VALUES:
+        raise HTTPException(status_code=400,
+                            detail=f"privacy_status phải là một trong: {', '.join(youtube_io.PRIVACY_VALUES)}")
+    with locked_conn(request) as conn:
+        updated = youtube.update_upload_fields(conn, upload_id, **body.model_dump(exclude_unset=True))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    return JSONResponse(updated)
 
 
 @router.get("/youtube/kaggle-credentials")
@@ -429,6 +496,8 @@ def _queue_imported_upload(request: Request):
             tags=payload["tags"],
             privacy_status=payload["privacy_status"],
             playlist_id=payload["playlist_id"],
+            not_for_kids=payload.get("not_for_kids", True),
+            ai_labels_enabled=payload.get("ai_labels_enabled", False),
         )
         store.enqueue(conn, "youtube_upload", payload={"upload_id": upload_id},
                       dedupe_key=f"youtube_upload:upload={upload_id}")
@@ -542,6 +611,33 @@ def api_list_playlists(request: Request, max_results: int = 50):
     items = _call_youtube(request, youtube.list_playlists, max_results=max_results)
     return JSONResponse({"items": items, "count": len(items),
                          "next_page_token": None, "prev_page_token": None})
+
+
+class _PlaylistUpdateBody(BaseModel):
+    title: str = Field(min_length=1, max_length=150)
+    description: str | None = None
+
+
+@router.patch("/youtube/api/playlists/{playlist_id}")
+def api_update_playlist(request: Request, playlist_id: str, body: _PlaylistUpdateBody):
+    """Rename a playlist (and optionally its description)."""
+    _require_connected(request)
+    _require_playlist_id(playlist_id)
+    result = _call_youtube(request, youtube.update_playlist_title, playlist_id, body.title, body.description)
+    return JSONResponse(result)
+
+
+class _VideoUpdateBody(BaseModel):
+    title: str = Field(min_length=1, max_length=youtube_metadata.YOUTUBE_TITLE_LIMIT)
+    description: str | None = None
+
+
+@router.patch("/youtube/api/videos/{video_id}")
+def api_update_video(request: Request, video_id: str, body: _VideoUpdateBody):
+    """Rename a video already live on the channel (e.g. one shown in a playlist)."""
+    _require_connected(request)
+    result = _call_youtube(request, youtube.update_video_metadata, video_id, body.title, body.description)
+    return JSONResponse(result)
 
 
 @router.get("/youtube/api/playlists/{playlist_id}/items")
@@ -771,6 +867,234 @@ def api_apply_playlist_sort(request: Request, playlist_id: str, body: _PlaylistS
     _require_playlist_id(playlist_id)
     result = _call_youtube(request, youtube.sort_playlist, playlist_id,
                            body.direction, body.mode)
+    return JSONResponse(_mark_partial(result))
+
+
+# ---------------------------------------------------------------------------
+# Playlist create/delete/bulk-update
+# ---------------------------------------------------------------------------
+
+
+class _PlaylistCreateBody(BaseModel):
+    title: str = Field(min_length=1, max_length=150)
+    description: str = ""
+    privacy: str = "private"
+
+
+@router.post("/youtube/api/playlists")
+def api_create_playlist(request: Request, body: _PlaylistCreateBody):
+    """Create a new playlist on the channel."""
+    _require_connected(request)
+    if body.privacy not in youtube_io.PRIVACY_VALUES:
+        raise HTTPException(status_code=400,
+                            detail=f"privacy phải là một trong: {', '.join(youtube_io.PRIVACY_VALUES)}")
+    result = _call_youtube(request, youtube.create_playlist, body.title, body.description, body.privacy)
+    return JSONResponse(result)
+
+
+@router.delete("/youtube/api/playlists/{playlist_id}")
+def api_delete_playlist(request: Request, playlist_id: str):
+    """Delete a playlist (does not delete the videos it contained)."""
+    _require_connected(request)
+    _require_playlist_id(playlist_id)
+    result = _call_youtube(request, youtube.delete_playlist, playlist_id)
+    return JSONResponse(result)
+
+
+class _PlaylistBulkUpdateBody(BaseModel):
+    playlist_ids: list[str] = Field(min_length=1)
+    privacy_status: str | None = None
+    title_prefix: str = ""
+    title_suffix: str = ""
+    description_template: str | None = None
+
+    @field_validator("privacy_status")
+    @classmethod
+    def _valid_privacy(cls, v):
+        if v is not None and v not in youtube_io.PRIVACY_VALUES:
+            raise ValueError(f"privacy_status phải là một trong: {', '.join(youtube_io.PRIVACY_VALUES)}")
+        return v
+
+
+@router.post("/youtube/api/playlists/bulk-update")
+def api_bulk_update_playlists(request: Request, body: _PlaylistBulkUpdateBody):
+    """Apply the same privacy/title-affix/description change to several playlists."""
+    _require_connected(request)
+    result = _call_youtube(
+        request, youtube.bulk_update_playlists, body.playlist_ids,
+        privacy_status=body.privacy_status, title_prefix=body.title_prefix,
+        title_suffix=body.title_suffix, description_template=body.description_template,
+    )
+    return JSONResponse(_mark_partial(result))
+
+
+# ---------------------------------------------------------------------------
+# Channel-videos cache (Videos-kênh tab)
+#
+# "Đồng bộ từ YouTube" (sync_channel_videos) snapshots every video on the channel -
+# including ones in no playlist - plus its playlist membership into
+# youtube_channel_videos; browsing/search/filter/sort/pagination below reads that
+# local cache (locked_conn, no network, no quota). Only the sync itself and the
+# bulk actions that mutate YouTube touch the network (_call_youtube).
+# ---------------------------------------------------------------------------
+
+
+@router.post("/youtube/api/channel/videos/sync")
+def api_sync_channel_videos(request: Request):
+    """Refresh the local channel-videos cache from the YouTube API."""
+    _require_connected(request)
+    channel_id = _channel_id_from_creds(request)
+    result = _call_youtube(request, youtube.sync_channel_videos, channel_id)
+    return JSONResponse(result)
+
+
+@router.get("/youtube/api/channel/videos/cached")
+def api_list_cached_channel_videos(
+    request: Request,
+    search: str = "",
+    privacy_status: str = "",
+    has_playlist: str = "",
+    playlist_id: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    sort: str = "published_at",
+    order: str = "desc",
+    page: int = 1,
+    page_size: int = 50,
+):
+    """Browse the cached channel-videos snapshot (local only; call sync first)."""
+    _validate_page_size(page_size)
+    with locked_conn(request) as conn:
+        result = youtube.list_cached_channel_videos(
+            conn, search=search, privacy_status=privacy_status, has_playlist=has_playlist,
+            playlist_id=playlist_id, date_from=date_from, date_to=date_to,
+            sort=sort, order=order, page=page, page_size=page_size,
+        )
+        status = youtube.channel_videos_sync_status(conn)
+    return JSONResponse({**result, "synced_at": status["synced_at"]})
+
+
+@router.get("/youtube/api/channel/videos/status")
+def api_channel_videos_status(request: Request):
+    """Last sync time and cached row count, for the sync banner."""
+    with locked_conn(request) as conn:
+        return JSONResponse(youtube.channel_videos_sync_status(conn))
+
+
+@router.get("/youtube/api/channel/videos/export")
+def api_export_channel_videos(request: Request, format: str = "json", ids: str | None = None):
+    """Export the cached channel-videos snapshot (or a selected subset) as JSON/CSV."""
+    if format not in ("json", "csv"):
+        raise HTTPException(status_code=400, detail="format phải là 'json' hoặc 'csv'")
+    id_list = [part.strip() for part in ids.split(",") if part.strip()] if ids else None
+    with locked_conn(request) as conn:
+        if id_list:
+            records = youtube.get_cached_channel_videos(conn, id_list)
+        else:
+            records = youtube.list_cached_channel_videos(conn, page=1, page_size=10_000)["items"]
+
+    columns = ["video_id", "title", "description", "tags", "privacy_status", "duration_sec",
+              "view_count", "published_at", "playlist_ids"]
+    rows = [{**r, "tags": ", ".join(r["tags"]), "playlist_ids": ", ".join(r["playlist_ids"])} for r in records]
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if format == "csv":
+        import csv, io
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        body, media_type = buffer.getvalue(), "text/csv; charset=utf-8"
+        content = body.encode("utf-8-sig")
+    else:
+        body = json.dumps({"kind": "youtube_channel_videos", "version": 1, "videos": rows},
+                          ensure_ascii=False, indent=2)
+        media_type = "application/json"
+        content = body.encode("utf-8")
+    filename = f"youtube-channel-videos-{stamp}.{format}"
+    return Response(content=content, media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+class _ChannelVideoBulkUpdateBody(BaseModel):
+    video_ids: list[str] = Field(min_length=1)
+    title_template: str = ""
+    description_template: str = ""
+    privacy_status: str | None = None
+    add_tags: list[str] = Field(default_factory=list)
+
+    @field_validator("privacy_status")
+    @classmethod
+    def _valid_privacy(cls, v):
+        if v is not None and v not in youtube_io.PRIVACY_VALUES:
+            raise ValueError(f"privacy_status phải là một trong: {', '.join(youtube_io.PRIVACY_VALUES)}")
+        return v
+
+
+_EPISODE_RE = re.compile(r"(?:episode|tap|tập|chuong|chương|ep)[\s#]*(\d+)", re.IGNORECASE)
+
+
+@router.post("/youtube/api/channel/videos/bulk-update")
+def api_bulk_update_channel_videos(request: Request, body: _ChannelVideoBulkUpdateBody):
+    """Bulk-edit title/description (with {episode} templating), privacy, and tags
+    for several live channel videos at once."""
+    _require_connected(request)
+    with locked_conn(request) as conn:
+        current = {r["video_id"]: r for r in youtube.get_cached_channel_videos(conn, body.video_ids)}
+
+    updates = []
+    for video_id in body.video_ids:
+        row = current.get(video_id, {})
+        item: dict = {"video_id": video_id}
+        if body.title_template:
+            title = row.get("title", "")
+            match = _EPISODE_RE.search(title)
+            episode = match.group(1) if match else video_id
+            item["title"] = body.title_template.replace("{episode}", episode)
+        if body.description_template:
+            description = row.get("description", "")
+            match = _EPISODE_RE.search(description)
+            episode = match.group(1) if match else video_id
+            item["description"] = body.description_template.replace("{episode}", episode)
+        if body.privacy_status:
+            item["privacy_status"] = body.privacy_status
+        if body.add_tags:
+            item["tags"] = sorted(set(row.get("tags", [])) | set(body.add_tags))
+        updates.append(item)
+
+    result = _call_youtube(request, youtube.bulk_update_channel_videos, updates)
+    return JSONResponse(_mark_partial(result))
+
+
+@router.post("/youtube/api/channel/videos/bulk-delete")
+def api_bulk_delete_channel_videos(request: Request, video_ids: list[str]):
+    """Permanently delete videos from YouTube. Irreversible - the UI requires the
+    user to type a confirmation phrase before calling this."""
+    _require_connected(request)
+    if not video_ids:
+        raise HTTPException(status_code=400, detail="video_ids không được để trống")
+    result = _call_youtube(request, youtube.delete_channel_videos, video_ids)
+    return JSONResponse(_mark_partial(result))
+
+
+class _ChannelVideoPlaylistBody(BaseModel):
+    playlist_id: str = Field(min_length=1)
+    video_ids: list[str] = Field(min_length=1)
+
+
+@router.post("/youtube/api/channel/videos/bulk-add-to-playlist")
+def api_bulk_add_channel_videos_to_playlist(request: Request, body: _ChannelVideoPlaylistBody):
+    """Add several channel videos (selected from the Videos-kênh tab) to a playlist."""
+    _require_connected(request)
+    result = _call_youtube(request, youtube.bulk_add_to_playlist, body.playlist_id, body.video_ids)
+    return JSONResponse(_mark_partial(result))
+
+
+@router.post("/youtube/api/channel/videos/bulk-remove-from-playlist")
+def api_bulk_remove_channel_videos_from_playlist(request: Request, body: _ChannelVideoPlaylistBody):
+    """Remove several channel videos from a playlist (by video id)."""
+    _require_connected(request)
+    result = _call_youtube(request, youtube.bulk_remove_from_playlist, body.playlist_id,
+                           video_ids=body.video_ids)
     return JSONResponse(_mark_partial(result))
 
 

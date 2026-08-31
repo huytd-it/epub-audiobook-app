@@ -246,8 +246,33 @@ CREATE TABLE IF NOT EXISTS youtube_uploads (
     uploaded_at     TEXT,
     scheduled_publish_at TEXT,
     ai_labels       TEXT,
+    not_for_kids    INTEGER NOT NULL DEFAULT 1,
+    ai_labels_enabled INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
+
+-- Local cache of the channel's live YouTube videos (populated by "Đồng bộ từ
+-- YouTube" in the Videos-kênh tab). This is what the channel-wide browse/search/
+-- filter/sort/pagination and bulk actions run against, so they stay fast and don't
+-- burn API quota on every keystroke; it is a snapshot, refreshed on demand.
+CREATE TABLE IF NOT EXISTS youtube_channel_videos (
+    video_id        TEXT PRIMARY KEY,
+    title           TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    tags            TEXT,
+    privacy_status  TEXT NOT NULL DEFAULT 'private',
+    category_id     TEXT,
+    thumbnail       TEXT,
+    duration_sec    INTEGER,
+    view_count      INTEGER,
+    published_at    TEXT,
+    -- JSON list of playlist ids that currently contain this video.
+    playlist_ids    TEXT NOT NULL DEFAULT '[]',
+    synced_at       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_youtube_channel_videos_title ON youtube_channel_videos(title);
+CREATE INDEX IF NOT EXISTS idx_youtube_channel_videos_published ON youtube_channel_videos(published_at);
 
 CREATE TABLE IF NOT EXISTS google_drive_credentials (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -891,6 +916,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE youtube_uploads ADD COLUMN scheduled_publish_at TEXT")
     if "ai_labels" not in uploads_cols:
         conn.execute("ALTER TABLE youtube_uploads ADD COLUMN ai_labels TEXT")
+    if "not_for_kids" not in uploads_cols:
+        conn.execute("ALTER TABLE youtube_uploads ADD COLUMN not_for_kids INTEGER NOT NULL DEFAULT 1")
+    if "ai_labels_enabled" not in uploads_cols:
+        conn.execute("ALTER TABLE youtube_uploads ADD COLUMN ai_labels_enabled INTEGER NOT NULL DEFAULT 0")
     from app.config import settings
     if settings.google_drive_client_id:
         row = conn.execute("SELECT 1 FROM drive_oauth_client LIMIT 1").fetchone()

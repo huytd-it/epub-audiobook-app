@@ -817,3 +817,370 @@ def test_reorder_all_service_calls_run_off_lock_on_throwaway_conn(make_client, m
     assert response.status_code == 200
     assert len(probe.records) == 2, "reorder-all must run a mapping call and the reorder call"
     _assert_off_lock(probe, c.conn)
+
+
+# ---------------------------------------------------------------------------
+# Rename a playlist / a video (PATCH endpoints)
+# ---------------------------------------------------------------------------
+
+
+def test_update_playlist_calls_service_with_title_and_description(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "update_playlist_title",
+        lambda conn, pid, title, description=None: calls.append((pid, title, description)) or {"id": pid},
+    )
+
+    response = c.client.patch(
+        "/youtube/api/playlists/PL1", json={"title": "Tên mới", "description": "Mô tả mới"}
+    )
+
+    assert response.status_code == 200
+    assert calls == [("PL1", "Tên mới", "Mô tả mới")]
+
+
+def test_update_playlist_requires_a_title(make_client):
+    c = make_client()
+    response = c.client.patch("/youtube/api/playlists/PL1", json={"title": ""})
+    assert response.status_code == 422
+
+
+def test_update_playlist_service_call_runs_off_lock_on_throwaway_conn(make_client, monkeypatch):
+    c = make_client()
+    probe = _Probe(c.lock)
+    monkeypatch.setattr(
+        youtube_module, "update_playlist_title",
+        lambda conn, pid, title, description=None: probe.record(conn) or {"id": pid},
+    )
+
+    response = c.client.patch("/youtube/api/playlists/PL1", json={"title": "Tên mới"})
+
+    assert response.status_code == 200
+    _assert_off_lock(probe, c.conn)
+
+
+def test_update_video_calls_service_with_title_and_description(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "update_video_metadata",
+        lambda conn, vid, title, description=None: calls.append((vid, title, description)) or {"id": vid},
+    )
+
+    response = c.client.patch(
+        "/youtube/api/videos/V1", json={"title": "Video mới"}
+    )
+
+    assert response.status_code == 200
+    assert calls == [("V1", "Video mới", None)]
+
+
+def test_update_video_requires_a_title(make_client):
+    c = make_client()
+    response = c.client.patch("/youtube/api/videos/V1", json={"title": ""})
+    assert response.status_code == 422
+
+
+def test_update_video_not_found_surfaces_as_error(make_client, monkeypatch):
+    c = make_client()
+    monkeypatch.setattr(
+        youtube_module, "update_video_metadata",
+        lambda conn, vid, title, description=None: (_ for _ in ()).throw(ValueError(f"video {vid} not found")),
+    )
+
+    response = c.client.patch("/youtube/api/videos/missing", json={"title": "X"})
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "internal"
+
+
+# ---------------------------------------------------------------------------
+# Playlist create / delete / bulk-update
+# ---------------------------------------------------------------------------
+
+
+def test_create_playlist_calls_service_with_title_description_privacy(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "create_playlist",
+        lambda conn, title, description="", privacy="private", default_language="vi":
+            calls.append((title, description, privacy)) or {"id": "PLNEW"},
+    )
+
+    response = c.client.post(
+        "/youtube/api/playlists", json={"title": "Mới", "description": "Mô tả", "privacy": "unlisted"}
+    )
+
+    assert response.status_code == 200
+    assert calls == [("Mới", "Mô tả", "unlisted")]
+
+
+def test_create_playlist_rejects_invalid_privacy(make_client):
+    c = make_client()
+    response = c.client.post("/youtube/api/playlists", json={"title": "X", "privacy": "bogus"})
+    assert response.status_code == 400
+
+
+def test_delete_playlist_calls_service(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "delete_playlist",
+        lambda conn, pid: calls.append(pid) or {"deleted": pid},
+    )
+
+    response = c.client.delete("/youtube/api/playlists/PL1")
+
+    assert response.status_code == 200
+    assert calls == ["PL1"]
+
+
+def test_playlists_bulk_update_passes_fields_and_marks_partial(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+
+    def fake(conn, playlist_ids, *, privacy_status=None, title_prefix="", title_suffix="", description_template=None):
+        calls.append((playlist_ids, privacy_status, title_prefix, title_suffix, description_template))
+        return _batch(succeeded=1, failed=1)
+
+    monkeypatch.setattr(youtube_module, "bulk_update_playlists", fake)
+
+    response = c.client.post("/youtube/api/playlists/bulk-update", json={
+        "playlist_ids": ["PL1", "PL2"], "privacy_status": "public",
+        "title_prefix": "[X] ", "title_suffix": "", "description_template": "Mô tả chung",
+    })
+
+    assert response.status_code == 200
+    assert calls == [(["PL1", "PL2"], "public", "[X] ", "", "Mô tả chung")]
+    assert response.json()["partial"] is True
+
+
+def test_playlists_bulk_update_rejects_empty_id_list(make_client):
+    c = make_client()
+    response = c.client.post("/youtube/api/playlists/bulk-update", json={"playlist_ids": []})
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Channel-videos cache: sync (network) + cached listing/status/export (local only)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_channel_videos_uses_channel_id_from_creds(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "sync_channel_videos",
+        lambda conn, channel_id: calls.append(channel_id) or {"synced": 3, "playlists_scanned": 2, "synced_at": "now"},
+    )
+
+    response = c.client.post("/youtube/api/channel/videos/sync")
+
+    assert response.status_code == 200
+    assert calls == ["UCtest"]
+    assert response.json() == {"synced": 3, "playlists_scanned": 2, "synced_at": "now"}
+
+
+def test_sync_channel_videos_service_call_runs_off_lock_on_throwaway_conn(make_client, monkeypatch):
+    c = make_client()
+    probe = _Probe(c.lock)
+    monkeypatch.setattr(
+        youtube_module, "sync_channel_videos",
+        lambda conn, channel_id: probe.record(conn) or {"synced": 0, "playlists_scanned": 0, "synced_at": "now"},
+    )
+
+    response = c.client.post("/youtube/api/channel/videos/sync")
+
+    assert response.status_code == 200
+    _assert_off_lock(probe, c.conn)
+
+
+def test_sync_channel_videos_requires_connection(make_client):
+    c = make_client(connected=False)
+    response = c.client.post("/youtube/api/channel/videos/sync")
+    assert response.status_code == 401
+
+
+def _seed_channel_video(conn, video_id, **overrides):
+    values = {
+        "title": f"Video {video_id}", "description": "", "tags": "[]", "privacy_status": "private",
+        "category_id": None, "thumbnail": None, "duration_sec": 60, "view_count": 0,
+        "published_at": "2026-01-01T00:00:00Z", "playlist_ids": "[]", "synced_at": "2026-01-01T00:00:00Z",
+    }
+    values.update(overrides)
+    conn.execute(
+        "INSERT INTO youtube_channel_videos "
+        "(video_id, title, description, tags, privacy_status, category_id, thumbnail, "
+        " duration_sec, view_count, published_at, playlist_ids, synced_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (video_id, values["title"], values["description"], values["tags"], values["privacy_status"],
+         values["category_id"], values["thumbnail"], values["duration_sec"], values["view_count"],
+         values["published_at"], values["playlist_ids"], values["synced_at"]),
+    )
+    conn.commit()
+
+
+def test_cached_channel_videos_is_local_only_and_needs_no_connection(make_client):
+    """Browsing the cache must not require YouTube creds - it never touches the network."""
+    c = make_client(connected=False)
+    _seed_channel_video(c.conn, "v1")
+
+    response = c.client.get("/youtube/api/channel/videos/cached")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["video_id"] == "v1"
+    assert body["synced_at"] == "2026-01-01T00:00:00Z"
+
+
+def test_cached_channel_videos_page_size_out_of_range_400(make_client):
+    c = make_client(connected=False)
+    response = c.client.get("/youtube/api/channel/videos/cached?page_size=999")
+    assert response.status_code == 400
+
+
+def test_channel_videos_status_reports_count_and_no_connection_needed(make_client):
+    c = make_client(connected=False)
+    _seed_channel_video(c.conn, "v1")
+    _seed_channel_video(c.conn, "v2")
+    response = c.client.get("/youtube/api/channel/videos/status")
+    assert response.status_code == 200
+    assert response.json()["count"] == 2
+
+
+def test_export_channel_videos_json_and_csv(make_client):
+    c = make_client(connected=False)
+    _seed_channel_video(c.conn, "v1", title="T1", tags='["a", "b"]', playlist_ids='["PL1"]')
+    _seed_channel_video(c.conn, "v2", title="T2")
+
+    json_resp = c.client.get("/youtube/api/channel/videos/export?format=json")
+    assert json_resp.status_code == 200
+    assert "application/json" in json_resp.headers["content-type"]
+    payload = json_resp.json()
+    assert {v["video_id"] for v in payload["videos"]} == {"v1", "v2"}
+    v1 = next(v for v in payload["videos"] if v["video_id"] == "v1")
+    assert v1["tags"] == "a, b"
+    assert v1["playlist_ids"] == "PL1"
+
+    csv_resp = c.client.get("/youtube/api/channel/videos/export?format=csv&ids=v1")
+    assert csv_resp.status_code == 200
+    assert "text/csv" in csv_resp.headers["content-type"]
+    body = csv_resp.content.decode("utf-8-sig")
+    assert "v1" in body and "v2" not in body
+
+
+def test_export_channel_videos_rejects_bad_format(make_client):
+    c = make_client(connected=False)
+    response = c.client.get("/youtube/api/channel/videos/export?format=xml")
+    assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Channel-videos bulk actions (network)
+# ---------------------------------------------------------------------------
+
+
+def test_channel_videos_bulk_update_builds_title_from_template_and_current_row(make_client, monkeypatch):
+    c = make_client()
+    _seed_channel_video(c.conn, "v1", title="Chuong 5 gioi thieu")
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "bulk_update_channel_videos",
+        lambda conn, updates: calls.append(updates) or _batch(succeeded=len(updates)),
+    )
+
+    response = c.client.post("/youtube/api/channel/videos/bulk-update", json={
+        "video_ids": ["v1"], "title_template": "Tap {episode}", "privacy_status": "public",
+    })
+
+    assert response.status_code == 200
+    assert calls == [[{"video_id": "v1", "title": "Tap 5", "privacy_status": "public"}]]
+
+
+def test_channel_videos_bulk_update_falls_back_to_video_id_when_no_episode_number(make_client, monkeypatch):
+    c = make_client()
+    _seed_channel_video(c.conn, "v1", title="No number here")
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "bulk_update_channel_videos",
+        lambda conn, updates: calls.append(updates) or _batch(succeeded=len(updates)),
+    )
+
+    c.client.post("/youtube/api/channel/videos/bulk-update", json={
+        "video_ids": ["v1"], "title_template": "Tap {episode}",
+    })
+
+    assert calls == [[{"video_id": "v1", "title": "Tap v1"}]]
+
+
+def test_channel_videos_bulk_update_service_call_runs_off_lock_on_throwaway_conn(make_client, monkeypatch):
+    c = make_client()
+    _seed_channel_video(c.conn, "v1")
+    probe = _Probe(c.lock)
+    monkeypatch.setattr(
+        youtube_module, "bulk_update_channel_videos",
+        lambda conn, updates: probe.record(conn) or _batch(succeeded=len(updates)),
+    )
+
+    response = c.client.post("/youtube/api/channel/videos/bulk-update",
+                             json={"video_ids": ["v1"], "privacy_status": "public"})
+
+    assert response.status_code == 200
+    _assert_off_lock(probe, c.conn)
+
+
+def test_channel_videos_bulk_delete_requires_ids_and_connection(make_client):
+    c = make_client()
+    response = c.client.post("/youtube/api/channel/videos/bulk-delete", json=[])
+    assert response.status_code == 400
+
+    c2 = make_client(connected=False)
+    response2 = c2.client.post("/youtube/api/channel/videos/bulk-delete", json=["v1"])
+    assert response2.status_code == 401
+
+
+def test_channel_videos_bulk_delete_marks_partial_on_failure(make_client, monkeypatch):
+    c = make_client()
+    monkeypatch.setattr(
+        youtube_module, "delete_channel_videos",
+        lambda conn, video_ids: _batch(succeeded=1, failed=1),
+    )
+
+    response = c.client.post("/youtube/api/channel/videos/bulk-delete", json=["v1", "v2"])
+
+    assert response.status_code == 200
+    assert response.json()["partial"] is True
+
+
+def test_channel_videos_bulk_add_to_playlist_calls_shared_service(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "bulk_add_to_playlist",
+        lambda conn, playlist_id, video_ids: calls.append((playlist_id, video_ids)) or _batch(succeeded=len(video_ids)),
+    )
+
+    response = c.client.post("/youtube/api/channel/videos/bulk-add-to-playlist",
+                             json={"playlist_id": "PL1", "video_ids": ["v1", "v2"]})
+
+    assert response.status_code == 200
+    assert calls == [("PL1", ["v1", "v2"])]
+
+
+def test_channel_videos_bulk_remove_from_playlist_calls_shared_service_by_video_id(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "bulk_remove_from_playlist",
+        lambda conn, playlist_id, video_ids=None, playlist_item_ids=None:
+            calls.append((playlist_id, video_ids)) or _batch(succeeded=len(video_ids)),
+    )
+
+    response = c.client.post("/youtube/api/channel/videos/bulk-remove-from-playlist",
+                             json={"playlist_id": "PL1", "video_ids": ["v1"]})
+
+    assert response.status_code == 200
+    assert calls == [("PL1", ["v1"])]

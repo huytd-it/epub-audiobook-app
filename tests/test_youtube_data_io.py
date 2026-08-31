@@ -68,6 +68,18 @@ def test_export_records_shape_and_playlist_from_snapshot(tmp_path):
     assert record["status"] == "pending"
 
 
+def test_export_records_includes_kids_and_ai_label_flags(tmp_path):
+    conn = _conn(tmp_path)
+    default_id = _seed(conn)
+    kid_friendly = youtube_module.enqueue_upload(conn, "D:/videos/b.mp4", "B", not_for_kids=False, ai_labels_enabled=True)
+
+    by_id = {r["id"]: r for r in youtube_io.export_records(conn)}
+    assert by_id[default_id]["not_for_kids"] == "true"
+    assert by_id[default_id]["ai_labels_enabled"] == "false"
+    assert by_id[kid_friendly]["not_for_kids"] == "false"
+    assert by_id[kid_friendly]["ai_labels_enabled"] == "true"
+
+
 def test_export_records_filters_by_id_and_status(tmp_path):
     conn = _conn(tmp_path)
     first = _seed(conn, title="A")
@@ -113,6 +125,36 @@ def test_parse_records_accepts_bare_list_and_rejects_junk():
         youtube_io.parse_records("a,b\n1,2\n", "csv")
 
 
+def test_csv_import_normalizes_crlf_in_multiline_description():
+    # Excel writes \r\n line endings, including inside a quoted multi-line cell (e.g.
+    # a description with a chapter list). Without normalizing, those \r\n pairs would
+    # land in the stored description verbatim and drift the text on every round-trip.
+    raw = 'id,title,description\r\n1,"T","dong 1\r\ndong 2"\r\n'.encode("utf-8-sig")
+    records = youtube_io.parse_records(raw, "csv")
+    assert records[0]["description"] == "dong 1\ndong 2"
+    assert "\r" not in records[0]["description"]
+
+
+def test_csv_import_preserves_emoji_and_vietnamese_through_a_round_trip():
+    desc = "Sách nói - Chương 1 \U0001f3a7 (\u201cĐêm khuya\u201d) #audiobook \U0001f1fb\U0001f1f3"
+    record = {"id": 1, "title": "Tập 1, có dấu phẩy", "description": desc, "tags": "a, b",
+              "privacy_status": "private", "playlist_id": "", "video_path": "d:/a.mp4",
+              "not_for_kids": "true", "ai_labels_enabled": "false", "status": "done",
+              "youtube_video_id": "x", "created_at": "2026"}
+    csv_text = youtube_io.records_to_csv([record])
+    back = youtube_io.parse_records(csv_text.encode("utf-8-sig"), "csv")
+    assert back[0]["description"] == desc
+    assert back[0]["title"] == record["title"]
+
+
+def test_csv_import_rejects_non_utf8_bytes_with_a_helpful_message():
+    # A common failure mode: Excel's "CSV (Comma delimited)" save option uses the
+    # system codepage instead of UTF-8, silently mangling emoji/Vietnamese text.
+    bad = "title\nX\xe9\n".encode("cp1252")
+    with pytest.raises(ValueError, match="UTF-8"):
+        youtube_io.parse_records(bad, "csv")
+
+
 # --------------------------------------------------------------------------- import
 
 
@@ -141,6 +183,29 @@ def test_import_updates_editable_fields_only(tmp_path):
     assert row["youtube_video_id"] is None
     snapshot = json.loads(row["metadata_snapshot"])
     assert snapshot["automation"]["youtube"]["playlist_id"] == "PLnew"
+
+
+@pytest.mark.parametrize("raw,expected", [("false", 0), ("0", 0), ("no", 0), ("true", 1), ("1", 1), ("yes", 1)])
+def test_import_accepts_various_boolean_spellings_for_not_for_kids(tmp_path, raw, expected):
+    conn = _conn(tmp_path)
+    # newly enqueued rows default to not_for_kids=1 (true), so flip it first to make
+    # every spelling in the matrix a real, observable change.
+    upload_id = youtube_module.enqueue_upload(conn, "D:/videos/a.mp4", "Title", not_for_kids=False)
+
+    summary = youtube_io.apply_import(conn, [{"id": upload_id, "not_for_kids": raw}])
+
+    assert summary["counts"][("updated" if expected == 1 else "unchanged")] == 1
+    row = conn.execute("SELECT not_for_kids FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+    assert row["not_for_kids"] == expected
+
+
+def test_import_rejects_invalid_boolean_value(tmp_path):
+    conn = _conn(tmp_path)
+    upload_id = _seed(conn)
+
+    summary = youtube_io.apply_import(conn, [{"id": upload_id, "ai_labels_enabled": "maybe"}])
+
+    assert summary["counts"]["error"] == 1
 
 
 def test_import_reports_unchanged_rows_and_omitted_columns(tmp_path):
@@ -228,6 +293,29 @@ def test_upsert_creates_rows_without_id(tmp_path):
     assert summary["counts"]["error"] == 1
     assert created[0]["tags"] == ["a", "b"]
     assert conn.execute("SELECT COUNT(*) c FROM youtube_uploads").fetchone()["c"] == 1
+
+
+def test_upsert_new_row_defaults_kids_and_ai_flags(tmp_path):
+    conn = _conn(tmp_path)
+
+    def create(c, payload):
+        return youtube_module.enqueue_upload(
+            c, video_path=payload["video_path"], title=payload["title"],
+            description=payload["description"], tags=payload["tags"],
+            privacy_status=payload["privacy_status"], playlist_id=payload["playlist_id"],
+            not_for_kids=payload["not_for_kids"], ai_labels_enabled=payload["ai_labels_enabled"],
+        )
+
+    summary = youtube_io.apply_import(conn, [
+        {"id": "", "title": "Mới", "video_path": "D:/videos/new.mp4"},
+        {"id": "", "title": "Dành cho trẻ em", "video_path": "D:/videos/kid.mp4", "not_for_kids": "false"},
+    ], mode="upsert", create=create)
+
+    assert summary["counts"]["created"] == 2
+    rows = {r["title"]: r for r in conn.execute("SELECT title, not_for_kids, ai_labels_enabled FROM youtube_uploads").fetchall()}
+    assert rows["Mới"]["not_for_kids"] == 1
+    assert rows["Mới"]["ai_labels_enabled"] == 0
+    assert rows["Dành cho trẻ em"]["not_for_kids"] == 0
 
 
 def test_update_mode_refuses_to_create(tmp_path):

@@ -83,10 +83,13 @@ def db_conn(tmp_path):
 
 
 class FakeYouTubeService:
+    last_insert_body = None
+
     def videos(self):
         return self
 
     def insert(self, *args, **kwargs):
+        FakeYouTubeService.last_insert_body = kwargs.get("body")
         return self
 
     def next_chunk(self):
@@ -110,6 +113,20 @@ def test_pending_upload_updates_same_row(db_conn, tmp_path):
     assert len(rows) == 1
     assert rows[0]["id"] == upload_id
     assert rows[0]["youtube_video_id"] == result["youtube_video_id"]
+
+
+def test_selfDeclaredMadeForKids_follows_not_for_kids_column(db_conn, tmp_path):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"video")
+    default_id = youtube.enqueue_upload(db_conn, str(video), "Title")
+    youtube.process_upload(db_conn, default_id)
+    assert FakeYouTubeService.last_insert_body["status"]["selfDeclaredMadeForKids"] is False
+
+    for_kids_video = tmp_path / "k.mp4"
+    for_kids_video.write_bytes(b"video")
+    for_kids_id = youtube.enqueue_upload(db_conn, str(for_kids_video), "Title", not_for_kids=False)
+    youtube.process_upload(db_conn, for_kids_id)
+    assert FakeYouTubeService.last_insert_body["status"]["selfDeclaredMadeForKids"] is True
 
 
 def test_second_worker_does_not_start_a_duplicate_transfer(db_conn, tmp_path, monkeypatch):

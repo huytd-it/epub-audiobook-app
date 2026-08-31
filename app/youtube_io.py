@@ -27,13 +27,19 @@ EXPORT_COLUMNS = [
     "privacy_status",
     "playlist_id",
     "video_path",
+    "not_for_kids",
+    "ai_labels_enabled",
     "status",
     "youtube_video_id",
     "created_at",
 ]
 
 #: Fields an import may write back. Everything else in the sheet is read-only.
-EDITABLE_FIELDS = ("title", "description", "tags", "privacy_status", "playlist_id", "video_path")
+EDITABLE_FIELDS = ("title", "description", "tags", "privacy_status", "playlist_id", "video_path",
+                   "not_for_kids", "ai_labels_enabled")
+
+#: Sheet fields that hold a true/false flag rather than free text.
+BOOLEAN_FIELDS = ("not_for_kids", "ai_labels_enabled")
 
 PRIVACY_VALUES = ("private", "unlisted", "public")
 
@@ -98,6 +104,8 @@ def row_to_record(row) -> dict:
         # Prefer the queued intent; the column is only filled in after publishing.
         "playlist_id": _snapshot_playlist_id(data.get("metadata_snapshot")) or (data.get("playlist_id") or ""),
         "video_path": data.get("video_path") or "",
+        "not_for_kids": "true" if data.get("not_for_kids", 1) else "false",
+        "ai_labels_enabled": "true" if data.get("ai_labels_enabled", 0) else "false",
         "status": data.get("status") or "",
         "youtube_video_id": data.get("youtube_video_id") or "",
         "created_at": data.get("created_at") or "",
@@ -153,8 +161,24 @@ def parse_records(raw: bytes | str, fmt: str) -> list[dict]:
     """Read an edited sheet back. Accepts the exported wrapper or a bare list."""
     if fmt not in ("json", "csv"):
         raise ValueError("format must be 'json' or 'csv'")
-    text = raw.decode("utf-8-sig") if isinstance(raw, bytes) else raw
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                "File không phải UTF-8 (thường do Excel lưu bằng 'CSV (Comma delimited)' thay vì "
+                "'CSV UTF-8 (Comma delimited)', làm hỏng emoji/tiếng Việt trong mô tả). "
+                f"Hãy lưu lại đúng định dạng CSV UTF-8, hoặc dùng JSON. Chi tiết: {exc}"
+            ) from exc
+    else:
+        text = raw
     if fmt == "csv":
+        # Excel writes \r\n line endings, including inside quoted multi-line cells
+        # (e.g. a description with a chapter list). csv.DictReader on a plain string
+        # buffer does not do Python's universal-newline translation, so those \r\n
+        # pairs would otherwise land in the stored description verbatim and drift the
+        # text every time it round-trips through a spreadsheet. Normalize once here.
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         rows = list(csv.DictReader(io.StringIO(text)))
         if rows and not any(key in (rows[0] or {}) for key in EXPORT_COLUMNS):
             raise ValueError("CSV thieu dong tieu de (header) hop le")
@@ -177,6 +201,26 @@ def _clean(value) -> str:
     return "" if value is None else str(value).strip()
 
 
+_TRUE_TEXT = ("true", "1", "yes")
+_FALSE_TEXT = ("false", "0", "no")
+
+
+def _parse_bool(value, default: bool) -> bool:
+    """Parse a sheet boolean cell. Blank (missing or "") falls back to `default` -
+    the row's normal default when creating, or explicit "false" (see
+    `_normalize_bool_text`, called with default=False) when editing an existing row."""
+    text = _clean(value).lower()
+    if text in _TRUE_TEXT:
+        return True
+    if text in _FALSE_TEXT:
+        return False
+    return default
+
+
+def _normalize_bool_text(value) -> str:
+    return "true" if _parse_bool(value, default=False) else "false"
+
+
 def _validate(field: str, value: str) -> str:
     """Return an error message for a rejected value, or '' when it is fine."""
     if field == "title":
@@ -192,6 +236,8 @@ def _validate(field: str, value: str) -> str:
         return f"Danh sách tags vượt quá {MAX_TAGS_CHARS} ký tự"
     if field == "video_path" and not value:
         return "Đường dẫn video không được để trống"
+    if field in BOOLEAN_FIELDS and value != "" and value.lower() not in (*_TRUE_TEXT, *_FALSE_TEXT):
+        return f"{field} phải là true/false (hoặc 1/0)"
     return ""
 
 
@@ -209,6 +255,8 @@ def _changes(record: dict, current: dict) -> tuple[dict, list[str]]:
         if error:
             errors.append(error)
             continue
+        if field in BOOLEAN_FIELDS:
+            value = _normalize_bool_text(value)
         if value != _clean(current.get(field)):
             changes[field] = value
     return changes, errors
@@ -221,6 +269,9 @@ def _apply_changes(conn: sqlite3.Connection, upload_id: int, changes: dict) -> N
         if field == "tags":
             assignments.append("tags=?")
             params.append(json.dumps(split_tags(value)))
+        elif field in BOOLEAN_FIELDS:
+            assignments.append(f"{field}=?")
+            params.append(1 if value == "true" else 0)
         elif field == "playlist_id":
             # The worker reads its playlist target out of metadata_snapshot (see
             # youtube.postprocess_upload); the playlist_id column is a result field.
@@ -332,7 +383,7 @@ def _import_new(conn: sqlite3.Connection, index: int, record: dict, *, mode: str
     title = _clean(record.get("title"))
     video_path = _clean(record.get("video_path"))
     errors = [e for e in (_validate("title", title), _validate("video_path", video_path)) if e]
-    for field in ("description", "privacy_status", "tags"):
+    for field in ("description", "privacy_status", "tags", *BOOLEAN_FIELDS):
         if field in record and _clean(record[field]):
             error = _validate(field, _clean(record[field]))
             if error:
@@ -347,6 +398,8 @@ def _import_new(conn: sqlite3.Connection, index: int, record: dict, *, mode: str
         "tags": split_tags(record.get("tags")),
         "privacy_status": _clean(record.get("privacy_status")) or "private",
         "playlist_id": _clean(record.get("playlist_id")),
+        "not_for_kids": _parse_bool(record.get("not_for_kids"), default=True),
+        "ai_labels_enabled": _parse_bool(record.get("ai_labels_enabled"), default=False),
     }
     if dry_run or create is None:
         return _result(index, None, "created", changes=payload)

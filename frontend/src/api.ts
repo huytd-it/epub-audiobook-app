@@ -108,10 +108,29 @@ export type YouTubeUploadItem = {
   tags: string[];
   privacy_status: string;
   playlist_id?: string;
+  not_for_kids: boolean;
+  ai_labels_enabled: boolean;
   status: string;
   youtube_video_id?: string;
   error_message?: string;
   created_at: string;
+};
+
+/** Query params accepted by GET /youtube/uploads; all optional, "" = no filter. */
+export type YouTubeUploadFilters = {
+  search?: string;
+  status?: string;
+  privacy_status?: string;
+  /** "yes" | "no" | "" */
+  has_playlist?: string;
+  /** "1" | "0" | "" */
+  not_for_kids?: string;
+  /** "1" | "0" | "" */
+  ai_labels_enabled?: string;
+  date_from?: string;
+  date_to?: string;
+  sort?: string;
+  order?: "asc" | "desc";
 };
 
 /** One row of the editable upload sheet from GET /youtube/uploads/export. */
@@ -160,6 +179,7 @@ export type PlaylistItemDetail = {
   playlist_id: string;
   video_id: string;
   title: string;
+  description: string;
   thumbnail: string;
   position: number;
   published_at: string;
@@ -170,6 +190,56 @@ export type ChannelVideo = {
   title: string;
   thumbnail: string;
   published_at: string;
+};
+
+/** One row of the local channel-videos cache (GET /youtube/api/channel/videos/cached). */
+export type CachedChannelVideo = {
+  video_id: string;
+  title: string;
+  description: string;
+  tags: string[];
+  privacy_status: string;
+  category_id?: string | null;
+  thumbnail?: string | null;
+  duration_sec?: number | null;
+  view_count?: number | null;
+  published_at?: string | null;
+  /** Every playlist id this video currently belongs to. */
+  playlist_ids: string[];
+  synced_at: string;
+};
+
+export type CachedChannelVideosResponse = {
+  items: CachedChannelVideo[];
+  total: number;
+  page: number;
+  page_size: number;
+  synced_at: string | null;
+};
+
+export type ChannelVideosSyncStatus = { count: number; synced_at: string | null };
+
+/** Filters accepted by GET /youtube/api/channel/videos/cached; "" = no filter. */
+export type ChannelVideoFilters = {
+  search?: string;
+  privacy_status?: string;
+  /** "yes" | "no" | "" */
+  has_playlist?: string;
+  playlist_id?: string;
+  date_from?: string;
+  date_to?: string;
+  sort?: "title" | "published_at" | "view_count" | "duration_sec";
+  order?: "asc" | "desc";
+};
+
+/** requested/succeeded/skipped/failed batch result shared by every bulk playlist/video route. */
+export type BatchResult = {
+  requested: number;
+  succeeded: number;
+  skipped: number;
+  failed: number;
+  items: Array<{ key: string; status: "succeeded" | "skipped" | "failed"; message: string }>;
+  partial?: boolean;
 };
 
 export type DriveTarget = {
