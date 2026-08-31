@@ -55,7 +55,7 @@ def test_write_patch_files_exports_chunk_metadata_at_chapter_boundaries(conn, tm
 
     metadata = manifest["chunk_metadata"]
     assert all(
-        list(item.keys()) == ["chapter_index", "is_chapter_start", "text"]
+        list(item.keys()) == ["chapter_index", "is_chapter_start", "chapter_title", "text"]
         for item in metadata
     )
     assert "chunks" not in manifest
@@ -63,11 +63,14 @@ def test_write_patch_files_exports_chunk_metadata_at_chapter_boundaries(conn, tm
     assert manifest["chapter_titles"] == {"0": "One", "1": "Two"}
     assert [item["chapter_index"] for item in metadata] == [0, 0, 0, 1, 1]
     assert [item["is_chapter_start"] for item in metadata] == [True, False, False, True, False]
+    # Chunk mở đầu mỗi chương phải đọc tiêu đề chương trước phần thân — thân chương
+    # trong EPUB không chứa sẵn tiêu đề, nên nếu không ghép ở đây thì manifest (và
+    # audio dựng từ nó) mất hẳn tên chương.
     assert [item["text"] for item in metadata] == [
-        "Alpha one.",
+        "One. Alpha one.",
         "Alpha two.",
         "Alpha three.",
-        "Beta one.",
+        "Two. Beta one.",
         "Beta two.",
     ]
     assert all("Never export" not in item["text"] for item in metadata)
@@ -106,7 +109,7 @@ def test_write_patch_files_writes_the_manifest_and_nothing_else(conn, tmp_path):
 
     for entry, item in zip(metadata, plan):
         assert set(entry) == {
-            "chapter_index", "is_chapter_start", "text",
+            "chapter_index", "is_chapter_start", "chapter_title", "text",
         }
         assert entry["text"] == item["text"]
         assert entry["text"].strip()

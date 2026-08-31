@@ -137,6 +137,7 @@ def _write_patch_files(
             {
                 "chapter_index": item["chapter_index"],
                 "is_chapter_start": item["is_chapter_start"],
+                "chapter_title": item["chapter_title"],
                 "text": item["text"],
             }
         )

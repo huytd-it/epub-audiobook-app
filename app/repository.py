@@ -1174,16 +1174,52 @@ def has_speakable_text(text: str) -> bool:
     return re.search(r"[^\W_]", text, re.UNICODE) is not None
 
 
+def _chapter_tts_heading(chapter: Chapter) -> str:
+    """The heading line that opens a chapter when it is read aloud.
+
+    Canonicalised to ``Chương N: Tên`` whenever the title carries both, so
+    normalize_chapter_titles can speak the number and add the breathing pause;
+    any other shape is spoken as written.
+    """
+    raw = (chapter.title or "").strip()
+    number, name = split_chapter_title(raw)
+    if number is not None and name:
+        return canonical_chapter_title(number, name)
+    if raw:
+        return raw
+    chapter_no = getattr(chapter, "chapter_no", None)
+    return f"Chương {chapter_no}" if chapter_no is not None else ""
+
+
 def prepare_chapter_tts_text(
     chapter: Chapter, opts: NormalizationOptions, rules: list[TextReplaceRule]
 ) -> str:
-    """Build one chapter's speakable body; its TOC title is not narrated twice."""
-    text = chapter.text
-    title = chapter.title.strip()
-    if title and text.startswith(title):
-        text = text[len(title):].lstrip()
-    text = normalize_chapter_titles(text)
-    return apply_replace_rules(normalize_text(text, opts), rules)
+    """Build one chapter's speakable text: its title, then its body, exactly once.
+
+    The EPUB parser splits chapters *at* the heading, so ``chapter.text`` normally
+    starts straight at the prose and the title would never be narrated — it was also
+    missing from the first ``is_chapter_start`` chunk of the export manifest and from
+    the normalization preview. Prepending it here, at the one choke point every text
+    path goes through (worker, chunk plan, export, preview), fixes all of them at
+    once. A body that already repeats the heading has that copy dropped first.
+
+    Heading and body are normalized separately and only joined when the body still
+    has something to say: a chapter emptied by replace rules stays empty instead of
+    turning into a stray title read out on its own.
+    """
+    text = chapter.text or ""
+    raw_title = (chapter.title or "").strip()
+    if raw_title and text.lstrip().startswith(raw_title):
+        text = text.lstrip()[len(raw_title):].lstrip()
+
+    body = apply_replace_rules(normalize_text(normalize_chapter_titles(text), opts), rules)
+    heading = _chapter_tts_heading(chapter)
+    if not heading or not has_speakable_text(body):
+        return body
+    spoken = apply_replace_rules(normalize_text(normalize_chapter_titles(heading), opts), rules)
+    if not has_speakable_text(spoken):
+        return body
+    return f"{spoken.rstrip()}\n\n{body.lstrip()}"
 
 
 def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:

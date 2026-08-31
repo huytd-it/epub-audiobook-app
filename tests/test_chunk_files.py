@@ -376,7 +376,12 @@ def test_worker_synthesizes_each_chapter_separately(tmp_audio_dir, seeded_conn, 
     monkeypatch.setattr(worker_mod.settings, "tts_write_chunk_files", write_chunk_files)
     worker = _make_worker(seeded_conn, fake_engine, tmp_audio_dir, monkeypatch)
     worker._synthesize(Patch(**dict(seeded_conn.execute("SELECT * FROM patch WHERE id = 1").fetchone())))
-    assert fake_engine.chunk_texts == ["Hello world. This is a test sentence. Another sentence here.", "Second chapter."]
+    # Mỗi chương mở đầu bằng chính tiêu đề của nó: EPUB tách heading khỏi thân
+    # chương, nên tiêu đề chỉ được đọc nếu prepare_chapter_tts_text ghép vào.
+    assert fake_engine.chunk_texts == [
+        "Ch0. Hello world. This is a test sentence. Another sentence here.",
+        "Ch1. Second chapter.",
+    ]
 
 
 @pytest.mark.parametrize("write_chunk_files", [True, False])

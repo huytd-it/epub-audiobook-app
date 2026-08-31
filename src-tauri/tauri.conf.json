@@ -1,35 +1,33 @@
 {
-    "$schema":  "https://schema.tauri.app/config/2",
-    "productName":  "Xuong Sach Noi",
-    "version":  "1.0.0",
-    "identifier":  "vn.xuongsachnoi.studio",
-    "build":  {
-                  "beforeDevCommand":  "npm run dev",
-                  "beforeBuildCommand":  "npm run build",
-                  "devUrl":  "http://localhost:5173",
-                  "frontendDist":  "../app/spa_dist"
-              },
-    "app":  {
-                "windows":  [
-                                {
-                                    "title":  "XÆ°á»Ÿng SÃ¡ch NÃ³i",
-                                    "url":  "/",
-                                    "width":  1440,
-                                    "height":  920,
-                                    "minWidth":  980,
-                                    "minHeight":  680,
-                                    "resizable":  true
-                                }
-                            ],
-                "security":  {
-                                 "csp":  null
-                             }
-            },
-    "bundle":  {
-                   "active":  true,
-                   "icon":  [
-                                "icons/icon.ico"
-                            ],
-                   "targets":  "all"
-               }
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Xuong Sach Noi",
+  "version": "1.0.0",
+  "identifier": "vn.xuongsachnoi.studio",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../app/spa_dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Xuong Sach Noi",
+        "url": "/",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 980,
+        "minHeight": 680,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.ico"],
+    "targets": "all"
+  }
 }
