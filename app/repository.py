@@ -772,9 +772,9 @@ def delete_book(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
         )
 
     for row in conn.execute(
-        "SELECT id FROM patch WHERE book_id = ?", (book_id,)
+        "SELECT id, patch_index FROM patch WHERE book_id = ?", (book_id,)
     ).fetchall():
-        _delete_chunk_dir(book_id, row["id"])
+        _delete_chunk_dir(book_id, row["patch_index"], row["id"])
 
     book = get_book(conn, book_id)
     if book is None:
@@ -2052,7 +2052,7 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
     video_rows = conn.execute(
         "SELECT output_path FROM book_job WHERE output_path IS NOT NULL"
     ).fetchall()
-    chunk_rows = conn.execute("SELECT book_id, id FROM patch").fetchall()
+    chunk_rows = conn.execute("SELECT book_id, id, patch_index FROM patch").fetchall()
     paths_to_delete = [r["output_path"] for r in video_rows]
     patch_audio_paths = [r["audio_path"] for r in audio_rows]
 
@@ -2087,7 +2087,7 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
             pass
 
     for row in chunk_rows:
-        _delete_chunk_dir(row["book_id"], row["id"])
+        _delete_chunk_dir(row["book_id"], row["patch_index"], row["id"])
 
     return {
         "patches_reset": cur_p.rowcount,
