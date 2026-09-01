@@ -158,16 +158,16 @@ def test_reconcile_skips_waiting_timeline_and_enqueues_ready_patch(tmp_path, mon
 
     stats = reconcile_patch_automation(conn, book_id=book_id)
     assert stats["checked"] == 2
-    assert stats["enqueued_render"] == 1
+    assert stats["enqueued_render"] == 2
     assert stats["enqueued_upload"] == 0
-    assert stats["skipped"] == 1
-    jobs = conn.execute("SELECT patch_id FROM job WHERE job_type='patch_video'").fetchall()
-    assert [row["patch_id"] for row in jobs] == [1]
+    assert stats["skipped"] == 0
+    jobs = conn.execute("SELECT patch_id FROM job WHERE job_type='patch_video' ORDER BY patch_id").fetchall()
+    assert [row["patch_id"] for row in jobs] == [1, 2]
 
     (audio_dir / "b.timeline.json").write_text(json.dumps(_timeline()), encoding="utf-8")
     conn.commit()
     stats = reconcile_patch_automation(conn, book_id=book_id)
-    assert stats["enqueued_render"] == 1
+    assert stats["enqueued_render"] == 0
     jobs = conn.execute("SELECT patch_id FROM job WHERE job_type='patch_video' ORDER BY id").fetchall()
     assert [row["patch_id"] for row in jobs] == [1, 2]
 
@@ -305,3 +305,35 @@ def test_reconcile_respects_request_policy_override(tmp_path, monkeypatch):
                                        request_policy={"auto_create_video": True})
     assert stats["enqueued_render"] == 1
     assert conn.execute("SELECT COUNT(*) FROM job").fetchone()[0] == 1
+
+
+def test_preflight_allows_empty_chapters_sidecar(tmp_path, monkeypatch):
+    """Patch 7420 regression: sidecar có chapters=[] (clean_text) vẫn phải qua preflight
+    với state 'ready' — timeline chỉ là tuỳ chọn cho chapter markers."""
+    from app.patch_publishing import evaluate_patch_preflight
+
+    conn = db.connect(str(tmp_path / "d.db"))
+    db.init_schema(conn)
+    monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    book_id = conn.execute(
+        "INSERT INTO book (title, original_filename, epub_path, patch_size, status, created_at, updated_at) "
+        "VALUES ('B', 'b.epub', 'b.epub', 1, 'ready', ?, ?)", (NOW, NOW),
+    ).lastrowid
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(_wav_bytes())
+    # Sidecar khớp audio hoàn hảo nhưng chapters rỗng — validate_timeline sẽ trả None
+    empty_timeline = {"version": 1, "sample_rate": RATE, "total_frames": FRAMES, "chapters": []}
+    Path(str(audio).replace(".wav", ".timeline.json")).write_text(json.dumps(empty_timeline), encoding="utf-8")
+    conn.execute(
+        "INSERT INTO patch (id, book_id, patch_index, chapter_start, chapter_end, status, audio_path, created_at, updated_at) "
+        "VALUES (1, ?, 0, 0, 0, 'done', ?, ?, ?)", (book_id, str(audio), NOW, NOW),
+    )
+    save_book_youtube_config(conn, book_id, {
+        "auto_upload": True, "playlist": {"mode": "existing", "playlist_id": "PL1"},
+    })
+    conn.commit()
+    monkeypatch.setattr("app.patch_publishing.youtube.is_configured", lambda: True)
+    monkeypatch.setattr("app.patch_publishing.youtube.get_creds_from_db", lambda conn: {"id": 1})
+
+    result = evaluate_patch_preflight(conn, 1)
+    assert result["state"] == "ready", result

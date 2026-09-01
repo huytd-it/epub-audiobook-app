@@ -26,6 +26,8 @@ from app.production_defaults import (get_effective_branding_config,
 
 STAGES = ("thumbnail", "video", "upload", "thumbnail_setting", "playlist", "published")
 
+logger = logging.getLogger(__name__)
+
 # Tổng số lần render/rerender một patch video trước khi pipeline bị khoá chạy tiếp.
 MAX_PATCH_RENDER_ATTEMPTS = 3
 # phiên bản cấu trúc snapshot cấp vào job patch_video lúc enqueue.
@@ -160,11 +162,7 @@ def evaluate_patch_preflight(conn: sqlite3.Connection, patch_id: int, *,
                     "error": "Playlist chưa được chọn", "policy": policy}
         timeline = _timeline_status(patch)
         if timeline != "valid":
-            return {"state": "waiting_timeline",
-                    "code": "timeline_invalid" if timeline == "invalid" else "timeline_missing",
-                    "error": ("Timeline không hợp lệ" if timeline == "invalid"
-                              else "Chưa có timeline để publish phần chương"),
-                    "policy": policy}
+            logger.info("patch %s publish không kèm chapter markers (timeline=%s)", patch_id, timeline)
         resolved["youtube_config"] = youtube_config
         resolved["privacy_status"] = youtube_config["privacy_status"]
     return {"state": "ready", "code": None, "error": None, **resolved}
