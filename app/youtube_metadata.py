@@ -68,11 +68,25 @@ DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_T
 
 def load_timeline(audio_path) -> dict | None:
     """Load a version-1 timeline whose exact frame metadata matches its WAV."""
+    # audio_path có thể là đường dẫn cũ tương đối/cũ tuyệt đối — thử resolver nếu đọc trực tiếp thất bại
     try:
         info = sf.info(str(audio_path))
         timeline = json.loads(Path(audio_path).with_suffix(".timeline.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, sf.SoundFileError):
-        return None
+        # Thử resolve qua patch (nếu caller đã truyền qua patch): fallback đọc file thật
+        # Không có patch ở đây nên chỉ thử kiểm tra candidate path tương đối -> tuyệt đối
+        try:
+            from app.config import settings as _settings
+
+            raw = str(audio_path or "")
+            if raw and not Path(raw).is_absolute():
+                alt = Path(_settings.data_root).parent / raw
+                info = sf.info(str(alt))
+                timeline = json.loads(Path(str(alt)).with_suffix(".timeline.json").read_text(encoding="utf-8"))
+            else:
+                return None
+        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, sf.SoundFileError):
+            return None
     return validate_timeline(timeline, info.samplerate, info.frames)
 
 
@@ -145,7 +159,17 @@ def resolve_patch_chapter_range(patch) -> tuple[int, int, str]:
     remain the last resort for books whose headings carry no numbers.
     """
     name = strip_chapter_heading(getattr(patch, "name", "") or "")
-    audio_path = getattr(patch, "audio_path", None)
+    raw_audio = getattr(patch, "audio_path", None)
+    audio_path = None
+    if raw_audio:
+        # Ưu tiên resolver nếu có file thật ở layout mới/cũ
+        try:
+            from app.repository import resolve_patch_audio as _resolve
+
+            resolved = _resolve(patch)
+            audio_path = str(resolved) if resolved is not None else raw_audio
+        except Exception:
+            audio_path = raw_audio
     timeline = load_timeline(audio_path) if audio_path else None
     if timeline:
         numbers = [n for n in (detect_chapter_number(ch["title"]) for ch in timeline["chapters"]) if n is not None]

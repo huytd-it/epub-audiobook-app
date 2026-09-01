@@ -1115,7 +1115,7 @@ def rebuild_patches(
         # Backup everything in audio/ before wiping the book.
         backup_all_book_audio(book_id)
         # Wipe audio directory completely.
-        audio_dir = Path("data") / "books" / str(book_id) / "audio"
+        audio_dir = Path(settings.data_root) / "books" / str(book_id) / "audio"
         if audio_dir.exists():
             for f in audio_dir.glob("*"):
                 f.unlink(missing_ok=True)
@@ -2562,3 +2562,16 @@ def build_youtube_description(
     tags = list(words | defaults)
 
     return {"description": desc, "tags": tags}
+
+
+def resolve_patch_audio(patch) -> Path | None:
+    """Đường dẫn audio thật sự tồn tại, hoặc None. CHỈ dùng cho đọc."""
+    raw = patch.audio_path
+    if not raw:
+        return None
+    candidates = [Path(raw)]
+    if not Path(raw).is_absolute():
+        candidates.append(Path(settings.data_root).parent / raw)
+    candidates.append(get_patch_audio_path(patch.book_id, patch.patch_index))
+    candidates.append(Path(settings.data_root) / "books" / str(patch.book_id) / "patches" / f"{patch.id}.wav")
+    return next((c for c in candidates if c.is_file()), None)

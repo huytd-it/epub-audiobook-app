@@ -306,8 +306,11 @@ def handle(ctx) -> dict:
     pipeline = ctx.conn.execute("SELECT * FROM patch_pipeline WHERE patch_id=?", (patch_id,)).fetchone()
     if book is None:
         raise JobFatalError("source_unavailable: book missing")
-    if not patch.audio_path or not Path(patch.audio_path).is_file():
+    # Chỉ-đọc: dùng resolver để tìm file thật (tương thích cả layout cũ/mới)
+    _resolved = repository.resolve_patch_audio(patch)
+    if _resolved is None:
         raise JobFatalError(f"source_unavailable: audio missing: {patch.audio_path}")
+    _resolved_audio = str(_resolved)
     recovery_upload_id = ctx.job.payload.get("recovery_upload_id")
     recovery_pipeline = (dict(pipeline) if pipeline else None) if recovery_upload_id is not None else None
     ctx.progress(0, 6, phase="preparing")
@@ -368,14 +371,14 @@ def handle(ctx) -> dict:
                     raise JobFatalError(f"source_unavailable: {key} missing: {value}")
             ctx.progress(1, 6, phase="overlay")
             ctx.progress(2, 6, phase="encoding")
-            expected = _expected_video(patch.audio_path, render_config or {})
+            expected = _expected_video(_resolved_audio, render_config or {})
             validator = partial(validate_video, expected=expected)
             with ctx.keep_alive():
                 try:
                     result = publish_validated_video(
                         output,
                         lambda temp: video_gen.generate_standalone_video(
-                            patch.audio_path, image, temp, **render_config),
+                            _resolved_audio, image, temp, **render_config),
                         validator=validator,
                     )
                 except VideoValidationError as exc:
@@ -426,10 +429,13 @@ def handle(ctx) -> dict:
                     branding_overlay_path = str(_bo_dir / f"branding_{patch.id}.png")
                     overlay_img.save(branding_overlay_path, "PNG")
 
+            # Legacy path không có snapshot: dùng audio đã resolve (chỉ-đọc)
+            _audio = _resolved_audio
+
             def render_main(target: str) -> None:
                 if sequence:
                     video_gen.generate_background_sequence(
-                        backgrounds, patch.audio_path, target,
+                        backgrounds, _audio, target,
                         image_duration=float(config.get("image_duration_seconds", 15)),
                         mode=config.get("background_mode", "sequential"), seed=f"{book.id}-{patch.id}",
                         start_index=patch.patch_index, music_path=music_path,
@@ -443,7 +449,7 @@ def handle(ctx) -> dict:
                     )
                 else:
                     video_gen.generate_segment(
-                        image, patch.audio_path, target, image_type=image_type,
+                        image, _audio, target, image_type=image_type,
                         use_nvenc=settings.use_nvenc, music_path=music_path,
                         music_volume=book.music_volume, music_gaps=config, **common,
                         waveform_config=config,
@@ -468,10 +474,10 @@ def handle(ctx) -> dict:
                         segments.append(outro_video)
                     video_gen.concat_segments(segments, target)
 
-            ctx.log(f"render patch {patch_id}: audio={patch.audio_path} background={raw_bg}")
+            ctx.log(f"render patch {patch_id}: audio={_audio} background={raw_bg}")
             ctx.progress(2, 6, phase="encoding")
             render_config = {**common, "intro_audio": intro, "outro_audio": outro}
-            expected = _expected_video(patch.audio_path, render_config)
+            expected = _expected_video(_audio, render_config)
             validator = partial(validate_video, expected=expected)
             with ctx.keep_alive():
                 try:

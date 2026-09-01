@@ -91,7 +91,11 @@ def resolve_automation_policy(book, *, request_policy: dict | None = None) -> di
 
 def _timeline_status(patch) -> str:
     """Kiểm tra sidecar timeline của audio: 'missing' | 'valid' | 'invalid'."""
-    audio = Path(patch.audio_path or "")
+    from app.repository import resolve_patch_audio
+
+    audio = resolve_patch_audio(patch)
+    if audio is None:
+        return "missing"
     sidecar = audio.with_suffix(".timeline.json")
     if not sidecar.is_file():
         return "missing"
@@ -542,11 +546,16 @@ def run_patch_publish_stage(conn: sqlite3.Connection, patch_id: int) -> dict:
         if row["video_status"] != "done":
             current_stage = "video"
             patch = get_patch(conn, patch_id); book = get_book(conn, patch.book_id)
-            output = row["video_path"] or str(Path(patch.audio_path or "").with_suffix(".mp4"))
+            # Chỉ-đọc: dùng resolver để tìm file thật (tương thích layout cũ/mới)
+            from app.repository import resolve_patch_audio as _resolve_audio
+
+            _real_audio = _resolve_audio(patch)
+            _audio_for_segment = str(_real_audio) if _real_audio is not None else patch.audio_path
+            output = row["video_path"] or str(Path(_audio_for_segment or "").with_suffix(".mp4"))
             publish_validated_video(
                 output,
                 lambda temp: video_gen.generate_segment(
-                    row["thumbnail_path"], patch.audio_path, temp,
+                    row["thumbnail_path"], _audio_for_segment, temp,
                     resolution=tuple(map(int, book.video_resolution.split("x"))),
                     fps=book.video_fps or 30,
                 ),
