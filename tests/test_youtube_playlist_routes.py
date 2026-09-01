@@ -412,7 +412,7 @@ def test_copy_maps_item_ids_to_video_ids(make_client, monkeypatch):
     )
     monkeypatch.setattr(
         youtube_module, "copy_playlist_items",
-        lambda conn, src, dst, vids=None, skip_duplicates=True: (
+        lambda conn, src, dst, vids=None, skip_duplicates=True, **kw: (
             copy_calls.append((src, dst, vids)) or _batch(succeeded=1)
         ),
     )
@@ -437,7 +437,7 @@ def test_copy_all_skips_mapping_when_no_item_ids(make_client, monkeypatch):
     )
     monkeypatch.setattr(
         youtube_module, "copy_playlist_items",
-        lambda conn, src, dst, vids=None, skip_duplicates=True: (
+        lambda conn, src, dst, vids=None, skip_duplicates=True, **kw: (
             copy_calls.append((src, dst, vids)) or _batch(succeeded=2)
         ),
     )
@@ -475,7 +475,7 @@ def test_move_maps_item_ids_to_video_ids(make_client, monkeypatch):
     monkeypatch.setattr(youtube_module, "get_all_playlist_items", lambda conn, pid: _source_items())
     monkeypatch.setattr(
         youtube_module, "move_playlist_items",
-        lambda conn, src, dst, vids=None, skip_duplicates=True: (
+        lambda conn, src, dst, vids=None, skip_duplicates=True, **kw: (
             move_calls.append((src, dst, vids)) or _batch(succeeded=1)
         ),
     )
@@ -498,7 +498,7 @@ def test_reorder_sorts_positions_and_computes_page_index(make_client, monkeypatc
     )
     monkeypatch.setattr(
         youtube_module, "reorder_playlist_page",
-        lambda conn, pid, page_index, order, page_size=50: (
+        lambda conn, pid, page_index, order, page_size=50, **kw: (
             calls.append((pid, page_index, order, page_size)) or _batch(succeeded=2)
         ),
     )
@@ -764,7 +764,7 @@ def test_copy_move_service_calls_run_off_lock_on_throwaway_conn(make_client, mon
     service = "copy_playlist_items" if route == "copy" else "move_playlist_items"
     monkeypatch.setattr(
         youtube_module, service,
-        lambda conn, src, dst, vids=None, skip_duplicates=True: probe.record(conn) or _batch(succeeded=1),
+        lambda conn, src, dst, vids=None, skip_duplicates=True, **kw: probe.record(conn) or _batch(succeeded=1),
     )
 
     response = c.client.post(
@@ -786,7 +786,7 @@ def test_reorder_service_calls_run_off_lock_on_throwaway_conn(make_client, monke
     )
     monkeypatch.setattr(
         youtube_module, "reorder_playlist_page",
-        lambda conn, pid, page_index, order, page_size=50: probe.record(conn) or _batch(succeeded=1),
+        lambda conn, pid, page_index, order, page_size=50, **kw: probe.record(conn) or _batch(succeeded=1),
     )
 
     response = c.client.post(

@@ -742,15 +742,22 @@ def api_remove_playlist_item(request: Request, item_id: str):
     return JSONResponse(_mark_partial(result))
 
 
-def _map_playlist_item_ids(request: Request, playlist_id: str, item_ids: list[str] | None) -> list[str] | None:
+def _map_playlist_item_ids(request: Request, playlist_id: str, item_ids: list[str] | None,
+                           items: list[dict] | None = None) -> list[str] | None:
     """Resolve playlistItem ids to video ids by fetching the source playlist server-side.
 
     The service copy/move functions key on video ids, while the UI selection is keyed on
     playlistItem ids; this route is the only place that resolves between the two.
+
+    Pass `items` to reuse a listing the caller already has. Callers should then hand the
+    same list to the service function too - reading a whole playlist costs one request
+    per 50 items, and doing it twice for one user action is what made these endpoints
+    the heaviest thing on the page.
     """
     if item_ids is None:
         return None
-    items = _call_youtube(request, youtube.get_all_playlist_items, playlist_id)
+    if items is None:
+        items = _call_youtube(request, youtube.get_all_playlist_items, playlist_id)
     by_id = {i["playlist_item_id"]: i["video_id"] for i in items}
     video_ids: list[str] = []
     missing: list[str] = []
@@ -773,9 +780,14 @@ def api_copy_playlist_items(request: Request, source_playlist_id: str, body: _Pl
     _require_playlist_id(source_playlist_id)
     _require_playlist_id(body.dest_playlist_id)
     _require_distinct(source_playlist_id, body.dest_playlist_id)
-    video_ids = _map_playlist_item_ids(request, source_playlist_id, body.item_ids)
+    # Only pre-read when there is a selection to map; copying a whole playlist needs no
+    # mapping, and the service reads the source itself.
+    items = (_call_youtube(request, youtube.get_all_playlist_items, source_playlist_id)
+             if body.item_ids is not None else None)
+    video_ids = _map_playlist_item_ids(request, source_playlist_id, body.item_ids, items=items)
     result = _call_youtube(request, youtube.copy_playlist_items,
-                           source_playlist_id, body.dest_playlist_id, video_ids)
+                           source_playlist_id, body.dest_playlist_id, video_ids,
+                           source_items=items)
     return JSONResponse(_mark_partial(result))
 
 
@@ -786,9 +798,12 @@ def api_move_playlist_items(request: Request, source_playlist_id: str, body: _Pl
     _require_playlist_id(source_playlist_id)
     _require_playlist_id(body.dest_playlist_id)
     _require_distinct(source_playlist_id, body.dest_playlist_id)
-    video_ids = _map_playlist_item_ids(request, source_playlist_id, body.item_ids)
+    items = (_call_youtube(request, youtube.get_all_playlist_items, source_playlist_id)
+             if body.item_ids is not None else None)
+    video_ids = _map_playlist_item_ids(request, source_playlist_id, body.item_ids, items=items)
     result = _call_youtube(request, youtube.move_playlist_items,
-                           source_playlist_id, body.dest_playlist_id, video_ids)
+                           source_playlist_id, body.dest_playlist_id, video_ids,
+                           source_items=items)
     return JSONResponse(_mark_partial(result))
 
 
@@ -831,7 +846,7 @@ def api_reorder_playlist_page(request: Request, playlist_id: str, body: _Playlis
         _youtube_error(400, "validation", f"playlist item(s) not found: {', '.join(missing)}")
     page_index = min(page_positions) // _REORDER_PAGE_SIZE if page_positions else 0
     result = _call_youtube(request, youtube.reorder_playlist_page, playlist_id,
-                           page_index, order, page_size=_REORDER_PAGE_SIZE)
+                           page_index, order, page_size=_REORDER_PAGE_SIZE, items=items)
     return JSONResponse(_mark_partial(result))
 
 
@@ -845,8 +860,9 @@ def api_reorder_playlist_all(request: Request, playlist_id: str, body: _Playlist
     """
     _require_connected(request)
     _require_playlist_id(playlist_id)
-    order = _map_playlist_item_ids(request, playlist_id, body.item_ids)
-    result = _call_youtube(request, youtube.reorder_playlist, playlist_id, order)
+    items = _call_youtube(request, youtube.get_all_playlist_items, playlist_id)
+    order = _map_playlist_item_ids(request, playlist_id, body.item_ids, items=items)
+    result = _call_youtube(request, youtube.reorder_playlist, playlist_id, order, items=items)
     return JSONResponse(_mark_partial(result))
 
 

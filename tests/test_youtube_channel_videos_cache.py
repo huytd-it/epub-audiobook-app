@@ -163,3 +163,161 @@ def test_cache_mirror_helpers_ignore_a_video_not_in_the_cache(tmp_path):
     # No row for "missing" - should not raise, and should not insert one either.
     yt._cache_add_video_to_playlists(conn, "missing", "PL1")
     assert conn.execute("SELECT COUNT(*) c FROM youtube_channel_videos").fetchone()["c"] == 0
+
+
+# --------------------------------------------------------------------- sync_channel_videos
+
+
+class _FakeService:
+    """Fake of just the playlistItems surface sync_channel_videos touches."""
+
+    def __init__(self, uploads_items):
+        self._uploads_items = uploads_items
+        self.list_calls = []
+
+    def playlistItems(self):
+        api = self
+
+        class _Res:
+            def list(self, **params):
+                return _Call(api, params)
+
+        return _Res()
+
+
+class _Call:
+    def __init__(self, service, params):
+        self._service, self._params = service, params
+
+    def execute(self):
+        service = self._service
+        service.list_calls.append(dict(self._params))
+        assert self._params["playlistId"] == "UUchan"
+        return {
+            "items": service._uploads_items,
+            "nextPageToken": None,
+            "pageInfo": {"totalResults": len(service._uploads_items)},
+        }
+
+
+def _raw_playlist_item(video_id):
+    return {
+        "id": f"PI_{video_id}",
+        "snippet": {
+            "playlistId": "UUchan",
+            "position": 0,
+            "resourceId": {"kind": "youtube#video", "videoId": video_id},
+            "title": f"Title {video_id}",
+            "thumbnails": {},
+        },
+        "contentDetails": {},
+    }
+
+
+def test_sync_channel_videos_does_not_scan_playlists(tmp_path, monkeypatch):
+    """The whole point: membership comes from the local cache, so the only
+    playlistItems.list the sync issues is for the channel's uploads playlist."""
+    conn = _conn(tmp_path)
+    _seed_video(conn, "v_old", playlist_ids=["PL1", "PL2"])
+    _seed_video(conn, "v_gone", playlist_ids=["PL1"])  # removed from the channel
+
+    uploads = [_raw_playlist_item("v_old"), _raw_playlist_item("v_new")]
+    service = _FakeService(uploads)
+    monkeypatch.setattr(yt, "get_youtube_service", lambda conn: service)
+    monkeypatch.setattr(yt, "_require_google_imports", lambda: None)
+    monkeypatch.setattr(yt, "_video_details_by_id", lambda service, ids: {})
+
+    result = yt.sync_channel_videos(conn, "UCchan")
+
+    assert service.list_calls, "uploads playlist must be listed"
+    assert all(c["playlistId"] == "UUchan" for c in service.list_calls), (
+        "no per-playlist membership scan may happen"
+    )
+    assert result["playlists_scanned"] == 0
+    assert result["synced"] == 2
+
+    rows = {r["video_id"]: r for r in conn.execute("SELECT * FROM youtube_channel_videos")}
+    # membership carried forward from the previous snapshot
+    assert json.loads(rows["v_old"]["playlist_ids"]) == ["PL1", "PL2"]
+    # a brand-new video starts with no membership until a mutation mirrors it
+    assert json.loads(rows["v_new"]["playlist_ids"]) == []
+    # a video no longer on the channel is gone from the cache
+    assert "v_gone" not in rows
+
+
+def test_sync_channel_videos_membership_reset_when_cleared(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    _seed_video(conn, "v1", playlist_ids=["PL1"])
+
+    service = _FakeService([_raw_playlist_item("v1")])
+    monkeypatch.setattr(yt, "get_youtube_service", lambda conn: service)
+    monkeypatch.setattr(yt, "_require_google_imports", lambda: None)
+    monkeypatch.setattr(yt, "_video_details_by_id", lambda service, ids: {})
+
+    # Documented rebuild path: clear the membership column, then sync.
+    conn.execute("UPDATE youtube_channel_videos SET playlist_ids='[]'")
+    conn.commit()
+    yt.sync_channel_videos(conn, "UCchan")
+
+    row = conn.execute("SELECT playlist_ids FROM youtube_channel_videos WHERE video_id='v1'").fetchone()
+    assert json.loads(row["playlist_ids"]) == []
+
+
+def test_single_add_and_remove_mirror_into_the_cache(tmp_path, monkeypatch):
+    """add_video_to_playlist / remove_video_from_playlist keep the membership column
+    in step so sync_channel_videos can carry it forward without re-scanning."""
+    conn = _conn(tmp_path)
+    _seed_video(conn, "v1", playlist_ids=[])
+
+    class _SingleItemService:
+        def playlistItems(self):
+            api = self
+
+            class _Res:
+                def list(self, **params):
+                    return _Page(api, params)
+
+                def insert(self, **body):
+                    return _Insert()
+
+                def delete(self, **kw):
+                    return _Delete()
+
+            return _Res()
+
+        def _all(self):
+            return [_raw_playlist_item("v1")]
+
+    class _Page:
+        def __init__(self, service, params):
+            self._service, self._params = service, params
+
+        def execute(self):
+            self._service.list_calls.append(dict(self._params))
+            return {
+                "items": self._service._all(),
+                "nextPageToken": None,
+                "pageInfo": {"totalResults": 1},
+            }
+
+    class _Insert:
+        def execute(self):
+            return _raw_playlist_item("v1")
+
+    class _Delete:
+        def execute(self):
+            return {}
+
+    service = _SingleItemService()
+    service.list_calls = []
+    monkeypatch.setattr(yt, "get_youtube_service", lambda conn: service)
+    monkeypatch.setattr(yt, "_require_google_imports", lambda: None)
+    monkeypatch.setattr(yt, "MIN_REQUEST_INTERVAL", 0)
+
+    yt.add_video_to_playlist(conn, "PL9", "v1")
+    row = conn.execute("SELECT playlist_ids FROM youtube_channel_videos WHERE video_id='v1'").fetchone()
+    assert json.loads(row["playlist_ids"]) == ["PL9"]
+
+    assert yt.remove_video_from_playlist(conn, "PL9", "v1") is True
+    row = conn.execute("SELECT playlist_ids FROM youtube_channel_videos WHERE video_id='v1'").fetchone()
+    assert json.loads(row["playlist_ids"]) == []

@@ -241,6 +241,9 @@ def fake(monkeypatch):
     api = FakePlaylistItems()
     monkeypatch.setattr(yt, "_require_google_imports", lambda: None)
     monkeypatch.setattr(yt, "get_youtube_service", lambda conn: FakeService(api))
+    # The real pacing floor between API requests exists to stay under YouTube's
+    # per-user rate limit; against an in-memory fake it would only add wall clock.
+    monkeypatch.setattr(yt, "MIN_REQUEST_INTERVAL", 0)
     return api
 
 
@@ -482,15 +485,30 @@ def test_reorder_playlist_applies_explicit_mapping(fake):
     result = yt.reorder_playlist(_conn(), "PL1", order=["v3", "v1", "v2"])
 
     assert result["requested"] == 3
-    assert result["succeeded"] == 3 and result["failed"] == 0 and result["skipped"] == 0
     assert fake.video_ids_of("PL1") == ["v3", "v1", "v2"]
 
-    # each update targeted the right playlistItem id / playlist / video / position
+    # Moving v3 to the front drags v1 and v2 into place with it, so the other two
+    # need no request of their own - one update, not three, for the same result.
+    assert result["succeeded"] == 1 and result["skipped"] == 2 and result["failed"] == 0
+
     bodies = [c["body"] for c in fake.update_calls]
-    assert [(b["id"], b["snippet"]["position"]) for b in bodies] == [("PI3", 0), ("PI1", 1), ("PI2", 2)]
+    assert [(b["id"], b["snippet"]["position"]) for b in bodies] == [("PI3", 0)]
     for b in bodies:
         assert b["snippet"]["playlistId"] == "PL1"
         assert b["snippet"]["resourceId"]["kind"] == "youtube#video"
+
+
+def test_reorder_playlist_never_updates_an_item_already_in_place(fake):
+    # Regression guard for quota: each playlistItems.update costs 50 units, so an
+    # item that the preceding moves already carried to its target must not get one.
+    # Rotating the last item to the front is the worst case - the naive algorithm
+    # (comparing against positions snapshotted before the loop) issues N updates.
+    fake.seed("PL1", _raw_list([("v1", "A"), ("v2", "B"), ("v3", "C"), ("v4", "D")]))
+    result = yt.reorder_playlist(_conn(), "PL1", order=["v4", "v1", "v2", "v3"])
+
+    assert fake.video_ids_of("PL1") == ["v4", "v1", "v2", "v3"]
+    assert len(fake.update_calls) == 1
+    assert result["succeeded"] == 1 and result["skipped"] == 3
 
 
 def test_reorder_playlist_result_items_carry_status_and_message(fake):
@@ -510,8 +528,9 @@ def test_reorder_playlist_skips_items_already_in_place(fake):
 def test_sort_playlist_uses_natural_order(fake):
     fake.seed("PL1", _raw_list([("v2", "Part 2"), ("v10", "Part 10"), ("v1", "Part 1")]))
     result = yt.sort_playlist(_conn(), "PL1", direction="asc")
-    assert result["succeeded"] == 3
     assert fake.video_ids_of("PL1") == ["v1", "v2", "v10"]
+    # pulling "Part 1" to the front is enough; the other two ride along
+    assert result["succeeded"] == 1 and result["skipped"] == 2
 
 
 def test_sort_playlist_desc(fake):
@@ -525,7 +544,7 @@ def test_reorder_playlist_explicit_order_keeps_unlisted_at_end(fake):
     fake.seed("PL1", _raw_list([("v1", "A"), ("v2", "B"), ("v3", "C"), ("v4", "D")]))
     result = yt.reorder_playlist(_conn(), "PL1", order=["v4", "v2"])
     assert fake.video_ids_of("PL1") == ["v4", "v2", "v1", "v3"]
-    assert result["succeeded"] == 3 and result["skipped"] == 1
+    assert result["succeeded"] == 2 and result["skipped"] == 2
 
 
 def test_reorder_playlist_partial_failure_continues(fake):
@@ -914,7 +933,7 @@ def test_reorder_playlist_page_reorders_within_span(fake):
     fake.seed("PL1", _raw_list([("v1", "A"), ("v2", "B"), ("v3", "C"), ("v4", "D")]))
     result = yt.reorder_playlist_page(_conn(), "PL1", page_index=0,
                                       order=["v4", "v3", "v2", "v1"], page_size=4)
-    assert result["succeeded"] == 4 and result["failed"] == 0
+    assert result["succeeded"] == 3 and result["skipped"] == 1 and result["failed"] == 0
     assert fake.video_ids_of("PL1") == ["v4", "v3", "v2", "v1"]
     # every target position stayed inside the page's span
     for c in fake.update_calls:
@@ -955,7 +974,10 @@ def test_reorder_playlist_page_skips_already_correct(fake):
 
 def test_reorder_playlist_page_partial_failure_continues(fake):
     fake.seed("PL1", _raw_list([("v1", "A"), ("v2", "B"), ("v3", "C")]))
-    fake.fail_update.add("PI2")
+    # PI3 is the first move; failing it leaves the rest genuinely out of place, so
+    # they still need their own updates (failing a later item would now just be
+    # skipped, since the first move already carried it home).
+    fake.fail_update.add("PI3")
     result = yt.reorder_playlist_page(_conn(), "PL1", page_index=0,
                                       order=["v3", "v1", "v2"], page_size=3)
     assert result["succeeded"] == 2 and result["failed"] == 1

@@ -83,7 +83,7 @@ def concat_chunks_to_wav(
         audio = np.concatenate(parts)
     else:
         audio = np.zeros(0, dtype=np.float32)
-    sf.write(out_path, audio, sample_rate)
+    sf.write(out_path, audio, sample_rate, format="WAV", subtype="PCM_16")
 
 
 def concat_wavs(input_paths: list[str], out_path: str, pause_ms=0) -> None:
@@ -97,7 +97,7 @@ def concat_wavs(input_paths: list[str], out_path: str, pause_ms=0) -> None:
     if any(header != (sample_rate, channels) for header in headers[1:]):
         raise ValueError("input samplerate/channels mismatch")
     pauses = resolve_pauses(pause_ms, len(input_paths))
-    with sf.SoundFile(out_path, mode="w", samplerate=sample_rate, channels=channels, subtype="PCM_16") as out_f:
+    with sf.SoundFile(out_path, mode="w", samplerate=sample_rate, channels=channels, subtype="PCM_16", format="WAV") as out_f:
         for index, path in enumerate(input_paths):
             with sf.SoundFile(path, mode="r") as in_f:
                 pause_frames = round(sample_rate * pauses[index] / 1000)
@@ -182,7 +182,7 @@ def atomic_write_wav(out_path: str, write_func) -> None:
     Raises on any failure and removes the temp file.
     """
     path = Path(out_path)
-    fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp.wav")
     os.close(fd)
     try:
         write_func(temp_path)

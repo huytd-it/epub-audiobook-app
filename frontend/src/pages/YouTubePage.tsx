@@ -48,6 +48,13 @@ import {
   BatchResult,
 } from "@/api";
 import { downloadTextFile, fileStamp, formatOf, parseSheet, toCsv } from "@/lib/tabular";
+import {
+  loadPlaylistsCached,
+  loadPlaylistItemsCached,
+  invalidatePlaylists,
+  invalidatePlaylistItems,
+  invalidateAllPlaylistItems,
+} from "@/lib/youtubeCache";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -224,9 +231,11 @@ export function YouTubePage() {
       .finally(() => setLoading(false));
   };
 
-  const loadPlaylists = () => {
-    api<{ items: PlaylistItem[] }>("/youtube/api/playlists")
-      .then((res) => setPlaylists(res.items || []))
+  /** Playlists come from the TTL cache; use force to spend a request (Reload button,
+      or after a mutation the cache layer hasn't already been invalidated for). */
+  const loadPlaylists = (force = false) => {
+    loadPlaylistsCached(force)
+      .then((items) => setPlaylists(items || []))
       .catch((err) => console.error("Lỗi tải danh sách playlist:", err));
   };
 
@@ -252,16 +261,15 @@ export function YouTubePage() {
       return;
     }
     setLoadingPlaylistItems(true);
-    api<{ items: PlaylistItemDetail[] }>(`/youtube/api/playlists/${channelFilters.playlist_id}/items?fetch_all=true`)
-      .then((res) => {
-        const items = res.items || [];
-    setPlaylistItems(items);
-    setManualOrders(Object.fromEntries(items.map((item, index) => [item.playlist_item_id, String(index + 1)])));
-    setHasPendingOrder(false);
-    setOrderSnapshot(null);
-  })
-  .catch((err) => console.error("Lỗi tải mục trong playlist:", err))
-  .finally(() => setLoadingPlaylistItems(false));
+    loadPlaylistItemsCached(channelFilters.playlist_id)
+      .then((items) => {
+        setPlaylistItems(items);
+        setManualOrders(Object.fromEntries(items.map((item, index) => [item.playlist_item_id, String(index + 1)])));
+        setHasPendingOrder(false);
+        setOrderSnapshot(null);
+      })
+      .catch((err) => console.error("Lỗi tải mục trong playlist:", err))
+      .finally(() => setLoadingPlaylistItems(false));
     setSelectedItemIds([]);
     setItemsPage(1);
   }, [channelFilters.playlist_id]);
@@ -368,6 +376,7 @@ export function YouTubePage() {
       setChannelSelectedIds([]);
       loadChannelVideos();
       loadPlaylists();
+      invalidatePlaylistItems(channelPlaylistTargetId);
       alert(`Đã thêm ${result.succeeded}/${result.requested} video vào playlist` + (result.failed ? `, ${result.failed} lỗi` : "") + ".");
     } catch (err: any) {
       alert(`Thao tác playlist thất bại: ${err.message}`);
@@ -386,6 +395,9 @@ export function YouTubePage() {
       setChannelSelectedIds([]);
       loadChannelVideos();
       loadChannelSyncStatus();
+      // Deleted videos vanish from every playlist they were in; no cached item
+      // list can know which ones, so drop them all.
+      invalidateAllPlaylistItems();
       loadPlaylists();
       alert(`Đã xóa vĩnh viễn ${result.succeeded}/${result.requested} video khỏi YouTube` +
         (result.failed ? `, ${result.failed} lỗi` : "") + ".");
@@ -418,7 +430,8 @@ export function YouTubePage() {
       setNewPlaylistTitle("");
       setNewPlaylistDescription("");
       setNewPlaylistPrivacy("private");
-      loadPlaylists();
+      invalidatePlaylists();
+      loadPlaylists(true);
     } catch (err: any) {
       alert(`Tạo playlist thất bại: ${err.message}`);
     } finally {
@@ -432,7 +445,9 @@ export function YouTubePage() {
       await del(`/youtube/api/playlists/${playlistId}`);
       setSelectedPlaylistIds((prev) => prev.filter((id) => id !== playlistId));
       if (channelFilters.playlist_id === playlistId) setActivePlaylistId("");
-      loadPlaylists();
+      invalidatePlaylists();
+      invalidatePlaylistItems(playlistId);
+      loadPlaylists(true);
     } catch (err: any) {
       alert(`Xóa playlist thất bại: ${err.message}`);
     }
@@ -455,7 +470,8 @@ export function YouTubePage() {
       setPlaylistBulkTitlePrefix("");
       setPlaylistBulkTitleSuffix("");
       setPlaylistBulkDescription("");
-      loadPlaylists();
+      invalidatePlaylists();
+      loadPlaylists(true);
       alert(`Đã cập nhật ${result.succeeded}/${result.requested} playlist` + (result.failed ? `, ${result.failed} lỗi` : "") + ".");
     } catch (err: any) {
       alert(`Cập nhật hàng loạt playlist thất bại: ${err.message}`);
@@ -477,6 +493,7 @@ export function YouTubePage() {
       });
       setPlaylistItems((prev) => prev.filter((i) => !selectedItemIds.includes(i.playlist_item_id)));
       setSelectedItemIds([]);
+      invalidatePlaylistItems(channelFilters.playlist_id);
       loadPlaylists();
     } catch (err: any) {
       alert(`Xóa hàng loạt thất bại: ${err.message}`);
@@ -499,6 +516,8 @@ export function YouTubePage() {
         setPlaylistItems((prev) => prev.filter((i) => !selectedItemIds.includes(i.playlist_item_id)));
       }
       setSelectedItemIds([]);
+      invalidatePlaylistItems(channelFilters.playlist_id);
+      invalidatePlaylistItems(copyMoveDestId);
       loadPlaylists();
     } catch (err: any) {
       alert(`${showCopyMoveModal.mode === "copy" ? "Sao chép" : "Di chuyển"} thất bại: ${err.message}`);
@@ -846,7 +865,8 @@ export function YouTubePage() {
         description: editingPlaylist.description,
       });
       setEditingPlaylist(null);
-      loadPlaylists();
+      invalidatePlaylists();
+      loadPlaylists(true);
     } catch (err: any) {
       alert(`Sửa playlist thất bại: ${err.message}`);
     } finally {
@@ -862,6 +882,8 @@ export function YouTubePage() {
       setPlaylistItems((prev) =>
         prev.map((item) => (item.video_id === editingItem.videoId ? { ...item, title: editingItem.title.trim() } : item))
       );
+      // The item list carries the video title, so the cached copy is now stale.
+      if (channelFilters.playlist_id) invalidatePlaylistItems(channelFilters.playlist_id);
       setEditingItem(null);
     } catch (err: any) {
       alert(`Sửa tiêu đề video thất bại: ${err.message}`);
@@ -888,11 +910,10 @@ export function YouTubePage() {
         video_ids: selectedAddVideoIds,
       });
       setShowAddVideosModal(false);
-      // reload playlist items
-      const res = await api<{ items: PlaylistItemDetail[] }>(
-        `/youtube/api/playlists/${channelFilters.playlist_id}/items?fetch_all=true`
-      );
-      setPlaylistItems(res.items || []);
+      // reload playlist items (the cache is stale for this playlist after the add)
+      invalidatePlaylistItems(channelFilters.playlist_id);
+      const items = await loadPlaylistItemsCached(channelFilters.playlist_id, true);
+      setPlaylistItems(items);
       loadPlaylists();
     } catch (err: any) {
       alert(`Thêm video vào playlist thất bại: ${err.message}`);
@@ -904,6 +925,7 @@ export function YouTubePage() {
     try {
       await del(`/youtube/api/playlist-items/${itemId}`);
       setPlaylistItems((prev) => prev.filter((i) => i.playlist_item_id !== itemId));
+      if (channelFilters.playlist_id) invalidatePlaylistItems(channelFilters.playlist_id);
       loadPlaylists();
     } catch (err: any) {
       alert(`Xóa khỏi playlist thất bại: ${err.message}`);
@@ -971,10 +993,8 @@ export function YouTubePage() {
         item_ids: playlistItems.map((item) => item.playlist_item_id),
       });
       alert("Đã lưu thứ tự danh sách phát!");
-      const res = await api<{ items: PlaylistItemDetail[] }>(
-        `/youtube/api/playlists/${channelFilters.playlist_id}/items?fetch_all=true`
-      );
-      const items = res.items || [];
+      invalidatePlaylistItems(channelFilters.playlist_id);
+      const items = await loadPlaylistItemsCached(channelFilters.playlist_id, true);
       setPlaylistItems(items);
       setManualOrders(Object.fromEntries(items.map((item, index) => [item.playlist_item_id, String(index + 1)])));
       setHasPendingOrder(false);
@@ -1534,6 +1554,16 @@ export function YouTubePage() {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-xs"
+                    title="Đọc lại danh sách playlist từ YouTube (tốn hạn mức API)"
+                    onClick={() => loadPlaylists(true)}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Làm mới
+                  </Button>
                   <Button variant="outline" size="sm" className="h-8 text-xs font-semibold" onClick={() => setShowCreatePlaylistModal(true)}>
                     <Plus className="h-3.5 w-3.5" />
                     Tạo playlist
@@ -1851,6 +1881,28 @@ export function YouTubePage() {
                   <Button variant="outline" size="sm" onClick={openAddVideos}>
                     <Plus className="h-3.5 w-3.5" />
                     Thêm video
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={loadingPlaylistItems}
+                    title="Đọc lại danh sách từ YouTube (tốn hạn mức API)"
+                    onClick={() => {
+                      if (!channelFilters.playlist_id) return;
+                      setLoadingPlaylistItems(true);
+                      loadPlaylistItemsCached(channelFilters.playlist_id, true)
+                        .then((items) => {
+                          setPlaylistItems(items);
+                          setManualOrders(Object.fromEntries(items.map((item, index) => [item.playlist_item_id, String(index + 1)])));
+                          setHasPendingOrder(false);
+                          setOrderSnapshot(null);
+                        })
+                        .catch((err) => console.error("Lỗi tải mục trong playlist:", err))
+                        .finally(() => setLoadingPlaylistItems(false));
+                    }}
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${loadingPlaylistItems ? "animate-spin" : ""}`} />
+                    Làm mới
                   </Button>
                   <Button
                     variant="secondary"
