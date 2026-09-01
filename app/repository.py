@@ -13,6 +13,7 @@ from pathlib import Path
 
 from app.audio_merge import cleanup_chunk_dir
 from app.chunker import group_into_patches, split_into_tts_chunks
+from app.config import settings
 from app.epub_parser import ParsedChapter
 from app.models import Book, BookJob, Chapter, Music, Patch, PatchExport, TextReplaceRule
 from app.normalization import NormalizationOptions, clean_junk_tokens, normalize_chapter_titles, normalize_text, remove_cjk
@@ -33,22 +34,22 @@ def _now() -> str:
 
 def _chunk_dir_for(book_id: int, patch_id: int) -> Path:
     # NOTE: Legacy. Use new helper get_patch_chunk_dir(book_id, patch_index)
-    return Path("data") / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
+    return Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
 
 
 def get_patch_audio_path(book_id: int, patch_index: int) -> Path:
     episode = f"{patch_index + 1:03d}"
-    return Path("data") / "books" / str(book_id) / "audio" / f"{book_id}_{episode}.wav"
+    return Path(settings.data_root) / "books" / str(book_id) / "audio" / f"{book_id}_{episode}.wav"
 
 
 def get_patch_chunk_dir(book_id: int, patch_index: int) -> Path:
     episode = f"{patch_index + 1:03d}"
-    return Path("data") / "books" / str(book_id) / "audio" / f"{book_id}_{episode}_chunks"
+    return Path(settings.data_root) / "books" / str(book_id) / "audio" / f"{book_id}_{episode}_chunks"
 
 
 def get_backup_path(book_id: int, patch_index: int, extension: str, timestamp: str) -> Path:
     episode = f"{patch_index + 1:03d}"
-    return Path("data") / "books" / str(book_id) / "backup_audio" / f"{book_id}_{episode}_{timestamp}{extension}"
+    return Path(settings.data_root) / "books" / str(book_id) / "backup_audio" / f"{book_id}_{episode}_{timestamp}{extension}"
 
 
 def backup_patch_audio_files(book_id: int, patch_index: int, old_audio_path: str) -> None:
@@ -57,7 +58,7 @@ def backup_patch_audio_files(book_id: int, patch_index: int, old_audio_path: str
         return
 
     timestamp = datetime.now().strftime("%Y_%m_%d_%H%M%S")
-    backup_dir = Path("data") / "books" / str(book_id) / "backup_audio"
+    backup_dir = Path(settings.data_root) / "books" / str(book_id) / "backup_audio"
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     for ext in (".wav", ".timeline.json", ".ass"):
@@ -70,10 +71,10 @@ def backup_patch_audio_files(book_id: int, patch_index: int, old_audio_path: str
 def backup_all_book_audio(book_id: int) -> None:
     """Backup every wav+sidecar under data/books/{book_id}/audio/ into backup_audio/.
     Used by rebuild_patches and reset_all_jobs, which wipe the whole audio folder."""
-    audio_dir = Path("data") / "books" / str(book_id) / "audio"
+    audio_dir = Path(settings.data_root) / "books" / str(book_id) / "audio"
     if not audio_dir.exists():
         return
-    backup_dir = Path("data") / "books" / str(book_id) / "backup_audio"
+    backup_dir = Path(settings.data_root) / "books" / str(book_id) / "backup_audio"
     backup_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y_%m_%d_%H%M%S")
     for src in audio_dir.glob("*.wav"):
