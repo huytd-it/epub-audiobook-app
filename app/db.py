@@ -612,7 +612,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
 def _backfill_patch_video_links(conn: sqlite3.Connection) -> int:
     """Link legacy `videos` rows to the patch whose MP4 they hold.
 
-    Patch videos are written to books/{book_id}/patch_videos/{patch_id}.mp4, so rows
+    Patch videos are written to books/{book_id}/videos/{book_id}_{episode}.mp4
+    (new) or legacy books/{book_id}/patch_videos/{patch_id}.mp4, so rows
     inserted before patch_id was populated can be recovered from their path. Without the
     link nothing can find a patch's video through the database, and the UNIQUE index on
     patch_id cannot dedupe the row, so the next writer adds a second one for the same file.
@@ -623,12 +624,28 @@ def _backfill_patch_video_links(conn: sqlite3.Connection) -> int:
     ).fetchall()
     for row in rows:
         path = Path(row["file_path"])
-        if path.parent.name != "patch_videos":
-            continue
         book_dir = path.parent.parent
-        if not (path.stem.isdigit() and book_dir.name.isdigit()):
+        patch_id = None
+        book_id = None
+        if path.parent.name == "patch_videos" and path.stem.isdigit() and book_dir.name.isdigit():
+            patch_id, book_id = int(path.stem), int(book_dir.name)
+        elif path.parent.name == "videos" and book_dir.name.isdigit():
+            # new naming {book_id}_{episode}.mp4 -> derive patch via book_id + episode
+            try:
+                stem = path.stem  # e.g. "12_003"
+                b, ep = stem.split("_", 1)
+                if b.isdigit() and ep.isdigit() and int(b) == int(book_dir.name):
+                    book_id = int(b)
+                    patch_index = int(ep) - 1
+                    prow = conn.execute("SELECT id FROM patch WHERE book_id=? AND patch_index=?", (book_id, patch_index)).fetchone()
+                    if prow:
+                        patch_id = int(prow["id"])
+            except ValueError:
+                continue
+        else:
             continue
-        patch_id, book_id = int(path.stem), int(book_dir.name)
+        if patch_id is None or book_id is None:
+            continue
         # The path only claims a patch id; the patch may have been deleted since, and
         # another row may already hold this patch_id (the index is UNIQUE).
         patch = conn.execute(

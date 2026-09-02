@@ -150,9 +150,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
         value = render_config.get(key)
         if value and not Path(value).is_file():
             raise JobFatalError(f"source_unavailable: {key} missing: {value}")
-    output = str(
-        Path(settings.data_root) / "books" / str(book.id) / "patch_videos" / f"{patch.id}.mp4"
-    )
+    output = str(repository.get_patch_video_path(book.id, patch.patch_index))
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     ctx.progress(1, 6, phase="overlay")
     ctx.progress(2, 6, phase="encoding")
@@ -332,7 +330,7 @@ def handle(ctx) -> dict:
                 Path(clip_path).unlink(missing_ok=True)
     else:
         output = (recovery_pipeline["video_path"] if recovery_pipeline else None) or str(
-            Path(settings.data_root) / "books" / str(book.id) / "patch_videos" / f"{patch_id}.mp4"
+            repository.get_patch_video_path(book.id, patch.patch_index)
         )
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         if recovery_pipeline:

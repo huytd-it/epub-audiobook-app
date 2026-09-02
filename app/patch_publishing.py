@@ -318,12 +318,28 @@ def discard_stale_patch_video(conn: sqlite3.Connection, book_id: int, patch_id: 
 
     Dùng khi audio của patch vừa thay đổi và cần dựng lại video từ đầu —
     render_attempts về 0 cho phép một chu kỳ render mới."""
-    video_path = Path(settings.data_root) / "books" / str(book_id) / "patch_videos" / f"{patch_id}.mp4"
-    row = conn.execute("SELECT id FROM videos WHERE file_path=?", (str(video_path),)).fetchone()
-    if row:
-        delete_video(conn, row["id"])
+    patch = get_patch(conn, patch_id)
+    if patch is not None:
+        candidates = [
+            repository.get_patch_video_path(book_id, patch.patch_index),
+            repository._legacy_patch_video_path(book_id, patch_id),
+        ]
     else:
-        video_path.unlink(missing_ok=True)
+        candidates = [Path(settings.data_root) / "books" / str(book_id) / "patch_videos" / f"{patch_id}.mp4"]
+    deleted = False
+    for video_path in candidates:
+        row = conn.execute("SELECT id FROM videos WHERE file_path=?", (str(video_path),)).fetchone()
+        if row:
+            delete_video(conn, row["id"])
+            deleted = True
+        else:
+            if video_path.exists():
+                video_path.unlink(missing_ok=True)
+    if not deleted and patch is not None:
+        # fallback: video row may have been inserted with other file_path (e.g. after migration)
+        row2 = conn.execute("SELECT id, file_path FROM videos WHERE patch_id=?", (patch_id,)).fetchone()
+        if row2:
+            delete_video(conn, row2["id"])
     conn.execute(
         """UPDATE patch_pipeline SET stage='video', video_status='pending', video_id=NULL,
                   video_path=NULL, youtube_upload_id=NULL, upload_status='pending',

@@ -187,9 +187,15 @@ async def upload_patch_video(
         if patch is None or patch.book_id != book_id:
             raise HTTPException(status_code=404, detail="patch not found")
 
-    video_dir = Path(settings.data_root) / "books" / str(book_id) / "patch_videos"
-    video_dir.mkdir(parents=True, exist_ok=True)
-    video_path = video_dir / f"{patch_id}.mp4"
+    video_path = repository.get_patch_video_path(book_id, patch.patch_index)
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    # legacy cleanup: remove old location if exists
+    legacy = repository._legacy_patch_video_path(book_id, patch_id)
+    if legacy.exists() and legacy != video_path:
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
     with open(video_path, "wb") as dest:
         shutil.copyfileobj(video.file, dest)
 
@@ -198,8 +204,8 @@ async def upload_patch_video(
         record = video_repository.upsert_patch_video(
             conn, book_id=book_id, patch_id=patch_id,
             file_path=str(video_path), resolution=(book.video_resolution if book else None) or "1920x1080",
-            filename=f"patch_{book_id}_{patch_id}.mp4",
-            original_name=video.filename or f"patch_{patch_id}.mp4",
+            filename=video_path.name,
+            original_name=video.filename or video_path.name,
             title=f"Patch {patch.patch_index + 1}",
             batch_id=f"patch:{book_id}",
             background_path=patch.image_path,
@@ -260,7 +266,19 @@ def get_patch_image(request: Request, book_id: int, patch_id: int):
 
 
 def _patch_video_path(book_id: int, patch_id: int) -> Path:
+    """Legacy helper kept for backward compatibility — delegates to repository helper via patch_index lookup.
+    New code should use repository.get_patch_video_path(book_id, patch_index) directly."""
+    # Fallback when patch_index unknown: legacy location
     return Path(settings.data_root) / "books" / str(book_id) / "patch_videos" / f"{patch_id}.mp4"
+
+
+def _patch_video_path_for_patch(patch) -> Path:
+    return repository.get_patch_video_path(patch.book_id, patch.patch_index)
+
+
+def _resolve_patch_video_path(patch) -> Path | None:
+    """Resolver chỉ-đọc: ưu tiên layout mới, fallback legacy."""
+    return repository.resolve_patch_video(patch)
 
 
 def _patch_video_title(book, patch) -> str:
@@ -277,7 +295,7 @@ def _register_patch_video(conn, book, patch, video_path: Path) -> int:
         patch_id=patch.id,
         file_path=str(video_path),
         resolution=book.video_resolution or "1920x1080",
-        filename=f"patch_{book.id}_{patch.id}.mp4",
+        filename=video_path.name,
         original_name=f"{_patch_video_title(book, patch)}.mp4",
         title=_patch_video_title(book, patch),
         batch_id=f"patch:{book.id}",
@@ -518,12 +536,19 @@ def delete_patch_video(
         if patch is None or patch.book_id != book_id:
             raise HTTPException(status_code=404, detail="patch not found")
 
-    video_path = _patch_video_path(book_id, patch_id)
+    video_path = _patch_video_path_for_patch(patch)
+    legacy_path = repository._legacy_patch_video_path(book_id, patch_id)
     with locked_conn(request) as conn:
-        row = conn.execute("SELECT id FROM videos WHERE file_path = ?", (str(video_path),)).fetchone()
-        if row:
-            video_repository.delete_video(conn, row["id"])
-        video_path.unlink(missing_ok=True)
+        for p in (video_path, legacy_path):
+            row = conn.execute("SELECT id FROM videos WHERE file_path = ?", (str(p),)).fetchone()
+            if row:
+                video_repository.delete_video(conn, row["id"])
+            # also handle row that still points at legacy while we delete new, etc.
+            p.unlink(missing_ok=True)
+        # fallback: any video row for this patch_id regardless of path
+        row2 = conn.execute("SELECT id, file_path FROM videos WHERE patch_id = ?", (patch_id,)).fetchone()
+        if row2:
+            video_repository.delete_video(conn, row2["id"])
 
         pipeline = conn.execute(
             "SELECT upload_status FROM patch_pipeline WHERE patch_id = ?", (patch_id,)
@@ -581,9 +606,18 @@ def upload_patch_video_to_youtube(
 ):
     """Push a patch's already-generated MP4 (server-rendered or uploaded from
     Colab/Kaggle) to YouTube via the upload worker. Returns JSON."""
-    video_path = _patch_video_path(book_id, patch_id)
-    if not video_path.exists():
-        raise HTTPException(status_code=400, detail="Chưa có video cho patch này")
+    with locked_conn(request) as conn:
+        _pre_patch = repository.get_patch(conn, patch_id)
+        if _pre_patch is None or _pre_patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        video_path = _patch_video_path_for_patch(_pre_patch)
+        # fallback legacy for videos chưa migrate
+        if not video_path.exists():
+            legacy = repository._legacy_patch_video_path(book_id, patch_id)
+            if legacy.exists():
+                video_path = legacy
+        if not video_path.exists():
+            raise HTTPException(status_code=400, detail="Chưa có video cho patch này")
     with locked_conn(request) as conn:
         patch = repository.get_patch(conn, patch_id)
         if patch is None or patch.book_id != book_id:
@@ -643,10 +677,19 @@ def get_patch_overlay_image(request: Request, book_id: int, patch_id: int):
 
 @router.get("/books/{book_id}/patches/{patch_id}/video")
 def get_patch_video(request: Request, book_id: int, patch_id: int):
-    video_path = _patch_video_path(book_id, patch_id)
-    if not video_path.exists():
-        raise HTTPException(status_code=404, detail="Video not generated yet")
-    return FileResponse(str(video_path), media_type="video/mp4")
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        video_path = _patch_video_path_for_patch(patch)
+        if not video_path.exists():
+            # fallback legacy
+            legacy = repository._legacy_patch_video_path(book_id, patch_id)
+            if legacy.exists():
+                video_path = legacy
+        if not video_path.exists():
+            raise HTTPException(status_code=404, detail="Video not generated yet")
+        return FileResponse(str(video_path), media_type="video/mp4")
 
 
 # ---------------------------------------------------------------------------

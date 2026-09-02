@@ -47,6 +47,24 @@ def get_patch_chunk_dir(book_id: int, patch_index: int) -> Path:
     return Path(settings.data_root) / "books" / str(book_id) / "audio" / f"{book_id}_{episode}_chunks"
 
 
+def get_patch_video_path(book_id: int, patch_index: int) -> Path:
+    episode = f"{patch_index + 1:03d}"
+    return Path(settings.data_root) / "books" / str(book_id) / "videos" / f"{book_id}_{episode}.mp4"
+
+
+def _legacy_patch_video_path(book_id: int, patch_id: int) -> Path:
+    return Path(settings.data_root) / "books" / str(book_id) / "patch_videos" / f"{patch_id}.mp4"
+
+
+def resolve_patch_video(patch) -> Path | None:
+    """Đường dẫn video thật sự tồn tại, ưu tiên layout mới {book}_{episode}.mp4, fallback legacy patch_videos/{patch_id}.mp4. Chỉ dùng cho đọc."""
+    candidates = [
+        get_patch_video_path(patch.book_id, patch.patch_index),
+        _legacy_patch_video_path(patch.book_id, patch.id),
+    ]
+    return next((c for c in candidates if c.is_file()), None)
+
+
 def get_backup_path(book_id: int, patch_index: int, extension: str, timestamp: str) -> Path:
     episode = f"{patch_index + 1:03d}"
     return Path(settings.data_root) / "books" / str(book_id) / "backup_audio" / f"{book_id}_{episode}_{timestamp}{extension}"
@@ -615,10 +633,9 @@ def reset_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
         backup_patch_audio_files(patch.book_id, patch.patch_index, patch.audio_path)
         delete_patch_audio_files(patch.audio_path)
 
-    video_dir = Path("data") / "books" / str(patch.book_id) / "patch_videos"
-    video_file = video_dir / f"{patch_id}.mp4"
-    if video_file.exists():
-        video_file.unlink(missing_ok=True)
+    # New layout videos/{book}_{episode}.mp4 + legacy patch_videos/{patch_id}.mp4
+    for p in (get_patch_video_path(patch.book_id, patch.patch_index), _legacy_patch_video_path(patch.book_id, patch.id)):
+        p.unlink(missing_ok=True)
 
     _delete_chunk_dir(patch.book_id, patch.patch_index, patch.id)
 
@@ -655,10 +672,8 @@ def delete_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
         delete_patch_audio_files(patch.audio_path)
     if patch.image_path:
         Path(patch.image_path).unlink(missing_ok=True)
-    video_dir = Path("data") / "books" / str(book_id) / "patch_videos"
-    video_file = video_dir / f"{patch_id}.mp4"
-    if video_file.exists():
-        video_file.unlink(missing_ok=True)
+    for p in (get_patch_video_path(patch.book_id, patch.patch_index), _legacy_patch_video_path(patch.book_id, patch.id)):
+        p.unlink(missing_ok=True)
 
     _delete_chunk_dir(book_id, patch.patch_index, patch.id)
 

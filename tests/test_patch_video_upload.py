@@ -61,8 +61,8 @@ def test_upload_patch_video_saves_where_preview_reads(tmp_path, monkeypatch):
         )
         library = client.get("/video/api/videos")
     assert response.status_code == 303
-    assert (tmp_path / "books" / "7" / "patch_videos" / "11.mp4").read_bytes() == b"video-data"
-    assert any(v["filename"] == "patch_7_11.mp4" for v in library.json()["videos"])
+    assert (tmp_path / "books" / "7" / "videos" / "7_001.mp4").read_bytes() == b"video-data"
+    assert any(v["filename"] == "7_001.mp4" for v in library.json()["videos"])
 
 
 def test_uploaded_patch_video_is_linked_to_its_patch(tmp_path, monkeypatch):
@@ -121,7 +121,7 @@ def test_registering_then_publishing_keeps_one_row_per_patch(tmp_path, monkeypat
             files={"video": ("patch.mp4", b"video-data", "video/mp4")},
             follow_redirects=False,
         )
-        video_path = tmp_path / "books" / "7" / "patch_videos" / "11.mp4"
+        video_path = tmp_path / "books" / "7" / "videos" / "7_001.mp4"
         upsert_patch_video(conn, book_id=7, patch_id=11,
                            file_path=str(video_path), resolution="1920x1080")
         rows = conn.execute("SELECT id, patch_id FROM videos").fetchall()
@@ -259,7 +259,7 @@ def test_generate_patch_video_appends_intro_and_outro(tmp_path, monkeypatch):
     assert len(concat_calls) == 1
     segments, out_path = concat_calls[0]
     assert len(segments) == 3
-    final = tmp_path / "books" / "1" / "patch_videos" / "1.mp4"
+    final = tmp_path / "books" / "1" / "videos" / "1_001.mp4"
     assert Path(out_path) != final
     assert final.is_file()
     assert final.read_bytes() == b"final"
@@ -279,12 +279,12 @@ def _seed_book_with_patch_video(conn, tmp_path) -> Path:
            VALUES (1, 1, 0, 1, 1, 'done', 'narration.wav', ?, ?)""",
         (now, now),
     )
-    video_path = tmp_path / "books" / "1" / "patch_videos" / "1.mp4"
+    video_path = tmp_path / "books" / "1" / "videos" / "1_001.mp4"
     video_path.parent.mkdir(parents=True, exist_ok=True)
     video_path.write_bytes(b"video")
     conn.execute(
         """INSERT INTO videos (id, filename, file_path, file_size_bytes, created_at, updated_at)
-           VALUES (1, 'patch_1_1.mp4', ?, 5, ?, ?)""",
+           VALUES (1, '1_001.mp4', ?, 5, ?, ?)""",
         (str(video_path), now, now),
     )
     conn.commit()

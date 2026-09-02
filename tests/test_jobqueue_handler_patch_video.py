@@ -24,7 +24,7 @@ def test_manual_patch_job_renders_without_pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(patch_video, "validate_video", lambda p, **kw: ValidationResult(True,None,"",(),ValidationFacts(),0))
     job_id = store.enqueue(conn, "patch_video", payload={"patch_id": 2}, book_id=1); job = store.claim(conn, "patch_video", "w")
     result = patch_video.handle(JobContext(job, conn, JobLogger(job_id, "patch_video"), lambda: False))
-    output = tmp_path / "books" / "1" / "patch_videos" / "2.mp4"
+    output = tmp_path / "books" / "1" / "videos" / "1_001.mp4"
     assert result["output_path"] == str(output)
     assert output.read_bytes() == b"new"
     assert seen["out"] != str(output)
