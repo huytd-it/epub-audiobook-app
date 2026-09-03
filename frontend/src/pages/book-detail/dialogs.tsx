@@ -215,7 +215,7 @@ export function PatchPreviewDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100%-2rem)] max-w-6xl overflow-hidden">
+      <DialogContent className="grid max-h-[90vh] w-[calc(100%-2rem)] max-w-6xl grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 pr-8">
             <span className="truncate">
@@ -231,8 +231,9 @@ export function PatchPreviewDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <Progress value={percent} className="h-1.5" />
+        <Progress value={percent} className="h-1.5 shrink-0" />
 
+        <div className="min-h-0 space-y-4 overflow-y-auto pr-1">
         <div className="grid gap-2 rounded-md border border-border bg-muted/20 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
           <Field label="TTS model (chỉ Patch này)">
             <select className={selectClass} value={quickModelId} onChange={(event) => setQuickModelId(event.target.value)}>
@@ -357,7 +358,7 @@ export function PatchPreviewDialog({
         </div>
 
         {patch?.status === "done" && (
-          <div className="space-y-3">
+          <div className="space-y-3 pb-1">
             <audio controls className="w-full" src={`/books/${bookId}/patches/${patch.id}/audio`} />
             <DialogFooter>
               <Button variant="outline" asChild>
@@ -373,6 +374,7 @@ export function PatchPreviewDialog({
             </DialogFooter>
           </div>
         )}
+        </div>
       </DialogContent>
     </Dialog>
   );

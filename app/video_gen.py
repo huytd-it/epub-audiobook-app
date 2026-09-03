@@ -64,6 +64,19 @@ def _emit(on_progress: ProgressCallback | None, event: str, **fields) -> None:
 # a job-level render attempt (patch renders are capped at MAX_PATCH_RENDER_ATTEMPTS).
 _ENCODER_RETRIES = 2
 
+# ffmpeg also returns its own negative AVERROR as the process exit status, and
+# Windows hands that back as an unsigned DWORD: ENOENT (-2) arrives as
+# 0xFFFFFFFE, which lands inside the NTSTATUS range above. Those are
+# deterministic ffmpeg errors ("No such file or directory" on an input or the
+# output directory) that no amount of retrying fixes, so only exit statuses
+# below this floor count as a crash worth retrying.
+_ERRNO_EXIT_FLOOR = 0xFFFFFF00
+
+
+def _is_transient_crash(returncode: int) -> bool:
+    """True for the Windows crash statuses that are worth retrying."""
+    return 0x80000000 <= returncode < _ERRNO_EXIT_FLOOR
+
 
 def _run_encoder(cmd: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess:
     delay = 2.0
@@ -72,7 +85,7 @@ def _run_encoder(cmd: list[str], *, cwd: str | None = None) -> subprocess.Comple
         try:
             return subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=cwd)
         except subprocess.CalledProcessError as exc:
-            if 0 <= exc.returncode < 0x80000000:
+            if not _is_transient_crash(exc.returncode):
                 logger.warning("ffmpeg failed (%s): %s", exc.returncode,
                                (exc.stderr or "")[-500:])
                 raise
@@ -85,7 +98,24 @@ def _run_encoder(cmd: list[str], *, cwd: str | None = None) -> subprocess.Comple
                 time.sleep(delay)
                 delay *= 2
     assert last_exc is not None
+    # Every retry is exhausted: log the diagnostics too, otherwise the crash
+    # branch swallows ffmpeg's own message and the failure is undebuggable.
+    logger.warning("ffmpeg failed after %d retries (%s): %s", _ENCODER_RETRIES,
+                   last_exc.returncode, (last_exc.stderr or "")[-500:])
     raise last_exc
+
+
+def _ensure_out_dir(out_path: str) -> None:
+    """Recreate the output directory immediately before writing to it.
+
+    A render can run for hours between the caller's mkdir and the final mux
+    (gameplay episodes concat ~200 clips), and the output directory is empty
+    that whole time — long enough for a cleanup pass to remove it. ffmpeg then
+    exits ENOENT with the partial render already paid for.
+    """
+    parent = Path(out_path).parent
+    if str(parent):
+        parent.mkdir(parents=True, exist_ok=True)
 
 
 def _probe_audio_seconds(path: str) -> float | None:
@@ -509,6 +539,7 @@ def generate_segment(
     Events: segment.start, segment.ffmpeg_start, segment.ffmpeg_done, segment.done,
             segment.failed.
     """
+    _ensure_out_dir(out_path)
     if music_path is not None and not Path(music_path).exists():
         raise FileNotFoundError(f"music file not found: {music_path}")
     music_path, loop_music = _prepare_gap_music(audio_path, music_path, out_path, music_gaps)
@@ -760,6 +791,19 @@ def _assert_uniform_audio_format(segment_paths: list[str]) -> None:
         )
 
 
+def _assert_segments_exist(segment_paths: list[str]) -> None:
+    """Fail loudly when a segment listed for concat is missing.
+
+    The concat demuxer treats an unopenable entry as a soft demux error: it
+    logs 'Impossible to open ...', skips the segment and still exits 0, so a
+    silently truncated video sails through as a success.
+    """
+    missing = [p for p in segment_paths if not Path(p).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "refusing to concat with missing segments: " + ", ".join(missing))
+
+
 def concat_segments(
     segment_paths: list[str],
     out_path: str,
@@ -771,6 +815,9 @@ def concat_segments(
         raise ValueError("No segments to concat")
 
     _emit(on_progress, "concat.start", count=len(segment_paths), path=out_path)
+
+    _assert_segments_exist(segment_paths)
+    _ensure_out_dir(out_path)
 
     if len(segment_paths) == 1:
         Path(out_path).write_bytes(Path(segment_paths[0]).read_bytes())
@@ -817,6 +864,8 @@ def concat_video_segments(segment_paths: list[str], out_path: str) -> None:
     """Concat pre-rendered video-only gameplay clips without audio assertions."""
     if not segment_paths:
         raise ValueError("No video segments to concat")
+    _assert_segments_exist(segment_paths)
+    _ensure_out_dir(out_path)
     _assert_uniform_frame_rate(segment_paths)
     list_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
     try:
@@ -854,6 +903,7 @@ def generate_background_sequence(
     branding_overlay_path: str | None = None,
 ) -> None:
     """Render rotating silent backgrounds, then mux narration/music once."""
+    _ensure_out_dir(out_path)
     duration = _probe_duration(audio_path)
     # Built before the (expensive) background pieces so a broken music input
     # fails fast; deleted again once the final mux has consumed it.

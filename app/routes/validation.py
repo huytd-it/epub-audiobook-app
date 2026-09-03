@@ -84,6 +84,26 @@ def _plan_text(plan: list[dict]) -> str:
     return "\n\n".join((chunk.get("text") or "") for chunk in plan)
 
 
+def _slice_parsed(parsed: list, parsed_start: int | None, parsed_end: int | None) -> tuple[list, bool]:
+    """Cắt danh sách chương đã parse theo khoảng 1-based (bao gồm cả hai đầu).
+
+    Trả về (danh sách đã cắt, có dùng range hay không). Ngoài khoảng thì bỏ qua
+    hoàn toàn — nhờ vậy file mới dài mà chỉ nối thêm ở cuối không phải diff lại
+    từ đầu (tránh khớp nhầm + nhẹ hơn). Giá trị ngoài biên được kẹp vào biên;
+    khoảng rỗng thì trả về danh sách rỗng.
+    """
+    if parsed_start is None and parsed_end is None:
+        return parsed, False
+    total = len(parsed)
+    start = (parsed_start or 1) - 1
+    end = parsed_end if parsed_end is not None else total
+    start = max(0, min(start, total))
+    end = max(0, min(end, total))
+    if start >= end:
+        return [], True
+    return parsed[start:end], True
+
+
 def _chapter_patch_summaries(conn, book_id: int, chapter_index: int) -> list[dict]:
     return [
         {
@@ -201,8 +221,20 @@ def patch_validation(request: Request, book_id: int, patch_id: int, max_chars: i
 
 
 @router.get("/books/{book_id}/reimport/preview")
-def reimport_preview(request: Request, book_id: int):
-    """Diff the book's stored EPUB against its chapters without writing anything."""
+def reimport_preview(
+    request: Request,
+    book_id: int,
+    parsed_start: int | None = None,
+    parsed_end: int | None = None,
+):
+    """Diff the book's stored EPUB against its chapters without writing anything.
+
+    ``parsed_start`` / ``parsed_end`` là vị trí 1-based (bao gồm cả hai đầu) trong
+    file EPUB mới — chỉ xét các mục trong khoảng đó. Dùng khi sách đã ra nhiều
+    chương và file mới chỉ nối thêm ở cuối: bỏ qua phần đầu để tránh khớp nhầm
+    (hash/số chương đổi ở đầu file) và preview nhẹ hơn. Khi có range, trường
+    ``removed`` luôn rỗng vì ngoài khoảng không được xét.
+    """
     with locked_conn(request) as conn:
         book = _require_book(conn, book_id)
         repository.backfill_chapter_metadata(conn, book_id)
@@ -212,8 +244,54 @@ def reimport_preview(request: Request, book_id: int):
         raise HTTPException(status_code=400, detail="Không tìm thấy file EPUB gốc của sách.")
 
     parsed = parse_epub(epub_path)
+    sliced, ranged = _slice_parsed(parsed, parsed_start, parsed_end)
     with locked_conn(request) as conn:
-        plan = repository.diff_chapters_against_epub(conn, book_id, parsed)
+        plan = repository.diff_chapters_against_epub(conn, book_id, sliced)
+    if ranged:
+        plan["removed"] = []
+        plan["ranged"] = True
+        plan["parsed_start"] = parsed_start
+        plan["parsed_end"] = parsed_end
+    return JSONResponse(plan)
+
+
+@router.post("/books/{book_id}/reimport/preview")
+async def reimport_preview_upload(
+    request: Request,
+    book_id: int,
+    epub_file: UploadFile | None = File(default=None),
+    parsed_start: int | None = Form(default=None),
+    parsed_end: int | None = Form(default=None),
+):
+    """Preview diff của một file EPUB mới tải lên mà chưa ghi gì vào DB.
+
+    Frontend giữ nguyên File đã chọn: gọi endpoint này để preview, rồi gọi
+    POST /reimport với cùng file + cùng range để nạp thật.
+    """
+    if epub_file is None or not epub_file.filename:
+        raise HTTPException(status_code=400, detail="Chưa chọn file EPUB.")
+    with locked_conn(request) as conn:
+        _require_book(conn, book_id)
+        repository.backfill_chapter_metadata(conn, book_id)
+
+    uploads_dir = Path(settings.data_root) / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = uploads_dir / f"_tmp_reimport_preview_{book_id}.epub"
+    with open(tmp_path, "wb") as handle:
+        shutil.copyfileobj(epub_file.file, handle)
+    try:
+        parsed = parse_epub(str(tmp_path))
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    sliced, ranged = _slice_parsed(parsed, parsed_start, parsed_end)
+    with locked_conn(request) as conn:
+        plan = repository.diff_chapters_against_epub(conn, book_id, sliced)
+    if ranged:
+        plan["removed"] = []
+        plan["ranged"] = True
+        plan["parsed_start"] = parsed_start
+        plan["parsed_end"] = parsed_end
     return JSONResponse(plan)
 
 
@@ -223,12 +301,18 @@ async def reimport(
     book_id: int,
     epub_file: UploadFile | None = File(default=None),
     update_changed: bool = Form(default=False),
+    parsed_start: int | None = Form(default=None),
+    parsed_end: int | None = Form(default=None),
 ):
     """Take new chapters from an EPUB (uploaded, or the book's stored one).
 
     Chapters already in the book keep their index, so existing patches — and the audio
     already rendered for them — stay valid. Chapters whose text changed are only rewritten
     with update_changed, and never when a completed patch covers them.
+
+    ``parsed_start`` / ``parsed_end`` (1-based, gồm cả hai đầu) giới hạn chỉ nạp các
+    mục trong khoảng đó của file mới — dùng khi file chỉ nối thêm ở cuối để khỏi
+    diff lại từ đầu gây khớp nhầm.
     """
     with locked_conn(request) as conn:
         book = _require_book(conn, book_id)
@@ -250,6 +334,7 @@ async def reimport(
 
     try:
         parsed = parse_epub(str(source))
+        parsed, _ = _slice_parsed(parsed, parsed_start, parsed_end)
         with locked_conn(request) as conn:
             result = repository.append_new_chapters(
                 conn, book_id, parsed, update_changed=bool(update_changed)

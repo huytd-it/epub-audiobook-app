@@ -166,6 +166,28 @@ export function BuildPanel({
   const [extendPlan, setExtendPlan] = useState<ExtendPlan>();
   const [updateChanged, setUpdateChanged] = useState(false);
   const [working, setWorking] = useState(false);
+  // Nguồn EPUB cho cập nhật: file gốc đã lưu hay file mới tải lên.
+  const [updateSource, setUpdateSource] = useState<"stored" | "upload">("stored");
+  const [updateFile, setUpdateFile] = useState<File | null>(null);
+  // Khoảng mục (1-based, gồm cả hai đầu) trong file EPUB mới — chỉ xét/nạp các
+  // mục này, bỏ qua phần đầu để tránh diff lại từ đầu gây khớp nhầm.
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
+  const [previewing, setPreviewing] = useState(false);
+  const [lastImport, setLastImport] = useState("");
+
+  const rangeParams = () => {
+    const query = new URLSearchParams();
+    if (rangeFrom) query.set("parsed_start", rangeFrom);
+    if (rangeTo) query.set("parsed_end", rangeTo);
+    return query.toString();
+  };
+
+  const rangeForm = (form: FormData) => {
+    if (rangeFrom) form.set("parsed_start", rangeFrom);
+    if (rangeTo) form.set("parsed_end", rangeTo);
+    return form;
+  };
 
   const loadPlans = useCallback(async () => {
     try {
@@ -245,31 +267,53 @@ export function BuildPanel({
     }
   };
 
-  const reimportStored = () =>
+  /** Xem trước diff mà chưa ghi gì: nạp file (upload hoặc gốc) + khoảng chọn. */
+  const previewUpdate = async () => {
+    if (updateSource === "upload" && !updateFile) {
+      onMessage("Hãy chọn file EPUB mới trước khi xem trước.");
+      return;
+    }
+    setPreviewing(true);
+    try {
+      if (updateSource === "upload" && updateFile) {
+        const form = rangeForm(new FormData());
+        form.set("epub_file", updateFile);
+        setReimportPlan(await postForm<ReimportPlan>(`/books/${bookId}/reimport/preview`, form));
+      } else {
+        const query = rangeParams();
+        setReimportPlan(
+          await api<ReimportPlan>(`/books/${bookId}/reimport/preview${query ? `?${query}` : ""}`).catch(
+            () => undefined
+          )
+        );
+      }
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  /** Nạp chương mới vào DB theo đúng nguồn + khoảng đã xem trước. */
+  const importUpdate = () =>
     runIncremental(async () => {
-      const form = new FormData();
+      const form = rangeForm(new FormData());
       form.set("update_changed", updateChanged ? "true" : "false");
+      if (updateSource === "upload") {
+        if (!updateFile) throw new Error("Chưa chọn file EPUB mới.");
+        form.set("epub_file", updateFile);
+      }
       const result = await postForm<{ inserted: number; updated: number; skipped_changed: number }>(
         `/books/${bookId}/reimport`,
         form
       );
-      return `Đã thêm ${result.inserted} chương mới, cập nhật ${result.updated} chương${
-        result.skipped_changed ? `, bỏ qua ${result.skipped_changed} chương đã có audio` : ""
-      }.`;
+      const summary =
+        `Đã nạp: thêm ${result.inserted} chương, cập nhật ${result.updated} chương` +
+        `${result.skipped_changed ? `, bỏ qua ${result.skipped_changed} chương đã có audio` : ""}.` +
+        `${extendPlan?.uncovered_chapters ? "" : " Mở phần Patch bổ sung bên dưới để thêm patch."}`;
+      setLastImport(summary);
+      return summary;
     });
-
-  const reimportUpload = (files: FileList | null) => {
-    if (!files?.length) return;
-    return runIncremental(async () => {
-      const form = new FormData();
-      form.set("epub_file", files[0]);
-      form.set("update_changed", updateChanged ? "true" : "false");
-      const result = await postForm<{ inserted: number; updated: number; skipped_changed: number }>(`/books/${bookId}/reimport`, form);
-      return `Đã nạp EPUB mới: thêm ${result.inserted} chương, cập nhật ${result.updated} chương${
-        result.skipped_changed ? `, bỏ qua ${result.skipped_changed} chương đã có audio` : ""
-      }.`;
-    });
-  };
 
   const extendPatches = () =>
     runIncremental(async () => {
@@ -552,20 +596,83 @@ export function BuildPanel({
           <SectionHead
             icon={ListPlus}
             title="Cập nhật sách (thêm chương mới)"
-            detail="Chương đã có giữ nguyên chỉ số và audio; chỉ chương mới được nạp thêm."
+            detail="Chương đã có giữ nguyên chỉ số và audio; chỉ chương mới được nạp thêm. Chọn khoảng mục trong file mới để khỏi nạp lại từ đầu."
           />
         </CardHeader>
         <CardContent className="space-y-4 pt-5 text-xs">
-          {reimportPlan ? (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <Tile label="Chương đang có" value={reimportPlan.existing_count} />
-              <Tile label="Trong EPUB" value={reimportPlan.parsed_count} />
-              <Tile label="Chương mới" value={reimportPlan.added.length} tone={reimportPlan.added.length ? "good" : undefined} />
-              <Tile label="Nội dung đổi" value={reimportPlan.changed.length} tone={reimportPlan.changed.length ? "warn" : undefined} />
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant={updateSource === "stored" ? "default" : "outline"}
+              onClick={() => setUpdateSource("stored")}
+            >
+              EPUB gốc đã lưu
+            </Button>
+            <Button
+              size="sm"
+              variant={updateSource === "upload" ? "default" : "outline"}
+              onClick={() => setUpdateSource("upload")}
+            >
+              <Upload className="h-3.5 w-3.5" /> EPUB mới tải lên
+            </Button>
+          </div>
+
+          {updateSource === "upload" && (
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex">
+                <input
+                  className="hidden"
+                  type="file"
+                  accept=".epub"
+                  onChange={(event) => {
+                    setUpdateFile(event.target.files?.[0] || null);
+                    setLastImport("");
+                    event.currentTarget.value = "";
+                  }}
+                />
+                <span className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-md border border-input px-3 text-xs font-medium hover:bg-muted">
+                  <Upload className="h-3.5 w-3.5" /> {updateFile ? "Đổi file khác" : "Chọn file EPUB"}
+                </span>
+              </label>
+              {updateFile ? (
+                <span className="inline-flex min-w-0 items-center gap-2 rounded-md bg-muted/40 px-2.5 py-1.5">
+                  <span className="max-w-64 truncate font-mono text-[11px]">{updateFile.name}</span>
+                  <button
+                    className="text-muted-foreground hover:text-foreground"
+                    title="Bỏ chọn file"
+                    onClick={() => setUpdateFile(null)}
+                  >
+                    <XCircle className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              ) : (
+                <span className="text-muted-foreground">Chưa chọn file — chọn file rồi bấm Xem trước.</span>
+              )}
             </div>
-          ) : (
-            <div className="text-muted-foreground">Không đọc được EPUB gốc — hãy tải file EPUB mới lên.</div>
           )}
+
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Từ mục (trong file mới)" hint="1 = đầu file, trống = từ đầu">
+              <input
+                className={fieldClass}
+                type="number"
+                min="1"
+                placeholder="1"
+                value={rangeFrom}
+                onChange={(event) => setRangeFrom(event.target.value)}
+              />
+            </Field>
+            <Field label="Đến mục" hint="Trống = đến hết file">
+              <input
+                className={fieldClass}
+                type="number"
+                min="1"
+                placeholder="Hết file"
+                value={rangeTo}
+                onChange={(event) => setRangeTo(event.target.value)}
+              />
+            </Field>
+          </div>
 
           <CheckField
             checked={updateChanged}
@@ -574,24 +681,52 @@ export function BuildPanel({
           />
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={reimportStored} disabled={working || !reimportPlan}>
-              <RefreshCw className={cn("h-3.5 w-3.5", working && "animate-spin")} /> Nạp từ EPUB gốc
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={previewUpdate}
+              disabled={previewing || working || (updateSource === "upload" && !updateFile)}
+            >
+              <Eye className="h-3.5 w-3.5" /> {previewing ? "Đang xem..." : "Xem trước"}
             </Button>
-            <label className="inline-flex">
-              <input
-                className="hidden"
-                type="file"
-                accept=".epub"
-                onChange={(event) => {
-                  reimportUpload(event.target.files);
-                  event.currentTarget.value = "";
-                }}
-              />
-              <span className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-md border border-input px-3 text-xs font-medium hover:bg-muted">
-                <Upload className="h-3.5 w-3.5" /> Tải EPUB mới
-              </span>
-            </label>
+            <Button
+              size="sm"
+              onClick={importUpdate}
+              disabled={working || previewing || (updateSource === "upload" && !updateFile)}
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", working && "animate-spin")} />
+              {working ? "Đang nạp..." : "Nạp chương mới"}
+            </Button>
           </div>
+
+          {lastImport && (
+            <div className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-800">{lastImport}</div>
+          )}
+
+          {reimportPlan ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <Tile label="Chương đang có" value={reimportPlan.existing_count} />
+              <Tile
+                label={reimportPlan.ranged ? "Trong khoảng chọn" : "Trong EPUB"}
+                value={reimportPlan.parsed_count}
+              />
+              <Tile label="Chương mới" value={reimportPlan.added.length} tone={reimportPlan.added.length ? "good" : undefined} />
+              <Tile label="Nội dung đổi" value={reimportPlan.changed.length} tone={reimportPlan.changed.length ? "warn" : undefined} />
+            </div>
+          ) : (
+            <div className="text-muted-foreground">
+              {updateSource === "upload"
+                ? "Chọn file EPUB mới rồi bấm Xem trước để biết sẽ thêm những chương nào."
+                : "Không đọc được EPUB gốc — hãy tải file EPUB mới lên."}
+            </div>
+          )}
+
+          {reimportPlan?.ranged && (
+            <div className="rounded-md bg-muted/40 px-3 py-2 text-muted-foreground">
+              Chỉ xét các mục {reimportPlan.parsed_start || 1}–{reimportPlan.parsed_end || reimportPlan.parsed_count} của
+              file mới; phần ngoài khoảng được bỏ qua.
+            </div>
+          )}
 
           {reimportPlan && reimportPlan.added.length > 0 && (
             <div className="rounded-md border border-border">
@@ -614,6 +749,28 @@ export function BuildPanel({
             </div>
           )}
 
+          {reimportPlan && reimportPlan.changed.length > 0 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50/50">
+              <div className="border-b border-amber-200 px-3 py-2 font-medium text-amber-900">
+                {reimportPlan.changed.length} chương đổi nội dung
+                {!updateChanged && " (sẽ giữ nguyên vì chưa bật ghi đè)"}
+              </div>
+              <div className="max-h-40 overflow-auto">
+                {reimportPlan.changed.slice(0, 50).map((chapter) => (
+                  <div key={chapter.chapter_index} className="flex items-center gap-3 border-b border-amber-100 px-3 py-1.5 last:border-0">
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      #{chapter.chapter_index + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{chapter.title}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {chapter.old_char_count.toLocaleString("vi-VN")} → {chapter.new_char_count.toLocaleString("vi-VN")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="border-t border-border pt-4">
             <div className="mb-2 font-medium">
               Patch bổ sung
@@ -629,7 +786,7 @@ export function BuildPanel({
                   ))}
                 </div>
                 <Button size="sm" onClick={extendPatches} disabled={working}>
-                  <ListPlus className="h-3.5 w-3.5" /> Tạo {extendPlan.patches.length} patch mới
+                  <ListPlus className="h-3.5 w-3.5" /> Thêm {extendPlan.patches.length} patch mới
                 </Button>
               </div>
             ) : (

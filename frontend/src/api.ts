@@ -111,6 +111,8 @@ export type YouTubeUploadItem = {
   not_for_kids: boolean;
   ai_labels_enabled: boolean;
   status: string;
+  /** Phần trăm byte đã đẩy lên YouTube, do app/youtube.py ghi lại sau mỗi khối. */
+  upload_progress?: number;
   youtube_video_id?: string;
   error_message?: string;
   created_at: string;

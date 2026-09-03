@@ -28,6 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { MediaBrowser } from "@/components/media-browser/MediaBrowser";
 import {
   PatchRangeReport,
   PatchRangesReport,
@@ -66,6 +67,7 @@ type RowProps = {
   onSelect: (patchId: number, mode: SelectMode) => void;
   onOpen: (patch: Patch) => void;
   onOpenIssues: (patch: Patch) => void;
+  onOpenMedia: (patch: Patch) => void;
   onUploadVideo: (patch: Patch) => void;
   onRetryPublish: (patch: Patch) => void;
   onRepublish: (patch: Patch) => void;
@@ -84,6 +86,7 @@ const PatchRow = React.memo(function PatchRow({
   onSelect,
   onOpen,
   onOpenIssues,
+  onOpenMedia,
   onUploadVideo,
   onRetryPublish,
   onRepublish,
@@ -306,10 +309,14 @@ const PatchRow = React.memo(function PatchRow({
               <span className="hidden lg:inline">Đăng lại</span>
             </Button>
           )}
-          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-[11px]" title="Mở media của patch">
-            <Link to={`/media-browser?path=${encodeURIComponent(`_Sách/${patch.book_id}/patches/${patch.id}_chunks`)}`}>
-              <span className="hidden lg:inline">Media</span>
-            </Link>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-[11px]"
+            title="Mở media của patch"
+            onClick={() => onOpenMedia(patch)}
+          >
+            <span className="hidden lg:inline">Media</span>
           </Button>
         </div>
       </TableCell>
@@ -438,6 +445,13 @@ export function PatchesPanel({
   const openIssues = useCallback((patch: Patch) => {
     setIssuesPatch(patch);
     setIssuesOpen(true);
+  }, []);
+
+  const [mediaPatch, setMediaPatch] = useState<Patch>();
+  const [mediaOpen, setMediaOpen] = useState(false);
+  const openMedia = useCallback((patch: Patch) => {
+    setMediaPatch(patch);
+    setMediaOpen(true);
   }, []);
 
   const visible = useMemo(
@@ -647,6 +661,7 @@ export function PatchesPanel({
                     onSelect={select}
                     onOpen={onOpenPatch}
                     onOpenIssues={openIssues}
+                    onOpenMedia={openMedia}
                     onUploadVideo={uploadVideo}
                     onRetryPublish={retryPublish}
                     onRepublish={(patch) => setRepublishPatch(patch)}
@@ -674,6 +689,37 @@ export function PatchesPanel({
         onOpenChange={setIssuesOpen}
         onMessage={onMessage}
       />
+
+      <Dialog open={mediaOpen} onOpenChange={setMediaOpen}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-4xl overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>Media · Patch {mediaPatch ? `#${mediaPatch.patch_index + 1}` : ""}</DialogTitle>
+            <DialogDescription className="break-all font-mono text-[11px]">
+              {mediaPatch ? `_Sách/${mediaPatch.book_id}/patches/${mediaPatch.id}_chunks` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          {mediaPatch && (
+            <MediaBrowser
+              key={mediaPatch.id}
+              initialPath={`_Sách/${mediaPatch.book_id}/patches/${mediaPatch.id}_chunks`}
+              height={440}
+            />
+          )}
+          <DialogFooter>
+            {mediaPatch && (
+              <Button variant="outline" size="sm" asChild>
+                <Link
+                  to={`/media-browser?path=${encodeURIComponent(
+                    `_Sách/${mediaPatch.book_id}/patches/${mediaPatch.id}_chunks`
+                  )}`}
+                >
+                  Mở trang Media đầy đủ →
+                </Link>
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(republishPatch)} onOpenChange={(open) => !open && setRepublishPatch(undefined)}>
         <DialogContent className="max-h-[90vh] max-w-md overflow-auto">

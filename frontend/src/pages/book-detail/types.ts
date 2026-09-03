@@ -522,6 +522,10 @@ export type ReimportPlan = {
   added: { chapter_no: number | null; title: string; char_count: number }[];
   removed: { chapter_index: number; title: string }[];
   next_chapter_index: number;
+  /** True khi preview/import giới hạn theo khoảng mục trong file mới. */
+  ranged?: boolean;
+  parsed_start?: number | null;
+  parsed_end?: number | null;
 };
 
 export type ExtendPlan = {

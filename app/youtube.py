@@ -1,17 +1,21 @@
 """YouTube Data API v3 integration: OAuth2 flow, video upload, token management."""
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
 import random
 import re
+import socket
 import sqlite3
+import ssl
 import time
 import uuid
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 # Reusing the same OAuth client for both YouTube and Google Drive (see .env.example) means
 # Google's token response often includes every scope ever granted to that client for this
@@ -118,6 +122,8 @@ RETRYABLE_REASONS = frozenset({
     "rateLimitExceeded", "userRateLimitExceeded", "backendError", "internalError",
 })
 MAX_ATTEMPTS = 5
+# Trần tổng số lần thử lại trong MỘT lần truyền file lên YouTube (xem process_upload).
+MAX_TRANSFER_RETRIES = 20
 BASE_RETRY_DELAY = 1.0
 MAX_RETRY_DELAY = 32.0
 
@@ -155,6 +161,40 @@ def _error_reason(exc: Exception) -> str:
         return ""
 
 
+def _error_detail(exc: Exception) -> str:
+    """The `error.message` of a googleapiclient HttpError, or '' when it has none."""
+    content = getattr(exc, "content", None)
+    if not content:
+        return ""
+    try:
+        body = json.loads(content)
+        error = body.get("error", {})
+        message = error.get("message") or ""
+        if not message:
+            message = (error.get("errors") or [{}])[0].get("message", "") or ""
+        return message
+    except (ValueError, TypeError, IndexError, AttributeError):
+        return ""
+
+
+def describe_error(exc: Exception) -> str:
+    """Một dòng mô tả lỗi đủ để chẩn đoán mà không cần mở app.log.
+
+    `str(HttpError)` của googleapiclient là một khối dài lặp cả URL lẫn JSON thô;
+    khi nó rơi vào cột error_message của bảng youtube_uploads thì UI chỉ hiện được
+    vài chục ký tự đầu — đúng phần vô nghĩa. Ở đây gộp lại thành
+    "HTTP 403 quotaExceeded: The request cannot be completed... (HttpError)", giữ
+    nguyên các từ khóa mà youtube_upload._is_fatal dò để phân loại lỗi chí tử."""
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    reason = _error_reason(exc)
+    detail = _error_detail(exc) or str(exc).strip()
+    head = " ".join(part for part in (f"HTTP {status}" if status else "", reason) if part)
+    kind = type(exc).__name__
+    if head:
+        return f"{head}: {detail} ({kind})"[:1900]
+    return f"{kind}: {detail}"[:1900] if detail else kind
+
+
 def _is_retryable(exc: Exception) -> bool:
     """True for throttling and transient server errors, false for quota exhaustion."""
     status = getattr(getattr(exc, "resp", None), "status", None)
@@ -166,6 +206,45 @@ def _is_retryable(exc: Exception) -> bool:
     if status == 403:
         return _error_reason(exc) in RETRYABLE_REASONS
     return False
+
+
+# Đứt mạng giữa chừng là chuyện bình thường với một file vài trăm MB. Upload
+# resumable giữ nguyên resumable_uri nên gọi lại next_chunk() sẽ đi tiếp từ byte
+# đang dở chứ không truyền lại từ đầu — nên những lỗi này đáng retry, khác hẳn
+# với 403 quotaExceeded.
+_TRANSIENT_TRANSFER_ERRORS: tuple[type[BaseException], ...] = (
+    ConnectionError, TimeoutError, ssl.SSLError, http.client.HTTPException, socket.error,
+)
+# OSError bao cả FileNotFoundError/PermissionError — file biến mất giữa chừng thì
+# thử lại bao nhiêu lần cũng thế, nên loại chúng ra khỏi nhánh retry.
+_PERMANENT_TRANSFER_ERRORS: tuple[type[BaseException], ...] = (
+    FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError,
+)
+
+
+def is_winsock_error(exc: BaseException) -> bool:
+    """True cho OSError mang mã Winsock (10000-11999) trên Windows.
+
+    `sock.connect()` bị firewall/AV chặn ném PermissionError [WinError 10013] —
+    cùng lớp Python với PermissionError của filesystem, nhưng bản chất là sự cố
+    mạng của máy chứ không phải file hỏng. Không tách ra thì nó rơi vào
+    _PERMANENT_TRANSFER_ERRORS và một lần chặn nhất thời giết luôn lần upload.
+    """
+    winerror = getattr(exc, "winerror", None)
+    return isinstance(winerror, int) and 10000 <= winerror < 12000
+
+
+def _is_retryable_transfer(exc: Exception) -> bool:
+    """True cho lỗi mạng/5xx giữa chừng một lần upload resumable."""
+    if is_winsock_error(exc):
+        return True
+    if isinstance(exc, _PERMANENT_TRANSFER_ERRORS):
+        return False
+    if _is_retryable(exc):
+        return True
+    if getattr(getattr(exc, "resp", None), "status", None) is not None:
+        return False      # HTTP error đã được _is_retryable phân loại: không thử lại
+    return isinstance(exc, _TRANSIENT_TRANSFER_ERRORS)
 
 
 def _execute(request):
@@ -369,12 +448,22 @@ class UploadInProgress(RuntimeError):
     transferring will resolve to 'done' or 'failed' on its own."""
 
 
-def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
+def process_upload(
+    conn: sqlite3.Connection,
+    upload_id: int,
+    *,
+    progress_cb: Callable[[dict], None] | None = None,
+) -> dict:
     """Upload a video for an existing youtube_uploads row.
 
     Updates the existing row from pending → uploading → done.
     Never creates a second row.
     Returns {youtube_video_id, status}.
+
+    `progress_cb` nhận từng event có cấu trúc của lần truyền này —
+    start / progress / retry / done / error (xem _emit bên dưới). Job queue dùng
+    nó để đổ tiến độ và lỗi vào nhật ký job; gọi trực tiếp thì bỏ trống cũng được.
+    Callback ném lỗi không được phép làm hỏng lần upload đang chạy.
     """
     _require_google_imports()
     row = dict(conn.execute("SELECT * FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone() or {})
@@ -406,6 +495,20 @@ def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
             return {"youtube_video_id": current["youtube_video_id"], "status": "done"}
         raise UploadInProgress(f"upload {upload_id} đang được worker khác xử lý")
 
+    def _emit(event: dict) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb({"upload_id": upload_id, **event})
+        except Exception:      # nhật ký hỏng thì kệ, không được kéo theo lần upload
+            logger.warning("progress_cb của upload %s ném lỗi", upload_id, exc_info=True)
+
+    try:
+        bytes_total = video_file.stat().st_size
+    except OSError:
+        bytes_total = 0
+    started_at = time.monotonic()
+
     try:
         youtube = get_youtube_service(conn)
         tags = json.loads(row["tags"]) if row["tags"] else []
@@ -433,11 +536,60 @@ def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
             chunksize=_UPLOAD_CHUNK_SIZE,
         )
 
+        _emit({
+            "type": "start",
+            "file": str(video_file),
+            "file_name": video_file.name,
+            "bytes_total": bytes_total,
+            "chunk_size": _UPLOAD_CHUNK_SIZE,
+            "title": title,
+            "privacy_status": privacy_status,
+            "tags": (tags or [])[:30],
+            "description_chars": len(description),
+            "made_for_kids": not bool(row.get("not_for_kids", 1)),
+            "category_id": "26",
+        })
+
         req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
 
         response = None
+        bytes_done = 0
+        transient_failures = 0      # tổng số lần thử lại của cả lần truyền này
+        consecutive_failures = 0    # số lần hỏng liên tiếp, reset sau mỗi khối đi lọt
         while response is None:
-            status, response = req.next_chunk()
+            try:
+                status, response = req.next_chunk()
+            except Exception as exc:
+                # Một chunk hỏng chưa phải là cả lần upload hỏng: request giữ
+                # resumable_uri nên next_chunk() kế tiếp đi tiếp từ chỗ đang dở.
+                #
+                # Đếm hai lần cố ý. `consecutive` là thứ quyết định bỏ cuộc — một
+                # file 2 GB truyền cả tiếng đồng hồ thì vài lần rớt mạng rải rác là
+                # bình thường, không đáng hủy cả lần upload chỉ vì lần thứ năm.
+                # `transient_failures` là trần tổng, để một kết nối chập chờn kiểu
+                # rớt-rồi-đi-được-một-khối không quay vòng mãi mãi.
+                consecutive_failures += 1
+                transient_failures += 1
+                if (consecutive_failures >= MAX_ATTEMPTS
+                        or transient_failures >= MAX_TRANSFER_RETRIES
+                        or not _is_retryable_transfer(exc)):
+                    raise
+                delay = min(BASE_RETRY_DELAY * (2 ** (consecutive_failures - 1)), MAX_RETRY_DELAY)
+                delay += random.uniform(0, delay / 2)
+                described = describe_error(exc)
+                logger.warning(
+                    "YouTube upload %s gián đoạn (%s); thử lại sau %.1fs (lần %d/%d)",
+                    upload_id, described, delay, consecutive_failures, MAX_ATTEMPTS,
+                )
+                _emit({
+                    "type": "retry", "attempt": consecutive_failures, "max_attempts": MAX_ATTEMPTS,
+                    "total_retries": transient_failures, "max_total_retries": MAX_TRANSFER_RETRIES,
+                    "delay": round(delay, 1), "error": described,
+                    "bytes_done": bytes_done, "bytes_total": bytes_total,
+                })
+                time.sleep(delay)
+                continue
+            consecutive_failures = 0
             if status:
                 # Persisted every chunk so the /youtube page can poll it. This runs on the
                 # worker's own connection (see UploadWorker._execution_connection), never the
@@ -448,6 +600,20 @@ def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
                     (pct, upload_id),
                 )
                 conn.commit()
+                # resumable_progress là byte thật đã lên server; status.progress() chỉ là
+                # tỉ lệ. Ưu tiên byte thật, và suy ra từ tỉ lệ khi API không đưa (test giả).
+                bytes_done = getattr(status, "resumable_progress", None)
+                if not isinstance(bytes_done, int):
+                    bytes_done = int(pct / 100 * bytes_total)
+                elapsed = time.monotonic() - started_at
+                speed = bytes_done / elapsed if elapsed > 0 else 0.0
+                remaining = max(0, bytes_total - bytes_done)
+                _emit({
+                    "type": "progress", "percent": pct,
+                    "bytes_done": bytes_done, "bytes_total": bytes_total,
+                    "elapsed": elapsed, "speed_bps": speed,
+                    "eta_seconds": (remaining / speed) if speed > 0 else None,
+                })
                 logger.info("YouTube upload %s: %d%%", upload_id, int(pct))
 
         youtube_video_id = response.get("id", "")
@@ -456,17 +622,33 @@ def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
             (youtube_video_id, _now_iso(), upload_id),
         )
         conn.commit()
+        elapsed = time.monotonic() - started_at
+        _emit({
+            "type": "done", "youtube_video_id": youtube_video_id,
+            "bytes_total": bytes_total, "elapsed": elapsed,
+            "speed_bps": (bytes_total / elapsed) if elapsed > 0 else 0.0,
+            "retries": transient_failures,
+        })
         logger.info("YouTube upload %s done: %s", upload_id, youtube_video_id)
         return {"youtube_video_id": youtube_video_id, "status": "done"}
 
     except Exception as exc:
+        described = describe_error(exc)
         conn.execute(
             "UPDATE youtube_uploads SET status='failed', error_message=? WHERE id=?",
-            (str(exc), upload_id),
+            (described, upload_id),
         )
         conn.commit()
+        _emit({
+            "type": "error", "error": described,
+            "error_class": type(exc).__name__,
+            "http_status": getattr(getattr(exc, "resp", None), "status", None),
+            "reason": _error_reason(exc),
+            "bytes_total": bytes_total,
+            "elapsed": time.monotonic() - started_at,
+        })
         logger.exception("YouTube upload %s failed", upload_id)
-        return {"youtube_video_id": None, "status": "failed", "error": str(exc)}
+        return {"youtube_video_id": None, "status": "failed", "error": described}
 
 
 def upload_video(

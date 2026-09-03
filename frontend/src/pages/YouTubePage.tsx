@@ -66,6 +66,19 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 /** Columns of the playlist-order sheet; `position` drives the imported order. */
 const PLAYLIST_COLUMNS = ["position", "playlist_item_id", "video_id", "title", "description"];
 
+/** Một thay đổi tiêu đề/mô tả đọc từ file nhập, đang chờ xem trước rồi mới gửi đi. */
+type PendingMetaEdit = {
+  video_id: string;
+  /** Giá trị sẽ gửi lên YouTube. */
+  title: string;
+  /** null = file không có cột mô tả, giữ nguyên mô tả hiện tại. */
+  description: string | null;
+  oldTitle: string;
+  oldDescription: string;
+  titleChanged: boolean;
+  descriptionChanged: boolean;
+};
+
 const IMPORT_STATUS_LABELS: Record<string, string> = {
   updated: "Đã cập nhật",
   created: "Tạo mới",
@@ -130,6 +143,12 @@ export function YouTubePage() {
   const [previewingSort, setPreviewingSort] = useState(false);
   const [savingOrder, setSavingOrder] = useState(false);
   const [hasPendingOrder, setHasPendingOrder] = useState(false);
+  const [importingPlaylistFile, setImportingPlaylistFile] = useState(false);
+  // Tiêu đề/mô tả đọc từ file nhập, giữ ở client cho tới khi bấm "Áp dụng": bảng
+  // playlist hiển thị luôn giá trị mới bên cạnh giá trị cũ, nên xem trước được
+  // toàn bộ file trước khi chạm tới YouTube. Khóa theo playlist_item_id.
+  const [pendingMeta, setPendingMeta] = useState<Record<string, PendingMetaEdit>>({});
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   /** Snapshot of the on-server order taken right before a local preview/reorder, so
    *  the user can undo and get the untouched playlist back without a reload. */
@@ -218,8 +237,10 @@ export function YouTubePage() {
   const [bulkGenerateLabels, setBulkGenerateLabels] = useState(false);
   const [bulkUpdateBusy, setBulkUpdateBusy] = useState(false);
 
-  const loadUploads = (filters: YouTubeUploadFilters = uploadFilters) => {
-    setLoading(true);
+  /** `silent` bỏ qua spinner: dùng cho vòng poll khi đang có upload chạy, nếu
+      không cả bảng sẽ nhấp nháy mỗi vài giây. */
+  const loadUploads = (filters: YouTubeUploadFilters = uploadFilters, silent = false) => {
+    if (!silent) setLoading(true);
     const params = new URLSearchParams();
     Object.entries(filters).forEach(([key, value]) => {
       if (value) params.set(key, value);
@@ -228,7 +249,9 @@ export function YouTubePage() {
     api<{ uploads: YouTubeUploadItem[] }>(`/youtube/uploads${qs ? `?${qs}` : ""}`)
       .then((res) => setUploads(res.uploads || []))
       .catch((err) => console.error("Lỗi tải lịch sử upload YouTube:", err))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!silent) setLoading(false);
+      });
   };
 
   /** Playlists come from the TTL cache; use force to spend a request (Reload button,
@@ -248,6 +271,17 @@ export function YouTubePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadFilters]);
 
+  // Trong lúc còn hàng đang truyền lên, % chỉ có ý nghĩa nếu nó tự nhích: poll
+  // nhẹ 3 giây một lần và chỉ khi đang mở đúng tab, dừng ngay khi không còn
+  // dòng nào ở trạng thái "uploading".
+  const hasRunningUpload = uploads.some((u) => u.status === "uploading");
+  useEffect(() => {
+    if (!hasRunningUpload || activeTab !== "uploads") return;
+    const timer = setInterval(() => loadUploads(uploadFilters, true), 3000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasRunningUpload, activeTab, uploadFilters]);
+
   useEffect(() => {
     const handle = setTimeout(() => {
       setUploadFilters((prev) => (prev.search === uploadSearchInput ? prev : { ...prev, search: uploadSearchInput }));
@@ -256,6 +290,10 @@ export function YouTubePage() {
   }, [uploadSearchInput]);
 
   useEffect(() => {
+    // Đổi playlist thì mọi thứ đang xem trước (thứ tự lẫn tiêu đề/mô tả) đều thuộc
+    // về playlist cũ - giữ lại chỉ khiến bảng mới hiện thay đổi của bảng khác.
+    setPendingMeta({});
+    setImportNotice(null);
     if (!channelFilters.playlist_id) {
       setPlaylistItems([]);
       return;
@@ -330,12 +368,6 @@ export function YouTubePage() {
     } finally {
       setChannelSyncing(false);
     }
-  };
-
-  const handleChannelExport = () => {
-    const params = new URLSearchParams({ format: ioFormat });
-    if (channelSelectedIds.length > 0) params.set("ids", channelSelectedIds.join(","));
-    window.location.href = `/youtube/api/channel/videos/export?${params}`;
   };
 
   const runChannelBulkUpdate = async () => {
@@ -709,7 +741,16 @@ export function YouTubePage() {
     }
   };
 
+  /**
+   * Read back a file produced by "Xuất thứ tự". Nothing is sent to YouTube here:
+   * the order goes into the same pending state the sort tools use, and edited
+   * titles/descriptions go into `pendingMeta` so the table below shows the new
+   * value against the old one. Cả hai đều chờ nút bấm riêng để áp dụng.
+   */
   const handleImportPlaylistOrder = async (file: File) => {
+    let matched: Array<{ item: PlaylistItemDetail; row: Record<string, string> }>;
+    let next: PlaylistItemDetail[];
+    let orderMessage: string;
     try {
       const rows = parseSheet(await file.text(), formatOf(file.name));
       const positioned = rows.every((row) => Number.isFinite(Number(row.position)))
@@ -718,7 +759,7 @@ export function YouTubePage() {
 
       const byItemId = new Map(playlistItems.map((item) => [item.playlist_item_id, item]));
       const byVideoId = new Map(playlistItems.map((item) => [item.video_id, item]));
-      const ordered: PlaylistItemDetail[] = [];
+      matched = [];
       const placed = new Set<string>();
       for (const row of positioned) {
         const key = String(row.playlist_item_id ?? "").trim();
@@ -726,26 +767,108 @@ export function YouTubePage() {
         const item = byItemId.get(key) || byVideoId.get(videoKey);
         if (!item || placed.has(item.playlist_item_id)) continue;
         placed.add(item.playlist_item_id);
-        ordered.push(item);
+        matched.push({ item, row });
       }
-      if (ordered.length === 0) {
+      if (matched.length === 0) {
         return alert("File không khớp video nào trong playlist đang mở (cần cột playlist_item_id hoặc video_id).");
       }
       // Anything the file left out keeps its relative order at the end, so an
       // incomplete sheet can never silently drop videos from the playlist.
       const rest = playlistItems.filter((item) => !placed.has(item.playlist_item_id));
-      const next = [...ordered, ...rest];
-      setPlaylistItems(next);
-      setManualOrders(Object.fromEntries(next.map((item, index) => [item.playlist_item_id, String(index + 1)])));
-      setHasPendingOrder(true);
-      alert(
-        `Đã nạp thứ tự từ file: ${ordered.length} video khớp` +
-          (rest.length > 0 ? `, ${rest.length} video không có trong file được xếp xuống cuối` : "") +
-          '. Nhấn "Lưu thứ tự" để áp dụng lên YouTube.'
-      );
+      next = [...matched.map((entry) => entry.item), ...rest];
+      orderMessage =
+        `Đã nạp thứ tự từ file: ${matched.length} video khớp` +
+        (rest.length > 0 ? `, ${rest.length} video không có trong file được xếp xuống cuối` : "");
     } catch (err: any) {
-      alert(`Không đọc được file thứ tự: ${err.message}`);
+      return alert(`Không đọc được file thứ tự: ${err.message}`);
     }
+
+    setPlaylistItems(next);
+    setManualOrders(Object.fromEntries(next.map((item, index) => [item.playlist_item_id, String(index + 1)])));
+    setHasPendingOrder(true);
+
+    // Only columns the file actually carries count as edits: a sheet trimmed down
+    // to position + video_id must not blank out titles or descriptions.
+    const staged: Record<string, PendingMetaEdit> = {};
+    for (const { item, row } of matched) {
+      const title = row.title === undefined ? item.title : String(row.title).trim();
+      const description = row.description === undefined ? null : String(row.description);
+      const oldDescription = item.description ?? "";
+      const titleChanged = title.length > 0 && title !== item.title;
+      const descriptionChanged = description !== null && description !== oldDescription;
+      if (!titleChanged && !descriptionChanged) continue;
+      staged[item.playlist_item_id] = {
+        video_id: item.video_id,
+        title: titleChanged ? title : item.title,
+        description,
+        oldTitle: item.title,
+        oldDescription,
+        titleChanged,
+        descriptionChanged,
+      };
+    }
+    setPendingMeta(staged);
+
+    const stagedCount = Object.keys(staged).length;
+    setImportNotice(
+      `${orderMessage}. ` +
+        (stagedCount > 0
+          ? `${stagedCount} video có tiêu đề/mô tả khác — xem trước ngay trong bảng bên dưới.`
+          : "Không có tiêu đề/mô tả nào thay đổi.")
+    );
+  };
+
+  /** Gửi các thay đổi tiêu đề/mô tả đang xem trước lên YouTube. */
+  const applyPendingMeta = async () => {
+    const entries = Object.entries(pendingMeta);
+    if (entries.length === 0) return;
+    if (!window.confirm(`Ghi ${entries.length} thay đổi tiêu đề/mô tả lên YouTube?`)) return;
+
+    setImportingPlaylistFile(true);
+    const applied = new Map<string, PendingMetaEdit>();
+    const failures: string[] = [];
+    try {
+      for (const [itemId, edit] of entries) {
+        try {
+          await patchJson(`/youtube/api/videos/${edit.video_id}`, {
+            title: edit.title,
+            ...(edit.description === null ? {} : { description: edit.description }),
+          });
+          applied.set(itemId, edit);
+        } catch (err: any) {
+          failures.push(`${edit.oldTitle}: ${err.message}`);
+        }
+      }
+    } finally {
+      setImportingPlaylistFile(false);
+    }
+
+    if (applied.size > 0) {
+      setPlaylistItems((prev) =>
+        prev.map((item) => {
+          const edit = applied.get(item.playlist_item_id);
+          if (!edit) return item;
+          return {
+            ...item,
+            title: edit.title,
+            description: edit.description === null ? item.description : edit.description,
+          };
+        })
+      );
+      // The cached item list carries title/description, so it is stale now.
+      if (channelFilters.playlist_id) invalidatePlaylistItems(channelFilters.playlist_id);
+    }
+    // Chỉ những dòng ghi hỏng còn ở lại để xem trước và thử lại.
+    setPendingMeta(Object.fromEntries(entries.filter(([itemId]) => !applied.has(itemId))));
+    setImportNotice(
+      `Đã cập nhật ${applied.size}/${entries.length} video trên YouTube` +
+        (failures.length > 0 ? `. Lỗi: ${failures.slice(0, 5).join(" | ")}` : "")
+    );
+  };
+
+  const discardPendingMeta = () => {
+    setPendingMeta({});
+    setImportNotice(null);
   };
 
   const handleManualUpload = async (e: React.FormEvent) => {
@@ -831,6 +954,8 @@ export function YouTubePage() {
   );
   useEffect(() => setItemsPage(1), [itemSearch]);
   useEffect(() => setItemsPage((p) => Math.min(p, itemsPageCount)), [itemsPageCount]);
+
+  const pendingMetaCount = Object.keys(pendingMeta).length;
 
   const playlistTitleById = useMemo(
     () => Object.fromEntries(playlists.map((p) => [p.id, p.title])),
@@ -1323,6 +1448,22 @@ export function YouTubePage() {
                             </td>
                             <td className="p-3">
                               <StatusBadge value={u.status} />
+                              {u.status === "uploading" && (
+                                <div className="mt-1 w-24">
+                                  <div className="flex justify-between text-[10px] font-mono">
+                                    <span className="text-muted-foreground">Đang tải</span>
+                                    <span className="font-bold text-foreground">
+                                      {Math.round(u.upload_progress ?? 0)}%
+                                    </span>
+                                  </div>
+                                  <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded bg-muted">
+                                    <div
+                                      className="h-full rounded bg-primary transition-all"
+                                      style={{ width: `${Math.min(100, Math.max(0, u.upload_progress ?? 0))}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              )}
                             </td>
                             <td className="p-3 font-mono text-muted-foreground uppercase">{u.privacy_status}</td>
                             <td className="p-3 font-mono text-muted-foreground">
@@ -1818,24 +1959,9 @@ export function YouTubePage() {
                   : "Chưa đồng bộ lần nào - nhấn Đồng bộ để tải danh sách video kênh."}
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              {channelSelectedIds.length > 0 && (
-                <span className="text-[11px] font-mono text-muted-foreground">Đã chọn: {channelSelectedIds.length}</span>
-              )}
-              <select
-                value={ioFormat}
-                onChange={(e) => setIoFormat(e.target.value as any)}
-                className="h-8 rounded border border-input bg-background px-2 text-xs"
-                aria-label="Định dạng xuất dữ liệu"
-              >
-                <option value="json">JSON (khuyên dùng, giữ nguyên emoji)</option>
-                <option value="csv">CSV (Excel)</option>
-              </select>
-              <Button variant="secondary" size="sm" onClick={handleChannelExport}>
-                <Download className="h-3.5 w-3.5" />
-                {channelSelectedIds.length > 0 ? `Xuất ${channelSelectedIds.length} mục` : "Xuất toàn bộ"}
-              </Button>
-            </div>
+            {channelSelectedIds.length > 0 && (
+              <span className="text-[11px] font-mono text-muted-foreground">Đã chọn: {channelSelectedIds.length}</span>
+            )}
           </div>
 
           {/* Scope switch: whole channel (cache browser) vs. one playlist's live items
@@ -1890,6 +2016,8 @@ export function YouTubePage() {
                     onClick={() => {
                       if (!channelFilters.playlist_id) return;
                       setLoadingPlaylistItems(true);
+                      setPendingMeta({});
+                      setImportNotice(null);
                       loadPlaylistItemsCached(channelFilters.playlist_id, true)
                         .then((items) => {
                           setPlaylistItems(items);
@@ -1904,23 +2032,38 @@ export function YouTubePage() {
                     <RefreshCw className={`h-3.5 w-3.5 ${loadingPlaylistItems ? "animate-spin" : ""}`} />
                     Làm mới
                   </Button>
+                  <select
+                    value={ioFormat}
+                    onChange={(e) => setIoFormat(e.target.value as any)}
+                    className="h-8 rounded border border-input bg-background px-2 text-xs"
+                    aria-label="Định dạng xuất dữ liệu"
+                  >
+                    <option value="json">JSON (khuyên dùng, giữ nguyên emoji)</option>
+                    <option value="csv">CSV (Excel)</option>
+                  </select>
                   <Button
                     variant="secondary"
                     size="sm"
                     onClick={handleExportPlaylist}
                     disabled={playlistItems.length === 0}
-                    title={`Xuất thứ tự playlist ra file ${ioFormat.toUpperCase()} để sửa`}
+                    title={`Xuất thứ tự, tiêu đề và mô tả của playlist ra file ${ioFormat.toUpperCase()} để sửa`}
                   >
                     <Download className="h-3.5 w-3.5" />
                     Xuất thứ tự
                   </Button>
-                  <label className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input text-xs font-medium cursor-pointer hover:bg-muted transition-colors">
+                  <label
+                    className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input text-xs font-medium transition-colors ${
+                      importingPlaylistFile ? "opacity-50 pointer-events-none" : "cursor-pointer hover:bg-muted"
+                    }`}
+                    title="Xem trước toàn bộ file đã xuất (thứ tự, tiêu đề, mô tả) ngay trong bảng"
+                  >
                     <FileUp className="h-3.5 w-3.5" />
                     Nhập thứ tự
                     <input
                       type="file"
                       accept=".json,.csv"
                       className="hidden"
+                      disabled={importingPlaylistFile}
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (file) handleImportPlaylistOrder(file);
@@ -2011,6 +2154,47 @@ export function YouTubePage() {
                   </div>
                 </div>
 
+                {/* Xem trước dữ liệu vừa nhập: bảng bên dưới đã hiện giá trị mới,
+                    chỗ này chỉ tổng kết và cho quyết định ghi hay bỏ. */}
+                {(importNotice || pendingMetaCount > 0) && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded border border-amber-500/40 bg-amber-500/10 text-xs">
+                    <div className="flex items-start gap-2 min-w-0">
+                      <FileUp className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-500" />
+                      <span className="min-w-0">
+                        {importNotice}
+                        {pendingMetaCount > 0 && (
+                          <span className="block text-[11px] text-muted-foreground">
+                            Dòng có nền vàng là giá trị mới từ file, chưa ghi lên YouTube.
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    {pendingMetaCount > 0 && (
+                      <div className="flex gap-2 shrink-0">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={discardPendingMeta}
+                          disabled={importingPlaylistFile}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                          Bỏ thay đổi
+                        </Button>
+                        <Button
+                          variant="default"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={applyPendingMeta}
+                          disabled={importingPlaylistFile}
+                        >
+                          {importingPlaylistFile ? "Đang ghi..." : `Áp dụng ${pendingMetaCount} tiêu đề/mô tả`}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {playlistItems.length > 0 && (
                   <div className="relative">
                     <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
@@ -2072,6 +2256,7 @@ export function YouTubePage() {
                         const isSelected = selectedItemIds.includes(item.playlist_item_id);
                         const isDragging = draggedItemId === item.playlist_item_id;
                         const canDrag = !itemSearch.trim();
+                        const pending = pendingMeta[item.playlist_item_id];
                         return (
                             <div
                               key={item.playlist_item_id}
@@ -2085,7 +2270,13 @@ export function YouTubePage() {
                                 handleDragReorder(item.playlist_item_id);
                               }}
                               className={`p-3 flex items-center justify-between gap-3 text-xs transition-colors ${
-                                isDragging ? "opacity-50 bg-muted/30" : isSelected ? "bg-primary/5 hover:bg-primary/10" : "hover:bg-muted/20"
+                                isDragging
+                                  ? "opacity-50 bg-muted/30"
+                                  : pending
+                                    ? "bg-amber-500/10 hover:bg-amber-500/15 border-l-2 border-l-amber-500"
+                                    : isSelected
+                                      ? "bg-primary/5 hover:bg-primary/10"
+                                      : "hover:bg-muted/20"
                               }`}
                             >
                               <button
@@ -2135,9 +2326,28 @@ export function YouTubePage() {
                                 </div>
                               )}
                               <div className="min-w-0 flex-1">
-                                <div className="font-semibold text-foreground truncate">{item.title}</div>
-                                <div className="text-[10px] font-mono text-muted-foreground">
-                                  ID: {item.video_id}
+                                {pending?.titleChanged ? (
+                                  <>
+                                    <div className="font-semibold text-amber-600 dark:text-amber-400 truncate" title={pending.title}>
+                                      {pending.title}
+                                    </div>
+                                    <div className="text-[10px] text-muted-foreground line-through truncate" title={pending.oldTitle}>
+                                      {pending.oldTitle}
+                                    </div>
+                                  </>
+                                ) : (
+                                  <div className="font-semibold text-foreground truncate">{item.title}</div>
+                                )}
+                                <div className="text-[10px] font-mono text-muted-foreground flex flex-wrap items-center gap-1.5">
+                                  <span>ID: {item.video_id}</span>
+                                  {pending?.descriptionChanged && (
+                                    <span
+                                      className="px-1 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-sans font-semibold"
+                                      title={`Mô tả mới:\n${(pending.description ?? "").slice(0, 500)}`}
+                                    >
+                                      mô tả: {pending.oldDescription.length} → {(pending.description ?? "").length} ký tự
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                               <Button

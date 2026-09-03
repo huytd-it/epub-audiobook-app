@@ -36,9 +36,9 @@ def test_two_invalid_upload_checks_rerender_then_upload_same_row(tmp_path, monke
     monkeypatch.setattr(youtube_upload, "validate_video", lambda p: next(checks))
     monkeypatch.setattr(video, "validate_video", lambda p: VALID)
     monkeypatch.setattr(video.video_gen, "generate_full_video", lambda *a, **k: (renders.append(Path(a[2])), Path(a[2]).write_bytes(b"rendered")))
-    monkeypatch.setattr(youtube_upload.youtube, "process_upload", lambda c, uid: youtube_calls.append(uid) or {"status":"done","youtube_video_id":"yt"})
-    monkeypatch.setattr(youtube_upload.youtube, "publish_completed_upload", lambda *a: {"status":"published"})
-    monkeypatch.setattr(youtube_upload, "sync_pipeline_from_upload", lambda *a: None)
+    monkeypatch.setattr(youtube_upload.youtube, "process_upload", lambda c, uid, **kw: youtube_calls.append(uid) or {"status":"done","youtube_video_id":"yt"})
+    monkeypatch.setattr(youtube_upload.youtube, "publish_completed_upload", lambda *a, **kw: {"status":"published"})
+    monkeypatch.setattr(youtube_upload, "sync_pipeline_from_upload", lambda *a, **kw: None)
     store.enqueue(conn,"youtube_upload",payload={"upload_id":upload_id},dedupe_key=f"initial:{upload_id}")
     for generation in (1, 2):
         upload_ctx = _ctx(conn,"youtube_upload",f"u{generation}"); result=youtube_upload.handle(upload_ctx); store.finish(conn,upload_ctx.job.id,result)
@@ -56,7 +56,7 @@ def test_failure_after_retry_two_is_terminal_without_youtube(tmp_path, monkeypat
     conn, book_job, upload_id, output = _setup(tmp_path); youtube_calls=[]
     conn.execute("UPDATE youtube_uploads SET integrity_retry_count=2 WHERE id=?",(upload_id,)); conn.commit()
     monkeypatch.setattr(youtube_upload,"validate_video",lambda p: INVALID)
-    monkeypatch.setattr(youtube_upload.youtube,"process_upload",lambda *a: youtube_calls.append(1))
+    monkeypatch.setattr(youtube_upload.youtube,"process_upload",lambda *a, **kw: youtube_calls.append(1))
     store.enqueue(conn,"youtube_upload",payload={"upload_id":upload_id})
     with pytest.raises(JobFatalError,match="2/2"):
         youtube_upload.handle(_ctx(conn,"youtube_upload","u"))

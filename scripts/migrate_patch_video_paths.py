@@ -119,7 +119,17 @@ def main() -> int:
             conn.execute("UPDATE patch_pipeline SET video_path=? WHERE video_path=?", (new, old))
 
     print(f"\n[apply] Moved {moved}/{len(plan_file)} files, updated {len(plan_db_videos)} videos, {len(plan_db_pipeline)} pipeline.")
-    # cleanup empty legacy dirs
+    # cleanup empty legacy dirs — skipped while a render job is in flight. An
+    # empty patch_videos/ is not proof that nothing needs it: a render creates
+    # the directory up front and only writes into it at the final mux, hours
+    # later for a gameplay episode. Removing it underneath such a job makes
+    # ffmpeg exit ENOENT after the whole render has already been paid for.
+    running = conn.execute(
+        "SELECT COUNT(*) FROM job WHERE job_type='patch_video' AND status IN ('running','pending')"
+    ).fetchone()[0]
+    if running:
+        print(f"[cleanup] Skipped removing empty legacy dirs — {running} patch_video job(s) in flight.")
+        return 0
     for book_dir in (Path(settings.data_root) / "books").glob("*"):
         legacy_dir = book_dir / "patch_videos"
         if legacy_dir.is_dir() and not any(legacy_dir.iterdir()):

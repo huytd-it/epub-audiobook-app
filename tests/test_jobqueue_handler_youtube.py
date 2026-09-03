@@ -59,10 +59,10 @@ def test_successful_upload_returns_the_video_id(tmp_path, monkeypatch):
     upload_id = _upload_row(conn)
     monkeypatch.setattr(
         handler.youtube, "process_upload",
-        lambda c, uid: {"status": "done", "youtube_video_id": "abc123"})
+        lambda c, uid, **kw: {"status": "done", "youtube_video_id": "abc123"})
     calls = []
-    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid: calls.append(("publish", uid)) or {"status": "published"})
-    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda c, uid: calls.append(("sync", uid)))
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid, **kw: calls.append(("publish", uid)) or {"status": "published"})
+    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda c, uid, **kw: calls.append(("sync", uid)))
     ctx, _ = _ctx(conn, upload_id)
 
     assert handler.handle(ctx) == {"youtube_video_id": "abc123"}
@@ -88,10 +88,10 @@ def test_youtube_transfer_runs_with_keep_alive(tmp_path, monkeypatch):
     monkeypatch.setattr(ctx, "keep_alive", lambda: KeepAlive())
     monkeypatch.setattr(
         handler.youtube, "process_upload",
-        lambda *args: calls.append("upload") or {"status": "done", "youtube_video_id": "yt"},
+        lambda *args, **kw: calls.append("upload") or {"status": "done", "youtube_video_id": "yt"},
     )
-    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda *args: {"status": "published"})
-    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda *args: None)
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda *args, **kw: {"status": "published"})
+    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda *args, **kw: None)
 
     handler.handle(ctx)
 
@@ -102,9 +102,9 @@ def test_validation_finishes_before_youtube_transfer(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db")); db.init_schema(conn)
     upload_id = _upload_row(conn); calls = []
     monkeypatch.setattr(handler, "validate_video", lambda path: calls.append("validate") or ValidationResult(True, None, "", (), ValidationFacts(), 0))
-    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: calls.append(c.execute("SELECT validation_status FROM youtube_uploads WHERE id=?", (uid,)).fetchone()[0]) or {"status": "done", "youtube_video_id": "yt"})
-    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda *a: {"status": "published"})
-    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda *a: None)
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid, **kw: calls.append(c.execute("SELECT validation_status FROM youtube_uploads WHERE id=?", (uid,)).fetchone()[0]) or {"status": "done", "youtube_video_id": "yt"})
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda *a, **kw: {"status": "published"})
+    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda *a, **kw: None)
     handler.handle(_ctx(conn, upload_id)[0])
     assert calls == ["validate", "valid"]
 
@@ -113,7 +113,7 @@ def test_invalid_external_video_never_calls_youtube(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db")); db.init_schema(conn)
     upload_id = _upload_row(conn); calls = []
     monkeypatch.setattr(handler, "validate_video", lambda path: ValidationResult(False, "decode_failed", "broken", (), ValidationFacts(), 0))
-    monkeypatch.setattr(handler.youtube, "process_upload", lambda *a: calls.append("upload"))
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda *a, **kw: calls.append("upload"))
     with pytest.raises(JobFatalError, match="external"):
         handler.handle(_ctx(conn, upload_id)[0])
     assert calls == []
@@ -132,7 +132,7 @@ def test_upload_in_progress_elsewhere_retries_without_marking_failed(tmp_path, m
     conn.commit()
     monkeypatch.setattr(
         handler.youtube, "process_upload",
-        lambda c, uid: (_ for _ in ()).throw(handler.youtube.UploadInProgress("busy")))
+        lambda c, uid, **kw: (_ for _ in ()).throw(handler.youtube.UploadInProgress("busy")))
     ctx, _ = _ctx(conn, upload_id, video_id=video_id)
 
     with pytest.raises(RuntimeError, match="busy"):
@@ -152,7 +152,7 @@ def test_a_failed_transfer_marks_the_upload_and_raises(tmp_path, monkeypatch):
     upload_id = _upload_row(conn)
     monkeypatch.setattr(
         handler.youtube, "process_upload",
-        lambda c, uid: {"status": "failed", "error": "mạng lỗi"})
+        lambda c, uid, **kw: {"status": "failed", "error": "mạng lỗi"})
     ctx, _ = _ctx(conn, upload_id)
     with pytest.raises(RuntimeError, match="mạng lỗi"):
         handler.handle(ctx)
@@ -171,7 +171,7 @@ def test_unexpected_transfer_exception_marks_upload_and_video_failed(tmp_path, m
     ).lastrowid
     upload_id = _upload_row(conn, video_id=video_id)
     conn.commit()
-    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: (_ for _ in ()).throw(ValueError("unexpected transfer")))
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid, **kw: (_ for _ in ()).throw(ValueError("unexpected transfer")))
     ctx, _ = _ctx(conn, upload_id, video_id=video_id)
 
     with pytest.raises(ValueError, match="unexpected transfer"):
@@ -179,22 +179,22 @@ def test_unexpected_transfer_exception_marks_upload_and_video_failed(tmp_path, m
 
     upload = conn.execute("SELECT status, error_message FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
     video = conn.execute("SELECT upload_status, error_message FROM videos WHERE id=?", (video_id,)).fetchone()
-    assert dict(upload) == {"status": "failed", "error_message": "unexpected transfer"}
-    assert dict(video) == {"upload_status": "failed", "error_message": "unexpected transfer"}
+    assert dict(upload) == {"status": "failed", "error_message": "ValueError: unexpected transfer"}
+    assert dict(video) == {"upload_status": "failed", "error_message": "ValueError: unexpected transfer"}
 
 
 def test_fatal_transfer_exception_marks_upload_and_raises_job_fatal_error(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
     upload_id = _upload_row(conn)
-    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: (_ for _ in ()).throw(ValueError("quotaExceeded: daily limit")))
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid, **kw: (_ for _ in ()).throw(ValueError("quotaExceeded: daily limit")))
     ctx, _ = _ctx(conn, upload_id)
 
     with pytest.raises(JobFatalError, match="quotaExceeded: daily limit"):
         handler.handle(ctx)
 
     row = conn.execute("SELECT status, error_message FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
-    assert dict(row) == {"status": "failed", "error_message": "quotaExceeded: daily limit"}
+    assert dict(row) == {"status": "failed", "error_message": "ValueError: quotaExceeded: daily limit"}
 
 
 def test_failed_transfer_with_video_id_marks_both_rows(tmp_path, monkeypatch):
@@ -207,7 +207,7 @@ def test_failed_transfer_with_video_id_marks_both_rows(tmp_path, monkeypatch):
     ).lastrowid
     upload_id = _upload_row(conn, video_id=video_id)
     conn.commit()
-    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: {"status": "failed", "error": "mạng lỗi"})
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid, **kw: {"status": "failed", "error": "mạng lỗi"})
     ctx, _ = _ctx(conn, upload_id, video_id=video_id)
 
     with pytest.raises(RuntimeError, match="mạng lỗi"):
@@ -225,7 +225,7 @@ def test_quota_errors_are_fatal_and_never_retried(tmp_path, monkeypatch):
     upload_id = _upload_row(conn)
     monkeypatch.setattr(
         handler.youtube, "process_upload",
-        lambda c, uid: {"status": "failed", "error": "quotaExceeded: daily limit"})
+        lambda c, uid, **kw: {"status": "failed", "error": "quotaExceeded: daily limit"})
     ctx, _ = _ctx(conn, upload_id)
     with pytest.raises(JobFatalError):
         handler.handle(ctx)
@@ -237,7 +237,7 @@ def test_a_missing_source_file_is_fatal(tmp_path, monkeypatch):
     upload_id = _upload_row(conn)
     monkeypatch.setattr(
         handler.youtube, "process_upload",
-        lambda c, uid: {"status": "failed", "error": "FileNotFoundError: /tmp/v.mp4"})
+        lambda c, uid, **kw: {"status": "failed", "error": "FileNotFoundError: /tmp/v.mp4"})
     ctx, _ = _ctx(conn, upload_id)
     with pytest.raises(JobFatalError):
         handler.handle(ctx)
@@ -255,9 +255,9 @@ def test_video_row_is_updated_when_the_upload_row_carries_one(tmp_path, monkeypa
     upload_id = _upload_row(conn, video_id=video_id)
     monkeypatch.setattr(
         handler.youtube, "process_upload",
-        lambda c, uid: {"status": "done", "youtube_video_id": "xyz"})
-    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid: {"status": "published"})
-    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda c, uid: None)
+        lambda c, uid, **kw: {"status": "done", "youtube_video_id": "xyz"})
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid, **kw: {"status": "published"})
+    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda c, uid, **kw: None)
     ctx, _ = _ctx(conn, upload_id, video_id=video_id)
 
     handler.handle(ctx)
@@ -272,9 +272,9 @@ def test_non_success_postprocess_records_upload_error_without_failing_video(tmp_
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
     upload_id = _upload_row(conn)
-    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: {"status": "done", "youtube_video_id": "xyz"})
-    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid: {"status": "auth_required", "error": "auth"})
-    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda c, uid: None)
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid, **kw: {"status": "done", "youtube_video_id": "xyz"})
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid, **kw: {"status": "auth_required", "error": "auth"})
+    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda c, uid, **kw: None)
     ctx, _ = _ctx(conn, upload_id)
 
     assert handler.handle(ctx) == {"youtube_video_id": "xyz"}
@@ -293,8 +293,8 @@ def test_raised_publish_exception_marks_upload_and_video_failed(tmp_path, monkey
     ).lastrowid
     upload_id = _upload_row(conn, video_id=video_id)
     conn.commit()
-    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: {"status": "done", "youtube_video_id": "xyz"})
-    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid: (_ for _ in ()).throw(ValueError("publish failed")))
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid, **kw: {"status": "done", "youtube_video_id": "xyz"})
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid, **kw: (_ for _ in ()).throw(ValueError("publish failed")))
     ctx, _ = _ctx(conn, upload_id, video_id=video_id)
 
     with pytest.raises(ValueError, match="publish failed"):
@@ -302,23 +302,23 @@ def test_raised_publish_exception_marks_upload_and_video_failed(tmp_path, monkey
 
     upload = conn.execute("SELECT status, error_message FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
     video = conn.execute("SELECT upload_status, error_message FROM videos WHERE id=?", (video_id,)).fetchone()
-    assert dict(upload) == {"status": "failed", "error_message": "publish failed"}
-    assert dict(video) == {"upload_status": "failed", "error_message": "publish failed"}
+    assert dict(upload) == {"status": "failed", "error_message": "ValueError: publish failed"}
+    assert dict(video) == {"upload_status": "failed", "error_message": "ValueError: publish failed"}
 
 
 def test_fatal_postprocess_exception_marks_upload_and_raises_job_fatal_error(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
     upload_id = _upload_row(conn)
-    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: {"status": "done", "youtube_video_id": "xyz"})
-    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid: (_ for _ in ()).throw(ValueError("forbidden: publish denied")))
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid, **kw: {"status": "done", "youtube_video_id": "xyz"})
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid, **kw: (_ for _ in ()).throw(ValueError("forbidden: publish denied")))
     ctx, _ = _ctx(conn, upload_id)
 
     with pytest.raises(JobFatalError, match="forbidden: publish denied"):
         handler.handle(ctx)
 
     row = conn.execute("SELECT status, error_message FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
-    assert dict(row) == {"status": "failed", "error_message": "forbidden: publish denied"}
+    assert dict(row) == {"status": "failed", "error_message": "ValueError: forbidden: publish denied"}
 
 
 def test_raised_sync_exception_marks_upload_and_video_failed(tmp_path, monkeypatch):
@@ -331,9 +331,9 @@ def test_raised_sync_exception_marks_upload_and_video_failed(tmp_path, monkeypat
     ).lastrowid
     upload_id = _upload_row(conn, video_id=video_id)
     conn.commit()
-    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: {"status": "done", "youtube_video_id": "xyz"})
-    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid: {"status": "published"})
-    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda c, uid: (_ for _ in ()).throw(RuntimeError("sync failed")))
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid, **kw: {"status": "done", "youtube_video_id": "xyz"})
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid, **kw: {"status": "published"})
+    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda c, uid, **kw: (_ for _ in ()).throw(RuntimeError("sync failed")))
     ctx, _ = _ctx(conn, upload_id, video_id=video_id)
 
     with pytest.raises(RuntimeError, match="sync failed"):
@@ -341,5 +341,5 @@ def test_raised_sync_exception_marks_upload_and_video_failed(tmp_path, monkeypat
 
     upload = conn.execute("SELECT status, error_message FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
     video = conn.execute("SELECT upload_status, error_message FROM videos WHERE id=?", (video_id,)).fetchone()
-    assert dict(upload) == {"status": "failed", "error_message": "sync failed"}
-    assert dict(video) == {"upload_status": "failed", "error_message": "sync failed"}
+    assert dict(upload) == {"status": "failed", "error_message": "RuntimeError: sync failed"}
+    assert dict(video) == {"upload_status": "failed", "error_message": "RuntimeError: sync failed"}
