@@ -500,12 +500,13 @@ def test_batch_notebook_has_no_result_zip_cell():
 
 
 # ---------------------------------------------------------------------------
-# Generic 5-model TTS dispatch. The runtime reads the model from the manifest's
+# Generic 4-model TTS dispatch. The runtime reads the model from the manifest's
 # "tts" contract ({"model_id", "options", "voice_id"}) with a legacy fallback to
-# the always-VoxCPM2 "voxcpm_model_id" field.
+# the always-VoxCPM2 "voxcpm_model_id" field. Online models (edge-tts/gTTS) are
+# intentionally unsupported here: the batch notebook only runs offline weights.
 # ---------------------------------------------------------------------------
 
-SUPPORTED_MODELS = {"voxcpm2", "omnivoice", "vieneu-fast", "zerotts", "edge-tts", "gtts"}
+SUPPORTED_MODELS = {"voxcpm2", "omnivoice", "vieneu-fast", "zerotts"}
 
 
 def _manifest_cell(template):
@@ -538,8 +539,6 @@ def test_sample_rate_constants_per_model(template):
         ("omnivoice", 24000),
         ("vieneu-fast", 48000),
         ("zerotts", 48000),
-        ("edge-tts", 24000),
-        ("gtts", 24000),
     ):
         assert f'"{k}": {v}' in src
 
@@ -560,23 +559,29 @@ def test_reference_required_only_for_cloning_models(template):
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
 def test_voice_id_required_for_voice_id_models(template):
     src = _manifest_cell(template)
-    assert 'VOICE_ID_MODELS = {"vieneu-fast", "zerotts", "edge-tts", "gtts"}' in src
+    assert 'VOICE_ID_MODELS = {"vieneu-fast", "zerotts"}' in src
     assert "if TTS_MODEL in VOICE_ID_MODELS:" in src
     assert "VOICE_ID" in src
     assert "raise RuntimeError" in src
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
-def test_gpu_check_is_skipped_for_online_models(template):
+def test_gpu_check_rejects_unknown_models(template):
     gpu = next(src for src in _code_cells(template) if "torch.cuda.is_available()" in src)
     assert 'GPU_REQUIRED = {"voxcpm2", "omnivoice"}' in gpu
     assert 'GPU_OPTIONAL = {"vieneu-fast", "zerotts"}' in gpu
     assert "if TTS_MODEL in GPU_REQUIRED:" in gpu
-    assert "no gpu required" in gpu.lower()
+    assert "elif TTS_MODEL in GPU_OPTIONAL:" in gpu
+    # Every supported model takes the GPU_REQUIRED / GPU_OPTIONAL path; anything
+    # else is an unknown model id and must raise, never silently continue.
+    assert "else:" in gpu
+    assert "raise RuntimeError" in gpu.split("else:")[-1]
+    assert "edge-tts" not in gpu
+    assert "gtts" not in gpu
     # The CPU-capable models must reach a print, never the raise.
     required_branch = gpu.split("elif TTS_MODEL in GPU_OPTIONAL:")
     assert len(required_branch) == 2, "GPU_OPTIONAL needs its own branch"
-    assert "raise RuntimeError" not in required_branch[1]
+    assert "raise RuntimeError" not in required_branch[1].split("else:")[0]
 
 
 def test_model_load_cell_dispatches_per_model():
@@ -589,18 +594,24 @@ def test_model_load_cell_dispatches_per_model():
         assert 'mode="v3turbo"' in load
         assert "pnnbao-ump/VieNeu-TTS-v3-Turbo" in load
         assert "zeroweight-ai/ZeroTTS" in load
-        assert "model = None" in load  # online models load nothing
-        assert '"edge-tts"' in load
+        # Online models are unsupported in the batch notebook: no model=None
+        # shortcut and no online references in the load cell.
+        assert "model = None" not in load
+        assert "edge-tts" not in load
+        assert "gtts" not in load
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
 def test_generation_cells_dispatch_every_model(template):
     gen = "\n".join(
         src for src in _code_cells(template)
-        if "model.generate(" in src or "save_online_mp3" in src
+        if "model.generate(" in src
     )
     for model in SUPPORTED_MODELS:
         assert f'"{model}"' in gen
+    assert "edge-tts" not in gen
+    assert "gtts" not in gen
+    assert "save_online_mp3" not in gen
     assert "model.generate(" in gen  # voxcpm2 / omnivoice
     assert "model.infer(" in gen     # vieneu-fast
     assert "model.synthesize(" in gen  # zerotts
@@ -614,28 +625,27 @@ def test_generation_cells_dispatch_every_model(template):
     branch = gen.split('elif TTS_MODEL == "vieneu-fast":')[1].split("elif TTS_MODEL ==")[0]
     code = [l for l in branch.splitlines() if not l.lstrip().startswith("#")]
     assert not any("ref_audio" in l for l in code), f"vieneu branch passes a clip: {code}"
-    assert "save_online_mp3" in gen  # edge-tts / gtts
     # OmniVoice normalizes its list output to audio[0]
     assert "result[0]" in gen or "audio[0]" in gen
 
 
-def test_online_models_generate_and_convert_mp3_to_wav():
+def test_batch_notebook_has_no_online_path():
     for template in TEMPLATES:
         src = "\n".join(_code_cells(template))
-        assert "def save_online_mp3(" in src
-        assert "def mp3_to_wav(" in src
-        assert "edge_tts.Communicate(" in src
-        assert "gTTS(" in src
-        assert "sf.write(dest, data, SAMPLE_RATE)" in src
+        assert "def save_online_mp3(" not in src
+        assert "def mp3_to_wav(" not in src
+        assert "edge_tts.Communicate(" not in src
+        assert "gTTS(" not in src
+        assert "edge-tts" not in src
+        assert "gtts" not in src
 
 
-def test_online_generation_path_never_calls_model_generate_without_voice():
-    # edge-tts/gTTS must branch before any torch generate path, keyed on voice id.
+def test_generation_branches_use_the_manifest_voice():
+    # The fixed-cast models synthesize from the manifest's voice id.
     for template in TEMPLATES:
         generation = [
             src for src in _code_cells(template)
-            if "model.generate(" in src or "save_online_mp3" in src
+            if "model.generate(" in src
         ]
-        for src in generation:
-            summary = [s for s in generation]
-            assert "VOICE_ID" in "\n".join(summary)
+        assert generation
+        assert "VOICE_ID" in "\n".join(generation)
