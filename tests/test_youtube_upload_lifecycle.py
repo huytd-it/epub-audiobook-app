@@ -129,6 +129,52 @@ def test_selfDeclaredMadeForKids_follows_not_for_kids_column(db_conn, tmp_path):
     assert FakeYouTubeService.last_insert_body["status"]["selfDeclaredMadeForKids"] is True
 
 
+def test_upload_declares_altered_content_by_default(db_conn, tmp_path):
+    # Ô "Sử dụng AI" của YouTube Studio. Giọng đọc là tổng hợp nên mọi video phải tự khai;
+    # API không đọc lại được giá trị này nên body lúc insert là chỗ duy nhất kiểm chứng được.
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"video")
+    upload_id = youtube.enqueue_upload(db_conn, str(video), "Title")
+    youtube.process_upload(db_conn, upload_id)
+    assert FakeYouTubeService.last_insert_body["status"]["containsSyntheticMedia"] is True
+
+
+def test_altered_content_declaration_can_be_turned_off(db_conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(youtube.settings, "youtube_declare_altered_content", False)
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"video")
+    upload_id = youtube.enqueue_upload(db_conn, str(video), "Title")
+    youtube.process_upload(db_conn, upload_id)
+    assert FakeYouTubeService.last_insert_body["status"]["containsSyntheticMedia"] is False
+
+
+def test_metadata_edit_does_not_strip_the_altered_content_declaration(monkeypatch):
+    # videos.update thay nguyên khối status, và videos.list không trả
+    # containsSyntheticMedia — sửa tiêu đề mà không set lại là gỡ mất phần khai báo.
+    sent = {}
+
+    class Service:
+        def videos(self): return self
+        def update(self, *args, **kwargs):
+            sent["body"] = kwargs.get("body")
+            return self
+
+    monkeypatch.setattr(youtube, "_require_google_imports", lambda: None)
+    monkeypatch.setattr(youtube, "get_youtube_service", lambda conn: Service())
+    monkeypatch.setattr(youtube, "_execute", lambda req: {})
+    monkeypatch.setattr(
+        youtube, "_videos_by_id",
+        lambda service, ids, part: {"vid1": {"snippet": {"title": "cũ"}, "status": {"privacyStatus": "private"}}},
+    )
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE youtube_channel_videos (video_id TEXT, title TEXT, description TEXT, tags TEXT, privacy_status TEXT)")
+    result = youtube.bulk_update_channel_videos(conn, [{"video_id": "vid1", "title": "mới"}])
+
+    assert result["succeeded"] == 1
+    assert sent["body"]["status"]["containsSyntheticMedia"] is True
+
+
 def test_second_worker_does_not_start_a_duplicate_transfer(db_conn, tmp_path, monkeypatch):
     video = tmp_path / "v.mp4"
     video.write_bytes(b"video")

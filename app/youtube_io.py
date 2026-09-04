@@ -29,6 +29,7 @@ EXPORT_COLUMNS = [
     "video_path",
     "not_for_kids",
     "ai_labels_enabled",
+    "altered_content",
     "status",
     "youtube_video_id",
     "created_at",
@@ -36,10 +37,10 @@ EXPORT_COLUMNS = [
 
 #: Fields an import may write back. Everything else in the sheet is read-only.
 EDITABLE_FIELDS = ("title", "description", "tags", "privacy_status", "playlist_id", "video_path",
-                   "not_for_kids", "ai_labels_enabled")
+                   "not_for_kids", "ai_labels_enabled", "altered_content")
 
 #: Sheet fields that hold a true/false flag rather than free text.
-BOOLEAN_FIELDS = ("not_for_kids", "ai_labels_enabled")
+BOOLEAN_FIELDS = ("not_for_kids", "ai_labels_enabled", "altered_content")
 
 PRIVACY_VALUES = ("private", "unlisted", "public")
 
@@ -106,6 +107,9 @@ def row_to_record(row) -> dict:
         "video_path": data.get("video_path") or "",
         "not_for_kids": "true" if data.get("not_for_kids", 1) else "false",
         "ai_labels_enabled": "true" if data.get("ai_labels_enabled", 0) else "false",
+        # altered_content = disclosure "Sử dụng AI" (containsSyntheticMedia) — default true
+        # cho các dòng cũ chưa có cột này, để export không lật ngược hàng loạt.
+        "altered_content": "true" if data.get("altered_content", 1) else "false",
         "status": data.get("status") or "",
         "youtube_video_id": data.get("youtube_video_id") or "",
         "created_at": data.get("created_at") or "",
@@ -400,6 +404,7 @@ def _import_new(conn: sqlite3.Connection, index: int, record: dict, *, mode: str
         "playlist_id": _clean(record.get("playlist_id")),
         "not_for_kids": _parse_bool(record.get("not_for_kids"), default=True),
         "ai_labels_enabled": _parse_bool(record.get("ai_labels_enabled"), default=False),
+        "altered_content": _parse_bool(record.get("altered_content"), default=True),
     }
     if dry_run or create is None:
         return _result(index, None, "created", changes=payload)

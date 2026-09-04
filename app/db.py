@@ -248,6 +248,7 @@ CREATE TABLE IF NOT EXISTS youtube_uploads (
     ai_labels       TEXT,
     not_for_kids    INTEGER NOT NULL DEFAULT 1,
     ai_labels_enabled INTEGER NOT NULL DEFAULT 0,
+    altered_content INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL
 );
 
@@ -937,6 +938,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE youtube_uploads ADD COLUMN not_for_kids INTEGER NOT NULL DEFAULT 1")
     if "ai_labels_enabled" not in uploads_cols:
         conn.execute("ALTER TABLE youtube_uploads ADD COLUMN ai_labels_enabled INTEGER NOT NULL DEFAULT 0")
+    if "altered_content" not in uploads_cols:
+        conn.execute("ALTER TABLE youtube_uploads ADD COLUMN altered_content INTEGER NOT NULL DEFAULT 1")
     from app.config import settings
     if settings.google_drive_client_id:
         row = conn.execute("SELECT 1 FROM drive_oauth_client LIMIT 1").fetchone()

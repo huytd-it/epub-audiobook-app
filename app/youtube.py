@@ -515,6 +515,12 @@ def process_upload(
         title = (row["title"] or "")[:100]
         description = (row["description"] or "")[:5000]
         privacy_status = row.get("privacy_status", "private")
+        # Ô "Sử dụng AI" trong YouTube Studio. Ưu tiên giá trị đã lưu cho từng bản ghi
+        # (sửa hàng loạt qua export/import), fallback về setting toàn cục cho các dòng cũ.
+        if "altered_content" in row:
+            altered_content = bool(row.get("altered_content", 1))
+        else:
+            altered_content = bool(settings.youtube_declare_altered_content)
 
         body = {
             "snippet": {
@@ -526,6 +532,7 @@ def process_upload(
             "status": {
                 "privacyStatus": privacy_status,
                 "selfDeclaredMadeForKids": not bool(row.get("not_for_kids", 1)),
+                "containsSyntheticMedia": altered_content,
             },
         }
 
@@ -547,6 +554,7 @@ def process_upload(
             "tags": (tags or [])[:30],
             "description_chars": len(description),
             "made_for_kids": not bool(row.get("not_for_kids", 1)),
+            "altered_content": altered_content,
             "category_id": "26",
         })
 
@@ -706,15 +714,21 @@ def enqueue_upload(
     render_source_id: int | None = None,
     not_for_kids: bool = True,
     ai_labels_enabled: bool = False,
+    altered_content: bool | None = None,
 ) -> int:
     """Create a pending youtube_uploads record. Returns upload_id.
 
     The actual upload is done by the caller (worker or route).
+    `altered_content` is the per-upload disclosure for YouTube's
+    "Sử dụng AI" / containsSyntheticMedia. None -> global default
+    `youtube_declare_altered_content` (env YOUTUBE_DECLARE_ALTERED_CONTENT).
     """
     if render_source_type not in {"book", "patch", "standalone", "external"}:
         raise ValueError("invalid render_source_type")
     if privacy_status is None:
         privacy_status = settings.youtube_default_privacy
+    if altered_content is None:
+        altered_content = bool(settings.youtube_declare_altered_content)
     metadata_snapshot = json.dumps({"automation": {"youtube": {
         "playlist_mode": "existing", "playlist_id": playlist_id,
     }}}) if playlist_id else None
@@ -723,11 +737,12 @@ def enqueue_upload(
         """INSERT INTO youtube_uploads
            (video_id, video_path, title, description, tags, privacy_status, status,
             metadata_snapshot, render_source_type, render_source_id, not_for_kids,
-            ai_labels_enabled, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)""",
+            ai_labels_enabled, altered_content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)""",
         (video_id, video_path, title, description, json.dumps(tags or []), privacy_status,
          metadata_snapshot, render_source_type, render_source_id,
-         1 if not_for_kids else 0, 1 if ai_labels_enabled else 0, now),
+         1 if not_for_kids else 0, 1 if ai_labels_enabled else 0,
+         1 if altered_content else 0, now),
     )
     conn.commit()
     return cursor.lastrowid
@@ -793,6 +808,7 @@ def list_uploads(
     has_playlist: str = "",
     not_for_kids: str = "",
     ai_labels_enabled: str = "",
+    altered_content: str = "",
     date_from: str = "",
     date_to: str = "",
     sort: str = "created_at",
@@ -825,6 +841,17 @@ def list_uploads(
     if ai_labels_enabled in ("0", "1"):
         where.append("ai_labels_enabled = ?")
         params.append(int(ai_labels_enabled))
+    if altered_content in ("0", "1"):
+        # Cột mới: DB chưa migrate thì SELECT * không có nó. Trước 1s sau khi upgrade,
+        # xử lý như filter rỗng thay vì ném lỗi.
+        try:
+            exists = conn.execute("SELECT altered_content FROM youtube_uploads LIMIT 0")
+            exists.close()
+        except Exception:
+            pass
+        else:
+            where.append("altered_content = ?")
+            params.append(int(altered_content))
     if date_from:
         where.append("created_at >= ?")
         params.append(date_from)
@@ -910,6 +937,7 @@ def set_upload_ai_labels(conn: sqlite3.Connection, upload_id: int, ai_labels: li
 
 _UPLOAD_EDITABLE_FIELDS = {
     "title", "description", "tags", "privacy_status", "not_for_kids", "ai_labels_enabled",
+    "altered_content",
 }
 
 
@@ -924,7 +952,7 @@ def update_upload_fields(conn: sqlite3.Connection, upload_id: int, **fields) -> 
     if updates:
         if "tags" in updates:
             updates["tags"] = json.dumps(updates["tags"])
-        for boolean_field in ("not_for_kids", "ai_labels_enabled"):
+        for boolean_field in ("not_for_kids", "ai_labels_enabled", "altered_content"):
             if boolean_field in updates:
                 updates[boolean_field] = 1 if updates[boolean_field] else 0
         set_clause = ", ".join(f"{k}=?" for k in updates)
@@ -2451,6 +2479,11 @@ def bulk_update_channel_videos(conn: sqlite3.Connection, updates: list[dict]) ->
                 snippet["tags"] = item["tags"]
             if item.get("privacy_status"):
                 status["privacyStatus"] = item["privacy_status"]
+            if settings.youtube_declare_altered_content:
+                # videos.list không trả containsSyntheticMedia, nên cái status đọc ngược về
+                # ở trên luôn thiếu nó; ghi đè nguyên khối status mà không set lại là xoá
+                # mất phần khai báo "Sử dụng AI" chỉ vì sửa cái tiêu đề.
+                status["containsSyntheticMedia"] = True
             body = {"id": video_id, "snippet": snippet, "status": status}
             _execute(service.videos().update(part="snippet,status", body=body))
             conn.execute(

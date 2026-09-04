@@ -33,7 +33,8 @@ router = APIRouter()
 
 
 def _enqueue(request: Request, video_path: str, title: str, description: str, tags: str, privacy_status: str,
-            playlist_id: str = "", not_for_kids: bool = True, ai_labels_enabled: bool = False) -> dict:
+            playlist_id: str = "", not_for_kids: bool = True, ai_labels_enabled: bool = False,
+            altered_content: bool | None = None) -> dict:
     """Queue a video for the upload worker and return immediately.
 
     The upload itself must not run here: these handlers hold the shared db_lock via
@@ -58,6 +59,7 @@ def _enqueue(request: Request, video_path: str, title: str, description: str, ta
             playlist_id=playlist_id,
             not_for_kids=not_for_kids,
             ai_labels_enabled=ai_labels_enabled,
+            altered_content=altered_content,
         )
         store.enqueue(conn, "youtube_upload", payload={"upload_id": upload_id},
                       dedupe_key=f"youtube_upload:upload={upload_id}")
@@ -312,12 +314,13 @@ async def youtube_upload_manual(
     playlist_id: str = Form(default=""),
     not_for_kids: bool = Form(default=True),
     ai_labels_enabled: bool = Form(default=False),
+    altered_content: bool = Form(default=True),
 ):
     if not youtube.is_configured():
         raise HTTPException(status_code=400, detail="YouTube not configured")
 
     return JSONResponse(_enqueue(request, video_path, title, description, tags, privacy_status, playlist_id,
-                                 not_for_kids, ai_labels_enabled))
+                                 not_for_kids, ai_labels_enabled, altered_content))
 
 
 @router.post("/youtube/upload-file")
@@ -331,6 +334,7 @@ async def youtube_upload_file(
     playlist_id: str = Form(default=""),
     not_for_kids: bool = Form(default=True),
     ai_labels_enabled: bool = Form(default=False),
+    altered_content: bool = Form(default=True),
 ):
     """Upload a video file directly (for standalone videos not yet on disk)."""
     if not youtube.is_configured():
@@ -352,7 +356,7 @@ async def youtube_upload_file(
     await asyncio.to_thread(_save)
 
     return JSONResponse(_enqueue(request, str(tmp_path), title, description, tags, privacy_status, playlist_id,
-                                 not_for_kids, ai_labels_enabled))
+                                 not_for_kids, ai_labels_enabled, altered_content))
 
 
 @router.get("/youtube/uploads")
@@ -364,6 +368,7 @@ def youtube_uploads_list(
     has_playlist: str = "",
     not_for_kids: str = "",
     ai_labels_enabled: str = "",
+    altered_content: str = "",
     date_from: str = "",
     date_to: str = "",
     sort: str = "created_at",
@@ -378,6 +383,7 @@ def youtube_uploads_list(
             has_playlist=has_playlist,
             not_for_kids=not_for_kids,
             ai_labels_enabled=ai_labels_enabled,
+            altered_content=altered_content,
             date_from=date_from,
             date_to=date_to,
             sort=sort,
@@ -393,6 +399,7 @@ class _UploadUpdateBody(BaseModel):
     privacy_status: str | None = None
     not_for_kids: bool | None = None
     ai_labels_enabled: bool | None = None
+    altered_content: bool | None = None
 
 
 @router.patch("/youtube/uploads/{upload_id}")
@@ -498,6 +505,7 @@ def _queue_imported_upload(request: Request):
             playlist_id=payload["playlist_id"],
             not_for_kids=payload.get("not_for_kids", True),
             ai_labels_enabled=payload.get("ai_labels_enabled", False),
+            altered_content=payload.get("altered_content", True),
         )
         store.enqueue(conn, "youtube_upload", payload={"upload_id": upload_id},
                       dedupe_key=f"youtube_upload:upload={upload_id}")

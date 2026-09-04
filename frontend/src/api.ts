@@ -110,6 +110,8 @@ export type YouTubeUploadItem = {
   playlist_id?: string;
   not_for_kids: boolean;
   ai_labels_enabled: boolean;
+  /** Khai báo "Sử dụng AI" / containsSyntheticMedia - tách hẳn khỏi ai_labels (tag SEO). */
+  altered_content: boolean;
   status: string;
   /** Phần trăm byte đã đẩy lên YouTube, do app/youtube.py ghi lại sau mỗi khối. */
   upload_progress?: number;
@@ -129,6 +131,8 @@ export type YouTubeUploadFilters = {
   not_for_kids?: string;
   /** "1" | "0" | "" */
   ai_labels_enabled?: string;
+  /** "1" | "0" | "" */
+  altered_content?: string;
   date_from?: string;
   date_to?: string;
   sort?: string;
@@ -144,6 +148,9 @@ export type YouTubeUploadRecord = {
   privacy_status: string;
   playlist_id: string;
   video_path: string;
+  not_for_kids: string;
+  ai_labels_enabled: string;
+  altered_content: string;
   status: string;
   youtube_video_id: string;
   created_at: string;

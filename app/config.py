@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     youtube_default_tags: str = "audiobook,epub,video"
     youtube_default_privacy: str = "private"  # private | unlisted | public
     youtube_auto_upload: bool = True  # auto-upload after video generation
+    # Tự khai báo "Sử dụng AI" (Altered/Synthetic content) cho mọi video đẩy lên.
+    # Map thẳng sang status.containsSyntheticMedia của videos.insert - đúng ô mà YouTube
+    # Studio hỏi "Bạn có sử dụng AI để tạo hoặc chỉnh sửa nội dung...". Video ở đây là
+    # giọng đọc tổng hợp + cảnh dựng nên mặc định bật; đặt
+    # YOUTUBE_DECLARE_ALTERED_CONTENT=false trong .env nếu muốn tự tick tay.
+    youtube_declare_altered_content: bool = True
 
     # Hugging Face token for Colab/Kaggle notebooks (baked into the exported package so the
     # notebook can download VoxCPM2 without hitting unauthenticated rate limits). Leave empty

@@ -103,7 +103,7 @@ export function YouTubePage() {
 
   // Uploads tab: advanced filters + inline title edit
   const [uploadFilters, setUploadFilters] = useState<YouTubeUploadFilters>({
-    search: "", status: "", privacy_status: "", has_playlist: "", not_for_kids: "", ai_labels_enabled: "",
+    search: "", status: "", privacy_status: "", has_playlist: "", not_for_kids: "", ai_labels_enabled: "", altered_content: "",
     date_from: "", date_to: "",
   });
   const [uploadSearchInput, setUploadSearchInput] = useState("");
@@ -623,6 +623,17 @@ export function YouTubePage() {
     } catch (err: any) {
       alert(`Cập nhật nhãn AI thất bại: ${err.message}`);
       setUploads((prev) => prev.map((row) => (row.id === u.id ? { ...row, ai_labels_enabled: u.ai_labels_enabled } : row)));
+    }
+  };
+
+  const toggleUploadAlteredContent = async (u: YouTubeUploadItem) => {
+    const next = !u.altered_content;
+    setUploads((prev) => prev.map((row) => (row.id === u.id ? { ...row, altered_content: next } : row)));
+    try {
+      await patchJson(`/youtube/uploads/${u.id}`, { altered_content: next });
+    } catch (err: any) {
+      alert(`Cập nhật khai báo AI thất bại: ${err.message}`);
+      setUploads((prev) => prev.map((row) => (row.id === u.id ? { ...row, altered_content: u.altered_content } : row)));
     }
   };
 
@@ -1323,6 +1334,18 @@ export function YouTubePage() {
               </select>
             </div>
             <div>
+              <label className="text-[10px] font-semibold text-muted-foreground mb-1 block">Sử dụng AI</label>
+              <select
+                className="h-8 rounded border border-input bg-background px-2 text-xs"
+                value={uploadFilters.altered_content}
+                onChange={(e) => setUploadFilters((prev) => ({ ...prev, altered_content: e.target.value }))}
+              >
+                <option value="">Tất cả</option>
+                <option value="1">Đã khai báo</option>
+                <option value="0">Chưa khai báo</option>
+              </select>
+            </div>
+            <div>
               <label className="text-[10px] font-semibold text-muted-foreground mb-1 block">Từ ngày</label>
               <Input
                 type="date"
@@ -1341,7 +1364,7 @@ export function YouTubePage() {
               />
             </div>
             {(uploadFilters.search || uploadFilters.status || uploadFilters.privacy_status || uploadFilters.has_playlist ||
-              uploadFilters.not_for_kids || uploadFilters.ai_labels_enabled || uploadFilters.date_from || uploadFilters.date_to) && (
+              uploadFilters.not_for_kids || uploadFilters.ai_labels_enabled || uploadFilters.altered_content || uploadFilters.date_from || uploadFilters.date_to) && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -1350,7 +1373,7 @@ export function YouTubePage() {
                   setUploadSearchInput("");
                   setUploadFilters({
                     search: "", status: "", privacy_status: "", has_playlist: "", not_for_kids: "",
-                    ai_labels_enabled: "", date_from: "", date_to: "",
+                    ai_labels_enabled: "", altered_content: "", date_from: "", date_to: "",
                   });
                 }}
               >
@@ -1385,6 +1408,7 @@ export function YouTubePage() {
                         <th className="p-3 font-semibold">Playlist</th>
                         <th className="p-3 font-semibold">Trẻ em</th>
                         <th className="p-3 font-semibold">Nhãn AI</th>
+                        <th className="p-3 font-semibold">Sử dụng AI</th>
                         <th className="p-3 font-semibold">Thời gian tạo</th>
                         <th className="p-3 font-semibold text-right">Thao tác</th>
                       </tr>
@@ -1489,10 +1513,22 @@ export function YouTubePage() {
                                 className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${
                                   u.ai_labels_enabled ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"
                                 }`}
-                                title="Nhấn để bật/tắt"
+                                title="Nhãn AI: tự sinh tag từ tiêu đề/mô tả"
                               >
                                 <Sparkles className="h-3 w-3" />
                                 {u.ai_labels_enabled ? "Đã bật" : "Chưa bật"}
+                              </button>
+                            </td>
+                            <td className="p-3">
+                              <button
+                                type="button"
+                                onClick={() => toggleUploadAlteredContent(u)}
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                  u.altered_content ? "bg-amber-500/15 text-amber-700" : "bg-muted text-muted-foreground"
+                                }`}
+                                title="Khai báo Sử dụng AI (containsSyntheticMedia)"
+                              >
+                                🤖 {u.altered_content ? "Đã khai báo" : "Chưa khai báo"}
                               </button>
                             </td>
                             <td className="p-3 font-mono text-muted-foreground whitespace-nowrap">
