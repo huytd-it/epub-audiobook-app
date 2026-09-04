@@ -34,7 +34,7 @@ from app.patch_publishing import (confirm_patch_republish, discard_stale_patch_v
                                   run_patch_publish_stage, seed_patch_video,
                                   warm_patch_thumbnail)
 from app.youtube_metadata import audio_duration_seconds, get_book_youtube_config, get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_book_youtube_config, validate_timeline
-from app.production_defaults import get_effective_video_config
+from app.production_defaults import get_effective_branding_config, get_effective_video_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
 
@@ -659,12 +659,13 @@ def get_patch_overlay_image(request: Request, book_id: int, patch_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
-
+        branding = get_effective_branding_config(conn, book)
     force = request.query_params.get("force") in {"1", "true"}
     overlay = image_overlay.ensure_patch_overlay(
         book, patch, settings.default_font_path or None,
         background_path=patch.image_path or None,
         force=force,
+        branding=branding,
     )
     if overlay and Path(overlay).exists():
         return FileResponse(str(overlay), media_type="image/png")

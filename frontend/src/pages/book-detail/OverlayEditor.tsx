@@ -345,6 +345,16 @@ export function OverlayEditor({
     if (!config) return;
     setSaving(true);
     try {
+      // Branding đang sửa (draft) phải được lưu trước — nếu không thumbnail
+      // tạo lại ngay sau đó sẽ render bằng branding cũ và mất chỉnh sửa.
+      if (brandingMode === "custom" && brandingDraft) {
+        const brandingResult = await postJson<{ effective: BrandingConfig; purged_patch_ids: number[] }>(
+          `/books/${bookId}/branding-config`,
+          { branding: brandingDraft },
+        );
+        setBranding(brandingResult.effective);
+        setBrandingDraft(brandingResult.effective);
+      }
       const form = new FormData();
       form.append("overlays_json", JSON.stringify(config.overlays.length ? config.overlays : [config]));
       if (background && !background.is_video) form.append("background_path", background.path);
@@ -385,14 +395,16 @@ export function OverlayEditor({
       setBranding(result.effective);
       setBrandingDraft(result.effective);
       setBrandingMode("custom");
-      if (result.purged_patch_ids?.length) {
-        setThumbnailRevision((c) => c + 1);
-        if (podcast.enabled) {
-          await post(`/books/${bookId}/podcast-cover/regenerate`);
-          setThumbnailRevision((c) => c + 1);
-        }
+      // Backend đã xoá cache nhưng chưa render lại file mới — gọi regenerate
+      // để thumbnail/podcast cover thực sự mang branding vừa lưu.
+      if (patchIds.length) {
+        await postJson(`/books/${bookId}/thumbnails/regenerate`, { patch_ids: patchIds });
       }
-      onMessage("Đã lưu cấu hình thương hiệu.");
+      if (podcast.enabled) {
+        await post(`/books/${bookId}/podcast-cover/regenerate`);
+      }
+      setThumbnailRevision((c) => c + 1);
+      onMessage("Đã lưu branding và tạo lại thumbnail.");
       await onSaved();
     } catch (error) {
       onMessage(errorText(error));
@@ -709,12 +721,22 @@ export function OverlayEditor({
           </div>
 
           {brandingMode === "custom" && brandingDraft && (
-            <BrandingEditor
-              branding={brandingDraft}
-              onChange={setBrandingDraft}
-              logoBrowserOpen={logoBrowserOpen}
-              onLogoBrowserOpenChange={setLogoBrowserOpen}
-            />
+            <>
+              <BrandingEditor
+                branding={brandingDraft}
+                onChange={setBrandingDraft}
+                logoBrowserOpen={logoBrowserOpen}
+                onLogoBrowserOpenChange={setLogoBrowserOpen}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" disabled={brandingSaving} onClick={saveBranding}>
+                  {brandingSaving ? "Đang lưu branding..." : "Lưu branding & tạo lại thumbnail"}
+                </Button>
+                <span className="text-[11px] text-muted-foreground">
+                  Lưu branding cũng tạo lại thumbnail/podcast cover (nếu bật) để thấy ngay.
+                </span>
+              </div>
+            </>
           )}
           {brandingMode === "inherit" && branding && (
             <div className="rounded-md bg-muted/30 p-3 text-xs text-muted-foreground">

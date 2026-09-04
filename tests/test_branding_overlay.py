@@ -520,3 +520,133 @@ def test_podcast_preview_branding_override(tmp_path, monkeypatch):
         )
     assert response.status_code == 200
     assert response.headers.get("content-type") == "image/png"
+
+
+def _insert_patch(conn, book_id, patch_index=0):
+    now = "2026-01-01T00:00:00+00:00"
+    row = conn.execute(
+        "INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status, created_at, updated_at) "
+        "VALUES (?, ?, 1, 10, 'pending', ?, ?) RETURNING id",
+        (book_id, patch_index, now, now),
+    ).fetchone()
+    conn.commit()
+    return int(row["id"])
+
+
+def test_thumbnails_regenerate_applies_saved_branding(tmp_path, monkeypatch):
+    """Hồi quy: POST thumbnails/regenerate phải vẽ branding đã lưu vào PNG."""
+    from fastapi.testclient import TestClient
+    from io import BytesIO
+    monkeypatch.setattr("app.config.settings.data_root", str(tmp_path))
+    monkeypatch.setattr("app.config.settings.enable_worker", False)
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr("app.config.settings.db_path", str(db_path))
+    app = __import__("app.main", fromlist=["app"]).app
+    with TestClient(app) as client:
+        conn = client.app.state.conn
+        book = _insert_book(conn)
+        bg = tmp_path / "backgrounds" / "test.png"
+        bg.parent.mkdir(parents=True)
+        _make_image().save(str(bg))
+        conn.execute("UPDATE book SET background_image_path = ? WHERE id = ?", (str(bg), book.id))
+        conn.commit()
+        patch_id = _insert_patch(conn, book.id)
+        # Lưu branding có watermark rồi tạo lại thumbnail qua API
+        resp = client.post(
+            f"/books/{book.id}/branding-config",
+            json={"branding": {"watermark": {"enabled": True, "text": "BRAND-X"}}},
+        )
+        assert resp.status_code == 200
+        resp = client.post(f"/books/{book.id}/thumbnails/regenerate", json={"patch_ids": [patch_id]})
+        assert resp.status_code == 200
+        assert resp.json()["generated"] == [patch_id]
+        overlay_path = image_overlay.get_patch_overlay_path(book.id, 0)
+        assert overlay_path.is_file()
+        # Ảnh đã lưu phải khác ảnh nền gốc (đã vẽ text/watermark lên)
+        rendered = Image.open(str(overlay_path)).convert("RGB")
+        baseline = image_overlay.compose_patch_overlay(
+            book, repository.get_patch(conn, patch_id),
+            image_overlay.parse_overlay_config(book.overlay_config),
+        )
+        assert list(rendered.getdata()) != list(baseline.getdata())
+        # Đối chứng: tắt thumbnail target thì regenerate không vẽ branding
+        client.post(
+            f"/books/{book.id}/branding-config",
+            json={"branding": {
+                "watermark": {"enabled": True, "text": "BRAND-X"},
+                "targets": {"thumbnail": False, "podcast": True, "video": True},
+            }},
+        )
+        resp = client.post(f"/books/{book.id}/thumbnails/regenerate", json={"patch_ids": [patch_id]})
+        assert resp.status_code == 200
+        book = repository.get_book(conn, book.id)
+        rendered2 = Image.open(str(overlay_path)).convert("RGB")
+        baseline2 = image_overlay.compose_patch_overlay(
+            book, repository.get_patch(conn, patch_id),
+            image_overlay.parse_overlay_config(book.overlay_config),
+        )
+        assert list(rendered2.getdata()) == list(baseline2.getdata())
+
+
+def test_podcast_cover_regenerate_applies_saved_branding(tmp_path, monkeypatch):
+    """Hồi quy: POST podcast-cover/regenerate phải vẽ branding đã lưu."""
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr("app.config.settings.data_root", str(tmp_path))
+    monkeypatch.setattr("app.config.settings.enable_worker", False)
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr("app.config.settings.db_path", str(db_path))
+    app = __import__("app.main", fromlist=["app"]).app
+    with TestClient(app) as client:
+        conn = client.app.state.conn
+        book = _insert_book(conn)
+        bg = tmp_path / "backgrounds" / "test.png"
+        bg.parent.mkdir(parents=True)
+        _make_image().save(str(bg))
+        conn.execute("UPDATE book SET background_image_path = ? WHERE id = ?", (str(bg), book.id))
+        cfg = image_overlay.parse_overlay_config(None)
+        cfg["podcast_cover"] = {"enabled": True, "focus_x": 50, "focus_y": 50, "size": 800}
+        conn.execute("UPDATE book SET overlay_config = ? WHERE id = ?", (json.dumps(cfg), book.id))
+        conn.commit()
+        _insert_patch(conn, book.id)
+        client.post(
+            f"/books/{book.id}/branding-config",
+            json={"branding": {"watermark": {"enabled": True, "text": "POD-X"}}},
+        )
+        resp = client.post(f"/books/{book.id}/podcast-cover/regenerate")
+        assert resp.status_code == 200
+        cover_path = image_overlay.get_podcast_cover_path(book.id)
+        assert cover_path.is_file()
+        book = repository.get_book(conn, book.id)
+        rendered = Image.open(str(cover_path)).convert("RGB")
+        plain = image_overlay.render_podcast_cover(
+            book, image_overlay.pick_cover_patch(repository.list_patches(conn, book.id)),
+            branding={"watermark": {"enabled": False}, "logo": {"enabled": False},
+                      "targets": {"thumbnail": True, "podcast": True, "video": True}},
+        )
+        assert list(rendered.getdata()) != list(Image.open(plain).convert("RGB").getdata())
+
+
+def test_overlay_image_endpoint_applies_saved_branding(tmp_path, monkeypatch):
+    """Hồi quy: GET overlay-image phải phục vụ ảnh đã gắn branding."""
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr("app.config.settings.data_root", str(tmp_path))
+    monkeypatch.setattr("app.config.settings.enable_worker", False)
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr("app.config.settings.db_path", str(db_path))
+    app = __import__("app.main", fromlist=["app"]).app
+    with TestClient(app) as client:
+        conn = client.app.state.conn
+        book = _insert_book(conn)
+        bg = tmp_path / "backgrounds" / "test.png"
+        bg.parent.mkdir(parents=True)
+        _make_image().save(str(bg))
+        conn.execute("UPDATE book SET background_image_path = ? WHERE id = ?", (str(bg), book.id))
+        conn.commit()
+        patch_id = _insert_patch(conn, book.id)
+        client.post(
+            f"/books/{book.id}/branding-config",
+            json={"branding": {"watermark": {"enabled": True, "text": "ROW-X"}}},
+        )
+        resp = client.get(f"/books/{book.id}/patches/{patch_id}/overlay-image?force=1")
+        assert resp.status_code == 200
+        assert resp.headers.get("content-type") == "image/png"

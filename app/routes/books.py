@@ -651,11 +651,12 @@ def update_book_music(
             raise HTTPException(status_code=404, detail="book not found")
         repository.set_book_music(conn, book_id, mid, vol)
         book = repository.get_book(conn, book_id)
+        branding = get_effective_branding_config(conn, book)
         patches = repository.list_patches(conn, book_id)
     font_path = settings.default_font_path or None
     for patch in patches:
         try:
-            image_overlay.ensure_patch_overlay(book, patch, font_path)
+            image_overlay.ensure_patch_overlay(book, patch, font_path, branding=branding)
         except Exception:
             pass
     if request.headers.get("X-Requested-With") == "autosave":
@@ -926,9 +927,10 @@ def regenerate_podcast_cover(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(404, "book not found")
+        branding = get_effective_branding_config(conn, book)
         patches = repository.list_patches(conn, book_id)
     try:
-        path = image_overlay.render_podcast_cover(book, image_overlay.pick_cover_patch(patches))
+        path = image_overlay.render_podcast_cover(book, image_overlay.pick_cover_patch(patches), branding=branding)
     except (ValueError, OSError) as exc:
         # Sách chưa có background, hoặc background là video (PIL không mở được).
         raise HTTPException(400, f"Không tạo được ảnh bìa podcast: {exc}") from exc
@@ -944,9 +946,10 @@ def get_podcast_cover(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(404, "book not found")
+        branding = get_effective_branding_config(conn, book)
         patches = repository.list_patches(conn, book_id)
     force = request.query_params.get("force") in {"1", "true"}
-    path = image_overlay.ensure_podcast_cover(book, image_overlay.pick_cover_patch(patches), force=force)
+    path = image_overlay.ensure_podcast_cover(book, image_overlay.pick_cover_patch(patches), force=force, branding=branding)
     if not path or not Path(path).is_file():
         raise HTTPException(404, "Chưa tạo được ảnh bìa podcast")
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
@@ -971,7 +974,10 @@ def apply_podcast_settings(request: Request, book_id: int):
     podcast = config.get("podcast") or {}
     cover_path = None
     if podcast.get("upload_cover", True):
-        cover_path = image_overlay.ensure_podcast_cover(book, image_overlay.pick_cover_patch(patches), force=True)
+        with locked_conn(request) as _conn:
+            _book = repository.get_book(_conn, book_id)
+            _branding = get_effective_branding_config(_conn, _book) if _book else {}
+        cover_path = image_overlay.ensure_podcast_cover(book, image_overlay.pick_cover_patch(patches), force=True, branding=_branding)
         if not cover_path:
             raise HTTPException(400, "Chưa tạo được ảnh bìa podcast — kiểm tra background của sách")
 
@@ -1067,12 +1073,13 @@ def select_background_image(
         )
         conn.commit()
         book = repository.get_book(conn, book_id)
+        branding = get_effective_branding_config(conn, book)
         patches = repository.list_patches(conn, book_id)
 
     font_path = settings.default_font_path or None
     for patch in patches:
         try:
-            image_overlay.ensure_patch_overlay(book, patch, font_path)
+            image_overlay.ensure_patch_overlay(book, patch, font_path, branding=branding)
         except Exception:
             pass
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
@@ -1118,6 +1125,7 @@ async def upload_background_image(
         )
         conn.commit()
         book = repository.get_book(conn, book_id)
+        branding = get_effective_branding_config(conn, book)
 
         patches = repository.list_patches(conn, book_id)
 
@@ -1127,7 +1135,7 @@ async def upload_background_image(
         font_path = settings.default_font_path or None
         for patch in patches:
             try:
-                image_overlay.ensure_patch_overlay(book, patch, font_path)
+                image_overlay.ensure_patch_overlay(book, patch, font_path, branding=branding)
             except Exception:
                 pass
 
@@ -1546,6 +1554,9 @@ async def regenerate_thumbnails(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(404, "book not found")
+        # Branding phải đi kèm thumbnail — nếu không watermark/logo đã lưu
+        # sẽ bị mất khi tạo lại ảnh.
+        branding = get_effective_branding_config(conn, book)
         # Validate all patches exist
         all_patches = repository.list_patches(conn, book_id)
         patch_map = {p.id: p for p in all_patches}
@@ -1557,7 +1568,7 @@ async def regenerate_thumbnails(request: Request, book_id: int):
     failed = []
     for patch in target_patches:
         try:
-            output = image_overlay.ensure_patch_overlay(book, patch, font_path, force=True)
+            output = image_overlay.ensure_patch_overlay(book, patch, font_path, force=True, branding=branding)
             if not output or not Path(output).is_file():
                 raise RuntimeError("Không thể tạo file thumbnail")
             generated.append(patch.id)

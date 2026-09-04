@@ -2725,8 +2725,10 @@ def apply_book_podcast(conn: sqlite3.Connection, book_id: int | None, playlist_i
             return None
         cover_path = None
         if podcast.get("upload_cover", True):
+            from app.production_defaults import get_effective_branding_config
             patches = repository.list_patches(conn, book_id)
-            cover_path = image_overlay.ensure_podcast_cover(book, image_overlay.pick_cover_patch(patches))
+            branding = get_effective_branding_config(conn, book)
+            cover_path = image_overlay.ensure_podcast_cover(book, image_overlay.pick_cover_patch(patches), branding=branding)
         return sync_playlist_podcast(conn, book_id, playlist_id, enabled=True, cover_path=cover_path)
     except Exception:
         logger.warning(

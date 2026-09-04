@@ -552,7 +552,8 @@ def run_patch_publish_stage(conn: sqlite3.Connection, patch_id: int) -> dict:
         if row["thumbnail_status"] != "done":
             current_stage = "thumbnail"
             patch = get_patch(conn, patch_id); book = get_book(conn, patch.book_id)
-            path = ensure_patch_overlay(book, patch, settings.default_font_path or None)
+            branding = get_effective_branding_config(conn, book) if book else {}
+            path = ensure_patch_overlay(book, patch, settings.default_font_path or None, branding=branding)
             if not path or not Path(path).is_file(): raise ValueError("patch thumbnail could not be created")
             conn.execute("UPDATE patch_pipeline SET stage='video', thumbnail_status='done', thumbnail_path=? WHERE patch_id=?", (path, patch_id)); conn.commit()
         row = _row(conn, patch_id)
