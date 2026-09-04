@@ -126,6 +126,7 @@ export function YouTubePage() {
   const [playlistId, setPlaylistId] = useState("");
   const [notForKids, setNotForKids] = useState(true);
   const [aiLabelsEnabled, setAiLabelsEnabled] = useState(false);
+  const [alteredContent, setAlteredContent] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Playlists tab state (list-only; a playlist's items are managed on the
@@ -898,6 +899,7 @@ export function YouTubePage() {
         form.append("playlist_id", playlistId);
         form.append("not_for_kids", String(notForKids));
         form.append("ai_labels_enabled", String(aiLabelsEnabled));
+        form.append("altered_content", String(alteredContent));
         await postForm("/youtube/upload", form);
       } else {
         if (!uploadFile) return alert("Vui lòng chọn file video từ máy tính");
@@ -910,6 +912,7 @@ export function YouTubePage() {
         form.append("playlist_id", playlistId);
         form.append("not_for_kids", String(notForKids));
         form.append("ai_labels_enabled", String(aiLabelsEnabled));
+        form.append("altered_content", String(alteredContent));
         await postForm("/youtube/upload-file", form);
       }
 
@@ -1692,6 +1695,15 @@ export function YouTubePage() {
                   Tự bật nhãn AI (tự sinh tag từ tiêu đề/mô tả)
                 </label>
               </div>
+              <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={alteredContent}
+                  onChange={(e) => setAlteredContent(e.target.checked)}
+                  className="rounded border-input"
+                />
+                Khai báo Sử dụng AI (Altered/Synthetic) cho YouTube — mặc định bật
+              </label>
 
               <Button variant="default" className="w-full font-bold" type="submit" disabled={isSubmitting}>
                 <Upload className="h-4 w-4" />
