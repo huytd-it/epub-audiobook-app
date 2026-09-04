@@ -40,14 +40,6 @@ def _require_patch(conn, book_id: int, patch_id: int):
     return patch
 
 
-def _book_patch_dir(book_id: int) -> Path:
-    return Path(settings.data_root) / "books" / str(book_id) / "patches"
-
-
-def _chunk_dir(book_id: int, patch_id: int) -> Path:
-    return _book_patch_dir(book_id) / f"{patch_id}_chunks"
-
-
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
@@ -364,8 +356,8 @@ def serve_patch_chunk_audio(request: Request, book_id: int, patch_id: int, index
     if index < 0:
         raise HTTPException(status_code=400, detail="invalid chunk index")
     with locked_conn(request) as conn:
-        _require_patch(conn, book_id, patch_id)
-    path = _chunk_dir(book_id, patch_id) / f"chunk_{index:03d}.wav"
+        patch = _require_patch(conn, book_id, patch_id)
+    path = repository.resolve_patch_chunk_dir(patch) / f"chunk_{index:03d}.wav"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="chunk not found")
     return FileResponse(str(path), media_type="audio/wav")
@@ -385,7 +377,7 @@ def completed_chunks_preview(request: Request, book_id: int, patch_id: int):
         audio_config = get_effective_audio_config(conn, book)
 
     plan = repository.build_chunk_plan_from_inputs(inputs)
-    chunk_dir = _chunk_dir(book_id, patch_id)
+    chunk_dir = repository.resolve_patch_chunk_dir(patch)
     try:
         tts_request = json.loads((chunk_dir / ".tts_request.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):

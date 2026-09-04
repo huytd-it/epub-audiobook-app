@@ -47,6 +47,19 @@ def get_patch_chunk_dir(book_id: int, patch_index: int) -> Path:
     return Path(settings.data_root) / "books" / str(book_id) / "audio" / f"{book_id}_{episode}_chunks"
 
 
+def resolve_patch_chunk_dir(patch) -> Path:
+    """Thư mục chunk WAV đang dùng cho patch, ưu tiên layout mới
+    audio/{book}_{episode}_chunks, fallback legacy patches/{patch_id}_chunks cho dữ liệu
+    cũ. Chỉ dùng cho ĐỌC (phát thử chunk, đếm chunk có sẵn) — mọi nơi GHI phải dùng
+    thẳng get_patch_chunk_dir. Không tồn tại thư mục nào thì trả về đường dẫn mới để
+    caller báo lỗi theo layout hiện hành."""
+    new_dir = get_patch_chunk_dir(patch.book_id, patch.patch_index)
+    if new_dir.is_dir():
+        return new_dir
+    legacy = _chunk_dir_for(patch.book_id, patch.id)
+    return legacy if legacy.is_dir() else new_dir
+
+
 def get_patch_video_path(book_id: int, patch_index: int) -> Path:
     episode = f"{patch_index + 1:03d}"
     return Path(settings.data_root) / "books" / str(book_id) / "videos" / f"{book_id}_{episode}.mp4"

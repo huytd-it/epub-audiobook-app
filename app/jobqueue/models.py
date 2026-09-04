@@ -54,8 +54,6 @@ class Job:
     started_at: str | None
     finished_at: str | None
     updated_at: str
-    flow_run_id: int | None = None
-    node_id: str | None = None
     patch_id: int | None = None
 
     @property

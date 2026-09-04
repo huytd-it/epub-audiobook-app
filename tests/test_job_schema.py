@@ -37,7 +37,7 @@ def test_job_table_has_expected_columns():
         "phase", "progress_current", "progress_total", "result_json", "error_message",
         "attempt_count", "max_attempts", "next_retry_at", "worker_id", "heartbeat_at",
         "created_at", "started_at", "finished_at", "updated_at",
-        "flow_run_id", "node_id", "patch_id",
+        "patch_id",
     }
 
 

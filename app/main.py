@@ -14,11 +14,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app import db, repository
 from app.config import settings
-from app.routes import (books, database_io, downloads, drive, effects, flows, gameplay, local_bridge, logs, media_browser, music,
+from app.routes import (books, database_io, downloads, drive, effects, gameplay, local_bridge, logs, media_browser, music,
     patches, photos, production_settings, queue, text_studio, tts_models, ui_api, validation, video, video_api, voices, youtube)
 import asyncio
 
-from app.jobqueue import joblog
+from app.jobqueue import joblog, store
 from app.jobqueue.backfill import backfill_pending_jobs, build_queue
 
 logging.basicConfig(
@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
             summary["books_reset"],
             summary["files_deleted"],
         )
-    else:
+    elif not settings.clean_start_on_startup:
         backfilled = repository.backfill_video_book_jobs(conn)
         if backfilled:
             logging.info(
@@ -83,22 +83,29 @@ async def lifespan(app: FastAPI):
     db_lock = threading.Lock()
     app.state.conn = conn
     app.state.db_lock = db_lock
-    backfilled = backfill_pending_jobs(conn)
-    if any(backfilled.values()):
-        logging.info(
-            "event=queue.backfill video=%s youtube_upload=%s",
-            backfilled["video"], backfilled["youtube_upload"],
-        )
 
-    # Tự động hoá patch: enqueue các job patch_video/youtube_upload còn thiếu cho mọi
-    # patch đã có audio (waiting_config đã tự khỏi khi config hợp lệ trở lại).
-    from app.patch_publishing import reconcile_patch_automation
-    try:
-        reconciled = reconcile_patch_automation(conn)
-        if sum(v for k, v in reconciled.items() if k != "errors") or reconciled["errors"]:
-            logging.info("event=queue.automation_reconcile %s", reconciled)
-    except Exception:
-        logging.exception("event=queue.automation_reconcile.failed")
+    if settings.clean_start_on_startup:
+        # Khởi động sạch: hàng đợi của lần chạy trước bị xoá hết và không có bước
+        # backfill/automation nào chạy — job chỉ xuất hiện khi người dùng bấm.
+        cleared = store.clear_all(conn)
+        logging.info("event=queue.clean_start jobs_cleared=%s", cleared)
+    else:
+        backfilled = backfill_pending_jobs(conn)
+        if any(backfilled.values()):
+            logging.info(
+                "event=queue.backfill video=%s youtube_upload=%s",
+                backfilled["video"], backfilled["youtube_upload"],
+            )
+
+        # Tự động hoá patch: enqueue các job patch_video/youtube_upload còn thiếu cho mọi
+        # patch đã có audio (waiting_config đã tự khỏi khi config hợp lệ trở lại).
+        from app.patch_publishing import reconcile_patch_automation
+        try:
+            reconciled = reconcile_patch_automation(conn)
+            if sum(v for k, v in reconciled.items() if k != "errors") or reconciled["errors"]:
+                logging.info("event=queue.automation_reconcile %s", reconciled)
+        except Exception:
+            logging.exception("event=queue.automation_reconcile.failed")
 
     removed = joblog.purge_old_logs(conn)
     if removed:
@@ -140,7 +147,6 @@ app.include_router(text_studio.router)
 app.include_router(drive.router)
 app.include_router(database_io.router)
 app.include_router(effects.router)
-app.include_router(flows.router)
 app.include_router(local_bridge.router)
 app.include_router(validation.router)
 app.include_router(ui_api.router)

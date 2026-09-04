@@ -170,7 +170,5 @@ def test_build_queue_registers_all_four_handlers(tmp_path):
     assert queue.capacity("light_tts") == 10
     assert {p["job_type"] for p in queue.pool_status()} == {
         "audiobook_tts", "video", "patch_video", "standalone_video",
-        "youtube_upload", "light_tts", "flow_audio", "flow_video", "flow_youtube",
-            "background_gen",
-            "gameplay_clip",
+        "youtube_upload", "light_tts", "background_gen", "gameplay_clip",
     }

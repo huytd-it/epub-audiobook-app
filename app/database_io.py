@@ -98,8 +98,6 @@ def _table_order() -> list[str]:
         "automation_settings",
         "media_assets",
         "batches",
-        "flow_run",
-        "flow_definition",
         "material_cache",
         "sound_effect",
     ]

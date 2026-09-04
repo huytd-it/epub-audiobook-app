@@ -18,11 +18,9 @@ type JobTypeFilter = "all" | WorkerType;
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const WORKER_TYPES = [
   ["audiobook_tts", "TTS audiobook"], ["light_tts", "TTS nhẹ"],
-  ["flow_audio", "Flow audio"], ["video", "Video sách"],
-  ["patch_video", "Video phân đoạn"], ["standalone_video", "Video độc lập"],
-  ["flow_video", "Flow video"], ["youtube_upload", "YouTube upload"],
-  ["flow_youtube", "Flow YouTube"], ["background_gen", "Tạo ảnh nền"],
-  ["gameplay_clip", "Gameplay clip"],
+  ["video", "Video sách"], ["patch_video", "Video phân đoạn"],
+  ["standalone_video", "Video độc lập"], ["youtube_upload", "YouTube upload"],
+  ["background_gen", "Tạo ảnh nền"], ["gameplay_clip", "Gameplay clip"],
 ] as const;
 type WorkerType = typeof WORKER_TYPES[number][0];
 type WorkerSettings = { concurrency: Record<WorkerType, number>; min: number; max: number; requires_restart: boolean };
@@ -35,7 +33,7 @@ type WorkerHealth = {
 };
 
 function jobTypeLabel(jobType: string) {
-  if (jobType.includes("tts") || jobType === "flow_audio") return "TTS";
+  if (jobType.includes("tts")) return "TTS";
   if (jobType.includes("youtube")) return "YouTube";
   if (jobType.includes("video")) return "Video";
   return jobType;

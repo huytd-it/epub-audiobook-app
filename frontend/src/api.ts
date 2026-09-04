@@ -36,7 +36,6 @@ export type Job = {
   attempt_count?: number;
   max_attempts?: number;
   patch_id?: number | null;
-  flow_run_id?: number | null;
   payload?: Record<string, unknown>;
   result?: Record<string, unknown> | null;
 };
@@ -335,12 +334,6 @@ export type PatchExport = {
   local_folder_path: string | null;
   sync_target_name: string | null;
   sync_target_email: string | null;
-};
-
-export type FlowDefinition = {
-  id: number;
-  name: string;
-  nodes: string[];
 };
 
 export type VideoItem = {

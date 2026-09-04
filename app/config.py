@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     tts_write_chunk_files: bool = True  # set TTS_WRITE_CHUNK_FILES=false to skip per-chunk WAV files
     ffmpeg_path: str = str(_APP_ROOT / "assets" / "bin" / "ffmpeg.exe")
     reset_all_jobs_on_startup: bool = False  # dev-only: reset every patch + book_job → pending on boot
+    # Khởi động sạch: xoá toàn bộ hàng đợi job còn sót của lần chạy trước và KHÔNG tự
+    # enqueue lại bất cứ việc gì (backfill video/upload, reconcile automation). Sau khi
+    # boot, job chỉ sinh ra khi người dùng bấm. Đặt CLEAN_START_ON_STARTUP=false để quay
+    # lại hành vi cũ: app tự nhặt lại mọi việc dở dang.
+    clean_start_on_startup: bool = True
 
     # YouTube upload
     youtube_client_id: str = ""

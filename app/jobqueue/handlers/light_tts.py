@@ -60,9 +60,10 @@ def handle(ctx) -> dict:
         ctx.emit({"type": "error", "message": "Patch này không có chunk nào"})
         raise JobFatalError("patch không có chunk nào")
 
-    book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
-    book_dir.mkdir(parents=True, exist_ok=True)
-    chunk_dir = book_dir / f"{patch_id}_chunks"
+    # Cùng thư mục chunk với pipeline TTS chính (audio/{book}_{episode}_chunks) để
+    # endpoint phát thử chunk chỉ phải đọc một chỗ; hai bên phân biệt chunk của nhau
+    # bằng marker riêng (.light_tts_meta ở đây, fingerprint ở audiobook_tts).
+    chunk_dir = repository.get_patch_chunk_dir(book_id, patch.patch_index)
     chunk_dir.mkdir(parents=True, exist_ok=True)
     joined = "\n\n".join(item["text"] for item in plan)
     meta_key = hashlib.md5(f"{backend}|{voice}|{effective_max_chars}|{joined}".encode("utf-8")).hexdigest()
@@ -118,7 +119,9 @@ def handle(ctx) -> dict:
         ctx.emit({"type": "done", "saved": False, "complete": False, "ok": ok_count, "failed": fail_count})
         return {"audio_path": None, "ok": ok_count, "failed": fail_count}
     ctx.progress(total, total, phase="merging")
-    audio_path = str(book_dir / f"{patch_id}.wav")
+    audio_path = repository.get_patch_audio_path(book_id, patch.patch_index)
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path = str(audio_path)
     chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
     pauses = audio_merge.build_pause_plan(
         plan, payload["chunk_pause_ms"], payload["chapter_pause_ms"])

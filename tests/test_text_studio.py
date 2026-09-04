@@ -385,3 +385,51 @@ def test_chunk_audio_is_served_after_a_run(client, book_and_patch, fake_engine, 
 
     assert client.get(f"/books/{book.id}/patches/{patch.id}/chunk-audio/0").status_code == 200
     assert client.get(f"/books/{book.id}/patches/{patch.id}/chunk-audio/99").status_code == 404
+
+
+def _write_silent_wav(path):
+    import io
+
+    import numpy as np
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(1600, dtype="float32"), 16000, format="WAV")
+    path.write_bytes(buf.getvalue())
+
+
+def test_chunk_preview_reads_the_production_chunk_layout(client, book_and_patch):
+    """Chunk do pipeline TTS chính sinh ra nằm ở audio/{book}_{episode}_chunks. Trước đây
+    endpoint phát thử chỉ nhìn vào layout cũ patches/{patch_id}_chunks nên luôn báo
+    'chưa có chunk' dù file có thật."""
+    book, patch = book_and_patch
+    chunk_dir = repository.get_patch_chunk_dir(book.id, patch.patch_index)
+    _write_silent_wav(chunk_dir / "chunk_000.wav")
+
+    assert client.get(f"/books/{book.id}/patches/{patch.id}/chunk-audio/0").status_code == 200
+    preview = client.get(f"/books/{book.id}/patches/{patch.id}/completed-chunks-preview").json()
+    assert [chunk["index"] for chunk in preview["chunks"]] == [0]
+
+
+def test_chunk_preview_falls_back_to_the_legacy_chunk_layout(client, book_and_patch):
+    """Sách cũ vẫn còn chunk ở patches/{patch_id}_chunks — vẫn phải phát thử được."""
+    book, patch = book_and_patch
+    legacy_dir = repository._chunk_dir_for(book.id, patch.id)
+    _write_silent_wav(legacy_dir / "chunk_000.wav")
+
+    assert client.get(f"/books/{book.id}/patches/{patch.id}/chunk-audio/0").status_code == 200
+    preview = client.get(f"/books/{book.id}/patches/{patch.id}/completed-chunks-preview").json()
+    assert [chunk["index"] for chunk in preview["chunks"]] == [0]
+
+
+def test_light_tts_writes_into_the_current_layout(client, book_and_patch, fake_engine, synchronous_light_tts):
+    """Đầu ghi (LightTTS) và đầu đọc (phát thử) phải trỏ cùng một thư mục, nếu không
+    bản xem trước vừa sinh sẽ bị bản chunk cũ ở thư mục kia che mất."""
+    book, patch = book_and_patch
+    _stream_events(client, f"/books/{book.id}/text-studio/patches/{patch.id}/preview-stream")
+
+    chunk_dir = repository.get_patch_chunk_dir(book.id, patch.patch_index)
+    assert sorted(p.name for p in chunk_dir.glob("chunk_*.wav"))
+    assert not repository._chunk_dir_for(book.id, patch.id).exists()
+    saved = repository.get_patch(client.app.state.conn, patch.id).audio_path
+    assert saved == str(repository.get_patch_audio_path(book.id, patch.patch_index))

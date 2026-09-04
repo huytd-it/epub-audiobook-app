@@ -39,6 +39,7 @@ import {
   stageBlockedReason,
 } from "./types";
 import { SectionHead, TabBar, checkboxClass } from "./parts";
+import { patchMediaDir } from "./paths";
 import { PatchIssuesDialog } from "./PatchIssuesDialog";
 
 type Filter = "all" | "processing" | "done" | "failed";
@@ -695,24 +696,20 @@ export function PatchesPanel({
           <DialogHeader>
             <DialogTitle>Media · Patch {mediaPatch ? `#${mediaPatch.patch_index + 1}` : ""}</DialogTitle>
             <DialogDescription className="break-all font-mono text-[11px]">
-              {mediaPatch ? `_Sách/${mediaPatch.book_id}/patches/${mediaPatch.id}_chunks` : ""}
+              {mediaPatch ? patchMediaDir(mediaPatch) : ""}
             </DialogDescription>
           </DialogHeader>
           {mediaPatch && (
             <MediaBrowser
               key={mediaPatch.id}
-              initialPath={`_Sách/${mediaPatch.book_id}/patches/${mediaPatch.id}_chunks`}
+              initialPath={patchMediaDir(mediaPatch)}
               height={440}
             />
           )}
           <DialogFooter>
             {mediaPatch && (
               <Button variant="outline" size="sm" asChild>
-                <Link
-                  to={`/media-browser?path=${encodeURIComponent(
-                    `_Sách/${mediaPatch.book_id}/patches/${mediaPatch.id}_chunks`
-                  )}`}
-                >
+                <Link to={`/media-browser?path=${encodeURIComponent(patchMediaDir(mediaPatch))}`}>
                   Mở trang Media đầy đủ →
                 </Link>
               </Button>

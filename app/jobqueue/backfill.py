@@ -9,15 +9,14 @@ from typing import Callable
 
 from app.config import settings
 from app.jobqueue import store
-from app.jobqueue.handlers import background_gen, flow_nodes, gameplay_clip, light_tts, patch_video, standalone_video, video, audiobook_tts, youtube_upload
+from app.jobqueue.handlers import background_gen, gameplay_clip, light_tts, patch_video, standalone_video, video, audiobook_tts, youtube_upload
 from app.jobqueue.runner import JobQueue, parse_concurrency
 
 logger = logging.getLogger(__name__)
 
 JOB_TYPES = (
     "audiobook_tts", "video", "patch_video", "standalone_video",
-    "youtube_upload", "light_tts", "flow_audio", "flow_video",
-    "flow_youtube", "background_gen", "gameplay_clip",
+    "youtube_upload", "light_tts", "background_gen", "gameplay_clip",
 )
 QUEUE_CONCURRENCY_STATE_KEY = "queue.concurrency"
 
@@ -68,9 +67,6 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     queue.register("standalone_video", standalone_video.handle)
     queue.register("youtube_upload", youtube_upload.handle, cancellable=False)
     queue.register("light_tts", light_tts.handle)
-    queue.register("flow_audio", flow_nodes.audio)
-    queue.register("flow_video", flow_nodes.video)
-    queue.register("flow_youtube", flow_nodes.youtube, cancellable=False)
     queue.register("background_gen", background_gen.handle)
     queue.register("gameplay_clip", gameplay_clip.handle)
     return queue

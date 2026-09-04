@@ -18,7 +18,7 @@ _COLUMNS = (
     "progress_current, progress_total, result_json, error_message, attempt_count, "
     "max_attempts, next_retry_at, worker_id, heartbeat_at, created_at, started_at, "
     "finished_at, updated_at"
-    ", flow_run_id, node_id, patch_id"
+    ", patch_id"
 )
 
 
@@ -53,8 +53,6 @@ def enqueue(
     dedupe_key: str | None = None,
     priority: int = 100,
     max_attempts: int = 3,
-    flow_run_id: int | None = None,
-    node_id: str | None = None,
     patch_id: int | None = None,
     depends_on: int | None = None,
 ) -> int | None:
@@ -78,10 +76,10 @@ def enqueue(
         cur = conn.execute(
             """INSERT INTO job (job_type, status, priority, book_id, payload_json,
                                 dedupe_key, max_attempts, created_at, updated_at,
-                                flow_run_id, node_id, patch_id)
-               VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                patch_id)
+               VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)""",
             (job_type, priority, book_id, json.dumps(payload), dedupe_key,
-             max_attempts, now, now, flow_run_id, node_id, patch_id),
+             max_attempts, now, now, patch_id),
         )
     except sqlite3.IntegrityError:
         conn.rollback()
@@ -445,6 +443,28 @@ def clear_inactive(conn: sqlite3.Connection) -> int:
     if inactive_ids:
         _suppress_auto_requeues(conn, inactive_ids)
     cur = conn.execute("DELETE FROM job WHERE status NOT IN ('running', 'cancelling')")
+    conn.commit()
+    return cur.rowcount
+
+
+def clear_all(conn: sqlite3.Connection) -> int:
+    """Xoá sạch hàng đợi — kể cả job còn 'running'/'cancelling'.
+
+    Chỉ gọi lúc khởi động, khi chắc chắn không worker nào còn ôm job: hàng
+    'running' lúc đó là rác của lần chạy trước. Producer (youtube_uploads /
+    book_job) bị đánh dấu cancelled trước khi xoá, nếu không backfill lần sau
+    sẽ enqueue lại đúng việc vừa dọn.
+    """
+    now = _now()
+    conn.execute(
+        """UPDATE job SET status='cancelled', finished_at=COALESCE(finished_at, ?),
+           updated_at=? WHERE status IN ('running', 'cancelling')""",
+        (now, now),
+    )
+    job_ids = [row["id"] for row in conn.execute("SELECT id FROM job")]
+    if job_ids:
+        _suppress_auto_requeues(conn, job_ids)
+    cur = conn.execute("DELETE FROM job")
     conn.commit()
     return cur.rowcount
 

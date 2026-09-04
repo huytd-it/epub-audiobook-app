@@ -15,7 +15,6 @@ import { VoicesPage } from "@/pages/VoicesPage";
 import { YouTubePage } from "@/pages/YouTubePage";
 import { DrivePage } from "@/pages/DrivePage";
 import { DatabaseIoPage } from "@/pages/DatabaseIoPage";
-import { FlowsPage } from "@/pages/FlowsPage";
 import { LogsPage } from "@/pages/LogsPage";
 import { EffectsPage } from "@/pages/EffectsPage";
 import { ProductionSettingsPage } from "@/pages/ProductionSettingsPage";
@@ -46,7 +45,6 @@ function App() {
         <Route path="/youtube" element={<YouTubePage />} />
         <Route path="/drive" element={<DrivePage />} />
         <Route path="/database-io" element={<DatabaseIoPage />} />
-        <Route path="/flows" element={<FlowsPage />} />
         <Route path="/logs" element={<LogsPage />} />
         <Route path="/effects" element={<EffectsPage />} />
         <Route path="/production-defaults" element={<ProductionSettingsPage />} />

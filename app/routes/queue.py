@@ -29,7 +29,7 @@ _JOB_FIELDS = ("id", "job_type", "status", "priority", "book_id", "phase",
                "progress_current", "progress_total", "error_message", "attempt_count",
                "max_attempts", "worker_id", "created_at", "started_at", "finished_at",
                "updated_at")
-_JOB_FIELDS += ("flow_run_id", "node_id", "patch_id")
+_JOB_FIELDS += ("patch_id",)
 
 
 def _job_dict(job) -> dict:
