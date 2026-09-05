@@ -21,6 +21,17 @@ class JobFatalError(Exception):
     Handler raise cái này thì job đi thẳng sang 'failed', bỏ qua backoff."""
 
 
+class JobRescheduled(Exception):
+    """Job không lỗi và không xong — nó đang chờ một tài nguyên bên ngoài (quota GPU
+    Kaggle) hồi phục tại một thời điểm biết trước. Khác JobFatalError/retry thường:
+    không tiêu attempt_count, không dùng công thức backoff 600s-cap của store.fail."""
+
+    def __init__(self, next_retry_at: str, message: str | None = None):
+        super().__init__(message or f"rescheduled until {next_retry_at}")
+        self.next_retry_at = next_retry_at
+        self.message = message
+
+
 def _loads(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None

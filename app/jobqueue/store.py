@@ -288,6 +288,25 @@ def fail(
     return FAILED if cur.rowcount > 0 else None
 
 
+def reschedule(
+    conn: sqlite3.Connection, job_id: int, next_retry_at: str,
+    message: str | None = None, *, worker_id: str | None = None,
+) -> bool:
+    """Đưa job về 'pending' tại đúng next_retry_at do caller chỉ định, không đụng
+    attempt_count/max_attempts — job này không lỗi, nó đang chờ một tài nguyên bên
+    ngoài (quota GPU Kaggle) hồi phục. Rào theo worker_id giống finish/fail: một
+    worker đã bị reap ghi vào là no-op."""
+    now = _now()
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"""UPDATE job SET status='pending', next_retry_at=?, error_message=?,
+                           worker_id=NULL, updated_at=? WHERE id=?{guard}""",
+        [next_retry_at, message, now, job_id] + extra,
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 # ---------------------------------------------------------------- hủy / retry
 
 def request_cancel(conn: sqlite3.Connection, job_id: int) -> str | None:

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from . import store
 from .context import JobContext
 from .joblog import JobLogger
-from .models import CANCELLING, HandlerSpec, JobFatalError
+from .models import CANCELLING, HandlerSpec, JobFatalError, JobRescheduled
 
 
 def parse_concurrency(spec: str, *, default: int) -> dict[str, int]:
@@ -174,6 +174,11 @@ class JobQueue:
             ctx.log(traceback.format_exc(), level=logging.ERROR)
             ctx.flush(); store.fail(
                 conn, job.id, str(exc), fatal=True, worker_id=job.worker_id,
+            )
+        except JobRescheduled as exc:
+            ctx.log(f"Hoãn tới {exc.next_retry_at}: {exc.message or exc}", level=logging.INFO)
+            ctx.flush(); store.reschedule(
+                conn, job.id, exc.next_retry_at, exc.message, worker_id=job.worker_id,
             )
         except Exception as exc:
             ctx.log(traceback.format_exc(), level=logging.ERROR)
