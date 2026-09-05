@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import shutil
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -51,7 +52,7 @@ def _kernel_slug(book_id: int, patch_ids: list[int]) -> str:
     return f"epub-tts-batch-{book_id}-{ids}"[:120]
 
 
-def _kernel_metadata(username: str, slug: str, title: str) -> dict:
+def _kernel_metadata(username: str, slug: str, title: str, dataset_ref: str) -> dict:
     return {
         "id": f"{username}/{slug}",
         "title": title,
@@ -61,6 +62,7 @@ def _kernel_metadata(username: str, slug: str, title: str) -> dict:
         "is_private": True,
         "enable_gpu": True,
         "enable_internet": True,
+        "dataset_sources": [dataset_ref],
     }
 
 
@@ -108,9 +110,21 @@ def handle(ctx: JobContext) -> dict | None:
 
             account_ref = kaggle_api.KaggleAccount(username=account["username"], api_key=account["api_key"])
             slug = _kernel_slug(book_id, patch_ids)
+
+            # A kernel push carries only its own notebook text -- the manifest and
+            # reference clip travel as a Dataset instead, referenced by slug in the
+            # kernel's dataset_sources. A fresh dataset every cycle (see kaggle_api's
+            # create_dataset docstring) rather than versioning one in place.
+            dataset_slug = f"epub-tts-data-{book_id}-{uuid.uuid4().hex[:8]}"
+            ctx.log(f"Uploading batch data as dataset {account['username']}/{dataset_slug}")
+            dataset_ref = kaggle_api.create_dataset(
+                account_ref, package_dir, dataset_slug, f"EPUB TTS data book {book_id}",
+            )
+
             ctx.log(f"Pushing kernel {account['username']}/{slug} ({len(patches)} patch(es))")
             kernel_ref = kaggle_api.push_kernel(
-                account_ref, package_dir, _kernel_metadata(account["username"], slug, f"epub-tts batch {book_id}"),
+                account_ref, package_dir,
+                _kernel_metadata(account["username"], slug, f"epub-tts batch {book_id}", dataset_ref),
             )
             usage_id = kaggle_accounts.record_usage_start(conn, account["id"], kernel_ref)
             started_at = time.monotonic()

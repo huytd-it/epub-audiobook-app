@@ -1277,18 +1277,14 @@ git commit -m "feat(kaggle): add account CRUD routes and export-batch-kaggle end
 **Files:**
 - Modify: `app/kaggle_api.py` (chỉ phần nội bộ, không đổi public interface đã test ở Task 3)
 
-Task này KHÔNG có test mới — nó là một checklist xác minh trước khi để tính năng này chạy với tài khoản Kaggle thật, vì Task 3 chỉ đảm bảo `kaggle_api.py` tự nhất quán nội bộ (qua `FakeRequest`), chưa đảm bảo khớp API thật.
+Task này ban đầu định "không viết code", chỉ đối chiếu tài liệu — nhưng việc đối chiếu tự nó lật ra lỗi thiết kế nghiêm trọng (kernel push KHÔNG thể đính file tuỳ ý, chỉ gửi được đúng 1 file notebook qua field `text`; auth là Basic chứ không phải Bearer; toàn bộ call là POST tới path dạng RPC `{service}.{Service}/{Method}`, không phải REST-with-query-params; giá trị status là UPPER_SNAKE_CASE) — nên đã sửa thẳng vào `app/kaggle_api.py` + `app/jobqueue/handlers/kaggle_tts.py` (thêm `create_dataset`/`_upload_blob` cho payload manifest+reference clip, giờ bắt buộc chứ không phải mở rộng tuỳ chọn) và test tương ứng, dựa trên đối chiếu **mã nguồn chính thức** của Kaggle (`github.com/Kaggle/kaggle-cli`, `github.com/Kaggle/kaggle-sdk-python`), không phải đoán.
 
-- [ ] Đối chiếu tài liệu Kaggle API hiện hành (hoặc mã nguồn `kaggle`/`kaggle-api` CLI mới nhất) cho: định dạng header `Authorization` (`Bearer <token>` hay Basic username:key), field chính xác của `kernel-metadata.json`, hình dạng response của `/kernels/push`, `/kernels/status`, `/kernels/output`.
-- [ ] Cập nhật `_auth_header()`/phần build request trong `app/kaggle_api.py` cho khớp, giữ nguyên chữ ký public đã có test.
-- [ ] Test thủ công 1 lần với 1 tài khoản Kaggle thật, 1 batch nhỏ (1 patch, vài chunk), xác nhận: push thành công, poll ra đúng trạng thái, output tải về đúng file, `patch_import.import_batch_patch` cài đặt được WAV.
-- [ ] Ghi lại bất kỳ sai khác nào so với spec vào `docs/superpowers/specs/2026-09-05-kaggle-api-tts-automation-design.md` (cập nhật mục "Implementation-time verification required" thành kết quả thật đã xác minh).
-- [ ] Commit riêng, không gộp với Task 3:
-
-```bash
-git add app/kaggle_api.py docs/superpowers/specs/2026-09-05-kaggle-api-tts-automation-design.md
-git commit -m "fix(kaggle): align kaggle_api.py request/response shapes with the live API"
-```
+- [x] Đối chiếu tài liệu/mã nguồn Kaggle API — đã đọc trực tiếp `kaggle_api_extended.py`, `kaggle_http_client.py`, và các file `types/*.py` sinh từ `kagglesdk` qua `gh api repos/Kaggle/...`. Kết quả đầy đủ ghi trong docstring đầu `app/kaggle_api.py` và mục "UPDATE (Task 12...)" của design doc.
+- [x] Cập nhật `_auth_header()`, base URL, toàn bộ path/method/body của `push_kernel`/`kernel_status`/`kernel_output`, thêm `create_dataset`/`_upload_blob`. Giữ nguyên chữ ký public `push_kernel`/`kernel_status`/`kernel_output`/`cancel_kernel` (test Task 3 chỉ cần viết lại nội dung assert, không đổi cách gọi từ `kaggle_tts.py`).
+- [x] Wire `create_dataset` vào `app/jobqueue/handlers/kaggle_tts.py`: tạo dataset từ `package_dir` trước khi push, truyền `dataset_sources=[dataset_ref]` vào metadata.
+- [x] Ghi lại phát hiện vào design doc (mục mới "UPDATE (Task 12...)"), bao gồm phần **CHƯA** xác minh được (cần tài khoản thật): shape thật của response `kernel_output`, license dataset có được chấp nhận không, cách lấy `kernel_session_id` số để `cancel_kernel` thật sự huỷ được kernel (hiện là no-op có chủ đích, xem docstring).
+- [ ] **Việc duy nhất còn lại, cần con người:** test thủ công 1 lần với 1 tài khoản Kaggle thật, 1 batch nhỏ (1 patch, vài chunk) — xác nhận: tạo dataset thành công, push kernel thành công, poll ra đúng trạng thái, `kernel_output` tải đúng file, `patch_import.resolve_batch_result`/`install_imported_wav` cài đặt được WAV. Không thể tự làm được trong phiên này (không có tài khoản/API key Kaggle thật).
+- [x] Commit riêng, không gộp với Task 3 (commit đã tách: sửa `kaggle_api.py`/test Task 3 giữ nguyên ở commit của Task 3; các sửa đổi Task 12 nằm ở commit riêng của Task 12).
 
 ---
 

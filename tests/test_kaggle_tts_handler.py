@@ -84,6 +84,7 @@ def test_handle_completes_when_one_kernel_run_imports_the_patch(tmp_path, monkey
     account_id = ka.create_account(conn, "acc1", "user1", "key1")
     book_id, patch_id = _seed_book_and_patch(conn)
 
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
     monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda account, *a, **k: f"{account.username}/slug")
     monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.COMPLETE)
 
@@ -130,6 +131,7 @@ def test_handle_returns_none_and_releases_account_when_cancelled(tmp_path, monke
     account_id = ka.create_account(conn, "acc1", "user1", "key1")
     book_id, patch_id = _seed_book_and_patch(conn)
 
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
     monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda account, *a, **k: f"{account.username}/slug")
     monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.RUNNING)
     cancelled = []
@@ -154,6 +156,7 @@ def test_handle_rotates_to_a_second_account_when_the_first_runs_out_of_quota(tmp
     book_id, patch_a = _seed_book_and_patch(conn)
     patch_b = _add_patch(conn, book_id, 1)
 
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
     push_calls = []
     def fake_push(account, package_dir, metadata):
         push_calls.append(account.username)

@@ -136,28 +136,64 @@ def push_kernel(account: KaggleAccount, package_dir: Path, metadata: dict) -> st
 def kernel_status(account: KaggleAccount, kernel_ref: str) -> KernelStatus               # queued|running|complete|error|cancelled
 def kernel_output(account: KaggleAccount, kernel_ref: str, dest_dir: Path) -> list[Path]  # downloads every output file, returns local paths
 def cancel_kernel(account: KaggleAccount, kernel_ref: str) -> None                       # best-effort; failures are swallowed
+def create_dataset(account: KaggleAccount, package_dir: Path, slug: str, title: str) -> str  # -> dataset_ref "username/slug"
 ```
 
 `metadata` mirrors `kernel-metadata.json`: `id` (`f"{username}/{slug}"`), `title`,
 `code_file`, `language: "python"`, `kernel_type: "notebook"`, `is_private: true`,
 `enable_gpu: true`, `enable_internet: true` (the notebook downloads model weights from
-Hugging Face). No `dataset_sources` in v1 — the manifest + reference clip are small
-enough (a few hundred KB of text plus one short WAV) to travel as the kernel's own
-attached files. `create_or_update_dataset(...)` for outsized payloads is an explicit
-extension point, out of scope for v1 (see Out of Scope).
+Hugging Face), `dataset_sources: [dataset_ref]`.
 
-**Implementation-time verification required** (do not trust this doc's exact wire
-shapes without checking the live API / current `kaggle` CLI source first):
+**UPDATE (Task 12, verified against Kaggle's own official SDK source — not a live
+account, see below):** the original plan above ("small payloads travel as the kernel's
+own attached files, `create_or_update_dataset` is an out-of-scope extension point") was
+wrong and has been corrected in the implementation. Reading
+`github.com/Kaggle/kaggle-cli`'s `kaggle_api_extended.py` and
+`github.com/Kaggle/kaggle-sdk-python`'s generated request classes shows:
 
-- Auth header format. Current public docs describe `Authorization: Bearer <token>`;
-  older client code used HTTP Basic with username+key. Kaggle has changed this before.
-  Isolate it behind one `_auth_header(account)` function so a change is a one-line fix.
-- Exact request/response shape of `kernels/push`, `kernels/status`, `kernels/output`
-  (field names, whether notebook content is inline JSON vs base64, how attached data
-  files are represented in the push payload).
-- The exact set of `kernel_status` string values and what a forced-timeout run reports.
+- **A kernel push carries exactly one file** — the notebook itself, as a single `text`
+  field (its cells' `outputs` stripped and each cell's `source` list joined into one
+  string). There is no mechanism to attach arbitrary local files to a kernel push.
+  Any other data (our manifest + reference clip) **must** travel as a Kaggle Dataset,
+  referenced by slug in `dataset_sources` — this is not optional, so `create_dataset`
+  is now part of the core `kaggle_api.py` surface, not an extension point.
+- **Auth is HTTP Basic** (`Authorization: Basic base64(username:api_key)`), not Bearer.
+  Confirmed by `KaggleHttpClient._try_fill_auth` setting `session.auth = (username,
+  password)`, which is exactly what `requests` treats as HTTP Basic.
+- **Every call is POST** to `https://api.kaggle.com/v1/{service}.{Service}/{Method}`
+  (e.g. `kernels.KernelsApiService/SaveKernel`, `.../GetKernelSessionStatus`,
+  `.../ListKernelSessionOutput`; `blobs.BlobApiService/StartBlobUpload`;
+  `datasets.DatasetApiService/CreateDataset`) — not REST-with-query-params against
+  `www.kaggle.com/api/v1`.
+- **Datasets are built from individually-uploaded blobs**: `StartBlobUpload` returns a
+  `token` + a presigned `createUrl`; the raw file bytes are `PUT` there with no Kaggle
+  auth header; `CreateDataset` then references the returned tokens.
+- **Kernel status values are upper-snake-case**: `QUEUED`, `RUNNING`, `COMPLETE`,
+  `ERROR`, `CANCEL_REQUESTED`, `CANCEL_ACKNOWLEDGED`, `NEW_SCRIPT` — not the
+  lowercase/camelCase originally guessed.
 
-None of this affects the architecture below — only `kaggle_api.py`'s internals.
+`app/kaggle_api.py`'s module docstring carries the same findings plus the citations.
+`create_dataset` always creates a brand-new dataset per push cycle rather than
+versioning one in place (simpler; leaves small throwaway datasets behind — a periodic
+cleanup is a reasonable follow-up, not implemented). `cancel_kernel` is a **documented
+no-op**: `CancelKernelSession` needs a numeric `kernel_session_id` that no other call
+in this module (push/status/output) surfaces anywhere, and this was not resolved.
+Callers already treat cancellation as best-effort, so this degrades safely — the job
+just stops polling and returns without confirming Kaggle itself stopped the kernel.
+
+**Still not verified — genuinely needs a live account** (source-reading closes the gap
+on wire shapes, not on whether Kaggle's backend actually behaves as its own client
+code implies):
+
+- An end-to-end real run: push a small batch, confirm it queues/runs/completes, confirm
+  `kernel_output` returns real files with a real `fileName`/`url` shape matching what
+  was assumed here.
+- Whether `CC0-1.0` (hardcoded as the dataset license) is accepted, or needs to be
+  configurable.
+- Where a numeric `kernel_session_id` can actually be obtained, to make `cancel_kernel`
+  do something.
+
+None of the above affects the architecture below — only `kaggle_api.py`'s internals.
 
 ## Account selection & quota tracking (`app/kaggle_accounts.py`)
 
@@ -383,8 +419,9 @@ ever contending for fewer accounts than are configured.
 
 ## Out of Scope
 
-- Using the Kaggle Datasets API for oversized payloads (extension point only; today's
-  manifest + reference clip sizes do not need it).
+- Versioning a Dataset in place across a batch's continuation cycles (Task 12 update:
+  a fresh dataset is created every push cycle instead — see `create_dataset`'s
+  docstring; periodic cleanup of old `epub-tts-data-*` datasets is not implemented).
 - A UI for manually editing `kaggle_usage` rows or overriding the quota estimate.
 - Automatically registering a Kaggle account (OAuth-less API-key accounts are added by
   hand, same as the user already does for Drive OAuth clients).
