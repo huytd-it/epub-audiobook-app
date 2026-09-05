@@ -194,12 +194,18 @@ def build_batch_export_package(
     voice_id: str | None = None,
     max_chars: int = 0,
     with_effects: bool = False,
+    mode: str = "drive",
 ) -> tuple[Path, dict]:
     """Write a multi-patch package: batch_manifest.json + the batch notebook at the
     root, one shared voice reference clip, and one manifest.json per patch under
     patches/. Nothing else travels: background images and music are only ever used by
     the app's own video rendering, so keeping them out keeps the Drive sync small.
-    Returns (package_dir, batch_manifest); caller is responsible for deleting the directory."""
+    Returns (package_dir, batch_manifest); caller is responsible for deleting the directory.
+
+    ``mode`` sets the notebook's own MODE global ("drive" or "kaggle_native" - see
+    Cell 1/Cell 4 of the template): "kaggle_native" tells Cell 4 to find the batch
+    under /kaggle/input/ instead of talking to Google Drive. Callers building a
+    kaggle_native package should not pass gdrive_creds - see build_kaggle_export_package."""
     if not patches:
         raise ValueError("no patches to export")
     book_ids = {p.book_id for p in patches}
@@ -277,6 +283,12 @@ def build_batch_export_package(
         "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]
     )
     notebook_src = notebook_src.replace("__HF_TOKEN__", (hf_token or settings.hf_token) or "")
+    if mode not in {"drive", "kaggle_native"}:
+        raise ValueError(f"unknown notebook mode: {mode!r}")
+    # Cell 1's MODE global, matched in its escaped-JSON-string form (the whole file is
+    # edited as text, not re-serialized through json.dump) - see Cell 1/Cell 4 of the
+    # template for what each value does.
+    notebook_src = notebook_src.replace('MODE = \\"drive\\"', f'MODE = \\"{mode}\\"')
     # Drive credentials for the notebook's Kaggle mode, baked straight into the copy we
     # hand out so the user does not have to create a Kaggle secret. json.dumps twice:
     # the inner call escapes the payload for the Python string literal in Cell 4, the
@@ -290,6 +302,28 @@ def build_batch_export_package(
     (package_dir / "colab_kaggle_batch_tts_template.ipynb").write_text(notebook_src, encoding="utf-8")
 
     return package_dir, batch_manifest
+
+
+def build_kaggle_export_package(
+    conn: sqlite3.Connection,
+    patches: list[Patch],
+    drive_folder_name: str | None = None,
+    hf_token: str | None = None,
+    model_id: str = "voxcpm2",
+    voice_id: str | None = None,
+    max_chars: int = 0,
+    with_effects: bool = False,
+) -> tuple[Path, dict]:
+    """Same package as build_batch_export_package, but for the Kaggle Kernels API
+    round trip: no Google Drive account, no GDRIVE_CREDS secret, no OAuth at all. The
+    notebook finds its input under /kaggle/input/ (Cell 4's kaggle_native branch,
+    matched by batch_id) instead of Google Drive, and its output travels back to the
+    app through kernel_output() instead of a Drive upload."""
+    return build_batch_export_package(
+        conn, patches, drive_folder_name=drive_folder_name, hf_token=hf_token,
+        model_id=model_id, voice_id=voice_id, max_chars=max_chars,
+        with_effects=with_effects, mode="kaggle_native",
+    )
 
 
 def build_batch_export_zip(
