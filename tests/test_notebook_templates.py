@@ -48,6 +48,21 @@ def test_is_kaggle_is_a_manual_global_set_in_cell_1(template):
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_mode_is_a_manual_global_set_in_cell_1(template):
+    """MODE controls Drive vs Kaggle-native input/output when IS_KAGGLE is True
+    (Task 6 of the Kaggle API automation plan). Colab has no push/pull API
+    equivalent, so it always behaves as "drive" regardless of MODE."""
+    cells = _code_cells(template)
+    assert 'MODE = "drive"' in cells[0], (
+        f"{template.name}: cell 1 must define MODE = \"drive\" as the default, "
+        "next to IS_KAGGLE"
+    )
+    assert cells[0].index("IS_KAGGLE = False") < cells[0].index('MODE = "drive"'), (
+        f"{template.name}: MODE must be defined after IS_KAGGLE in cell 1"
+    )
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
 def test_drive_mount_never_guarded_by_importerror(template):
     for src in _code_cells(template):
         if "drive.mount(" in src:
@@ -485,6 +500,36 @@ def test_cell4_lists_before_downloading_and_is_thread_safe():
     assert "def drive_persist(" in src
     # the old walk that downloaded while listing must be gone
     assert "def _sync_down(" not in src
+
+
+def test_kaggle_native_branch_is_gated_behind_is_kaggle_and_mode():
+    src = _code_cells(TEMPLATES[0])[3]  # Cell 4
+    assert 'elif MODE == "kaggle_native":' in src
+    assert src.index("if not IS_KAGGLE:") < src.index('elif MODE == "kaggle_native":'), (
+        "the kaggle_native branch must come after the Colab (not IS_KAGGLE) check, "
+        "so IS_KAGGLE still gates it"
+    )
+
+
+def test_kaggle_native_branch_never_touches_drive_credentials():
+    """kaggle_native mode must do exactly what its name promises: no GDRIVE_CREDS,
+    no Drive API client, no network call - just find the attached kernel data."""
+    src = _code_cells(TEMPLATES[0])[3]
+    branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
+    assert "GDRIVE_CREDS" not in branch
+    assert "drive_service" not in branch
+    assert "build(\"drive\"" not in branch
+    assert "/kaggle/input" in branch
+
+
+def test_kaggle_native_branch_leaves_no_drive_persist_hooks():
+    """Cell 8 falls back to no-op persist/REMOTE/drive_fetch_many via
+    globals().get(...) - the kaggle_native branch must not accidentally define any
+    of them, or Cell 8 would think it has a live Drive connection."""
+    src = _code_cells(TEMPLATES[0])[3]
+    branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
+    for name in ("drive_persist", "drive_fetch_many", "_drive_file_ids"):
+        assert name not in branch
 
 
 def test_batch_notebook_has_no_result_zip_cell():
