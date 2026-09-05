@@ -273,6 +273,18 @@ export type DriveClient = {
   created_at: string;
 };
 
+export type KaggleAccount = {
+  id: number;
+  label: string;
+  username: string;
+  status: "idle" | "busy" | "cooldown" | "disabled";
+  cooldown_until: string | null;
+  in_use_by_job_id: number | null;
+  remaining_quota_hours: number;
+  created_at: string;
+  updated_at: string;
+};
+
 /** Kết quả xử lý từng patch từ inbox / upload kết quả hàng loạt. */
 export type UploadResult = {
   patch_id?: number;

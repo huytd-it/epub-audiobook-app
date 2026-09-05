@@ -207,4 +207,12 @@ def book_exports(request: Request, book_id: int):
                 exports.append(asdict(exp))
         sync_targets = repository.list_drive_sync_targets(conn)
         accounts = google_drive.list_accounts(conn)
-    return {"exports": exports, "sync_targets": sync_targets, "accounts": accounts}
+        kaggle_accounts_list = kaggle_accounts.list_accounts(conn)
+        for account in kaggle_accounts_list:
+            account["remaining_quota_hours"] = round(
+                kaggle_accounts.remaining_quota_seconds(conn, account["id"]) / 3600, 1
+            )
+    return {
+        "exports": exports, "sync_targets": sync_targets, "accounts": accounts,
+        "kaggle_accounts": kaggle_accounts_list,
+    }

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { HardDrive, Plus, RefreshCw, Trash2, ExternalLink, Settings2, Copy, Check, FolderOpen, Cloud, KeyRound } from "lucide-react";
-import { api, postForm, postJson, DriveTarget, DriveAccount, DriveClient, PatchExport } from "@/api";
+import { HardDrive, Plus, RefreshCw, Trash2, ExternalLink, Settings2, Copy, Check, FolderOpen, Cloud, KeyRound, Gauge, Power } from "lucide-react";
+import { api, postForm, postJson, DriveTarget, DriveAccount, DriveClient, KaggleAccount, PatchExport } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,10 +12,13 @@ export function DrivePage() {
   const [accounts, setAccounts] = useState<DriveAccount[]>([]);
   const [clients, setClients] = useState<DriveClient[]>([]);
   const [exports, setExports] = useState<PatchExport[]>([]);
+  const [kaggleAccounts, setKaggleAccounts] = useState<KaggleAccount[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeSection, setActiveSection] = useState<"targets" | "accounts" | "exports" | "clients">("targets");
+  const [activeSection, setActiveSection] = useState<"targets" | "accounts" | "exports" | "clients" | "kaggle">("targets");
   const [showTargetForm, setShowTargetForm] = useState(false);
   const [showClientForm, setShowClientForm] = useState(false);
+  const [showKaggleForm, setShowKaggleForm] = useState(false);
+  const [editingKaggleId, setEditingKaggleId] = useState<number | null>(null);
   const [syncingId, setSyncingId] = useState<number | null>(null);
   const [kaggleCreds, setKaggleCreds] = useState("");
   const [copied, setCopied] = useState(false);
@@ -29,17 +32,21 @@ export function DrivePage() {
   const [clientSecret, setClientSecret] = useState("");
   const [rcloneClientId, setRcloneClientId] = useState("");
   const [rcloneClientSecret, setRcloneClientSecret] = useState("");
+  const [kaggleLabel, setKaggleLabel] = useState("");
+  const [kaggleUsername, setKaggleUsername] = useState("");
+  const [kaggleApiKey, setKaggleApiKey] = useState("");
 
   const loadData = () => {
     setLoading(true);
-    api<any>("/api/ui/drive")
-      .then((data) => {
-        setTargets(data.targets || []);
-        setAccounts(data.accounts || []);
-        setClients(data.clients || []);
-        setExports(data.exports || []);
-        setRcloneClientId(data.rclone_client_id || "");
-        setRcloneClientSecret(data.rclone_client_secret || "");
+    Promise.all([api<any>("/api/ui/drive"), api<any>("/api/ui/kaggle")])
+      .then(([drive, kaggle]) => {
+        setTargets(drive.targets || []);
+        setAccounts(drive.accounts || []);
+        setClients(drive.clients || []);
+        setExports(drive.exports || []);
+        setRcloneClientId(drive.rclone_client_id || "");
+        setRcloneClientSecret(drive.rclone_client_secret || "");
+        setKaggleAccounts(kaggle.accounts || []);
       })
       .catch((err) => console.error("Lỗi tải dữ liệu Google Drive:", err))
       .finally(() => setLoading(false));
@@ -103,6 +110,34 @@ export function DrivePage() {
     try { await postForm("/drive/rclone-config", form); alert("Đã lưu cấu hình rclone"); } catch (err: any) { alert(err.message); }
   };
 
+  const openKaggleForm = (account?: KaggleAccount) => {
+    setEditingKaggleId(account?.id ?? null);
+    setKaggleLabel(account?.label ?? "");
+    setKaggleUsername(account?.username ?? "");
+    setKaggleApiKey("");
+    setShowKaggleForm(true);
+  };
+
+  const handleSaveKaggleAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const form = new FormData();
+    form.append("label", kaggleLabel); form.append("username", kaggleUsername); form.append("api_key", kaggleApiKey);
+    try {
+      await postForm(editingKaggleId ? `/kaggle/accounts/${editingKaggleId}/edit` : "/kaggle/accounts", form);
+      setShowKaggleForm(false);
+      loadData();
+    } catch (err: any) { alert(`Lưu tài khoản Kaggle thất bại: ${err.message}`); }
+  };
+
+  const handleToggleKaggleAccount = async (id: number) => {
+    try { await postForm(`/kaggle/accounts/${id}/toggle`, new FormData()); loadData(); } catch (err: any) { alert(err.message); }
+  };
+
+  const handleDeleteKaggleAccount = async (id: number) => {
+    if (!confirm("Xóa tài khoản Kaggle này?")) return;
+    try { await postForm(`/kaggle/accounts/${id}/delete`, new FormData()); loadData(); } catch (err: any) { alert(err.message); }
+  };
+
   if (loading) return <LoadingState text="Đang nạp cấu hình Google Drive..." />;
 
   return (
@@ -113,6 +148,7 @@ export function DrivePage() {
         <Button variant={activeSection === "accounts" ? "default" : "ghost"} size="sm" onClick={() => setActiveSection("accounts")}><Cloud className="h-4 w-4" /> Tài khoản ({accounts.length})</Button>
         <Button variant={activeSection === "exports" ? "default" : "ghost"} size="sm" onClick={() => setActiveSection("exports")}><HardDrive className="h-4 w-4" /> Bản export ({exports.length})</Button>
         <Button variant={activeSection === "clients" ? "default" : "ghost"} size="sm" onClick={() => setActiveSection("clients")}><KeyRound className="h-4 w-4" /> OAuth clients</Button>
+        <Button variant={activeSection === "kaggle" ? "default" : "ghost"} size="sm" onClick={() => setActiveSection("kaggle")}><Gauge className="h-4 w-4" /> Kaggle ({kaggleAccounts.length})</Button>
       </div>
 
       {activeSection === "targets" && <div className="space-y-4">
@@ -125,6 +161,32 @@ export function DrivePage() {
       {activeSection === "exports" && <Card><CardHeader><CardTitle className="text-sm">Lịch sử bản export</CardTitle></CardHeader><CardContent className="p-0">{exports.length === 0 ? <EmptyState text="Chưa có bản export nào." /> : <div className="divide-y divide-border">{exports.map((item) => <div key={item.id} className="p-4 flex justify-between gap-3 text-xs"><div><div className="font-semibold">Export #{item.id} · Patch #{item.patch_id}</div><div className="font-mono text-muted-foreground break-all">{item.local_folder_path || item.drive_folder_link || item.drive_folder_id}</div><div className="text-[10px] text-muted-foreground">{new Date(item.created_at).toLocaleString("vi-VN")}</div></div><Button variant="outline" size="sm" asChild><a href={item.local_folder_path || item.drive_folder_link || item.drive_folder_id}><ExternalLink className="h-3.5 w-3.5" /> Mở</a></Button></div>)}</div>}</CardContent></Card>}
 
       {activeSection === "clients" && <div className="space-y-4"><div className="flex justify-end"><Button size="sm" onClick={() => setShowClientForm(true)}><Plus className="h-4 w-4" /> Thêm OAuth client</Button></div><Card><CardContent className="p-0 divide-y divide-border">{clients.length === 0 ? <EmptyState text="Chưa có OAuth client tùy chỉnh." /> : clients.map((client) => <div key={client.id} className="p-4 flex justify-between"><div><div className="font-semibold text-sm">{client.name}</div><div className="text-xs font-mono text-muted-foreground">{client.client_id}</div></div><Button variant="ghost" size="icon" className="text-destructive" onClick={async () => { if (confirm("Xóa OAuth client này?")) { try { await postForm(`/drive/clients/${client.id}/delete`, new FormData()); loadData(); } catch (e: any) { alert(e.message); } } }}><Trash2 className="h-4 w-4" /></Button></div>)}</CardContent></Card><Card><CardHeader><CardTitle className="text-sm">Rclone OAuth client</CardTitle></CardHeader><CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3"><Input placeholder="Google client ID" value={rcloneClientId} onChange={(e) => setRcloneClientId(e.target.value)} /><Input type="password" placeholder="Google client secret" value={rcloneClientSecret} onChange={(e) => setRcloneClientSecret(e.target.value)} /><Button className="md:col-span-2" onClick={saveRcloneConfig}>Lưu cấu hình rclone</Button></CardContent></Card></div>}
+
+      {activeSection === "kaggle" && <div className="space-y-4">
+        <div className="flex justify-end"><Button size="sm" onClick={() => openKaggleForm()}><Plus className="h-4 w-4" /> Thêm tài khoản Kaggle</Button></div>
+        <Card><CardHeader><CardTitle className="text-sm">Tài khoản Kaggle (tự động hoá qua Kaggle Kernels API)</CardTitle></CardHeader><CardContent className="p-0 divide-y divide-border">
+          {kaggleAccounts.length === 0 ? <EmptyState text="Chưa có tài khoản Kaggle nào. Thêm ít nhất một tài khoản để dùng export 'Kaggle (tự động)'." /> : kaggleAccounts.map((account) => {
+            const statusLabel: Record<string, string> = { idle: "Sẵn sàng", busy: "Đang chạy job", cooldown: "Hết quota tuần này", disabled: "Đã tắt" };
+            return <div key={account.id} className="p-4 flex items-center justify-between gap-3">
+              <div>
+                <div className="font-semibold text-sm">{account.label} <span className="text-muted-foreground font-normal">· {account.username}</span></div>
+                <div className="text-[11px] font-mono text-muted-foreground">
+                  {statusLabel[account.status] || account.status}
+                  {account.status === "cooldown" && account.cooldown_until && ` đến ${new Date(account.cooldown_until).toLocaleString("vi-VN")}`}
+                  {" · còn ~"}{account.remaining_quota_hours}h GPU tuần này
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => openKaggleForm(account)}><Settings2 className="h-3.5 w-3.5" /> Sửa</Button>
+                <Button variant="outline" size="sm" onClick={() => handleToggleKaggleAccount(account.id)}><Power className="h-3.5 w-3.5" /> {account.status === "disabled" ? "Bật" : "Tắt"}</Button>
+                <Button variant="ghost" size="icon" className="text-destructive" onClick={() => handleDeleteKaggleAccount(account.id)}><Trash2 className="h-4 w-4" /></Button>
+              </div>
+            </div>;
+          })}
+        </CardContent></Card>
+      </div>}
+
+      <Dialog open={showKaggleForm} onOpenChange={setShowKaggleForm}><DialogContent><DialogHeader><DialogTitle>{editingKaggleId ? "Sửa tài khoản Kaggle" : "Thêm tài khoản Kaggle"}</DialogTitle></DialogHeader><form onSubmit={handleSaveKaggleAccount} className="space-y-4"><Input placeholder="Tên gợi nhớ (vd: tài khoản chính)" value={kaggleLabel} onChange={(e) => setKaggleLabel(e.target.value)} required /><Input placeholder="Kaggle username" value={kaggleUsername} onChange={(e) => setKaggleUsername(e.target.value)} required /><Input type="password" placeholder={editingKaggleId ? "API key mới (để trống nếu giữ nguyên)" : "Kaggle API key"} value={kaggleApiKey} onChange={(e) => setKaggleApiKey(e.target.value)} required={!editingKaggleId} /><DialogFooter><Button type="button" variant="outline" onClick={() => setShowKaggleForm(false)}>Hủy</Button><Button type="submit">Lưu</Button></DialogFooter></form></DialogContent></Dialog>
 
       <Dialog open={showTargetForm} onOpenChange={setShowTargetForm}><DialogContent><DialogHeader><DialogTitle>Thêm điểm đồng bộ Drive</DialogTitle></DialogHeader><form onSubmit={handleCreateTarget} className="space-y-4"><Input placeholder="Tên target" value={targetName} onChange={(e) => setTargetName(e.target.value)} required /><Input type="email" placeholder="Email tài khoản Google" value={targetEmail} onChange={(e) => setTargetEmail(e.target.value)} required /><Input placeholder="Đường dẫn thư mục local" value={folderPath} onChange={(e) => setFolderPath(e.target.value)} required /><Input placeholder="rclone remote:path (không bắt buộc)" value={rcloneRemote} onChange={(e) => setRcloneRemote(e.target.value)} /><DialogFooter><Button type="button" variant="outline" onClick={() => setShowTargetForm(false)}>Hủy</Button><Button type="submit">Tạo target</Button></DialogFooter></form></DialogContent></Dialog>
       <Dialog open={showClientForm} onOpenChange={setShowClientForm}><DialogContent><DialogHeader><DialogTitle>Thêm Google OAuth client</DialogTitle></DialogHeader><form onSubmit={handleCreateClient} className="space-y-4"><Input placeholder="Tên client" value={clientName} onChange={(e) => setClientName(e.target.value)} required /><Input placeholder="Client ID" value={clientId} onChange={(e) => setClientId(e.target.value)} required /><Input type="password" placeholder="Client secret" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} /><DialogFooter><Button type="button" variant="outline" onClick={() => setShowClientForm(false)}>Hủy</Button><Button type="submit">Lưu client</Button></DialogFooter></form></DialogContent></Dialog>

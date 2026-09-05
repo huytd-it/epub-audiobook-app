@@ -46,7 +46,7 @@ export type BookDetailData = {
   refresh: () => Promise<void>;
 };
 
-const EMPTY_EXPORTS: ExportContext = { exports: [], sync_targets: [], accounts: [] };
+const EMPTY_EXPORTS: ExportContext = { exports: [], sync_targets: [], accounts: [], kaggle_accounts: [] };
 
 /**
  * Tải hồ sơ sách + trạng thái pipeline và tự làm mới nền.

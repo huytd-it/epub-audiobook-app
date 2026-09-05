@@ -1,4 +1,4 @@
-import { Book, Chapter, DriveAccount, DriveTarget, Patch, PatchExport } from "@/api";
+import { Book, Chapter, DriveAccount, DriveTarget, KaggleAccount, Patch, PatchExport } from "@/api";
 
 export type PlannedPatch = {
   patch_index: number;
@@ -74,6 +74,7 @@ export type ExportContext = {
   exports: PatchExport[];
   sync_targets: DriveTarget[];
   accounts: DriveAccount[];
+  kaggle_accounts: KaggleAccount[];
 };
 
 export type UploadResult = import("@/api").UploadResult;

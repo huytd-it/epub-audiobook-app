@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
-import { ChevronDown, Clipboard, Download, HardDrive, KeyRound, Save } from "lucide-react";
-import { api, DriveAccount, DriveTarget, Patch, post, postJson } from "@/api";
+import { ChevronDown, Clipboard, Download, Gauge, HardDrive, KeyRound, Save } from "lucide-react";
+import { api, DriveAccount, DriveTarget, KaggleAccount, Patch, post, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,6 +18,7 @@ export function ExportPanel({
   selectedIds,
   accounts,
   syncTargets,
+  kaggleAccounts,
   settings,
   onSettingsChange,
   ttsModels,
@@ -31,6 +32,7 @@ export function ExportPanel({
   selectedIds: number[];
   accounts: DriveAccount[];
   syncTargets: DriveTarget[];
+  kaggleAccounts: KaggleAccount[];
   settings: AudioSettings;
   onSettingsChange: (patch: Partial<AudioSettings>) => void;
   ttsModels: TtsModel[];
@@ -135,6 +137,12 @@ export function ExportPanel({
       return post(`/books/${bookId}/patches/export-batch-api`, form);
     }, `Đã export ${targetIds.length} patch qua Google Drive API.`);
   };
+
+  const exportToKaggle = () =>
+    runExport(
+      (form) => post(`/books/${bookId}/patches/export-batch-kaggle`, form),
+      `Đã đưa ${targetIds.length} patch vào hàng đợi Kaggle. Theo dõi tiến độ ở trang Queue.`
+    );
 
   const loadCredentials = async () => {
     if (!accountId) {
@@ -250,7 +258,7 @@ export function ExportPanel({
           </Button>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 border-t border-border pt-4 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 border-t border-border pt-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="space-y-2">
             <span className="block text-[11px] font-medium text-muted-foreground">Tải về máy</span>
             <Button size="sm" className="w-full" onClick={downloadZip} disabled={exporting || !targetIds.length}>
@@ -300,6 +308,23 @@ export function ExportPanel({
             >
               Export qua API
             </Button>
+          </div>
+          <div className="space-y-2">
+            <span className="block text-[11px] font-medium text-muted-foreground">Kaggle (tự động)</span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full"
+              onClick={exportToKaggle}
+              disabled={exporting || !targetIds.length || !kaggleAccounts.length}
+            >
+              <Gauge className="h-3.5 w-3.5" /> Chạy trên Kaggle
+            </Button>
+            {!kaggleAccounts.length && (
+              <p className="text-[11px] text-muted-foreground">
+                Chưa có tài khoản Kaggle nào — thêm ở trang <span className="font-medium text-foreground">Google Drive &amp; Đồng bộ</span> (tab Kaggle).
+              </p>
+            )}
           </div>
         </div>
 

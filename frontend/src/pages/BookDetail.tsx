@@ -776,6 +776,7 @@ export function BookDetail() {
             selectedIds={selectedIds}
             accounts={exports.accounts}
             syncTargets={exports.sync_targets}
+            kaggleAccounts={exports.kaggle_accounts}
             settings={exportSettings}
             onSettingsChange={updateExportSettings}
             ttsModels={exportTtsOptions.ttsModels}

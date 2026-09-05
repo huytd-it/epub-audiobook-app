@@ -135,3 +135,12 @@ def test_export_batch_kaggle_rejects_unknown_patch(client, tmp_path):
         data={"patch_ids": [999999], "model_id": "zerotts"},
     )
     assert resp.status_code == 404
+
+
+def test_book_exports_endpoint_includes_kaggle_accounts(client, tmp_path):
+    book_id, _ = _seed_book_and_patch(tmp_path)
+    client.post("/kaggle/accounts", data={"label": "acc1", "username": "u1", "api_key": "k1"}, follow_redirects=False)
+    data = client.get(f"/api/ui/books/{book_id}/exports").json()
+    assert len(data["kaggle_accounts"]) == 1
+    assert data["kaggle_accounts"][0]["username"] == "u1"
+    assert "remaining_quota_hours" in data["kaggle_accounts"][0]
