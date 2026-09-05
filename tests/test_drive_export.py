@@ -122,7 +122,7 @@ def test_exported_manifest_satisfies_the_notebook_and_the_importer(conn, tmp_pat
     through both."""
     from test_notebook_templates import _cell8_helpers
 
-    from app.routes.patches import _timeline_metadata
+    from app.patch_import import timeline_metadata
 
     connection, book, patch = conn
     dest = tmp_path / "patch"
@@ -139,7 +139,7 @@ def test_exported_manifest_satisfies_the_notebook_and_the_importer(conn, tmp_pat
     ]
 
     # Import side: titles come back out of the chapter_titles map, in chunk order.
-    imported = _timeline_metadata(json.loads(exported))
+    imported = timeline_metadata(json.loads(exported))
     assert all(set(item) == {"chapter_index", "chapter_title", "is_chapter_start"} for item in imported)
     assert [item["chapter_title"] for item in imported] == ["One", "One", "One", "Two", "Two"]
 

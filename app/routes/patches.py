@@ -21,7 +21,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from app import audio_merge, drive_export, google_drive, image_overlay, repository, video_gen, video_repository, youtube
+from app import audio_merge, drive_export, google_drive, image_overlay, patch_import, repository, video_gen, video_repository, youtube
 from app import db as app_db
 from app.chunker import split_into_tts_chunks
 from app.config import settings
@@ -33,7 +33,7 @@ from app.patch_publishing import (confirm_patch_republish, discard_stale_patch_v
                                   on_patch_audio_ready, resolve_automation_policy,
                                   run_patch_publish_stage, seed_patch_video,
                                   warm_patch_thumbnail)
-from app.youtube_metadata import audio_duration_seconds, get_book_youtube_config, get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_book_youtube_config, validate_timeline
+from app.youtube_metadata import audio_duration_seconds, get_book_youtube_config, get_patch_youtube_override, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_book_youtube_config, validate_timeline
 from app.production_defaults import get_effective_branding_config, get_effective_video_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
@@ -308,139 +308,9 @@ def _wants_json(request: Request, ajax: int) -> bool:
     return bool(ajax) or "application/json" in (request.headers.get("accept") or "")
 
 
-def _safe_batch_path(root: Path, relative: str) -> Path | None:
-    candidate = (root / relative).resolve()
-    try:
-        candidate.relative_to(root.resolve())
-    except ValueError:
-        return None
-    return candidate
-
-
-def _resolve_batch_result(patch_folder: Path, patch_id: int) -> Path | None:
-    root = patch_folder.resolve()
-    for parent in [root, *root.parents]:
-        manifest_path = parent / "batch_manifest.json"
-        if not manifest_path.is_file():
-            continue
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            entry = next((item for item in manifest.get("patches", []) if item.get("patch_id") == patch_id), None)
-            if not entry or not isinstance(entry.get("result_wav"), str):
-                return None
-            result = _safe_batch_path(parent, entry["result_wav"])
-            patch_manifest = _safe_batch_path(parent, str(entry.get("folder", "")) + "/manifest.json")
-            return result if result and patch_manifest and patch_manifest.is_file() else None
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            return None
-    return None
-
-
-def _build_import_timeline(chunk_paths: list[Path], metadata: list[dict], pause_ms: int) -> dict | None:
-    if not chunk_paths or len(chunk_paths) != len(metadata):
-        return None
-    try:
-        infos = [sf.info(str(path)) for path in chunk_paths]
-        rate = infos[0].samplerate
-        # Chunks pair with chunk_paths by position - both are built from the same
-        # chunk_NNN ordering - so the metadata carries no filename of its own.
-        keys = {"chapter_index", "chapter_title", "is_chapter_start"}
-        if any(set(item) != keys or info.samplerate != rate or info.channels != infos[0].channels
-               for info, item in zip(infos, metadata)):
-            return None
-        pause = round(rate * pause_ms / 1000)
-        starts, chapters = [], []
-        frame = 0
-        previous_index = None
-        for index, (info, item) in enumerate(zip(infos, metadata)):
-            chapter_index = item["chapter_index"]
-            title = item["chapter_title"]
-            marker = item["is_chapter_start"]
-            if (isinstance(chapter_index, bool) or not isinstance(chapter_index, int) or
-                    (previous_index is not None and chapter_index <= previous_index) or
-                    not isinstance(title, str) or not title.strip() or not isinstance(marker, bool) or
-                    (index == 0 and not marker) or
-                    (index > 0 and marker != (chapter_index != previous_index))):
-                return None
-            previous_index = chapter_index
-            starts.append(frame)
-            if marker:
-                chapters.append({"chapter_index": chapter_index, "start_frame": frame,
-                                 "start_seconds": frame / rate, "title": title.strip()})
-            frame += info.frames + pause
-        total_frames = frame - pause
-        if any(b - a < rate * 10 for a, b in zip(starts, starts[1:])) or total_frames - starts[-1] < rate * 10:
-            return None
-        return {"version": 1, "sample_rate": rate, "total_frames": total_frames, "chapters": chapters}
-    except (OSError, TypeError, ValueError, KeyError, sf.SoundFileError):
-        return None
-
-
-def _timeline_metadata(manifest: dict) -> list[dict]:
-    """Reduce a patch manifest's chunk_metadata to the three fields
-    _build_import_timeline validates.
-
-    Current exports are compact: entries carry no chapter_title (titles are
-    de-duplicated into the chapter_titles map) and no filename. Older packages carry
-    both, plus the chunk text - dropping the extras here is what lets them import with
-    a chapter timeline too."""
-    titles = manifest.get("chapter_titles") or {}
-    metadata = []
-    for item in manifest.get("chunk_metadata") or []:
-        if not isinstance(item, dict):
-            return []
-        title = item.get("chapter_title")
-        if not isinstance(title, str) or not title.strip():
-            title = titles.get(str(item.get("chapter_index")))
-        metadata.append({
-            "chapter_index": item.get("chapter_index"),
-            "chapter_title": title,
-            "is_chapter_start": item.get("is_chapter_start"),
-        })
-    return metadata
-
-
-def _atomic_copy(source: Path, target: Path) -> None:
-    shutil.copy2(source, target)
-
-
-def _install_imported_wav(source: Path, audio_path: Path, timeline: dict | None = None) -> None:
-    audio_path.parent.mkdir(parents=True, exist_ok=True)
-    local_sidecar = audio_path.with_suffix(".timeline.json")
-    temp_wav = audio_path.with_name(f".{audio_path.name}.{uuid.uuid4().hex}.tmp")
-    temp_sidecar = local_sidecar.with_name(f".{local_sidecar.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        sf.info(str(source))
-        _atomic_copy(source, temp_wav)
-        if timeline is None:
-            timeline = load_timeline(source)
-        if timeline is not None:
-            temp_sidecar.write_text(json.dumps(timeline), encoding="utf-8")
-        os.replace(temp_wav, audio_path)
-        if timeline is not None:
-            try:
-                os.replace(temp_sidecar, local_sidecar)
-            except OSError:
-                logger.warning("Timeline persistence failed after local install", exc_info=True)
-                try:
-                    local_sidecar.unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("Failed to remove stale timeline sidecar %s", local_sidecar, exc_info=True)
-        else:
-            try:
-                local_sidecar.unlink(missing_ok=True)
-            except OSError:
-                logger.warning("Failed to remove stale timeline sidecar %s", local_sidecar, exc_info=True)
-    except Exception:
-        temp_wav.unlink(missing_ok=True)
-        temp_sidecar.unlink(missing_ok=True)
-        raise
-    finally:
-        for path in (temp_wav, temp_sidecar):
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning("failed to clean import staging path %s", path, exc_info=True)
+# _safe_batch_path / _resolve_batch_result / _build_import_timeline /
+# _timeline_metadata / _install_imported_wav moved to app.patch_import so the Kaggle
+# job handler can reuse them without importing this FastAPI route module.
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/generate-video")
@@ -942,13 +812,13 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
         manifest_path = batch_root / "batch_manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
         entry = next((item for item in (manifest or {}).get("patches", []) if item.get("patch_id") == patch_id), None)
-        result = _resolve_batch_result(package_folder, patch_id)
+        result = patch_import.resolve_batch_result(package_folder, patch_id)
         audio_path = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}.wav"
         if result and result.is_file():
             installed = False
             try:
                 sf.info(str(result))
-                _install_imported_wav(result, audio_path)
+                patch_import.install_imported_wav(result, audio_path)
                 installed = True
             except Exception:
                 logger.warning("batch result WAV invalid for patch %s; falling back to chunks", patch_id, exc_info=True)
@@ -959,7 +829,7 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
                     on_patch_audio_ready(conn, patch_id)
                     repository.update_patch_export(conn, export.id, status="imported", imported_chunk_count=expected_chunk_count)
                 return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
-        patch_folder = _safe_batch_path(batch_root, entry.get("folder", "")) if entry else package_folder
+        patch_folder = patch_import.safe_batch_path(batch_root, entry.get("folder", "")) if entry else package_folder
         chunk_source_dir = patch_folder / "output" if patch_folder else package_folder / "output"
         if not chunk_source_dir.is_dir():
             chunk_source_dir = package_folder / "output"
@@ -979,7 +849,7 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
                     raise ValueError("chunk samplerate/channels mismatch")
                 imported += 1
                 continue
-            source_path = _safe_batch_path(batch_root, str(chunk_source_dir.relative_to(batch_root) / name)) if chunk_source_dir.is_relative_to(batch_root) else None
+            source_path = patch_import.safe_batch_path(batch_root, str(chunk_source_dir.relative_to(batch_root) / name)) if chunk_source_dir.is_relative_to(batch_root) else None
             if source_path is None or not source_path.is_file():
                 break  # first missing chunk: stop here, contiguous prefix ends
             info = sf.info(str(source_path))
@@ -1000,9 +870,9 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
                 metadata = []
                 patch_manifest = (patch_folder or package_folder) / "manifest.json"
                 if patch_manifest.is_file():
-                    metadata = _timeline_metadata(json.loads(patch_manifest.read_text(encoding="utf-8")))
-                timeline = _build_import_timeline([Path(p) for p in chunk_paths], metadata, 300)
-                _install_imported_wav(temp_audio, audio_path, timeline)
+                    metadata = patch_import.timeline_metadata(json.loads(patch_manifest.read_text(encoding="utf-8")))
+                timeline = patch_import.build_import_timeline([Path(p) for p in chunk_paths], metadata, 300)
+                patch_import.install_imported_wav(temp_audio, audio_path, timeline)
             finally:
                 temp_audio.unlink(missing_ok=True)
             # Chunk files (downloaded from Drive) are intentionally kept on disk, same as
@@ -1294,7 +1164,7 @@ async def import_patch_from_upload(
         temp_audio = audio_path.with_name(f".{audio_path.stem}.{uuid.uuid4().hex}.wav")
         try:
             audio_merge.concat_wavs(chunk_paths, str(temp_audio), pause_ms=300)
-            _install_imported_wav(temp_audio, audio_path, None)
+            patch_import.install_imported_wav(temp_audio, audio_path, None)
         finally:
             temp_audio.unlink(missing_ok=True)
         return imported, audio_path
@@ -1379,7 +1249,7 @@ def _install_result_upload(audio_path: Path, audio: UploadFile | None, timeline_
             raise ValueError(f"WAV không hợp lệ: {exc}") from exc
         checked = validate_timeline(timeline, info.samplerate, info.frames) if timeline is not None else None
         # checked=None also clears a stale sidecar left by an earlier upload.
-        _install_imported_wav(staged, audio_path, checked)
+        patch_import.install_imported_wav(staged, audio_path, checked)
     finally:
         staged.unlink(missing_ok=True)
     return {
