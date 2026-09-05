@@ -61,7 +61,7 @@
 **Interfaces:**
 - Produces: bảng `kaggle_account` (id, label, username, api_key, status, cooldown_until, in_use_by_job_id, created_at, updated_at) + unique index trên `username`; bảng `kaggle_usage` (id, account_id, kernel_ref, started_at, finished_at, gpu_seconds, created_at) + index trên `(account_id, started_at DESC)`; `patch_export.kaggle_account_id`, `patch_export.kaggle_kernel_ref`.
 
-- [ ] **Step 1: Viết test thất bại**
+- [x] **Step 1: Viết test thất bại**
 
 ```python
 """Schema kaggle_account/kaggle_usage + 2 cột mới trên patch_export."""
@@ -134,7 +134,7 @@ def test_patch_export_has_kaggle_columns():
     assert {"kaggle_account_id", "kaggle_kernel_ref"} <= names
 ```
 
-- [ ] **Step 2: Chạy test, xác nhận fail**
+- [x] **Step 2: Chạy test, xác nhận fail**
 
 ```bash
 pytest tests/test_kaggle_schema.py -v
@@ -142,7 +142,7 @@ pytest tests/test_kaggle_schema.py -v
 
 Kỳ vọng: FAIL với `sqlite3.OperationalError: no such table: kaggle_account`.
 
-- [ ] **Step 3: Thêm DDL vào `_SCHEMA` trong `app/db.py`**
+- [x] **Step 3: Thêm DDL vào `_SCHEMA` trong `app/db.py`**
 
 ```sql
 CREATE TABLE IF NOT EXISTS kaggle_account (
@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS kaggle_usage (
 CREATE INDEX IF NOT EXISTS idx_kaggle_usage_account ON kaggle_usage(account_id, started_at DESC);
 ```
 
-- [ ] **Step 4: Thêm migrate 2 cột mới của `patch_export` trong `_migrate()`**
+- [x] **Step 4: Thêm migrate 2 cột mới của `patch_export` trong `_migrate()`**
 
 Theo đúng pattern đã có (`PRAGMA table_info` rồi `ALTER TABLE ADD COLUMN` nếu thiếu — xem khối tương tự cho `book`/`patch` trong `_migrate()`):
 
@@ -182,13 +182,13 @@ if "kaggle_kernel_ref" not in export_existing:
     conn.execute("ALTER TABLE patch_export ADD COLUMN kaggle_kernel_ref TEXT")
 ```
 
-- [ ] **Step 5: Chạy test, xác nhận pass**
+- [x] **Step 5: Chạy test, xác nhận pass**
 
 ```bash
 pytest tests/test_kaggle_schema.py -v
 ```
 
-- [ ] **Step 6: Chạy cả suite**
+- [x] **Step 6: Chạy cả suite**
 
 ```bash
 pytest tests/ -q
@@ -196,7 +196,7 @@ pytest tests/ -q
 
 Kỳ vọng: không có failure mới so với trước Task 1.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add app/db.py tests/test_kaggle_schema.py
@@ -230,7 +230,7 @@ def record_usage_finish(conn, usage_id: int, gpu_seconds: int) -> None
 def earliest_quota_reset(conn) -> str | None
 ```
 
-- [ ] **Step 1: Viết test thất bại**
+- [x] **Step 1: Viết test thất bại**
 
 ```python
 """app.kaggle_accounts: CRUD, claim nguyên tử, cooldown tự hồi phục, quota 7 ngày."""
@@ -370,7 +370,7 @@ def test_earliest_quota_reset_is_none_with_no_usage():
     assert ka.earliest_quota_reset(conn) is None
 ```
 
-- [ ] **Step 2: Chạy test, xác nhận fail**
+- [x] **Step 2: Chạy test, xác nhận fail**
 
 ```bash
 pytest tests/test_kaggle_accounts.py -v
@@ -378,7 +378,7 @@ pytest tests/test_kaggle_accounts.py -v
 
 Kỳ vọng: FAIL với `ModuleNotFoundError: No module named 'app.kaggle_accounts'`.
 
-- [ ] **Step 3: Viết `app/kaggle_accounts.py`**
+- [x] **Step 3: Viết `app/kaggle_accounts.py`**
 
 Điểm quan trọng khi implement:
 - `claim_idle_account` dùng đúng 1 câu `UPDATE ... WHERE id = (SELECT id FROM kaggle_account WHERE status='idle' OR (status='cooldown' AND cooldown_until<=?) ORDER BY updated_at ASC LIMIT 1) AND (...) RETURNING *`, giống nguyên lý `jobqueue/store.py::claim`.
@@ -387,13 +387,13 @@ Kỳ vọng: FAIL với `ModuleNotFoundError: No module named 'app.kaggle_accoun
 - `earliest_quota_reset` = `MIN(started_at) + 7 days` trong số các dòng usage đang tính vào quota (7 ngày gần nhất), qua mọi account; trả `None` nếu không có usage nào.
 - `delete_account` trả `False` (không raise) khi `in_use_by_job_id IS NOT NULL` — route sẽ tự map thành HTTP 400.
 
-- [ ] **Step 4: Chạy test, xác nhận pass**
+- [x] **Step 4: Chạy test, xác nhận pass**
 
 ```bash
 pytest tests/test_kaggle_accounts.py -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/kaggle_accounts.py tests/test_kaggle_accounts.py
@@ -431,7 +431,7 @@ def cancel_kernel(account: KaggleAccount, kernel_ref: str, *, request=_request) 
 
 Ghi chú implementation: `_request` là 1 hàm nội bộ bọc `urllib.request` giống hệt cách `app/tts_api_providers.py::_request` đã làm — **inject được qua tham số `request=` cho mỗi hàm public**, để test không cần mock `urllib` toàn cục mà truyền thẳng 1 fake callable. Auth header cô lập trong đúng 1 hàm `_auth_header(account)` (xem mục "Implementation-time verification required" trong spec — đây là chỗ duy nhất cần sửa nếu Kaggle đổi scheme auth).
 
-- [ ] **Step 1: Viết test thất bại**
+- [x] **Step 1: Viết test thất bại**
 
 ```python
 """app.kaggle_api: client HTTP thuần cho Kaggle REST API, request được inject để test
@@ -512,23 +512,23 @@ def test_cancel_kernel_swallows_errors():
     cancel_kernel(ACCOUNT, "user1/x", request=fake)  # phải không raise
 ```
 
-- [ ] **Step 2: Chạy test, xác nhận fail**
+- [x] **Step 2: Chạy test, xác nhận fail**
 
 ```bash
 pytest tests/test_kaggle_api.py -v
 ```
 
-- [ ] **Step 3: Viết `app/kaggle_api.py`**
+- [x] **Step 3: Viết `app/kaggle_api.py`**
 
 Base URL `https://www.kaggle.com/api/v1`. `push_kernel` ghi `kernel-metadata.json` + nội dung notebook (đọc từ `package_dir`) vào request tới `/kernels/push`. `kernel_output` gọi `/kernels/output` lấy danh sách file rồi tải từng file (URL trả về trong response) vào `dest_dir`, tạo thư mục con theo `fileName`. `cancel_kernel` gọi `/kernels/{ref}/cancel` hoặc endpoint tương đương, bọc try/except quanh mọi lỗi (best-effort, không raise). Đây là chỗ cần đối chiếu tài liệu Kaggle API hiện hành (xem mục cảnh báo trong spec) trước khi implement — task này KHÔNG bị chặn bởi việc đó vì `FakeRequest` không phụ thuộc hình dạng thật của Kaggle, chỉ cần tự nhất quán nội bộ; việc đối chiếu API thật là một bước riêng trước khi dùng thật (xem Task 12).
 
-- [ ] **Step 4: Chạy test, xác nhận pass**
+- [x] **Step 4: Chạy test, xác nhận pass**
 
 ```bash
 pytest tests/test_kaggle_api.py -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/kaggle_api.py tests/test_kaggle_api.py
@@ -553,7 +553,7 @@ def store.reschedule(conn, job_id: int, next_retry_at: str, message: str | None 
                       *, worker_id: str | None = None) -> bool
 ```
 
-- [ ] **Step 1: Viết test thất bại**
+- [x] **Step 1: Viết test thất bại**
 
 ```python
 """store.reschedule: đưa job về pending tại thời điểm chỉ định, không đụng attempt_count;
@@ -611,13 +611,13 @@ def test_claim_skips_a_rescheduled_job_before_its_time():
     assert store.claim(conn, "kaggle_tts", "w2") is None
 ```
 
-- [ ] **Step 2: Chạy test, xác nhận fail**
+- [x] **Step 2: Chạy test, xác nhận fail**
 
 ```bash
 pytest tests/test_jobqueue_reschedule.py -v
 ```
 
-- [ ] **Step 3: Thêm `JobRescheduled` vào `app/jobqueue/models.py`**
+- [x] **Step 3: Thêm `JobRescheduled` vào `app/jobqueue/models.py`**
 
 ```python
 class JobRescheduled(Exception):
@@ -630,7 +630,7 @@ class JobRescheduled(Exception):
         self.message = message
 ```
 
-- [ ] **Step 4: Thêm `reschedule()` vào `app/jobqueue/store.py`**
+- [x] **Step 4: Thêm `reschedule()` vào `app/jobqueue/store.py`**
 
 ```python
 def reschedule(
@@ -648,7 +648,7 @@ def reschedule(
     return cur.rowcount > 0
 ```
 
-- [ ] **Step 5: Bắt `JobRescheduled` trong `app/jobqueue/runner.py::_execute`**
+- [x] **Step 5: Bắt `JobRescheduled` trong `app/jobqueue/runner.py::_execute`**
 
 Thêm nhánh **trước** `except Exception as exc:` hiện có:
 
@@ -662,19 +662,19 @@ Thêm nhánh **trước** `except Exception as exc:` hiện có:
 
 Và import `JobRescheduled` cùng dòng với `HandlerSpec, JobFatalError` ở đầu file.
 
-- [ ] **Step 6: Chạy test, xác nhận pass**
+- [x] **Step 6: Chạy test, xác nhận pass**
 
 ```bash
 pytest tests/test_jobqueue_reschedule.py -v
 ```
 
-- [ ] **Step 7: Chạy cả suite jobqueue để chắc không phá gì**
+- [x] **Step 7: Chạy cả suite jobqueue để chắc không phá gì**
 
 ```bash
 pytest tests/test_jobqueue_store.py tests/test_jobqueue_models.py tests/ -k jobqueue -q
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add app/jobqueue/models.py app/jobqueue/store.py app/jobqueue/runner.py tests/test_jobqueue_reschedule.py
@@ -704,11 +704,11 @@ def install_imported_wav(source: Path, audio_path: Path, timeline: dict | None =
 
 **Đây là refactor thuần** — hành vi phải giữ nguyên 100%. Không viết lại thuật toán, chỉ di chuyển.
 
-- [ ] **Step 1: Viết test cho hành vi hiện có (bắt trước khi di chuyển) — chạy trên code hiện tại để xác nhận PASS ngay, làm bằng chứng "không đổi hành vi"**
+- [x] **Step 1: Viết test cho hành vi hiện có (bắt trước khi di chuyển) — chạy trên code hiện tại để xác nhận PASS ngay, làm bằng chứng "không đổi hành vi"**
 
 Copy các test case liên quan từ `tests/test_export_reference_required.py` và bất kỳ test hiện có nào gọi `_resolve_batch_result`/`_install_imported_wav`/`_build_import_timeline` (grep `_install_imported_wav\|_resolve_batch_result\|_build_import_timeline` trong `tests/`) sang `tests/test_patch_import.py`, đổi import từ `app.routes.patches` sang `app.patch_import` với tên public mới (bỏ dấu gạch dưới đầu). Giữ nguyên input/expected của từng case.
 
-- [ ] **Step 2: Chạy test mới trỏ vào `app.patch_import`, xác nhận fail vì module chưa tồn tại**
+- [x] **Step 2: Chạy test mới trỏ vào `app.patch_import`, xác nhận fail vì module chưa tồn tại**
 
 ```bash
 pytest tests/test_patch_import.py -v
@@ -720,13 +720,13 @@ Kỳ vọng: FAIL với `ModuleNotFoundError: No module named 'app.patch_import'
 
 - [x] **Step 4: Sửa `app/routes/patches.py` để gọi module mới** — mọi lời gọi `_safe_batch_path`/`_resolve_batch_result`/`_build_import_timeline`/`_timeline_metadata`/`_install_imported_wav` (trong `import_patch_from_drive` và 2 chỗ khác) đổi sang `patch_import.<tên không gạch dưới>`, orchestration của route giữ nguyên 100% (locked_conn, thumbnail warming, `update_patch_export`, `RedirectResponse` không đổi). Xoá 6 hàm private đã di chuyển khỏi `patches.py`.
 
-- [ ] **Step 5: Chạy toàn bộ test liên quan, xác nhận pass và không có regression**
+- [x] **Step 5: Chạy toàn bộ test liên quan, xác nhận pass và không có regression**
 
 ```bash
 pytest tests/test_patch_import.py tests/test_export_reference_required.py tests/ -k "export or import" -q
 ```
 
-- [ ] **Step 6: Chạy cả suite**
+- [x] **Step 6: Chạy cả suite**
 
 ```bash
 pytest tests/ -q
@@ -734,7 +734,7 @@ pytest tests/ -q
 
 Kỳ vọng: không có failure mới so với trước Task 5.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add app/patch_import.py app/routes/patches.py tests/test_patch_import.py
@@ -754,7 +754,7 @@ git commit -m "refactor(patches): extract batch-import helpers into app/patch_im
 - Mọi cell mount Drive / đọc `GDRIVE_CREDS` được bọc thêm điều kiện `MODE == "drive"` (kết hợp với `IS_KAGGLE` đã có).
 - Cell đọc input / ghi output dùng `INPUT_ROOT`/`OUTPUT_ROOT` tính theo `MODE`.
 
-- [ ] **Step 1: Viết test thất bại**
+- [x] **Step 1: Viết test thất bại**
 
 Thêm vào `tests/test_notebook_templates.py`:
 
@@ -787,13 +787,13 @@ def test_input_and_output_roots_branch_on_mode():
         assert '"kaggle_native"' in joined
 ```
 
-- [ ] **Step 2: Chạy test, xác nhận fail**
+- [x] **Step 2: Chạy test, xác nhận fail**
 
 ```bash
 pytest tests/test_notebook_templates.py -v
 ```
 
-- [ ] **Step 3: Sửa notebook**
+- [x] **Step 3: Sửa notebook**
 
 Mở `app/assets/colab_kaggle_batch_tts_template.ipynb`, cell 1 (nơi `IS_KAGGLE = False` đang sống) thêm ngay dòng kế:
 
@@ -817,19 +817,19 @@ else:
 
 Cell 8 (chunk/merge/pause/timeline) đổi mọi đường dẫn đang đọc/ghi trực tiếp `DRIVE_BATCH_FOLDER` sang `INPUT_ROOT`/`OUTPUT_ROOT` tương ứng (đọc manifest từ `INPUT_ROOT`, ghi `result/` vào `OUTPUT_ROOT`) — không đổi logic chunk/merge/pause/timeline/SKIP_EXISTING bên trong.
 
-- [ ] **Step 4: Chạy test, xác nhận pass**
+- [x] **Step 4: Chạy test, xác nhận pass**
 
 ```bash
 pytest tests/test_notebook_templates.py -v
 ```
 
-- [ ] **Step 5: Xác nhận notebook vẫn là JSON hợp lệ và mở được**
+- [x] **Step 5: Xác nhận notebook vẫn là JSON hợp lệ và mở được**
 
 ```bash
 python -c "import json; json.load(open('app/assets/colab_kaggle_batch_tts_template.ipynb', encoding='utf-8'))"
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/assets/colab_kaggle_batch_tts_template.ipynb tests/test_notebook_templates.py
@@ -852,7 +852,7 @@ def build_kaggle_export_package(conn, patches, *, model_id, voice_id=None, max_c
                                  with_effects=False, hf_token=None) -> tuple[Path, dict]
 ```
 
-- [ ] **Step 1: Viết test thất bại**
+- [x] **Step 1: Viết test thất bại**
 
 ```python
 """build_kaggle_export_package: package không có gdrive_creds/GDRIVE_CREDS, notebook
@@ -900,31 +900,31 @@ def test_drive_package_still_defaults_to_drive_mode(tmp_path, conn_with_book_and
 
 Ghi chú: fixture `conn_with_book_and_patches` — tái dùng helper dựng book/patch có sẵn trong `tests/test_export_reference_required.py` hoặc `conftest.py` nếu đã có; nếu chưa, thêm 1 fixture cục bộ trong file test này theo đúng cách các test export hiện có tự dựng dữ liệu (xem `tests/test_export_reference_required.py` để copy khuôn).
 
-- [ ] **Step 2: Chạy test, xác nhận fail**
+- [x] **Step 2: Chạy test, xác nhận fail**
 
 ```bash
 pytest tests/test_kaggle_export_package.py -v
 ```
 
-- [ ] **Step 3: Sửa `app/drive_export.py`**
+- [x] **Step 3: Sửa `app/drive_export.py`**
 
 Thêm tham số `mode: str = "drive"` vào `build_batch_export_package`. Khi thay thế placeholder notebook, dùng `notebook_src.replace('MODE = "drive"', f'MODE = "{mode}"')` thay vì chỉ thay `__GDRIVE_CREDS__`. Khi `mode == "kaggle_native"`, **không** gọi phần baked-Drive-creds (`creds_literal`/`__GDRIVE_CREDS__` để trống hẳn, không nhận `gdrive_creds` làm tham số).
 
 Viết `build_kaggle_export_package` như một wrapper mỏng gọi `build_batch_export_package(..., mode="kaggle_native")` không truyền `gdrive_creds`, cùng docstring giải thích vì sao (không cần secret, không cần tài khoản Drive nào).
 
-- [ ] **Step 4: Chạy test, xác nhận pass**
+- [x] **Step 4: Chạy test, xác nhận pass**
 
 ```bash
 pytest tests/test_kaggle_export_package.py -v
 ```
 
-- [ ] **Step 5: Chạy lại toàn bộ test export hiện có để chắc đường Drive không đổi hành vi**
+- [x] **Step 5: Chạy lại toàn bộ test export hiện có để chắc đường Drive không đổi hành vi**
 
 ```bash
 pytest tests/ -k "export or drive_export" -q
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/drive_export.py tests/test_kaggle_export_package.py
@@ -951,7 +951,7 @@ Payload: `{"book_id": int, "patch_ids": list[int], "model_id": str, "voice_id": 
 
 Handler nhận `kaggle_api`/`kaggle_accounts`/`drive_export`/`patch_import` như module-level imports (không dependency injection phức tạp) — test dùng `monkeypatch` để thay các hàm cấp module bằng fake, đúng phong cách test handler khác trong repo (xem `tests/` cho `video.handle`/`youtube_upload.handle` nếu có ví dụ tương tự, nếu không thì theo mẫu dưới).
 
-- [ ] **Step 1: Viết test thất bại**
+- [x] **Step 1: Viết test thất bại**
 
 ```python
 """kaggle_tts.handle: vòng lặp claim account -> push -> poll -> import -> xoay account,
@@ -1065,25 +1065,25 @@ def test_handle_returns_early_when_cancelled(monkeypatch, tmp_path):
     assert result is None
 ```
 
-- [ ] **Step 2: Chạy test, xác nhận fail**
+- [x] **Step 2: Chạy test, xác nhận fail**
 
 ```bash
 pytest tests/test_kaggle_tts_handler.py -v
 ```
 
-- [ ] **Step 3: Viết `app/jobqueue/handlers/kaggle_tts.py`**
+- [x] **Step 3: Viết `app/jobqueue/handlers/kaggle_tts.py`**
 
 Theo đúng lifecycle đã tả trong spec (mục "Job type `kaggle_tts`"): vòng lặp claim → build package (chỉ patch còn thiếu) → push → poll (heartbeat + should_cancel mỗi vòng) → output → import từng patch → ghi usage → nếu còn thiếu và account còn quota thì lặp lại với cùng account; nếu account hết quota thì release (cooldown) và claim account khác; nếu không account nào rảnh thì raise `JobRescheduled(kaggle_accounts.earliest_quota_reset(ctx.conn) or <+6h>, ...)`. Viết `_missing_patch_ids(conn, book_id, patch_ids) -> list[int]` như hàm module-level (kiểm tra `patch.status`/audio đã có chưa) để test có thể monkeypatch độc lập với I/O thật.
 
 Import ở đầu module: `from app import kaggle_api, kaggle_accounts, drive_export, patch_import` (import module, không import từng hàm) — để test monkeypatch đúng theo `kaggle_tts.kaggle_api.push_kernel` như trong test trên.
 
-- [ ] **Step 4: Chạy test, xác nhận pass**
+- [x] **Step 4: Chạy test, xác nhận pass**
 
 ```bash
 pytest tests/test_kaggle_tts_handler.py -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/jobqueue/handlers/kaggle_tts.py tests/test_kaggle_tts_handler.py
@@ -1101,9 +1101,9 @@ git commit -m "feat(kaggle): add kaggle_tts job handler with account rotation an
 **Interfaces:**
 - `configured_concurrency(conn)` (đã có trong `backfill.py`, xem `test_jobqueue_backfill.py` hiện tại) SHALL cộng thêm `kaggle_tts=<số kaggle_account chưa disabled>` nếu `QUEUE_CONCURRENCY` không tự đặt `kaggle_tts` tường minh.
 
-- [ ] **Step 1: Đọc `configured_concurrency` hiện có trong `app/jobqueue/backfill.py` để biết đúng chữ ký/hành vi trước khi sửa (không đoán).**
+- [x] **Step 1: Đọc `configured_concurrency` hiện có trong `app/jobqueue/backfill.py` để biết đúng chữ ký/hành vi trước khi sửa (không đoán).**
 
-- [ ] **Step 2: Viết test thất bại**
+- [x] **Step 2: Viết test thất bại**
 
 ```python
 def test_kaggle_tts_concurrency_matches_enabled_account_count():
@@ -1128,15 +1128,15 @@ def test_explicit_queue_concurrency_overrides_the_account_count(monkeypatch):
     assert configured_concurrency(conn)["kaggle_tts"] == 7
 ```
 
-- [ ] **Step 3: Sửa `configured_concurrency` để tính thêm `kaggle_tts` khi chưa bị `QUEUE_CONCURRENCY` đặt tường minh, và `queue.register("kaggle_tts", kaggle_tts.handle, cancellable=True)` trong `build_queue`.**
+- [x] **Step 3: Sửa `configured_concurrency` để tính thêm `kaggle_tts` khi chưa bị `QUEUE_CONCURRENCY` đặt tường minh, và `queue.register("kaggle_tts", kaggle_tts.handle, cancellable=True)` trong `build_queue`.**
 
-- [ ] **Step 4: Chạy test, xác nhận pass**
+- [x] **Step 4: Chạy test, xác nhận pass**
 
 ```bash
 pytest tests/test_jobqueue_backfill.py -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/jobqueue/backfill.py app/config.py tests/test_jobqueue_backfill.py
@@ -1150,7 +1150,7 @@ git commit -m "feat(kaggle): register kaggle_tts handler with account-count-base
 **Files:**
 - Modify: `app/config.py`, `.env.example`
 
-- [ ] **Step 1: Thêm setting vào `app/config.py`** (sau khối `queue_*` hiện có):
+- [x] **Step 1: Thêm setting vào `app/config.py`** (sau khối `queue_*` hiện có):
 
 ```python
     # Kaggle Kernels API automation
@@ -1159,15 +1159,15 @@ git commit -m "feat(kaggle): register kaggle_tts handler with account-count-base
     kaggle_weekly_gpu_quota_hours: int = 30
 ```
 
-- [ ] **Step 2: Thêm ví dụ vào `.env.example`** cạnh khối Hugging Face/Drive hiện có, giải thích ngắn gọn rằng tài khoản Kaggle được thêm qua trang settings (không qua biến môi trường) — chỉ 3 số trên là cấu hình qua env.
+- [x] **Step 2: Thêm ví dụ vào `.env.example`** cạnh khối Hugging Face/Drive hiện có, giải thích ngắn gọn rằng tài khoản Kaggle được thêm qua trang settings (không qua biến môi trường) — chỉ 3 số trên là cấu hình qua env.
 
-- [ ] **Step 3: Chạy test cấu hình hiện có (nếu có test load settings) để chắc không phá gì**
+- [x] **Step 3: Chạy test cấu hình hiện có (nếu có test load settings) để chắc không phá gì**
 
 ```bash
 pytest tests/ -k config -q
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/config.py .env.example
@@ -1191,7 +1191,7 @@ git commit -m "feat(kaggle): add poll interval / session cap / weekly quota sett
 - `POST /kaggle/accounts/{id}/toggle`
 - `POST /books/{book_id}/patches/export-batch-kaggle` (`patch_ids`, `model_id`, `voice_id`, `max_chars`, `with_effects`) -> JSON `{"job_id": int}`
 
-- [ ] **Step 1: Viết test thất bại**
+- [x] **Step 1: Viết test thất bại**
 
 ```python
 """Routes Kaggle: CRUD account qua form, enqueue kaggle_tts qua export-batch-kaggle."""
@@ -1239,31 +1239,31 @@ def test_export_batch_kaggle_dedupes_per_book(client: TestClient, book_with_patc
 
 Ghi chú: `client`/`conn`/`book_with_patches` — tái dùng fixture đã có trong `conftest.py`/các test route khác (`tests/test_export_reference_required.py`, test route drive/patches hiện có) theo đúng khuôn của repo; nếu tên khác, đối chiếu file conftest thật trước khi viết.
 
-- [ ] **Step 2: Chạy test, xác nhận fail**
+- [x] **Step 2: Chạy test, xác nhận fail**
 
 ```bash
 pytest tests/test_kaggle_routes.py -v
 ```
 
-- [ ] **Step 3: Viết `app/routes/kaggle.py`** theo đúng pattern Form/Redirect + JSON aggregate của `app/routes/drive.py` (xem `drive_create_client`/`drive_delete_client`/`drive_kaggle_credentials` làm khuôn), gọi thẳng `app.kaggle_accounts`.
+- [x] **Step 3: Viết `app/routes/kaggle.py`** theo đúng pattern Form/Redirect + JSON aggregate của `app/routes/drive.py` (xem `drive_create_client`/`drive_delete_client`/`drive_kaggle_credentials` làm khuôn), gọi thẳng `app.kaggle_accounts`.
 
-- [ ] **Step 4: Thêm endpoint `export-batch-kaggle` vào `app/routes/patches.py`**, tái dùng `_load_batch_patches`/`_save_export_audio_settings` đã có, enqueue qua `jobqueue.store.enqueue(conn, "kaggle_tts", payload={...}, book_id=book_id, dedupe_key=f"kaggle_tts:book={book_id}")`, trả `JSONResponse({"job_id": job_id or đã có sẵn từ find_live_by_dedupe})`.
+- [x] **Step 4: Thêm endpoint `export-batch-kaggle` vào `app/routes/patches.py`**, tái dùng `_load_batch_patches`/`_save_export_audio_settings` đã có, enqueue qua `jobqueue.store.enqueue(conn, "kaggle_tts", payload={...}, book_id=book_id, dedupe_key=f"kaggle_tts:book={book_id}")`, trả `JSONResponse({"job_id": job_id or đã có sẵn từ find_live_by_dedupe})`.
 
-- [ ] **Step 5: `app.include_router(kaggle.router)` trong `app/main.py`**
+- [x] **Step 5: `app.include_router(kaggle.router)` trong `app/main.py`**
 
-- [ ] **Step 6: Chạy test, xác nhận pass**
+- [x] **Step 6: Chạy test, xác nhận pass**
 
 ```bash
 pytest tests/test_kaggle_routes.py -v
 ```
 
-- [ ] **Step 7: Chạy cả suite**
+- [x] **Step 7: Chạy cả suite**
 
 ```bash
 pytest tests/ -q
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add app/routes/kaggle.py app/routes/patches.py app/main.py tests/test_kaggle_routes.py
@@ -1308,19 +1308,19 @@ export type KaggleAccount = {
 };
 ```
 
-- [ ] **Step 1: Thêm type `KaggleAccount` vào `frontend/src/api.ts`**, theo đúng khuôn `DriveAccount` đã có.
+- [x] **Step 1: Thêm type `KaggleAccount` vào `frontend/src/api.ts`**, theo đúng khuôn `DriveAccount` đã có.
 
-- [ ] **Step 2: Thêm UI quản lý account** (danh sách + form thêm/sửa + nút xoá/toggle), gọi `/api/ui/kaggle` + `postForm("/kaggle/accounts", ...)` v.v., theo đúng khuôn `DrivePage.tsx`'s `loadData`/`handleCreateTarget`/`handleDeleteTarget`.
+- [x] **Step 2: Thêm UI quản lý account** (danh sách + form thêm/sửa + nút xoá/toggle), gọi `/api/ui/kaggle` + `postForm("/kaggle/accounts", ...)` v.v., theo đúng khuôn `DrivePage.tsx`'s `loadData`/`handleCreateTarget`/`handleDeleteTarget`.
 
-- [ ] **Step 3: Thêm nút "Kaggle (tự động)" trong `ExportPanel.tsx`** cạnh 2 nút export hiện có (Drive/zip) — cùng form chọn patch + model + voice + max_chars + with_effects, gọi `postJson("/books/{id}/patches/export-batch-kaggle", ...)`, hiện link tới job vừa enqueue trên trang Queue (route đã có sẵn, không cần sửa Queue page).
+- [x] **Step 3: Thêm nút "Kaggle (tự động)" trong `ExportPanel.tsx`** cạnh 2 nút export hiện có (Drive/zip) — cùng form chọn patch + model + voice + max_chars + with_effects, gọi `postJson("/books/{id}/patches/export-batch-kaggle", ...)`, hiện link tới job vừa enqueue trên trang Queue (route đã có sẵn, không cần sửa Queue page).
 
-- [ ] **Step 4: Chạy dev server, tự tay kiểm tra** (theo hướng dẫn "For UI or frontend changes" — phải mở trình duyệt thật, không chỉ dựa vào type-check):
+- [x] **Step 4: Chạy dev server, tự tay kiểm tra** (theo hướng dẫn "For UI or frontend changes" — phải mở trình duyệt thật, không chỉ dựa vào type-check):
   - Trang account: thêm 1 account giả, thấy nó xuất hiện trong danh sách với trạng thái `idle`; xoá được.
   - `ExportPanel`: nút "Kaggle (tự động)" hiện ra, bấm enqueue được job (kiểm tra job xuất hiện trên trang Queue) khi có ít nhất 1 account đã cấu hình; báo lỗi rõ ràng khi chưa có account nào.
 
-- [ ] **Step 5: `npm run build` (hoặc lệnh build/typecheck hiện có của frontend) để chắc không có lỗi TypeScript**
+- [x] **Step 5: `npm run build` (hoặc lệnh build/typecheck hiện có của frontend) để chắc không có lỗi TypeScript**
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add frontend/src/api.ts frontend/src/pages/DrivePage.tsx frontend/src/pages/book-detail/ExportPanel.tsx
@@ -1331,6 +1331,6 @@ git commit -m "feat(kaggle): add account management UI and Kaggle export button"
 
 ## Final check
 
-- [ ] `pytest tests/ -q` — toàn bộ suite pass, không skip test mới thêm.
-- [ ] Đối chiếu lại spec: mọi mục "SHALL" trong `docs/superpowers/specs/2026-09-05-kaggle-api-tts-automation-design.md` có tương ứng ít nhất 1 task/test ở trên.
-- [ ] Xác nhận đường Drive/Colab hiện có (zip, Drive Desktop, Drive API) chạy y hệt trước — không có test nào trong các file cũ bị sửa ngoài phạm vi refactor ở Task 5.
+- [x] `pytest tests/ -q` — toàn bộ suite pass, không skip test mới thêm.
+- [x] Đối chiếu lại spec: mọi mục "SHALL" trong `docs/superpowers/specs/2026-09-05-kaggle-api-tts-automation-design.md` có tương ứng ít nhất 1 task/test ở trên.
+- [x] Xác nhận đường Drive/Colab hiện có (zip, Drive Desktop, Drive API) chạy y hệt trước — không có test nào trong các file cũ bị sửa ngoài phạm vi refactor ở Task 5.
