@@ -30,7 +30,7 @@
 | `app/jobqueue/models.py` (sửa) | thêm `JobRescheduled` |
 | `app/jobqueue/store.py` (sửa) | thêm `reschedule()` |
 | `app/jobqueue/runner.py` (sửa) | bắt `JobRescheduled` trong `_execute` |
-| `app/patch_import.py` (mới, tách từ `app/routes/patches.py`) | `_resolve_batch_result`, `_build_import_timeline`, `_timeline_metadata`, `_install_imported_wav`, `_safe_batch_path`, `import_batch_patch()` |
+| `app/patch_import.py` (mới, tách từ `app/routes/patches.py`) | `resolve_batch_result`, `build_import_timeline`, `timeline_metadata`, `install_imported_wav`, `safe_batch_path` (pure helpers only — xem ghi chú "Scope thực tế" ở Task 5, không có `import_batch_patch()` orchestrator chung) |
 | `app/jobqueue/handlers/kaggle_tts.py` (mới) | handler chính: vòng lặp claim account → push → poll → import → xoay tài khoản |
 | `app/jobqueue/backfill.py` (sửa) | `queue.register("kaggle_tts", kaggle_tts.handle, cancellable=True)` |
 | `app/drive_export.py` (sửa) | `build_kaggle_export_package()`, tham số `mode` nội bộ cho `build_batch_export_package` |
@@ -698,15 +698,9 @@ def resolve_batch_result(patch_folder: Path, patch_id: int) -> Path | None
 def build_import_timeline(chunk_paths: list[Path], metadata: list[dict], pause_ms: int) -> dict | None
 def timeline_metadata(manifest: dict) -> list[dict]
 def install_imported_wav(source: Path, audio_path: Path, timeline: dict | None = None) -> None
-
-@dataclass
-class ImportOutcome:
-    installed: bool
-    audio_path: Path | None
-    error: str | None
-
-def import_batch_patch(conn, patch, package_folder: Path, *, chunk_pause_ms: int) -> ImportOutcome
 ```
+
+**Scope thực tế (đã điều chỉnh khi implement — DONE):** chỉ 5 pure helper trên (+ `_atomic_copy` private) di chuyển sang `app/patch_import.py`. Bản kế hoạch gốc còn định viết thêm một `import_batch_patch()`/`ImportOutcome` bọc toàn bộ orchestration của `import_patch_from_drive` (locked_conn, `_warm_thumbnail(request, ...)`, `repository.update_patch_export`, `RedirectResponse`...) — khi bắt tay vào mới thấy phần đó gắn chặt vào FastAPI request/response và transaction của route, ép nó thành một hàm dùng chung cho cả route lẫn job handler sẽ tạo ra chỗ vòng vo không cần thiết mà lợi ích không tương xứng. Quyết định: **bỏ `import_batch_patch()`**, giữ route `import_patch_from_drive` với orchestration inline như cũ (chỉ gọi 5 hàm pure qua `patch_import.*` thay vì hàm private nội bộ). Task 8 (`kaggle_tts` handler) sẽ tự viết orchestration của nó, gọi thẳng `patch_import.resolve_batch_result`/`patch_import.install_imported_wav` cộng với `repository`/`on_patch_audio_ready` riêng — xem ghi chú trong Task 8.
 
 **Đây là refactor thuần** — hành vi phải giữ nguyên 100%. Không viết lại thuật toán, chỉ di chuyển.
 
@@ -722,13 +716,9 @@ pytest tests/test_patch_import.py -v
 
 Kỳ vọng: FAIL với `ModuleNotFoundError: No module named 'app.patch_import'`.
 
-- [ ] **Step 3: Tạo `app/patch_import.py`**
+- [x] **Step 3: Tạo `app/patch_import.py`** — di chuyển nguyên văn `_safe_batch_path`, `_resolve_batch_result`, `_build_import_timeline`, `_timeline_metadata`, `_atomic_copy`, `_install_imported_wav` từ `app/routes/patches.py` sang đây, đổi tên bỏ dấu gạch dưới đầu cho 5 hàm public (giữ `_atomic_copy` private). Không viết `import_batch_patch()` — xem "Scope thực tế" ở trên.
 
-Di chuyển nguyên văn `_safe_batch_path`, `_resolve_batch_result`, `_build_import_timeline`, `_timeline_metadata`, `_atomic_copy`, `_install_imported_wav` từ `app/routes/patches.py` sang đây, đổi tên bỏ dấu gạch dưới đầu cho hàm public (giữ `_atomic_copy` private nếu chỉ dùng nội bộ). Viết thêm `import_batch_patch()` bọc đúng logic đang nằm inline trong `import_patch_from_drive` (đọc `batch_manifest.json`, tìm entry theo `patch_id`, `resolve_batch_result`, cài đặt WAV+timeline, trả về `ImportOutcome`) — copy logic, không đổi thứ tự thao tác hay điều kiện.
-
-- [ ] **Step 4: Sửa `app/routes/patches.py` để import và gọi module mới**
-
-`import_patch_from_drive` gọi `patch_import.import_batch_patch(conn, patch, package_folder, chunk_pause_ms=...)` thay vì logic inline; các chỗ khác dùng `_install_imported_wav` (dòng ~1005, ~1297, ~1382) đổi sang `patch_import.install_imported_wav`. Xoá các hàm private đã di chuyển khỏi `patches.py`.
+- [x] **Step 4: Sửa `app/routes/patches.py` để gọi module mới** — mọi lời gọi `_safe_batch_path`/`_resolve_batch_result`/`_build_import_timeline`/`_timeline_metadata`/`_install_imported_wav` (trong `import_patch_from_drive` và 2 chỗ khác) đổi sang `patch_import.<tên không gạch dưới>`, orchestration của route giữ nguyên 100% (locked_conn, thumbnail warming, `update_patch_export`, `RedirectResponse` không đổi). Xoá 6 hàm private đã di chuyển khỏi `patches.py`.
 
 - [ ] **Step 5: Chạy toàn bộ test liên quan, xác nhận pass và không có regression**
 
@@ -944,6 +934,8 @@ git commit -m "feat(kaggle): add build_kaggle_export_package building a Drive-fr
 ---
 
 ### Task 8: `app/jobqueue/handlers/kaggle_tts.py` — handler chính
+
+> **Lưu ý khi bắt tay vào task này:** Task 5 đã bỏ `patch_import.import_batch_patch()` (xem "Scope thực tế" ở Task 5) — mọi chỗ dưới đây viết `kaggle_tts.patch_import.import_batch_patch(...)` chỉ là placeholder từ bản kế hoạch gốc. Handler thật sẽ tự viết orchestration của nó: gọi `patch_import.resolve_batch_result(...)` + `patch_import.install_imported_wav(...)` (2 hàm pure có thật) cộng với `repository.mark_patch_done`/`on_patch_audio_ready`/cập nhật `patch_export` riêng, tương tự những gì `import_patch_from_drive` làm nhưng không đi qua `locked_conn`/HTTP. Viết lại test ở Step 1 cho khớp trước khi implement, đừng copy nguyên văn pseudocode `import_batch_patch` dưới đây.
 
 **Files:**
 - Create: `app/jobqueue/handlers/kaggle_tts.py`
