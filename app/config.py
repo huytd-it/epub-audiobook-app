@@ -107,6 +107,13 @@ class Settings(BaseSettings):
     gameplay_pool_maintainer_enabled: bool = False
     gameplay_renderer_version: str = "1"
 
+    # Kaggle Kernels API automation
+    kaggle_poll_interval_seconds: int = 30
+    # Kaggle GPU notebook sessions are capped; this is the app's own safety timeout for
+    # one push->poll cycle, independent of whatever Kaggle currently enforces.
+    kaggle_max_session_hours: int = 9
+    kaggle_weekly_gpu_quota_hours: int = 30
+
     @staticmethod
     @lru_cache(maxsize=1)
     def get_ffmpeg_path() -> str:
