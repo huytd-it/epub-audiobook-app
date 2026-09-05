@@ -211,7 +211,7 @@ class JobQueue:
     def _audiobook_tts(self):
         return next((
             r for r in self._running.values()
-            if r.job.job_type in {"audiobook_tts", "voxcpm_tts"}
+            if r.job.job_type in {"audiobook_tts", "audiobook_tts_api", "voxcpm_tts"}
         ), None)
 
     @property

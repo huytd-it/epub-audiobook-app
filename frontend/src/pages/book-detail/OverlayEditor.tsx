@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { X } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Upload, X } from "lucide-react";
 import { api, post, postForm, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -200,6 +200,11 @@ export function OverlayEditor({
   const [preview, setPreview] = useState("");
   const [coverPreview, setCoverPreview] = useState("");
   const [thumbnailRevision, setThumbnailRevision] = useState(0);
+  const [thumbnailFile, setThumbnailFile] = useState<File>();
+  const [thumbnailPreview, setThumbnailPreview] = useState("");
+  const [thumbnailApplying, setThumbnailApplying] = useState(false);
+  const [thumbnailProgress, setThumbnailProgress] = useState(0);
+  const thumbnailInputRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const layers = config?.overlays?.length ? config.overlays : config ? [config] : [];
   const podcast = config?.podcast_cover || DEFAULT_PODCAST_COVER;
@@ -329,6 +334,10 @@ export function OverlayEditor({
     if (coverPreview) URL.revokeObjectURL(coverPreview);
   }, [coverPreview]);
 
+  useEffect(() => () => {
+    if (thumbnailPreview) URL.revokeObjectURL(thumbnailPreview);
+  }, [thumbnailPreview]);
+
   const update = (index: number, patch: Partial<OverlayLayer>) =>
     setConfig((current) =>
       current
@@ -340,6 +349,51 @@ export function OverlayEditor({
     setConfig((current) =>
       current ? { ...current, podcast_cover: { ...(current.podcast_cover || DEFAULT_PODCAST_COVER), ...patch } } : current
     );
+
+  const selectThumbnail = (file?: File) => {
+    if (!file) return;
+    const nextPreview = URL.createObjectURL(file);
+    setThumbnailFile(file);
+    setThumbnailPreview((current) => {
+      if (current) URL.revokeObjectURL(current);
+      return nextPreview;
+    });
+    setThumbnailProgress(0);
+  };
+
+  const applyThumbnailToAll = async () => {
+    if (!thumbnailFile || !patchIds.length || thumbnailApplying) return;
+    setThumbnailApplying(true);
+    setThumbnailProgress(0);
+    let completed = 0;
+    let firstError: unknown;
+
+    try {
+      for (const patchId of patchIds) {
+        const formData = new FormData();
+        formData.append("image", thumbnailFile);
+        try {
+          await postForm(`/books/${bookId}/patches/${patchId}/image`, formData);
+          completed += 1;
+          setThumbnailProgress(completed);
+        } catch (error) {
+          if (!firstError) firstError = error;
+        }
+      }
+
+      if (completed) {
+        setThumbnailRevision((current) => current + 1);
+        await onSaved();
+      }
+      onMessage(
+        completed === patchIds.length
+          ? `Đã dùng ảnh mới làm thumbnail cho ${completed} patch.`
+          : `Đã cập nhật ${completed}/${patchIds.length} patch. ${errorText(firstError)}`
+      );
+    } finally {
+      setThumbnailApplying(false);
+    }
+  };
 
   const save = async (regenerate: boolean) => {
     if (!config) return;
@@ -466,45 +520,68 @@ export function OverlayEditor({
       )}
       {preview && <img src={preview} alt="Overlay preview" className="max-h-64 w-full rounded-md object-contain" />}
 
-      {patchIds.length > 0 && (
-        <Card>
-          <CardContent className="space-y-3 p-4">
-            <div>
-              <div className="text-sm font-semibold">Thumbnail các patch</div>
-              <div className="text-xs text-muted-foreground">Ảnh preview của patch đầu tiên, dùng cho video và YouTube. Nhấn vào ảnh để upload ảnh tùy chỉnh.</div>
-            </div>
-            <label className="max-w-xl block cursor-pointer overflow-hidden rounded-md border bg-muted/20 hover:ring-2 hover:ring-primary/50 transition-all">
-              <input
-                type="file"
-                className="hidden"
-                accept=".jpg,.jpeg,.png,.webp"
-                onChange={async (event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  const formData = new FormData();
-                  formData.append("image", file);
-                  try {
-                    await postForm(`/books/${bookId}/patches/${patchIds[0]}/image`, formData);
-                    setThumbnailRevision((c) => c + 1);
-                    onMessage("Đã upload ảnh thumbnail tùy chỉnh.");
-                  } catch (error) {
-                    onMessage(errorText(error));
-                  }
-                  event.currentTarget.value = "";
-                }}
+      <section className="grid gap-4 border-y border-border py-4 lg:grid-cols-[minmax(0,320px)_1fr] lg:items-center">
+        <figure className="overflow-hidden rounded-md border bg-muted/20">
+          <div className="aspect-video bg-muted">
+            {patchIds.length > 0 || thumbnailPreview ? (
+              <img
+                src={thumbnailPreview || `/books/${bookId}/patches/${patchIds[0]}/overlay-image?v=${thumbnailRevision}`}
+                alt={thumbnailPreview ? "Thumbnail mới đã chọn" : "Thumbnail hiện tại của patch đầu tiên"}
+                className="h-full w-full object-contain"
               />
-              <div className="aspect-video bg-muted">
-                <img
-                  src={`/books/${bookId}/patches/${patchIds[0]}/overlay-image?v=${thumbnailRevision}`}
-                  alt="Thumbnail patch 1"
-                  className="h-full w-full object-contain pointer-events-none"
-                />
+            ) : (
+              <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+                Chưa có patch để áp dụng thumbnail.
               </div>
-              <figcaption className="border-t px-3 py-2 text-xs font-medium">Patch 1 — Nhấn để upload ảnh</figcaption>
-            </label>
-          </CardContent>
-        </Card>
-      )}
+            )}
+          </div>
+          <figcaption className="border-t px-3 py-2 text-[11px] text-muted-foreground">
+            {thumbnailFile ? thumbnailFile.name : "Ảnh thumbnail hiện tại"}
+          </figcaption>
+        </figure>
+
+        <div className="space-y-3">
+          <div>
+            <div className="text-sm font-semibold">Dùng một ảnh cho nhiều patch</div>
+            <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">
+              Tải ảnh JPG, PNG hoặc WebP, kiểm tra preview rồi áp dụng cùng lúc cho toàn bộ {patchIds.length} patch.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={thumbnailInputRef}
+              type="file"
+              className="hidden"
+              accept=".jpg,.jpeg,.png,.webp"
+              disabled={thumbnailApplying}
+              onChange={(event) => {
+                selectThumbnail(event.target.files?.[0]);
+                event.currentTarget.value = "";
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={thumbnailApplying}
+              onClick={() => thumbnailInputRef.current?.click()}
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Tải thumbnail mới
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!thumbnailFile || !patchIds.length || thumbnailApplying}
+              onClick={applyThumbnailToAll}
+            >
+              {thumbnailApplying
+                ? `Đang áp dụng ${thumbnailProgress}/${patchIds.length}...`
+                : `Dùng cho tất cả ${patchIds.length} patch`}
+            </Button>
+          </div>
+        </div>
+      </section>
 
       <Card>
         <CardContent className="space-y-4 p-4">

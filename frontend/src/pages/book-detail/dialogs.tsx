@@ -950,7 +950,9 @@ export function ConfigDialog({
                           <option value="pixel_dash">Đua Xe · Retro</option>
                           <option value="pacman_maze">Pac-Man · Retro</option>
                           <option value="chicken_shooter">Phi Thuyền Bắn Gà · Retro</option>
+                          <option value="spaceship_voyager">Phi Thuyền · Retro</option>
                           <option value="flappy_bird">Flappy Bird · Retro</option>
+                          <option value="gold_miner">Đào Vàng · Retro</option>
                           <option value="aurora_veil">Aurora Veil · Procedural</option>
                           <option value="plasma_tide">Plasma Tide · Procedural</option>
                           <option value="ripple_pond">Ripple Pond · Procedural</option>
@@ -962,7 +964,7 @@ export function ConfigDialog({
                     ) : (
                       <div className="space-y-2">
                         <div className="text-xs font-medium">Game trong vòng xoay</div>
-                        {([ ["snake_arena", "Rắn Săn Mồi · Retro"], ["brick_stack", "Xếp Gạch · Retro"], ["tank_duel", "Xe Tăng 90 · Retro"], ["brick_breaker", "Đập Gạch · Retro"], ["star_defender", "Bắn Ruồi · Retro"], ["pixel_dash", "Đua Xe · Retro"], ["pacman_maze", "Pac-Man · Retro"], ["chicken_shooter", "Phi Thuyền Bắn Gà · Retro"], ["flappy_bird", "Flappy Bird · Retro"], ["aurora_veil", "Aurora Veil · Procedural"], ["plasma_tide", "Plasma Tide · Procedural"], ["ripple_pond", "Ripple Pond · Procedural"], ["lumen_bloom", "Lumen Bloom · Procedural"], ["silk_current", "Silk Current · Procedural"], ["starfall_warp", "Starfall Warp · Procedural"] ] as const).map(([id, label]) => {
+                        {([ ["snake_arena", "Rắn Săn Mồi · Retro"], ["brick_stack", "Xếp Gạch · Retro"], ["tank_duel", "Xe Tăng 90 · Retro"], ["brick_breaker", "Đập Gạch · Retro"], ["star_defender", "Bắn Ruồi · Retro"], ["pixel_dash", "Đua Xe · Retro"], ["pacman_maze", "Pac-Man · Retro"], ["chicken_shooter", "Phi Thuyền Bắn Gà · Retro"], ["spaceship_voyager", "Phi Thuyền · Retro"], ["flappy_bird", "Flappy Bird · Retro"], ["gold_miner", "Đào Vàng · Retro"], ["aurora_veil", "Aurora Veil · Procedural"], ["plasma_tide", "Plasma Tide · Procedural"], ["ripple_pond", "Ripple Pond · Procedural"], ["lumen_bloom", "Lumen Bloom · Procedural"], ["silk_current", "Silk Current · Procedural"], ["starfall_warp", "Starfall Warp · Procedural"] ] as const).map(([id, label]) => {
                           const checked = videoConfig.gameplay.game_ids.includes(id);
                           return <label key={id} className="flex items-center gap-2 text-xs">
                             <input type="checkbox" className={checkboxClass} checked={checked}

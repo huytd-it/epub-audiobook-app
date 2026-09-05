@@ -72,8 +72,8 @@ def test_old_config_defaults_to_media():
 
 def test_generic_games_are_deterministic_versioned_and_bounded():
     catalog = list_games()
-    assert len(catalog) == 16
-    assert sum(game["family"] == "retro" for game in catalog) == 10
+    assert len(catalog) == 17
+    assert sum(game["family"] == "retro" for game in catalog) == 11
     assert sum(game["family"] == "procedural" for game in catalog) == 6
     # No catalog game may need art any more: every family paints itself.
     assert all(game["sprite_roles"] == [] for game in catalog)
@@ -113,6 +113,15 @@ def test_spaceship_bosses_rotate_and_cast_distinct_skills():
         observed.add(engine.events[-1]["skill"])
     assert observed == {"COMET BARRAGE", "VOID CURTAIN", "NOVA SPIRAL"}
     assert engine.stats["skills"] == 3
+
+
+def test_gold_miner_completes_a_visible_haul_in_the_preview_window():
+    engine = build_engine("gold_miner", 20260819 + sum(map(ord, "gold_miner")), {})
+    for _ in range(60):  # The gallery preview is three seconds at the shared 20 Hz tick rate.
+        engine.step()
+    assert engine.score > 0
+    assert engine.stats["gold"] + engine.stats["gems"] > 0
+    assert engine.frame().cells
 
 
 def test_retro_runs_are_ranked_and_promoted_once_rendered():

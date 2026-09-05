@@ -89,9 +89,12 @@ class Settings(BaseSettings):
     piper_voices_dir: str = ""
     # How many times to attempt each LightTTS chunk before reporting it failed.
     light_tts_chunk_retries: int = 3
+    # Remote providers: JSON array with id/name/adapter/model/voice/api_key_env and
+    # optional base_url/voices. Secrets stay in their named environment variables.
+    tts_api_providers: str = ""
     # Queue job chạy nền
     # Loại nào không liệt kê ở đây nhận queue_default_concurrency.
-    queue_concurrency: str = "audiobook_tts=1,video=2,youtube_upload=1,patch_video=1,gameplay_clip=1"
+    queue_concurrency: str = "audiobook_tts=1,audiobook_tts_api=4,video=2,youtube_upload=1,patch_video=1,gameplay_clip=1"
     queue_default_concurrency: int = 10
     queue_log_retention_days: int = 7
     # Job 'running' im lặng quá lâu bị coi là chết và trả về 'pending'.

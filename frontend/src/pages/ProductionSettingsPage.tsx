@@ -45,6 +45,7 @@ const GAMES = [
   ["chicken_shooter", "Phi Thuyền Bắn Gà · Retro"],
   ["spaceship_voyager", "Phi Thuyền · Retro"],
   ["flappy_bird", "Flappy Bird · Retro"],
+  ["gold_miner", "Đào Vàng · Retro"],
   ["aurora_veil", "Aurora Veil · Procedural"],
   ["plasma_tide", "Plasma Tide · Procedural"],
   ["ripple_pond", "Ripple Pond · Procedural"],

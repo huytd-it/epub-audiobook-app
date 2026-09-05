@@ -30,6 +30,7 @@ const fallbackCatalog: Game[] = [
   { id: "chicken_shooter", name: "Phi Thuyền Bắn Gà", family: "retro", waveform_policy: "default_off", description: "Phi thuyền tự né trứng, bắn đội hình gà không gian theo từng đợt.", enabled: true },
   { id: "spaceship_voyager", name: "Phi Thuyền", family: "retro", waveform_policy: "default_off", description: "Bay xuyên trường sao, né thiên thạch và đối đầu ba Boss với kỹ năng riêng.", enabled: true },
   { id: "flappy_bird", name: "Flappy Bird", family: "retro", waveform_policy: "allowed_with_safe_area", description: "Chú chim tự vỗ cánh luồn qua ống nước, tốc độ tăng dần theo quãng bay.", enabled: true },
+  { id: "gold_miner", name: "Đào Vàng", family: "retro", waveform_policy: "allowed_with_safe_area", description: "Móc máy tự săn vàng và đá quý, kéo kho báu lên để mở tầng mỏ mới.", enabled: true },
   { id: "aurora_veil", name: "Aurora Veil", family: "procedural", waveform_policy: "allowed_with_safe_area", description: "Rèm cực quang trôi trên nền sao, sáng dần theo từng đợt.", enabled: true },
   { id: "plasma_tide", name: "Plasma Tide", family: "procedural", waveform_policy: "default_off", description: "Sóng plasma giao thoa với các đường viền phát sáng.", enabled: true },
   { id: "ripple_pond", name: "Ripple Pond", family: "procedural", waveform_policy: "allowed_with_safe_area", description: "Mặt nước tĩnh với những vòng sóng lan và ánh khúc xạ.", enabled: true },

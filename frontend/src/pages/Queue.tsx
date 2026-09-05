@@ -17,7 +17,8 @@ type JobTypeFilter = "all" | WorkerType;
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const WORKER_TYPES = [
-  ["audiobook_tts", "TTS audiobook"], ["light_tts", "TTS nhẹ"],
+  ["audiobook_tts", "TTS local"], ["audiobook_tts_api", "TTS qua API"],
+  ["light_tts", "TTS nhẹ"],
   ["video", "Video sách"], ["patch_video", "Video phân đoạn"],
   ["standalone_video", "Video độc lập"], ["youtube_upload", "YouTube upload"],
   ["background_gen", "Tạo ảnh nền"], ["gameplay_clip", "Gameplay clip"],
@@ -33,6 +34,9 @@ type WorkerHealth = {
 };
 
 function jobTypeLabel(jobType: string) {
+  if (jobType === "audiobook_tts") return "TTS local";
+  if (jobType === "audiobook_tts_api") return "TTS qua API";
+  if (jobType === "light_tts") return "TTS nhẹ";
   if (jobType.includes("tts")) return "TTS";
   if (jobType.includes("youtube")) return "YouTube";
   if (jobType.includes("video")) return "Video";
@@ -68,6 +72,7 @@ export function Queue() {
   const [workerHealthError, setWorkerHealthError] = useState("");
 
   const load = () => {
+    setQueueError("");
     const params = new URLSearchParams({ limit: jobTypeFilter === "all" ? "200" : "1000" });
     if (jobTypeFilter !== "all") params.set("type", jobTypeFilter);
     if (jobTypeFilter !== "all" && statusFilter === "pending") {
@@ -85,7 +90,9 @@ export function Queue() {
       })
       .catch((err) => {
         console.error(err);
-        setWorkerHealthError(err instanceof Error ? err.message : "Không đọc được trạng thái worker");
+        const detail = err instanceof Error ? err.message : "Không đọc được dữ liệu hàng đợi";
+        setQueueError(detail);
+        setWorkerHealthError(detail);
       })
       .finally(() => setLoading(false));
   };
@@ -152,12 +159,13 @@ export function Queue() {
   const allVisibleSelected = visibleSelectableIds.length > 0 && visibleSelectableIds.every((id) => selectedIds.has(id));
   const canReorder = jobTypeFilter !== "all" && statusFilter === "pending";
   const ttsPool = workerHealth?.pools.find((pool) => pool.job_type === "audiobook_tts");
+  const ttsApiPool = workerHealth?.pools.find((pool) => pool.job_type === "audiobook_tts_api");
   const ttsBlockedReason = workerHealth?.worker_state === "disabled"
     ? "Worker backend đang tắt (ENABLE_WORKER=false), nên các job TTS sẽ không được nhận."
     : workerHealth?.worker_state === "paused"
       ? "Hàng đợi đang tạm dừng, nên các job TTS sẽ giữ trạng thái chờ."
-      : ttsPool?.capacity === 0
-        ? "Worker audiobook_tts đang đặt bằng 0. Đặt lại ít nhất 1 rồi khởi động lại backend."
+      : ttsPool?.capacity === 0 && ttsApiPool?.capacity === 0
+        ? "Cả worker TTS local và TTS API đang đặt bằng 0. Bật ít nhất một pool rồi khởi động lại backend."
         : "";
 
   useEffect(() => {

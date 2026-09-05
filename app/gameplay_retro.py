@@ -1294,6 +1294,123 @@ class FlappyBirdEngine(Engine):
 
 
 # ---------------------------------------------------------------------------
+# Gold Miner
+# ---------------------------------------------------------------------------
+class GoldMinerEngine(Engine):
+    """An autonomous claw that prefers gems, then gold, while clearing each mine layer."""
+
+    game_id = "gold_miner"
+    cols, rows = 24, 18
+    _VALUES = {"gold": 120, "gem": 260, "rock": 35}
+    _COLORS = {"gold": "food", "gem": "p2", "rock": "wall"}
+
+    def reset_game(self) -> None:
+        self.stats = {"gold": 0, "gems": 0}
+        self.hauls = 0
+        self.reset_round()
+
+    def reset_round(self) -> None:
+        self.pivot = (self.cols // 2, 1)
+        self.items: dict[tuple[int, int], str] = {}
+        self.phase = "swing"
+        self.aim_col = 3
+        self.aim_direction = 1
+        self.rope: list[tuple[int, int]] = [self.pivot]
+        self.rope_length = 1
+        self.caught: tuple[tuple[int, int], str] | None = None
+        self.action_at = self.tick + 1
+        self._fill_mine()
+
+    def _fill_mine(self) -> None:
+        target_count = min(22, 12 + self.level)
+        while len(self.items) < target_count:
+            cell = (self.rng.randint(1, self.cols - 2), self.rng.randint(5, self.rows - 2))
+            if cell in self.items:
+                continue
+            roll = self.rng.random()
+            kind = "gem" if roll < 0.17 else "gold" if roll < 0.58 else "rock"
+            self.items[cell] = kind
+
+    @staticmethod
+    def _line(start: tuple[int, int], end: tuple[int, int]) -> list[tuple[int, int]]:
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        steps = max(abs(dx), abs(dy), 1)
+        cells = [(round(start[0] + dx * step / steps), round(start[1] + dy * step / steps))
+                 for step in range(steps + 1)]
+        return list(dict.fromkeys(cells))
+
+    def _pick_target(self) -> tuple[int, int]:
+        valuables = [cell for cell, kind in self.items.items() if kind != "rock"]
+        candidates = valuables or list(self.items)
+        if not candidates:
+            self.level_up(min(12, self.level + 1))
+            self.flash("MINE CLEAR", 1.2)
+            self.emit("stage_clear", level=self.level, score=self.score)
+            self._fill_mine()
+            candidates = list(self.items)
+        # Value wins, with a small travel penalty so the claw still feels physically grounded.
+        return min(candidates, key=lambda cell: (
+            -(self._VALUES[self.items[cell]] - 8 * abs(cell[0] - self.aim_col) - 3 * cell[1]),
+            cell[0], cell[1]))
+
+    def _bank_catch(self) -> None:
+        if self.caught is None:
+            return
+        cell, kind = self.caught
+        if kind == "gold":
+            self.stats["gold"] += 1
+        elif kind == "gem":
+            self.stats["gems"] += 1
+        self.items.pop(cell, None)
+        self.hauls += 1
+        self.award(self._VALUES[kind] * self.level, kind)
+        self.level_up(min(12, 1 + self.hauls // 6))
+        self.caught = None
+        self.phase = "swing"
+        self.action_at = self.tick + max(3, 7 - self.level // 2)
+
+    def update(self) -> None:
+        if self.tick < self.action_at:
+            return
+        cadence = 1
+        speed = 2 + self.level // 5
+        self.action_at = self.tick + cadence
+        if self.phase == "swing":
+            self.aim_col += self.aim_direction
+            if self.aim_col <= 2 or self.aim_col >= self.cols - 3:
+                self.aim_direction *= -1
+            self.rope = self._line(self.pivot, (self.aim_col, 6))
+            self.rope_length = len(self.rope)
+            if self.tick % max(16, 30 - self.level) < cadence:
+                target = self._pick_target()
+                self.rope = self._line(self.pivot, target)
+                self.rope_length = 1
+                self.phase = "extend"
+        elif self.phase == "extend":
+            self.rope_length = min(len(self.rope), self.rope_length + speed)
+            if self.rope_length >= len(self.rope):
+                cell = self.rope[-1]
+                self.caught = (cell, self.items[cell])
+                self.phase = "retract"
+        else:
+            self.rope_length -= speed
+            if self.rope_length <= 1:
+                self._bank_catch()
+
+    def frame(self) -> RetroFrame:
+        cells = [(col, 3, "trail") for col in range(self.cols)]
+        cells.extend((col, row, self._COLORS[kind])
+                     for (col, row), kind in self.items.items()
+                     if self.caught is None or (col, row) != self.caught[0])
+        rope = self.rope[:self.rope_length]
+        cells.extend((col, row, "steel") for col, row in rope)
+        cells.append((*self.pivot, "player"))
+        if rope:
+            cells.append((*rope[-1], self._COLORS[self.caught[1]] if self.caught else "shot"))
+        return RetroFrame(cells, self.hud(), self.overlay)
+
+
+# ---------------------------------------------------------------------------
 # Catalog, tag generation and the deterministic replay envelope
 # ---------------------------------------------------------------------------
 RETRO_GAMES: tuple[RetroSpec, ...] = (
@@ -1327,12 +1444,15 @@ RETRO_GAMES: tuple[RetroSpec, ...] = (
     RetroSpec("flappy_bird", "Flappy Bird", "allowed_with_safe_area",
               "Chú chim tự vỗ cánh luồn qua ống nước, tốc độ tăng dần theo quãng bay.",
               (("pipes", "Ống qua"), ("distance", "Quãng"))),
+    RetroSpec("gold_miner", "Đào Vàng", "allowed_with_safe_area",
+              "Móc máy tự săn vàng và đá quý, kéo kho báu lên để mở tầng mỏ mới.",
+              (("gold", "Vàng"), ("gems", "Đá quý"))),
 )
 
 _ENGINES: dict[str, type[Engine]] = {engine.game_id: engine for engine in (
     SnakeEngine, BrickStackEngine, TankDuelEngine, BrickBreakerEngine,
     StarDefenderEngine, PixelDashEngine, PacmanEngine, ChickenShooterEngine, SpaceshipVoyagerEngine,
-    FlappyBirdEngine)}
+    FlappyBirdEngine, GoldMinerEngine)}
 
 RETRO_IDS = frozenset(_ENGINES)
 SPECS: dict[str, RetroSpec] = {spec.id: spec for spec in RETRO_GAMES}

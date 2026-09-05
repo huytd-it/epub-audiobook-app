@@ -31,7 +31,9 @@ export type TtsModel = {
   model_id: string;
   supports_reference: boolean;
   default_voice: string | null;
-  capabilities: { kind: string; voice_selection: boolean };
+  capabilities: { kind: string; runtime?: "local" | "api"; provider?: string; voice_selection: boolean };
+  configured?: boolean;
+  config_hint?: string;
   /** Giọng có sẵn trong chính model (ZeroTTS). Rỗng với model clone theo audio mẫu
    * và với backend cloud — hai loại đó lấy giọng từ nơi khác. */
   voices?: OnlineVoice[];
@@ -135,8 +137,8 @@ export type BookStatus = {
 
 export type GameplaySelectionConfig = {
   selection_mode: "single" | "rotation";
-  game_id: "snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "pacman_maze" | "chicken_shooter" | "spaceship_voyager" | "flappy_bird" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp";
-  game_ids: ("snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "pacman_maze" | "chicken_shooter" | "spaceship_voyager" | "flappy_bird" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp")[];
+  game_id: "snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "pacman_maze" | "chicken_shooter" | "spaceship_voyager" | "flappy_bird" | "gold_miner" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp";
+  game_ids: ("snake_arena" | "brick_stack" | "tank_duel" | "brick_breaker" | "star_defender" | "pixel_dash" | "pacman_maze" | "chicken_shooter" | "spaceship_voyager" | "flappy_bird" | "gold_miner" | "aurora_veil" | "plasma_tide" | "ripple_pond" | "lumen_bloom" | "silk_current" | "starfall_warp")[];
   preset: "calm";
 };
 

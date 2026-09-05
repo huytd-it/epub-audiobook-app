@@ -165,10 +165,11 @@ def test_build_queue_registers_all_four_handlers(tmp_path):
     conn = _conn(tmp_path)
     queue = build_queue(lambda: db.connect(str(tmp_path / "a.db")))
     assert queue.capacity("audiobook_tts") == 1
+    assert queue.capacity("audiobook_tts_api") == 4
     assert queue.capacity("video") == 2
     assert queue.capacity("youtube_upload") == 1
     assert queue.capacity("light_tts") == 10
     assert {p["job_type"] for p in queue.pool_status()} == {
-        "audiobook_tts", "video", "patch_video", "standalone_video",
+        "audiobook_tts", "audiobook_tts_api", "video", "patch_video", "standalone_video",
         "youtube_upload", "light_tts", "background_gen", "gameplay_clip",
     }

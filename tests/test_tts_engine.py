@@ -140,7 +140,7 @@ def test_synthesize_chunk_without_prompt_text_omits_prompt_arguments(monkeypatch
 def test_model_catalog_and_factory_are_unified():
     models = list_tts_models()
     assert [model["id"] for model in models] == [
-        "voxcpm2", "omnivoice", "vieneu-fast", "zerotts", "edge-tts", "gtts",
+        "voxcpm2", "omnivoice", "confucius4", "f5-vivoice", "vieneu-fast", "zerotts", "edge-tts", "gtts",
     ]
     assert isinstance(create_tts_engine("voxcpm2"), VoxCPMEngine)
     assert isinstance(create_tts_engine("omnivoice"), OmniVoiceEngine)
@@ -158,7 +158,7 @@ def test_catalog_carries_capability_metadata():
     }
     for cloud in ("edge-tts", "gtts"):
         assert models[cloud]["capabilities"] == {
-            "kind": "cloud", "reference_audio": False, "voice_selection": True,
+            "kind": "api", "runtime": "api", "reference_audio": False, "voice_selection": True,
             "offline": False, "online": True,
         }
         assert models[cloud]["supports_reference"] is False

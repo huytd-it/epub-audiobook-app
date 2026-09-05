@@ -4,9 +4,9 @@ The previews intentionally reuse the same deterministic simulators and painters 
 video renderer, so the gallery never promises motion the rendered clip cannot produce.
 Run from the repository root with ``python scripts/generate_gameplay_videos.py``.
 
-Requires ``imageio-ffmpeg`` (bundled with the rest of the project's dev tooling) for the
-encoding step.  Frame rate is kept low (~12 fps) and the loop is short (~3 s) so the file
-stays well under a few hundred kilobytes per game even at 960x540.
+Uses ``imageio-ffmpeg`` when available and otherwise falls back to an ``ffmpeg`` binary on
+PATH. Frame rate is kept low (~12 fps) and the loop is short (~3 s) so the file stays well
+under a few hundred kilobytes per game even at 960x540.
 """
 from __future__ import annotations
 
@@ -16,8 +16,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-import imageio_ffmpeg
 from PIL import Image
+
+try:
+    import imageio_ffmpeg
+except ImportError:  # A system FFmpeg is enough for this small maintenance script.
+    imageio_ffmpeg = None
 
 # Allow this maintenance script to run directly from the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -35,6 +39,10 @@ SEED = 20260819
 DURATION_SECONDS = 3.0
 FPS = 12
 LOOP_DURATION = int(DURATION_SECONDS * FPS)  # 36 frames per clip is plenty for a card preview
+
+
+def _ffmpeg_exe() -> str | None:
+    return imageio_ffmpeg.get_ffmpeg_exe() if imageio_ffmpeg is not None else shutil.which("ffmpeg")
 
 
 def _frames_for(game_id: str) -> list[Image.Image]:
@@ -60,7 +68,9 @@ def _frames_for(game_id: str) -> list[Image.Image]:
 
 def _encode(frames: list[Image.Image], target: Path) -> None:
     """Pipe raw RGB24 frames to ffmpeg and write a small, browser-friendly MP4."""
-    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg = _ffmpeg_exe()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg binary not available")
     width, height = frames[0].size
     cmd = [
         ffmpeg, "-y", "-loglevel", "error",
@@ -90,9 +100,9 @@ def _encode(frames: list[Image.Image], target: Path) -> None:
 
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg = _ffmpeg_exe()
     if not ffmpeg or not Path(ffmpeg).exists():
-        raise SystemExit("ffmpeg binary not available; install imageio-ffmpeg to encode previews.")
+        raise SystemExit("ffmpeg binary not available; install FFmpeg or imageio-ffmpeg.")
     for game in list_games():
         game_id = game["id"]
         target = OUTPUT_DIR / f"{game_id}.mp4"

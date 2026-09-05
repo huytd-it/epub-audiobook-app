@@ -15,7 +15,7 @@ from app.jobqueue.runner import JobQueue, parse_concurrency
 logger = logging.getLogger(__name__)
 
 JOB_TYPES = (
-    "audiobook_tts", "video", "patch_video", "standalone_video",
+    "audiobook_tts", "audiobook_tts_api", "video", "patch_video", "standalone_video",
     "youtube_upload", "light_tts", "background_gen", "gameplay_clip",
 )
 QUEUE_CONCURRENCY_STATE_KEY = "queue.concurrency"
@@ -59,6 +59,7 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
         is_paused=repository.is_queue_paused,
     )
     queue.register("audiobook_tts", audiobook_tts.handle)
+    queue.register("audiobook_tts_api", audiobook_tts.handle)
     # Compatibility for queue rows created before the generic TTS rename. New jobs
     # always use audiobook_tts; persisted voxcpm_tts rows can still finish safely.
     queue.register("voxcpm_tts", audiobook_tts.handle)
@@ -176,9 +177,11 @@ def enqueue_pending_patch_jobs(
                     request.update(saved)
             except (OSError, ValueError, TypeError):
                 pass
+        from app.tts_api_providers import is_api_engine
+        job_type = "audiobook_tts_api" if is_api_engine(request["tts_engine"]) else "audiobook_tts"
         if store.enqueue(
             conn,
-            "audiobook_tts",
+            job_type,
             payload={"patch_id": row["id"], **request},
             book_id=row["book_id"],
             patch_id=row["id"],

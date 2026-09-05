@@ -80,6 +80,9 @@ def list_models() -> list[dict]:
     for model in list_tts_models():
         status = statuses.get(model["id"], {"managed": False, "ready": None, "path": "", "size_bytes": 0,
                                                 "detail": "Weights được package/model tải theo cơ chế riêng khi chạy."})
+        if model.get("capabilities", {}).get("kind") == "api" and model["id"] not in statuses:
+            status = {"managed": False, "ready": bool(model.get("configured")), "path": "",
+                      "size_bytes": 0, "detail": model.get("config_hint") or "TTS chạy qua API."}
         with _lock:
             job = dict(_jobs.get(model["id"], {}))
         result.append({**model, "install": status, "job": job or None})

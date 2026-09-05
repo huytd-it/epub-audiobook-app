@@ -75,7 +75,8 @@ _CAP_LOCAL = {
     "online": False,
 }
 _CAP_CLOUD = {
-    "kind": "cloud",
+    "kind": "api",
+    "runtime": "api",
     "reference_audio": False,
     "voice_selection": True,
     "offline": False,
@@ -158,6 +159,9 @@ def resolve_engine_id(engine_id: str | None) -> str:
 
     engine_id = engine_id or settings.tts_engine
     if engine_id not in _MODELS:
+        from app.tts_api_providers import provider_config
+        if provider_config(engine_id) is not None:
+            return engine_id
         choices = ", ".join(_MODELS)
         raise ValueError(f"Unknown TTS engine {engine_id!r}; choose one of: {choices}")
     return engine_id
@@ -375,7 +379,8 @@ def requires_book_reference(engine_id: str, voice: str | None) -> bool:
 
     Any pick - a library clip or a preset - already names the reference (resolve_reference),
     and cloud and fixed-cast engines speak their own voice, so none of those need one."""
-    return _MODELS[engine_id].supports_reference and not voice
+    model = _MODELS.get(engine_id)
+    return bool(model and model.supports_reference and not voice)
 
 
 def list_tts_models() -> list[dict]:
@@ -387,6 +392,8 @@ def list_tts_models() -> list[dict]:
         if source:
             entry["voices"] = source()
         models.append(entry)
+    from app.tts_api_providers import list_api_models
+    models.extend(list_api_models())
     return models
 
 
@@ -394,6 +401,9 @@ def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
     """Construct any catalog engine. Heavy models import lazily on first synthesis;
     ``voice`` reaches every engine (see below for what each does with it)."""
     voice = options.pop("voice", None)
+    from app.tts_api_providers import ApiTTSEngine, provider_config
+    if provider_config(engine_id) is not None:
+        return ApiTTSEngine(engine_id, voice=voice)
     factories = {
         "voxcpm2": VoxCPMEngine,
         "omnivoice": OmniVoiceEngine,
