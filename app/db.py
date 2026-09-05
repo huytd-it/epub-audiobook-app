@@ -559,6 +559,30 @@ ON gameplay_clip(profile_key, status, id);
 CREATE INDEX IF NOT EXISTS idx_gameplay_clip_reserved_patch
 ON gameplay_clip(reserved_patch_id, status);
 
+CREATE TABLE IF NOT EXISTS kaggle_account (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    label            TEXT NOT NULL,
+    username         TEXT NOT NULL,
+    api_key          TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'idle',
+    cooldown_until   TEXT,
+    in_use_by_job_id INTEGER,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_kaggle_account_username ON kaggle_account(username);
+
+CREATE TABLE IF NOT EXISTS kaggle_usage (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id   INTEGER NOT NULL REFERENCES kaggle_account(id) ON DELETE CASCADE,
+    kernel_ref   TEXT NOT NULL,
+    started_at   TEXT NOT NULL,
+    finished_at  TEXT,
+    gpu_seconds  INTEGER,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kaggle_usage_account ON kaggle_usage(account_id, started_at DESC);
+
 """
 
 
@@ -840,6 +864,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE patch_export ADD COLUMN sync_target_id INTEGER")
     if "local_folder_path" not in export_existing:
         conn.execute("ALTER TABLE patch_export ADD COLUMN local_folder_path TEXT")
+    if "kaggle_account_id" not in export_existing:
+        conn.execute("ALTER TABLE patch_export ADD COLUMN kaggle_account_id INTEGER")
+    if "kaggle_kernel_ref" not in export_existing:
+        conn.execute("ALTER TABLE patch_export ADD COLUMN kaggle_kernel_ref TEXT")
     gdc_existing = {row["name"] for row in conn.execute("PRAGMA table_info(google_drive_credentials)")}
     if "oauth_client_id" not in gdc_existing:
         conn.execute("ALTER TABLE google_drive_credentials ADD COLUMN oauth_client_id INTEGER")

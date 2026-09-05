@@ -126,6 +126,8 @@ class PatchExport:
     local_folder_path: str | None = None
     sync_target_name: str | None = None
     sync_target_email: str | None = None
+    kaggle_account_id: int | None = None
+    kaggle_kernel_ref: str | None = None
 
 @dataclass
 class BookJob:
