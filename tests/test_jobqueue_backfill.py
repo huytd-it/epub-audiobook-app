@@ -8,6 +8,7 @@ from app.jobqueue import store
 from app.jobqueue.backfill import (
     backfill_pending_jobs,
     build_queue,
+    configured_concurrency,
     enqueue_pending_patch_jobs,
 )
 
@@ -171,5 +172,28 @@ def test_build_queue_registers_all_four_handlers(tmp_path):
     assert queue.capacity("light_tts") == 10
     assert {p["job_type"] for p in queue.pool_status()} == {
         "audiobook_tts", "audiobook_tts_api", "video", "patch_video", "standalone_video",
-        "youtube_upload", "light_tts", "background_gen", "gameplay_clip",
+        "youtube_upload", "light_tts", "background_gen", "gameplay_clip", "kaggle_tts",
     }
+
+
+def test_kaggle_tts_concurrency_matches_enabled_account_count(tmp_path):
+    from app import kaggle_accounts as ka
+
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "a1", "u1", "k1")
+    a2 = ka.create_account(conn, "a2", "u2", "k2")
+    ka.set_disabled(conn, a2, True)
+    assert configured_concurrency(conn)["kaggle_tts"] == 1
+
+
+def test_kaggle_tts_concurrency_is_zero_with_no_accounts(tmp_path):
+    conn = _conn(tmp_path)
+    assert configured_concurrency(conn)["kaggle_tts"] == 0
+
+
+def test_explicit_queue_concurrency_overrides_the_kaggle_account_count(tmp_path, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "queue_concurrency", "kaggle_tts=7")
+    conn = _conn(tmp_path)
+    assert configured_concurrency(conn)["kaggle_tts"] == 7
