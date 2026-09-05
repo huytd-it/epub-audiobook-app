@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from app import google_drive, repository, voice_taxonomy
+from app import google_drive, kaggle_accounts, repository, voice_taxonomy
 from app.config import settings
 from app.deps import locked_conn
 from app.jobqueue import store
@@ -182,6 +182,17 @@ def drive(request: Request):
         "rclone_client_id": rclone_client_id,
         "rclone_client_secret": rclone_client_secret,
     }
+
+
+@router.get("/kaggle")
+def kaggle(request: Request):
+    with locked_conn(request) as conn:
+        accounts = kaggle_accounts.list_accounts(conn)
+        for account in accounts:
+            account["remaining_quota_hours"] = round(
+                kaggle_accounts.remaining_quota_seconds(conn, account["id"]) / 3600, 1
+            )
+    return {"accounts": accounts}
 
 
 @router.get("/books/{book_id}/exports")

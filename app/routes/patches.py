@@ -776,6 +776,42 @@ def export_batch_to_drive_api(
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
+@router.post("/books/{book_id}/patches/export-batch-kaggle")
+def export_batch_to_kaggle(
+    request: Request, book_id: int, patch_ids: list[int] = Form(...),
+    model_id: str = Form("voxcpm2"), voice_id: str = Form(""), max_chars: int = Form(0),
+    with_effects: int = Form(0),
+):
+    """Enqueue a kaggle_tts job: pushes the batch through the Kaggle Kernels API and
+    imports results as they complete, no Google Drive involved. One live job per book
+    at a time (dedupe_key), same reasoning as the other export routes' dedupe keys."""
+    with locked_conn(request) as conn:
+        book, patches = _load_batch_patches(conn, book_id, patch_ids)
+        dedupe_key = f"kaggle_tts:book={book_id}"
+        existing = store.find_live_by_dedupe(conn, dedupe_key)
+        if existing is not None:
+            return JSONResponse({"job_id": existing.id})
+        job_id = store.enqueue(
+            conn, "kaggle_tts",
+            payload={
+                "book_id": book_id,
+                "patch_ids": [p.id for p in patches],
+                "model_id": model_id,
+                "voice_id": voice_id or None,
+                "max_chars": max_chars,
+                "with_effects": bool(with_effects),
+            },
+            book_id=book_id,
+            dedupe_key=dedupe_key,
+        )
+        _save_export_audio_settings(
+            conn, book_id, model_id=model_id, voice_id=voice_id,
+            max_chars=max_chars, with_effects=with_effects,
+        )
+        conn.commit()
+    return JSONResponse({"job_id": job_id})
+
+
 @router.post("/books/{book_id}/patches/{patch_id}/import")
 def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
     with locked_conn(request) as conn:
