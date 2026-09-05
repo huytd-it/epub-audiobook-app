@@ -182,3 +182,18 @@ def earliest_quota_reset(conn: sqlite3.Connection) -> str | None:
         return None
     oldest = datetime.fromisoformat(row["oldest"])
     return (oldest + timedelta(days=7)).isoformat()
+
+
+def account_quota_reset(conn: sqlite3.Connection, account_id: int) -> str | None:
+    """Same estimate as earliest_quota_reset, scoped to one account -- used when that
+    specific account (not every account) just ran out of quota, so its cooldown
+    reflects when ITS oldest counted usage ages out rather than some other account's."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    row = conn.execute(
+        "SELECT MIN(started_at) AS oldest FROM kaggle_usage WHERE account_id=? AND started_at >= ?",
+        (account_id, cutoff),
+    ).fetchone()
+    if row is None or row["oldest"] is None:
+        return None
+    oldest = datetime.fromisoformat(row["oldest"])
+    return (oldest + timedelta(days=7)).isoformat()

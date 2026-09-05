@@ -238,3 +238,27 @@ def test_earliest_quota_reset_is_7_days_after_the_oldest_counted_usage():
     reset = ka.earliest_quota_reset(conn)
     expected = (datetime.fromisoformat(started) + timedelta(days=7)).isoformat()
     assert reset == expected
+
+
+def test_account_quota_reset_is_none_with_no_usage():
+    conn = _conn()
+    account_id = ka.create_account(conn, "acc1", "user1", "key1")
+    assert ka.account_quota_reset(conn, account_id) is None
+
+
+def test_account_quota_reset_scopes_to_the_given_account():
+    conn = _conn()
+    account_id = ka.create_account(conn, "acc1", "user1", "key1")
+    other_id = ka.create_account(conn, "acc2", "user2", "key2")
+    started = _iso(-3600)
+    conn.execute(
+        "INSERT INTO kaggle_usage (account_id, kernel_ref, started_at, finished_at, gpu_seconds, created_at) "
+        "VALUES (?, 'user2/slug', ?, ?, 60, ?)",
+        (other_id, started, _iso(), _iso()),
+    )
+    conn.commit()
+    # acc1 has no usage of its own, so its scoped reset must stay None even though
+    # acc2 (a different account) has a countable usage row.
+    assert ka.account_quota_reset(conn, account_id) is None
+    expected = (datetime.fromisoformat(started) + timedelta(days=7)).isoformat()
+    assert ka.account_quota_reset(conn, other_id) == expected
