@@ -47,6 +47,11 @@ export function ExportPanel({
   const [saving, setSaving] = useState(false);
   const [credentials, setCredentials] = useState("");
   const [credentialsOpen, setCredentialsOpen] = useState(false);
+  // Tự động hoá sau TTS Kaggle — giống dialog "Tạo âm thanh": dựng video +
+  // upload YouTube. Mặc định after_all (an toàn): cả batch xong mới chuỗi.
+  const [kaggleAutoVideo, setKaggleAutoVideo] = useState(true);
+  const [kaggleAutoUpload, setKaggleAutoUpload] = useState(false);
+  const [kaggleAutoMode, setKaggleAutoMode] = useState<"per_patch" | "after_all">("after_all");
 
   const { targetIds, skipped, usingSelection } = useMemo(() => {
     const exportable = patches.filter((patch) => patch.status !== "processing");
@@ -138,11 +143,29 @@ export function ExportPanel({
     }, `Đã export ${targetIds.length} patch qua Google Drive API.`);
   };
 
-  const exportToKaggle = () =>
-    runExport(
-      (form) => post(`/books/${bookId}/patches/export-batch-kaggle`, form),
-      `Đã đưa ${targetIds.length} patch vào hàng đợi Kaggle. Theo dõi tiến độ ở trang Queue.`
+  const exportToKaggle = () => {
+    const video = kaggleAutoUpload || kaggleAutoVideo;
+    const chain = kaggleAutoUpload
+      ? " → tự động dựng video và upload YouTube"
+      : video
+        ? " → tự động dựng video"
+        : "";
+    const modeNote =
+      video && kaggleAutoMode === "per_patch"
+        ? " (chuỗi ngay từng patch)"
+        : video
+          ? " (xong cả batch mới chuỗi)"
+          : "";
+    return runExport(
+      (form) => {
+        form.set("auto_create_video", video ? "1" : "0");
+        form.set("auto_upload_youtube", kaggleAutoUpload ? "1" : "0");
+        form.set("automation_mode", kaggleAutoMode);
+        return post(`/books/${bookId}/patches/export-batch-kaggle`, form);
+      },
+      `Đã đưa ${targetIds.length} patch vào hàng đợi Kaggle${chain}${modeNote}. Theo dõi tiến độ ở trang Queue.`
     );
+  };
 
   const loadCredentials = async () => {
     if (!accountId) {
@@ -311,6 +334,29 @@ export function ExportPanel({
           </div>
           <div className="space-y-2">
             <span className="block text-[11px] font-medium text-muted-foreground">Kaggle (tự động)</span>
+            <CheckField
+              checked={kaggleAutoVideo}
+              disabled={kaggleAutoUpload}
+              onChange={setKaggleAutoVideo}
+              label="Dựng video sau audio"
+            />
+            <CheckField
+              checked={kaggleAutoUpload}
+              onChange={(value) => {
+                setKaggleAutoUpload(value);
+                if (value) setKaggleAutoVideo(true);
+              }}
+              label="Upload YouTube sau video"
+            />
+            <select
+              className={selectClass}
+              value={kaggleAutoMode}
+              onChange={(event) => setKaggleAutoMode(event.target.value as "per_patch" | "after_all")}
+              title="Khi nào chuỗi video/upload"
+            >
+              <option value="after_all">Xong cả batch mới chuỗi (an toàn)</option>
+              <option value="per_patch">Chuỗi ngay từng patch</option>
+            </select>
             <Button
               size="sm"
               variant="outline"

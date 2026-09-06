@@ -21,9 +21,18 @@ from app.config import settings
 from app.jobqueue.context import JobContext
 from app.jobqueue.models import JobFatalError, JobRescheduled
 from app.kaggle_api import KernelStatus
-from app.patch_publishing import on_patch_audio_ready
+from app.patch_publishing import (
+    enqueue_patch_video, fetch_thumbnail_inputs, on_patch_audio_ready, warm_patch_thumbnail,
+)
 
 logger = logging.getLogger(__name__)
+
+# When automation runs: "per_patch" chains video/YouTube right after each patch's
+# audio lands (progressive, resilient to a mid-batch failure); "after_all" marks
+# every patch done first and automates the whole set once nothing is missing
+# (safer, all-or-nothing). Route default is "after_all".
+AUTOMATION_PER_PATCH = "per_patch"
+AUTOMATION_AFTER_ALL = "after_all"
 
 # When no account has quota and there is no usage history to estimate a real reset
 # time from (kaggle_accounts.earliest_quota_reset returns None), come back in a few
@@ -223,6 +232,67 @@ def _verify_dataset_not_empty(
         )
 
 
+def _automation_policy(payload: dict) -> tuple[dict, str, bool]:
+    """(request_policy, mode, active) for the video/YouTube fallback chain.
+
+    Mirrors the "Tạo âm thanh" dialog (/tts/generate) honored by audiobook_tts:
+    explicit payload flags override the book's persisted flags; when the route
+    sends no flags at all the job stays legacy (only the old publish hook runs).
+    Automation is active when video and/or upload is explicitly requested."""
+    request_policy: dict = {}
+    if payload.get("auto_create_video") is not None:
+        request_policy["auto_create_video"] = bool(payload.get("auto_create_video"))
+    if payload.get("auto_upload_youtube") is not None:
+        request_policy["auto_upload_youtube"] = bool(payload.get("auto_upload_youtube"))
+    mode = payload.get("automation_mode") or AUTOMATION_AFTER_ALL
+    if mode not in (AUTOMATION_PER_PATCH, AUTOMATION_AFTER_ALL):
+        mode = AUTOMATION_AFTER_ALL
+    active = bool(request_policy.get("auto_create_video") or request_policy.get("auto_upload_youtube"))
+    return request_policy, mode, active
+
+
+def _automate_patch(ctx: JobContext, patch_id: int, request_policy: dict) -> str:
+    """Thumbnail warm + enqueue_patch_video for one freshly-imported patch -- the
+    same finish path the local TTS handler uses. Returns the outcome state."""
+    thumbnail_inputs = fetch_thumbnail_inputs(ctx.conn, patch_id)
+    warm_patch_thumbnail(thumbnail_inputs)
+    outcome = enqueue_patch_video(ctx.conn, patch_id, request_policy=request_policy)
+    ctx.log(f"patch {patch_id} automation={outcome['state']}")
+    return outcome["state"]
+
+
+def _automate_after_all(
+    ctx: JobContext, conn, book_id: int, patch_ids: list[int],
+    imported_this_job: list[int], request_policy: dict,
+) -> None:
+    """Fallback an toàn: cả batch xong mới chuỗi video/upload một lượt.
+
+    Bao gồm patch job này vừa import lẫn patch đã done từ trước nhưng chưa có
+    video (lấp chỗ trống khi job phải retry nhiều attempt); bỏ qua patch đã có
+    video done để không render trùng."""
+    fresh = [pid for pid in imported_this_job if pid in patch_ids]
+    gaps = []
+    for pid in patch_ids:
+        if pid in fresh:
+            continue
+        patch = repository.get_patch(conn, pid)
+        if patch is None or patch.book_id != book_id or patch.status != "done":
+            continue
+        row = conn.execute(
+            "SELECT video_status, video_path FROM patch_pipeline WHERE patch_id=?", (pid,),
+        ).fetchone()
+        if row is not None and (row["video_status"] == "done"
+                                or (row["video_path"] and Path(row["video_path"]).is_file())):
+            continue
+        gaps.append(pid)
+    targets = fresh + gaps
+    if not targets:
+        return
+    ctx.progress(len(patch_ids), len(patch_ids), phase="automating")
+    states = [_automate_patch(ctx, pid, request_policy) for pid in targets]
+    ctx.log(f"Automation after_all cho {len(targets)} patch (mới: {len(fresh)}, lấp: {len(gaps)}): {states}")
+
+
 def handle(ctx: JobContext) -> dict | None:
     payload = ctx.job.payload
     book_id = int(payload["book_id"])
@@ -231,17 +301,21 @@ def handle(ctx: JobContext) -> dict | None:
     voice_id = payload.get("voice_id")
     max_chars = int(payload.get("max_chars") or 0)
     with_effects = bool(payload.get("with_effects"))
+    request_policy, automation_mode, automation_active = _automation_policy(payload)
 
     conn = ctx.conn
     account: dict | None = None
     package_dir: Path | None = None
     total = len(patch_ids)
+    imported_this_job: list[int] = []
     ctx.progress(0, total, phase="preparing")
     try:
         while True:
             missing = _missing_patch_ids(conn, book_id, patch_ids)
             done = total - len(missing)
             if not missing:
+                if automation_active and automation_mode == AUTOMATION_AFTER_ALL:
+                    _automate_after_all(ctx, conn, book_id, patch_ids, imported_this_job, request_policy)
                 ctx.progress(total, total, phase="done")
                 return {"imported": len(patch_ids)}
 
@@ -376,7 +450,15 @@ def handle(ctx: JobContext) -> dict | None:
                     )
                     continue
                 repository.mark_patch_done(conn, patch.id, str(audio_path))
-                on_patch_audio_ready(conn, patch.id)
+                if automation_active and automation_mode == AUTOMATION_PER_PATCH:
+                    # Chuỗi ngay từng patch: audio xong -> video/upload luôn, patch
+                    # sau hỏng cũng không mất phần đã xong.
+                    _automate_patch(ctx, patch.id, request_policy)
+                elif not automation_active:
+                    on_patch_audio_ready(conn, patch.id)
+                # after_all + active: bỏ qua hook cũ ở đây, _automate_after_all lo
+                # một lượt khi cả batch xong (tránh render trùng với hook cũ).
+                imported_this_job.append(patch.id)
                 done += 1
                 ctx.progress(done, total, phase="importing")
                 ctx.log(f"Imported patch {patch.id} from kernel {kernel_ref} ({done}/{total})")
@@ -385,6 +467,8 @@ def handle(ctx: JobContext) -> dict | None:
             package_dir = None
 
             if not _missing_patch_ids(conn, book_id, patch_ids):
+                if automation_active and automation_mode == AUTOMATION_AFTER_ALL:
+                    _automate_after_all(ctx, conn, book_id, patch_ids, imported_this_job, request_policy)
                 ctx.progress(total, total, phase="done")
                 return {"imported": len(patch_ids)}
 

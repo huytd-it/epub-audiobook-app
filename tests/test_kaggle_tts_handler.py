@@ -453,3 +453,119 @@ def test_handle_fatal_kernel_error_includes_the_real_log_tail(tmp_path, monkeypa
     ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
     with pytest.raises(JobFatalError, match="no kernel image"):
         kaggle_tts.handle(ctx)
+
+
+def _success_stubs(monkeypatch, tmp_path, write_for):
+    """Network fakes for a kernel run that COMPLETES; write_for(patch_id, dest_dir)
+    materializes that patch's result wav like a real kernel would."""
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda *a, **k: "user1/slug")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.COMPLETE)
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "kernel_output",
+        lambda account, kernel_ref, dest_dir: (write_for(dest_dir), []),
+    )
+
+
+def _automation_spies(monkeypatch):
+    """Stub the video-chain side effects; record call order in events."""
+    events = []
+    monkeypatch.setattr(kaggle_tts, "fetch_thumbnail_inputs", lambda conn, pid: events.append(("thumb", pid)) or [])
+    monkeypatch.setattr(kaggle_tts, "warm_patch_thumbnail", lambda inputs: events.append(("warm",)))
+    monkeypatch.setattr(
+        kaggle_tts, "enqueue_patch_video",
+        lambda conn, pid, request_policy=None: events.append(("video", pid, dict(request_policy or {}))) or {"state": "queued"},
+    )
+    monkeypatch.setattr(
+        kaggle_tts, "on_patch_audio_ready", lambda conn, pid: events.append(("legacy", pid)),
+    )
+    return events
+
+
+def test_per_patch_automation_chains_video_right_after_each_audio(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+    _success_stubs(monkeypatch, tmp_path, lambda dest: _write_result_for(dest, patch_id))
+    events = _automation_spies(monkeypatch)
+
+    ctx = _ctx(conn, {
+        "book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts",
+        "auto_create_video": True, "auto_upload_youtube": False,
+        "automation_mode": "per_patch",
+    })
+    assert kaggle_tts.handle(ctx) == {"imported": 1}
+    assert ("video", patch_id, {"auto_create_video": True, "auto_upload_youtube": False}) in events
+    assert not [e for e in events if e[0] == "legacy"]
+
+
+def test_after_all_automation_waits_for_the_whole_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_a = _seed_book_and_patch(conn)
+    patch_b = _add_patch(conn, book_id, 1)
+
+    def write_both(dest_dir):
+        _write_result_for(dest_dir, patch_a)
+        _write_result_for(dest_dir, patch_b)
+    _success_stubs(monkeypatch, tmp_path, write_both)
+    events = _automation_spies(monkeypatch)
+    real_mark = repository.mark_patch_done
+    monkeypatch.setattr(
+        repository, "mark_patch_done",
+        lambda conn, pid, path: events.append(("mark", pid)) or real_mark(conn, pid, path),
+    )
+
+    ctx = _ctx(conn, {
+        "book_id": book_id, "patch_ids": [patch_a, patch_b], "model_id": "zerotts",
+        "auto_create_video": True, "automation_mode": "after_all",
+    })
+    assert kaggle_tts.handle(ctx) == {"imported": 2}
+    kinds = [e[0] for e in events]
+    # Mọi mark done xong trước mọi enqueue video (an toàn = cả batch xong mới chuỗi).
+    assert kinds.index("video") > kinds.index("mark")
+    assert kinds.count("mark") == 2 and kinds.count("video") == 2
+    assert not [e for e in events if e[0] == "legacy"]
+
+
+def test_after_all_backfills_a_previously_done_patch_without_video(tmp_path, monkeypatch):
+    """Job retry nhiều attempt: patch done từ attempt trước nhưng chưa có video
+    được lấp vào đợt automation cuối (patch đã có video thì bỏ qua)."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_a = _seed_book_and_patch(conn)
+    patch_b = _add_patch(conn, book_id, 1)
+    repository.mark_patch_done(conn, patch_a, "/tmp/legacy.wav")  # done từ trước, chưa automation
+    _success_stubs(monkeypatch, tmp_path, lambda dest: _write_result_for(dest, patch_b))
+    events = _automation_spies(monkeypatch)
+
+    ctx = _ctx(conn, {
+        "book_id": book_id, "patch_ids": [patch_a, patch_b], "model_id": "zerotts",
+        "auto_create_video": True, "automation_mode": "after_all",
+    })
+    assert kaggle_tts.handle(ctx) == {"imported": 2}
+    automated = [e[1] for e in events if e[0] == "video"]
+    assert sorted(automated) == sorted([patch_a, patch_b])
+
+
+def test_legacy_job_without_flags_keeps_the_old_publish_hook(tmp_path, monkeypatch):
+    """Payload không có flags automation: không gọi dây chuyền video mới, giữ
+    nguyên on_patch_audio_ready như trước."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+    _success_stubs(monkeypatch, tmp_path, lambda dest: _write_result_for(dest, patch_id))
+    events = _automation_spies(monkeypatch)
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    assert kaggle_tts.handle(ctx) == {"imported": 1}
+    assert ("legacy", patch_id) in events
+    assert not [e for e in events if e[0] == "video"]

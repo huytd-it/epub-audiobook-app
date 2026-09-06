@@ -781,26 +781,46 @@ def export_batch_to_kaggle(
     request: Request, book_id: int, patch_ids: list[int] = Form(...),
     model_id: str = Form("voxcpm2"), voice_id: str = Form(""), max_chars: int = Form(0),
     with_effects: int = Form(0),
+    auto_create_video: int | None = Form(None),
+    auto_upload_youtube: int | None = Form(None),
+    automation_mode: str = Form("after_all"),
 ):
     """Enqueue a kaggle_tts job: pushes the batch through the Kaggle Kernels API and
     imports results as they complete, no Google Drive involved. One live job per book
-    at a time (dedupe_key), same reasoning as the other export routes' dedupe keys."""
+    at a time (dedupe_key), same reasoning as the other export routes' dedupe keys.
+
+    Automation mirrors the "Tạo âm thanh" dialog (/tts/generate): auto_create_video /
+    auto_upload_youtube (absent = legacy behavior, only the old publish hook runs)
+    chain video + YouTube after TTS. automation_mode selects WHEN: "per_patch"
+    automates each patch as its audio lands, "after_all" (default, safer) waits
+    until every requested patch is done, then automates the whole set at once."""
+    if automation_mode not in ("per_patch", "after_all"):
+        raise HTTPException(400, f"automation_mode phải là per_patch hoặc after_all, got {automation_mode!r}")
     with locked_conn(request) as conn:
         book, patches = _load_batch_patches(conn, book_id, patch_ids)
         dedupe_key = f"kaggle_tts:book={book_id}"
         existing = store.find_live_by_dedupe(conn, dedupe_key)
         if existing is not None:
             return JSONResponse({"job_id": existing.id})
+        payload = {
+            "book_id": book_id,
+            "patch_ids": [p.id for p in patches],
+            "model_id": model_id,
+            "voice_id": voice_id or None,
+            "max_chars": max_chars,
+            "with_effects": bool(with_effects),
+        }
+        if auto_create_video is not None:
+            payload["auto_create_video"] = bool(auto_create_video)
+        if auto_upload_youtube is not None:
+            payload["auto_upload_youtube"] = bool(auto_upload_youtube)
+            if auto_upload_youtube:
+                # Upload cần video làm tiền đề — giống BatchRunDialog của nút audio.
+                payload["auto_create_video"] = True
+        if "auto_create_video" in payload or "auto_upload_youtube" in payload:
+            payload["automation_mode"] = automation_mode
         job_id = store.enqueue(
-            conn, "kaggle_tts",
-            payload={
-                "book_id": book_id,
-                "patch_ids": [p.id for p in patches],
-                "model_id": model_id,
-                "voice_id": voice_id or None,
-                "max_chars": max_chars,
-                "with_effects": bool(with_effects),
-            },
+            conn, "kaggle_tts", payload=payload,
             book_id=book_id,
             dedupe_key=dedupe_key,
         )

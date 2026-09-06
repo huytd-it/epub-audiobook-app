@@ -137,6 +137,64 @@ def test_export_batch_kaggle_rejects_unknown_patch(client, tmp_path):
     assert resp.status_code == 404
 
 
+def test_export_batch_kaggle_carries_automation_flags_and_mode(client, tmp_path):
+    """Session Kaggle kiểu nút Tạo âm thanh: flags automation + mode vào payload."""
+    from app.jobqueue import store
+    book_id, patch_id = _seed_book_and_patch(tmp_path)
+    resp = client.post(
+        f"/books/{book_id}/patches/export-batch-kaggle",
+        data={"patch_ids": [patch_id], "model_id": "zerotts",
+              "auto_create_video": "1", "auto_upload_youtube": "1",
+              "automation_mode": "per_patch"},
+    )
+    assert resp.status_code == 200
+    with db.connect(str(tmp_path / "app.db")) as conn:
+        job = store.get(conn, resp.json()["job_id"])
+    assert job.payload["auto_create_video"] is True
+    assert job.payload["auto_upload_youtube"] is True
+    assert job.payload["automation_mode"] == "per_patch"
+
+
+def test_export_batch_kaggle_upload_forces_video_like_the_audio_dialog(client, tmp_path):
+    """Bật upload kéo theo video bắt buộc — giống BatchRunDialog của nút audio."""
+    from app.jobqueue import store
+    book_id, patch_id = _seed_book_and_patch(tmp_path)
+    resp = client.post(
+        f"/books/{book_id}/patches/export-batch-kaggle",
+        data={"patch_ids": [patch_id], "auto_upload_youtube": "1"},
+    )
+    assert resp.status_code == 200
+    with db.connect(str(tmp_path / "app.db")) as conn:
+        job = store.get(conn, resp.json()["job_id"])
+    assert job.payload["auto_create_video"] is True
+    assert job.payload["automation_mode"] == "after_all"  # mode mặc định an toàn
+
+
+def test_export_batch_kaggle_omits_automation_keys_for_legacy_callers(client, tmp_path):
+    """Không gửi flags = legacy: handler giữ nguyên hook publish cũ."""
+    from app.jobqueue import store
+    book_id, patch_id = _seed_book_and_patch(tmp_path)
+    resp = client.post(
+        f"/books/{book_id}/patches/export-batch-kaggle",
+        data={"patch_ids": [patch_id], "model_id": "zerotts"},
+    )
+    assert resp.status_code == 200
+    with db.connect(str(tmp_path / "app.db")) as conn:
+        job = store.get(conn, resp.json()["job_id"])
+    assert "auto_create_video" not in job.payload
+    assert "automation_mode" not in job.payload
+
+
+def test_export_batch_kaggle_rejects_unknown_automation_mode(client, tmp_path):
+    book_id, patch_id = _seed_book_and_patch(tmp_path)
+    resp = client.post(
+        f"/books/{book_id}/patches/export-batch-kaggle",
+        data={"patch_ids": [patch_id], "auto_create_video": "1",
+              "automation_mode": "bogus"},
+    )
+    assert resp.status_code == 400
+
+
 def test_book_exports_endpoint_includes_kaggle_accounts(client, tmp_path):
     book_id, _ = _seed_book_and_patch(tmp_path)
     client.post("/kaggle/accounts", data={"label": "acc1", "username": "u1", "api_key": "k1"}, follow_redirects=False)

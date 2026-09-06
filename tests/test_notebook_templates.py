@@ -717,3 +717,17 @@ def test_generation_branches_use_the_manifest_voice():
         ]
         assert generation
         assert "VOICE_ID" in "\n".join(generation)
+
+
+def test_kaggle_native_branch_finds_nested_mounts():
+    """Attached datasets are not always at /kaggle/input/<slug>: live runs showed
+    Kaggle also mounting them nested (/kaggle/input/datasets/<owner>/<slug>)
+    and auto-extracting the zip server-side so no archive remains. Both the zip
+    lookup and the manifest lookup must therefore walk instead of assuming the
+    flat /kaggle/input/* depth that died live on 2026-09-06 (3/3 runs)."""
+    src = _code_cells(TEMPLATES[0])[3]
+    branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
+    assert "_candidate_dirs" in branch
+    assert "os.walk(_top)" in branch
+    assert '"/kaggle/working"' in branch and '"/kaggle/input"' in branch
+    assert 'glob.glob("/kaggle/input/*' not in branch
