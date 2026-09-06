@@ -289,6 +289,20 @@ def build_batch_export_package(
     # edited as text, not re-serialized through json.dump) - see Cell 1/Cell 4 of the
     # template for what each value does.
     notebook_src = notebook_src.replace('MODE = \\"drive\\"', f'MODE = \\"{mode}\\"')
+    if mode == "kaggle_native":
+        # Cell 3 (Drive mount) and Cell 4 (Kaggle download) branch on IS_KAGGLE, not
+        # on MODE: with IS_KAGGLE=False the pushed kernel runs Cell 3's Colab
+        # drive.mount branch and dies with NotImplementedError (Kaggle has no Drive
+        # mount -- observed on the first live run, 2026-09-06). The match is written
+        # in the .ipynb's escaped form so the two LOOKALIKE strings elsewhere --
+        # the markdown "Keep `IS_KAGGLE = False`" and Cell 4's own
+        # 'print("IS_KAGGLE = False - skipping ...")' -- are left alone.
+        flipped = notebook_src.replace(
+            '"IS_KAGGLE = False\\n",', '"IS_KAGGLE = True\\n",',
+        )
+        if flipped == notebook_src:
+            raise ValueError("notebook template lost its Cell 1 IS_KAGGLE flag")
+        notebook_src = flipped
     # Drive credentials for the notebook's Kaggle mode, baked straight into the copy we
     # hand out so the user does not have to create a Kaggle secret. json.dumps twice:
     # the inner call escapes the payload for the Python string literal in Cell 4, the

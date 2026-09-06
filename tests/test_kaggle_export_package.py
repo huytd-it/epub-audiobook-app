@@ -63,6 +63,28 @@ def test_kaggle_package_sets_mode_kaggle_native(conn, tmp_path, monkeypatch):
         shutil.rmtree(package_dir, ignore_errors=True)
 
 
+def test_kaggle_package_enables_is_kaggle(conn, tmp_path, monkeypatch):
+    """Cell 3/Cell 4 branch on IS_KAGGLE, not on MODE: with IS_KAGGLE=False the pushed
+    kernel runs Cell 3's Colab drive.mount branch and dies with NotImplementedError
+    (first live run, 2026-09-06)."""
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn)
+
+    package_dir, _ = drive_export.build_kaggle_export_package(conn, [patch], model_id="zerotts")
+    try:
+        src = _cell1_source(package_dir)
+        assert "IS_KAGGLE = True" in src
+        assert "IS_KAGGLE = False" not in src
+        # The lookalikes elsewhere in the notebook must be untouched: the manual-flow
+        # docs and Cell 4's own Colab-path message still say False.
+        raw = (package_dir / "colab_kaggle_batch_tts_template.ipynb").read_text(encoding="utf-8")
+        assert "Keep `IS_KAGGLE = False`" in raw
+        assert 'IS_KAGGLE = False - skipping the Kaggle' in raw
+    finally:
+        import shutil
+        shutil.rmtree(package_dir, ignore_errors=True)
+
+
 def test_kaggle_package_never_bakes_a_gdrive_secret(conn, tmp_path, monkeypatch):
     monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
     patch = _seed_book_and_patch(conn)
@@ -103,6 +125,10 @@ def test_drive_package_still_defaults_to_drive_mode(conn, tmp_path, monkeypatch)
         src = _cell1_source(package_dir)
         assert 'MODE = "drive"' in src
         assert 'MODE = "kaggle_native"' not in src
+        # The Drive/Colab package keeps IS_KAGGLE=False: on Colab Cell 3 must mount
+        # Drive, and manual-Kaggle users flip the flag by hand per the docs.
+        assert "IS_KAGGLE = False" in src
+        assert "IS_KAGGLE = True" not in src
     finally:
         import shutil
         shutil.rmtree(package_dir, ignore_errors=True)

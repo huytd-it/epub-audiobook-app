@@ -12,8 +12,9 @@ import json
 import pytest
 
 from app.kaggle_api import (
-    KaggleAccount, KernelStatus, cancel_kernel, create_dataset, kernel_output,
-    kernel_status, push_kernel,
+    KaggleAccount, KernelStatus, cancel_kernel, create_dataset, dataset_files,
+    dataset_status, kernel_log, kernel_output, kernel_status, normalize_kernel_ref,
+    push_kernel,
 )
 
 
@@ -65,6 +66,54 @@ def test_push_kernel_posts_to_the_save_kernel_rpc_path(tmp_path):
     assert method == "POST"
 
 
+@pytest.mark.parametrize("raw", [
+    "user1/epub-tts-batch-abc",
+    "/code/user1/epub-tts-batch-abc",
+    "https://www.kaggle.com/code/user1/epub-tts-batch-abc",
+    "https://www.kaggle.com/code/user1/epub-tts-batch-abc/versions/3",
+    "/code/user1/epub-tts-batch-abc?scriptVersionId=7",
+])
+def test_normalize_kernel_ref_reduces_any_kernel_url_to_username_slug(raw):
+    assert normalize_kernel_ref(raw) == "user1/epub-tts-batch-abc"
+
+
+@pytest.mark.parametrize("raw", [None, "", "/code/user1", "epub-tts-batch-abc", "/"])
+def test_normalize_kernel_ref_falls_back_when_no_username_is_left(raw):
+    assert normalize_kernel_ref(raw, fallback="user1/x") == "user1/x"
+
+
+def test_push_kernel_normalizes_the_url_path_ref_that_kaggle_really_returns(tmp_path):
+    """A live SaveKernel answered with ref="/code/<user>/<slug>"; every later call
+    (kernel_status, kernel_output) needs a bare "<user>/<slug>"."""
+    _write_notebook(tmp_path)
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"ref": "/code/user1/epub-tts-batch-18"})}])
+    ref = push_kernel(
+        ACCOUNT, tmp_path, {"id": "user1/epub-tts-batch-18", "code_file": "nb.ipynb"}, request=fake,
+    )
+    assert ref == "user1/epub-tts-batch-18"
+
+
+def test_push_kernel_falls_back_to_the_requested_id_when_the_response_carries_no_ref(tmp_path):
+    _write_notebook(tmp_path)
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"versionNumber": 1})}])
+    ref = push_kernel(ACCOUNT, tmp_path, {"id": "user1/x", "code_file": "nb.ipynb"}, request=fake)
+    assert ref == "user1/x"
+
+
+def test_kernel_status_reads_an_absent_status_field_as_queued():
+    """QUEUED is the zero value of Kaggle's KernelWorkerStatus and proto3 JSON drops
+    zero-valued fields, so a just-pushed kernel can answer with no status at all."""
+    fake = FakeRequest([{"status": 200, "body": json.dumps({})}])
+    assert kernel_status(ACCOUNT, "user1/x", request=fake) == KernelStatus.QUEUED
+
+
+def test_kernel_status_accepts_a_url_path_ref(tmp_path):
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"status": "RUNNING"})}])
+    assert kernel_status(ACCOUNT, "/code/user1/x", request=fake) == KernelStatus.RUNNING
+    _, _, _, body = fake.calls[0]
+    assert json.loads(body) == {"userName": "user1", "kernelSlug": "x"}
+
+
 def test_push_kernel_sends_the_notebook_as_a_single_text_field_with_outputs_stripped(tmp_path):
     _write_notebook(tmp_path)
     fake = FakeRequest([{"status": 200, "body": json.dumps({"ref": "user1/x"})}])
@@ -82,6 +131,26 @@ def test_push_kernel_sends_the_notebook_as_a_single_text_field_with_outputs_stri
     notebook = json.loads(payload["text"])
     assert notebook["cells"][0]["source"] == "import os\nprint(os)\n"
     assert notebook["cells"][0]["outputs"] == []
+
+
+def test_push_kernel_sends_machine_shape_when_given(tmp_path):
+    """A concrete GPU type (T4, not whatever the scheduler hands out): P100 (sm_60)
+    is visible to CUDA but the PyTorch in Kaggle's image cannot execute on it."""
+    _write_notebook(tmp_path)
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"ref": "user1/x"})}])
+    push_kernel(ACCOUNT, tmp_path, {
+        "id": "user1/x", "code_file": "nb.ipynb", "machine_shape": "NvidiaTeslaT4",
+    }, request=fake)
+    _, _, _, body = fake.calls[0]
+    assert json.loads(body)["machineShape"] == "NvidiaTeslaT4"
+
+
+def test_push_kernel_omits_machine_shape_when_not_given(tmp_path):
+    _write_notebook(tmp_path)
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"ref": "user1/x"})}])
+    push_kernel(ACCOUNT, tmp_path, {"id": "user1/x", "code_file": "nb.ipynb"}, request=fake)
+    _, _, _, body = fake.calls[0]
+    assert "machineShape" not in json.loads(body)
 
 
 def test_push_kernel_raises_on_http_error(tmp_path):
@@ -151,6 +220,26 @@ def test_kernel_output_downloads_every_file_into_dest_dir(tmp_path):
     assert fake.calls[1][2] == {}
 
 
+def test_kernel_output_skips_hidden_cache_blobs():
+    """The notebook persists HF/pip caches under /kaggle/working/.cache and Kaggle
+    captures them as session output (observed live: GBs of model blobs). The import
+    pipeline only reads result/*.wav, so dot-paths must not be downloaded -- fetching
+    them stalls the worker past the reaper window."""
+    fake = FakeRequest([
+        {"status": 200, "body": json.dumps({"files": [
+            {"fileName": "result/18_003.wav", "url": "https://signed/result.wav"},
+            {"fileName": ".cache/huggingface/hub/models--x/blobs/abc123", "url": "https://signed/blob"},
+        ]})},
+        {"status": 200, "body": b"WAVDATA"},
+    ])
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        from pathlib import Path
+        paths = kernel_output(ACCOUNT, "user1/x", Path(tmp), request=fake)
+    assert [p.name for p in paths] == ["18_003.wav"]
+    assert len(fake.calls) == 2  # listing + the one real download, no blob fetch
+
+
 def test_kernel_output_returns_empty_list_when_no_files():
     fake = FakeRequest([{"status": 200, "body": json.dumps({"files": []})}])
     assert kernel_output(ACCOUNT, "user1/x", "/tmp/does-not-matter", request=fake) == []
@@ -160,36 +249,56 @@ def test_cancel_kernel_is_a_safe_no_op():
     cancel_kernel(ACCOUNT, "user1/x")  # no request/network call at all; must not raise
 
 
-def test_create_dataset_uploads_each_file_then_creates(tmp_path):
-    (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
+def _write_package(tmp_path):
+    (tmp_path / "batch_manifest.json").write_text("{}", encoding="utf-8")
     (tmp_path / "reference.wav").write_bytes(b"RIFF")
+    (tmp_path / "colab_kaggle_batch_tts_template.ipynb").write_text("{}", encoding="utf-8")
+    patch_dir = tmp_path / "patches" / "patch_000"
+    patch_dir.mkdir(parents=True)
+    (patch_dir / "manifest.json").write_text("{}", encoding="utf-8")
+
+
+def test_create_dataset_uploads_the_package_as_one_zip_then_creates(tmp_path):
+    """Blob uploads carry basenames only and CreateDataset's files list carries
+    tokens only, so per-file upload cannot preserve patches/patch_NNN/ -- the whole
+    package must travel as a single zip (mirrors kaggle-cli's --dir-mode zip)."""
+    _write_package(tmp_path)
     fake = FakeRequest([
-        {"status": 200, "body": json.dumps({"token": "tok-manifest", "createUrl": "https://upload/manifest"})},
+        {"status": 200, "body": json.dumps({"token": "tok-zip", "createUrl": "https://upload/pkg"})},
         {"status": 200, "body": ""},  # PUT to the presigned URL
-        {"status": 200, "body": json.dumps({"token": "tok-ref", "createUrl": "https://upload/reference"})},
-        {"status": 200, "body": ""},
         {"status": 200, "body": json.dumps({})},  # CreateDataset, no error
     ])
     ref = create_dataset(ACCOUNT, tmp_path, "epub-tts-data-1-abc", "EPUB TTS data 1", request=fake)
     assert ref == "user1/epub-tts-data-1-abc"
 
     start_calls = [c for c in fake.calls if c[0].endswith("StartBlobUpload")]
-    assert len(start_calls) == 2
+    assert len(start_calls) == 1
+    assert json.loads(start_calls[0][3])["name"] == "epub-tts-data-1-abc.zip"
+
     put_calls = [c for c in fake.calls if c[1] == "PUT"]
-    assert {c[0] for c in put_calls} == {"https://upload/manifest", "https://upload/reference"}
-    assert all(c[2] == {} for c in put_calls)  # no Kaggle auth on the presigned PUT
+    assert len(put_calls) == 1
+    assert put_calls[0][0] == "https://upload/pkg"
+    assert put_calls[0][2] == {}  # no Kaggle auth on the presigned PUT
+
+    import io
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(put_calls[0][3])) as zf:
+        assert sorted(zf.namelist()) == [
+            "batch_manifest.json",
+            "patches/patch_000/manifest.json",
+            "reference.wav",
+        ]  # hierarchy preserved, notebook (kernel code) excluded
 
     create_call = fake.calls[-1]
     assert create_call[0] == "https://api.kaggle.com/v1/datasets.DatasetApiService/CreateDataset"
     payload = json.loads(create_call[3])
     assert payload["slug"] == "epub-tts-data-1-abc"
     assert payload["ownerSlug"] == "user1"
-    assert {"token": "tok-manifest"} in payload["files"]
-    assert {"token": "tok-ref"} in payload["files"]
+    assert payload["files"] == [{"token": "tok-zip"}]
 
 
 def test_create_dataset_raises_on_an_error_field(tmp_path):
-    (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "batch_manifest.json").write_text("{}", encoding="utf-8")
     fake = FakeRequest([
         {"status": 200, "body": json.dumps({"token": "t", "createUrl": "https://upload/x"})},
         {"status": 200, "body": ""},
@@ -197,3 +306,70 @@ def test_create_dataset_raises_on_an_error_field(tmp_path):
     ])
     with pytest.raises(RuntimeError, match="slug already in use"):
         create_dataset(ACCOUNT, tmp_path, "dup-slug", "Title", request=fake)
+
+
+def test_push_kernel_raises_when_kaggle_rejects_a_data_source(tmp_path):
+    """SaveKernel does NOT fail on a bad source -- the kernel runs without input.
+    Surfacing invalidDatasetSources loudly beats a kernel that later dies in Cell 4."""
+    _write_notebook(tmp_path)
+    fake = FakeRequest([{"status": 200, "body": json.dumps({
+        "ref": "user1/x", "invalidDatasetSources": ["user1/not-ready-yet"],
+    })}])
+    with pytest.raises(RuntimeError, match="not-ready-yet"):
+        push_kernel(ACCOUNT, tmp_path, {"id": "user1/x", "code_file": "nb.ipynb"}, request=fake)
+
+
+@pytest.mark.parametrize("raw,expected", [("READY", "ready"), ("PENDING", "pending"), (5, "ready"), (6, "failed")])
+def test_dataset_status_normalizes_names_and_numbers(raw, expected):
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"status": raw})}])
+    assert dataset_status(ACCOUNT, "user1/my-data", request=fake) == expected
+    url, method, _, body = fake.calls[0]
+    assert url == "https://api.kaggle.com/v1/datasets.DatasetApiService/GetDatasetStatus"
+    assert method == "POST"
+    assert json.loads(body) == {"ownerSlug": "user1", "datasetSlug": "my-data"}
+
+
+def test_dataset_status_rejects_a_bare_slug():
+    with pytest.raises(ValueError, match="username/slug"):
+        dataset_status(ACCOUNT, "no-username-here")
+
+
+def test_dataset_files_returns_the_server_listing():
+    # Wire key is "datasetFiles" (kagglesdk exposes it as .files/.dataset_files
+    # on the parsed object, but the raw JSON carries "datasetFiles").
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"datasetFiles": [
+        {"name": "epub-tts-data-1-abc.zip", "totalBytes": 1234},
+    ]})}])
+    files = dataset_files(ACCOUNT, "user1/my-data", request=fake)
+    assert [f["name"] for f in files] == ["epub-tts-data-1-abc.zip"]
+    url, method, _, body = fake.calls[0]
+    assert url == "https://api.kaggle.com/v1/datasets.DatasetApiService/ListDatasetFiles"
+    assert method == "POST"
+    assert json.loads(body) == {"ownerSlug": "user1", "datasetSlug": "my-data", "pageSize": 100}
+
+
+def test_dataset_files_tolerates_an_empty_listing():
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"datasetFiles": []})}])
+    assert dataset_files(ACCOUNT, "user1/my-data", request=fake) == []
+
+
+def test_kernel_log_concatenates_the_json_entries():
+    entries = [
+        {"stream_name": "stdout", "time": 1.0, "data": "hello "},
+        {"stream_name": "stderr", "time": 2.0, "data": "boom\n"},
+    ]
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"log": json.dumps(entries)})}])
+    assert kernel_log(ACCOUNT, "user1/x", request=fake) == "hello boom\n"
+    url, method, _, body = fake.calls[0]
+    assert url == "https://api.kaggle.com/v1/kernels.KernelsApiService/ListKernelSessionOutput"
+    assert method == "POST"
+
+
+def test_kernel_log_returns_empty_string_when_the_session_logged_nothing():
+    fake = FakeRequest([{"status": 200, "body": json.dumps({})}])
+    assert kernel_log(ACCOUNT, "user1/x", request=fake) == ""
+
+
+def test_kernel_log_passes_through_a_non_json_log():
+    fake = FakeRequest([{"status": 200, "body": json.dumps({"log": "plain traceback"})}])
+    assert kernel_log(ACCOUNT, "user1/x", request=fake) == "plain traceback"

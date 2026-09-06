@@ -522,6 +522,29 @@ def test_kaggle_native_branch_never_touches_drive_credentials():
     assert "/kaggle/input" in branch
 
 
+def test_gpu_required_models_reject_too_old_cuda_capability():
+    """torch.cuda.is_available() is True on a P100 (sm_60) but the installed torch
+    only ships kernels for sm_70+ -- Cell 6 must fail fast naming T4, not die pages
+    later with 'no kernel image is available for execution on the device'."""
+    src = _code_cells(TEMPLATES[0])[5]  # Cell 6
+    assert "get_device_capability" in src
+    assert "T4" in src
+
+
+def test_kaggle_native_branch_unpacks_one_zip_into_working():
+    """The batch travels as a single zip (datasets cannot preserve the
+    patches/patch_NNN/ hierarchy file-by-file). It must be extracted into
+    /kaggle/working itself -- so Cell 8's outputs land at /kaggle/working/result/...
+    with the paths kernel_output() hands back to the app -- and FOLDER_PATH must be
+    allowed to resolve there, not only under /kaggle/input."""
+    src = _code_cells(TEMPLATES[0])[3]
+    branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
+    assert "zipfile" in branch
+    assert ".zip" in branch
+    assert 'extractall("/kaggle/working")' in branch
+    assert '"/kaggle/working"' in branch
+
+
 def test_kaggle_native_branch_leaves_no_drive_persist_hooks():
     """Cell 8 falls back to no-op persist/REMOTE/drive_fetch_many via
     globals().get(...) - the kaggle_native branch must not accidentally define any

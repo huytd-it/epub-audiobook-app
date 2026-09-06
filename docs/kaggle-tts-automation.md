@@ -5,10 +5,11 @@ lên Kaggle bằng API (không cần mở kaggle.com, không cần tạo noteboo
 theo dõi tiến độ, tự tải kết quả về và import — tương tự "Export vào Drive" nhưng
 không cần Drive, không cần chạy tay notebook.
 
-> ⚠️ **Chưa test với tài khoản Kaggle thật.** Toàn bộ phần push/poll/import được viết
-> khớp với mã nguồn chính thức của Kaggle (`kaggle-cli`, `kaggle-sdk-python`), nhưng
-> chưa có ai chạy thử với API key thật. Trước khi giao cho việc thật, làm thử **một
-> batch nhỏ (1 patch, vài chunk)** trước — xem mục "Trước khi dùng thật" bên dưới.
+> ⚠️ **Mới test một phần với tài khoản Kaggle thật (06/09/2026).** Lần chạy thật đầu
+> tiên đã xác minh được: xác thực, upload dataset và push kernel đều tới được server.
+> Nó cũng lộ 2 lỗi (đã vá) và **dừng lại ngay sau bước push** — các bước poll trạng
+> thái, tải kết quả về và import **vẫn chưa từng chạy thật**. Trước khi giao cho việc
+> thật, làm thử **một batch nhỏ (1 patch, vài chunk)** — xem mục "Trước khi dùng thật".
 
 ## Bước 1 — Lấy Kaggle username + API key
 
@@ -87,10 +88,77 @@ giờ GPU/tuần khả dụng tổng cộng.
 
 ## Trước khi dùng thật — nên biết
 
-Phần dưới đây là các điểm **chưa xác minh được với tài khoản Kaggle thật** (chỉ đối
-chiếu mã nguồn chính thức của Kaggle, xem
+### Đã sửa sau lần chạy thật đầu tiên (06/09/2026)
+
+Lần chạy thật đầu tiên chết ở bước push kernel vì 2 lỗi, cả hai đã vá:
+
+- Kaggle trả về ref của kernel dưới dạng **đường dẫn URL** (`/code/<user>/<slug>`)
+  chứ không phải `<user>/<slug>` như tài liệu SDK gợi ý → app crash ngay khi hỏi
+  trạng thái kernel. Nay mọi dạng ref/URL đều được chuẩn hoá.
+- Với kernel **chưa tồn tại**, Kaggle lấy slug **từ tiêu đề** và bỏ qua slug mà app
+  yêu cầu. Tiêu đề cũ ("epub-tts batch 18") ra slug khác slug app dùng để poll, nên
+  lần push sau bị `HTTP 409 ALREADY_EXISTS` ("title is already in use"). Nay tiêu đề
+  chính là slug (`epub-tts-batch-<book>-<hash>`), ổn định suốt job.
+
+Nếu tài khoản còn sót notebook `epub-tts-batch-<số>` từ các lần chạy hỏng trước, vào
+kaggle.com/code xoá đi cho sạch (không xoá cũng không sao — slug mới không đụng nữa).
+Gặp lại lỗi 409 thì job sẽ **fail ngay** kèm hướng dẫn thay vì thử lại 3 lần vô ích.
+
+### Đã sửa sau lần chạy thật thứ hai (06/09/2026)
+
+Kernel push thành công nhưng chết ở cell 3 với `NotImplementedError: Mounting drive
+is unsupported`: package Kaggle chỉ bật `MODE = "kaggle_native"` mà quên bật
+`IS_KAGGLE = True`, trong khi Cell 3/Cell 4 rẽ nhánh theo `IS_KAGGLE` — nên kernel
+chạy nhầm nhánh mount Drive của Colab. Nay package `kaggle_native` bật cả hai cờ;
+package Drive/Colab và luồng mở notebook thủ công giữ nguyên (`IS_KAGGLE = False`,
+người dùng lật tay theo hướng dẫn trong notebook).
+
+### Đã sửa sau lần chạy thật thứ ba (06/09/2026)
+
+Kernel chạy tới Cell 4 nhưng assert "No attached Kaggle input has a
+batch_manifest.json": 2 nguyên nhân chồng nhau, cả hai đã vá:
+
+- **Dataset mất cấu trúc thư mục.** Upload từng file không thể giữ được
+  `patches/patch_NNN/` — blob upload chỉ mang basename, `CreateDataset` chỉ nhận
+  token, không chỗ nào truyền đường dẫn (mọi `manifest.json` còn đè nhau). Nay cả
+  package đi trong **một file zip duy nhất** (trừ notebook), Cell 4 bung ra
+  `/kaggle/working` — đúng semantics `--dir-mode zip` của CLI chính thức.
+- **Race dataset-chưa-ready.** App push kernel ngay sau khi tạo dataset; dataset còn
+  processing thì Kaggle lặng lẽ gỡ source khỏi kernel mà vẫn cho chạy. Nay app đợi
+  dataset `ready` (tối đa 10 phút) mới push, và push sẽ **fail ngay** nếu Kaggle báo
+  source không hợp lệ thay vì cho kernel chạy chay rồi chết ở Cell 4.
+
+### Đã sửa sau lần chạy thật thứ tư (06/09/2026)
+
+Kernel tới được bước tổng hợp nhưng torch chết với `CUDA error: no kernel image is
+available for execution on the device`: scheduler đã giao **Tesla P100 (sm_60)**,
+mà PyTorch trong image Kaggle hiện tại chỉ ship kernel cho sm_70+ (`is_available()`
+vẫn báo True nên Cell 6 cho qua, rồi nổ ở op đầu tiên). 2 lớp vá:
+
+- App nay push kèm **`machine_shape = NvidiaTeslaT4`** (field chính thức của
+  `SaveKernel`; `enable_gpu` đã deprecated) — đổi được qua `KAGGLE_MACHINE_SHAPE`.
+  Kernel cũ đang kẹt P100 thì vào kaggle.com mở notebook đó: sidebar Settings →
+  Accelerator → GPU T4, chạy lại.
+- Cell 6 nay kiểm tra `get_device_capability()` và fail ngay kèm hướng dẫn đổi T4
+  nếu GPU < sm_70 — để luồng mở notebook thủ công không phải đọc traceback torch.
+
+### Đã sửa sau lần chạy thật thứ năm (06/09/2026)
+
+Kernel T4 chạy tới Cell 4 nhưng assert "No attached Kaggle input": mở trang dataset
+ra thì **dataset rỗng (0 file)** dù mọi API call đều 2xx — blob PUT không có receipt,
+`CreateDataset` báo thành công kể cả khi chẳng gắn được file nào. Nay sau khi dataset
+`ready`, app gọi `ListDatasetFiles` xác minh và **fail job ngay khi dataset rỗng**
+thay vì đốt một session GPU để Cell 4 phát hiện ra. Log job in số file trong dataset
+(`contains N file(s)`) để lần sau nhìn log là biết upload có vào hay không.
+
+### Vẫn chưa xác minh được với tài khoản thật
+
+Phần dưới đây chỉ mới đối chiếu mã nguồn chính thức của Kaggle, xem
 `docs/superpowers/specs/2026-09-05-kaggle-api-tts-automation-design.md` để biết chi
-tiết):
+tiết:
+
+- **Toàn bộ nửa sau của quy trình** — poll trạng thái kernel, tải file kết quả về,
+  import patch — chưa lần nào chạy thật tới nơi.
 
 - **Hủy job không thực sự dừng kernel trên Kaggle.** Bấm Cancel ở trang Queue sẽ dừng
   app theo dõi job đó ngay, nhưng kernel vẫn có thể tiếp tục chạy trên Kaggle tới khi

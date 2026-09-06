@@ -46,7 +46,15 @@ try {
     # Settings are loaded once by Pydantic at process startup. Do not reuse a
     # previous Uvicorn process, or .env edits such as ENABLE_WORKER are ignored.
     Stop-StaleBackend
-    $backendProc = Start-Process -FilePath $venvPython -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload", "--reload-dir", "app" -WorkingDirectory $Root -PassThru -NoNewWindow
+    # No --reload by default: an auto-restart mid-run kills worker threads, leaves
+    # jobs half-claimed and GPU accounts busy (observed live with kaggle_tts).
+    # Opt back in for fast backend iteration with: $env:EPUB_APP_RELOAD = "1"
+    $backendArgs = @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000")
+    if ($env:EPUB_APP_RELOAD -eq "1") {
+        Write-Host "  EPUB_APP_RELOAD=1: enabling --reload (do NOT run long jobs in this mode)..." -ForegroundColor DarkYellow
+        $backendArgs += @("--reload", "--reload-dir", "app")
+    }
+    $backendProc = Start-Process -FilePath $venvPython -ArgumentList $backendArgs -WorkingDirectory $Root -PassThru -NoNewWindow
     $processes += $backendProc
     Write-Host "  Backend PID: $($backendProc.Id)" -ForegroundColor DarkGray
 

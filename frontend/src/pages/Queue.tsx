@@ -18,7 +18,7 @@ type JobTypeFilter = "all" | WorkerType;
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const WORKER_TYPES = [
   ["audiobook_tts", "TTS local"], ["audiobook_tts_api", "TTS qua API"],
-  ["light_tts", "TTS nhẹ"],
+  ["light_tts", "TTS nhẹ"], ["kaggle_tts", "TTS Kaggle"],
   ["video", "Video sách"], ["patch_video", "Video phân đoạn"],
   ["standalone_video", "Video độc lập"], ["youtube_upload", "YouTube upload"],
   ["background_gen", "Tạo ảnh nền"], ["gameplay_clip", "Gameplay clip"],
@@ -36,6 +36,7 @@ type WorkerHealth = {
 function jobTypeLabel(jobType: string) {
   if (jobType === "audiobook_tts") return "TTS local";
   if (jobType === "audiobook_tts_api") return "TTS qua API";
+  if (jobType === "kaggle_tts") return "TTS Kaggle";
   if (jobType === "light_tts") return "TTS nhẹ";
   if (jobType.includes("tts")) return "TTS";
   if (jobType.includes("youtube")) return "YouTube";
@@ -239,18 +240,32 @@ export function Queue() {
     await loadLog(job.id);
   }
 
-  async function loadLog(jobId: number) {
-    setLogText("");
-    setLogError("");
-    setLogLoading(true);
+  async function loadLog(jobId: number, silent = false) {
+    if (!silent) {
+      setLogText("");
+      setLogError("");
+      setLogLoading(true);
+    }
     try {
-      setLogText(await api<string>(`/queue/jobs/${jobId}/log?tail=1000`));
+      const text = await api<string>(`/queue/jobs/${jobId}/log?tail=1000`);
+      setLogText(text);
+      if (silent) setLogError("");
     } catch (err) {
-      setLogError(err instanceof Error ? err.message : "Không tải được log tác vụ");
+      if (!silent) setLogError(err instanceof Error ? err.message : "Không tải được log tác vụ");
     } finally {
-      setLogLoading(false);
+      if (!silent) setLogLoading(false);
     }
   }
+
+  // Tự động tải lại log mỗi 3s khi dialog còn mở và job chưa kết thúc —
+  // trước đây log chỉ tải một lần lúc mở nên job chạy dài (vd. kaggle_tts
+  // poll mỗi 30s) nhìn như "đứng hình".
+  useEffect(() => {
+    if (!logJob) return;
+    if (["done", "failed", "cancelled"].includes(logJob.status)) return;
+    const timer = setInterval(() => void loadLog(logJob.id, true), 3000);
+    return () => clearInterval(timer);
+  }, [logJob?.id, logJob?.status]);
 
   async function copyLog() {
     await navigator.clipboard.writeText(logText);

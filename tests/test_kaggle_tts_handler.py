@@ -6,6 +6,7 @@ the actual manifest/result-resolution contract rather than a mocked shape of it.
 from __future__ import annotations
 
 import json
+import re
 
 import numpy as np
 import pytest
@@ -27,11 +28,11 @@ def _conn(tmp_path):
     return conn
 
 
-def _seed_book_and_patch(conn, title="B"):
+def _seed_book_and_patch(conn, title="B", voice_clip_path=None):
     now = "2026-01-01T00:00:00+00:00"
     cur = conn.execute(
-        "INSERT INTO book (title, original_filename, epub_path, patch_size, status, created_at, updated_at) "
-        "VALUES (?, 'b.epub', 'b.epub', 10, 'ready', ?, ?)", (title, now, now),
+        "INSERT INTO book (title, original_filename, epub_path, patch_size, status, voice_clip_path, created_at, updated_at) "
+        "VALUES (?, 'b.epub', 'b.epub', 10, 'ready', ?, ?, ?)", (title, voice_clip_path, now, now),
     )
     book_id = cur.lastrowid
     conn.execute(
@@ -67,6 +68,19 @@ def _ctx(conn, payload, *, cancel=False):
     return JobContext(job, conn, JobLogger(job.id, "kaggle_tts"), lambda: cancel)
 
 
+@pytest.fixture(autouse=True)
+def _dataset_already_ready(monkeypatch):
+    """Most tests stub create_dataset but exercise the real wait-for-ready and
+    verify-not-empty steps -- keep both from touching the network by default;
+    the wait/verify tests below override."""
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "dataset_status", lambda *a, **k: "ready")
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "dataset_files",
+        lambda *a, **k: [{"name": "epub-tts-data-x.zip", "totalBytes": 42}],
+    )
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_log", lambda *a, **k: "")
+
+
 def _write_result_for(package_dir, patch_id):
     """Simulate a completed kernel: write a tiny valid WAV at the exact path
     batch_manifest.json names for this patch's result_wav."""
@@ -75,6 +89,146 @@ def _write_result_for(package_dir, patch_id):
     result_path = package_dir / entry["result_wav"]
     result_path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(result_path, np.zeros(1000, dtype=np.float32), 16000)
+
+
+def test_kernel_title_resolves_to_the_kernel_slug():
+    """Kaggle derives a NEW kernel's slug from its title and ignores the slug the push
+    asked for when they disagree, so the next push lands on a different kernel and
+    fails with 409 on the title. Guard: title == slug, and the slug survives slugify
+    unchanged (lowercase, digits, hyphens only)."""
+    slug = kaggle_tts._kernel_slug(18, [6752])
+    metadata = kaggle_tts._kernel_metadata("user1", slug, "user1/data")
+    assert metadata["title"] == slug
+    assert metadata["id"] == f"user1/{slug}"
+    assert re.fullmatch(r"[a-z0-9][a-z0-9-]*[a-z0-9]", slug)
+
+
+def test_kernel_slug_is_stable_per_batch_and_stays_short():
+    assert kaggle_tts._kernel_slug(18, [1, 2, 3]) == kaggle_tts._kernel_slug(18, [3, 2, 1])
+    assert kaggle_tts._kernel_slug(18, [1, 2, 3]) != kaggle_tts._kernel_slug(18, [1, 2])
+    assert kaggle_tts._kernel_slug(18, [1]) != kaggle_tts._kernel_slug(19, [1])
+    # A big batch must not blow the slug (and therefore the title) up.
+    assert len(kaggle_tts._kernel_slug(18, list(range(500)))) <= 50
+
+
+def test_a_title_collision_fails_the_job_instead_of_burning_its_retries(tmp_path, monkeypatch):
+    """409 ALREADY_EXISTS is deterministic -- retrying re-sends the same title and
+    uploads another throwaway dataset on the way to the same error."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    account_id = ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+
+    def conflict(*a, **k):
+        raise RuntimeError(
+            'Kaggle API POST .../SaveKernel failed: HTTP 409: b\'{"error":{"code":409,'
+            '"message":"The requested title is already in use","status":"ALREADY_EXISTS"}}\''
+        )
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", conflict)
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    with pytest.raises(JobFatalError, match="kaggle.com/code"):
+        kaggle_tts.handle(ctx)
+    assert ka.get_account(conn, account_id)["status"] == "idle"
+
+
+def test_other_push_failures_stay_retryable(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+
+    def boom(*a, **k):
+        raise RuntimeError("Kaggle API POST .../SaveKernel failed: HTTP 500: b'boom'")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", boom)
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    with pytest.raises(RuntimeError) as excinfo:  # JobFatalError does not subclass RuntimeError
+        kaggle_tts.handle(ctx)
+    assert not isinstance(excinfo.value, JobFatalError)
+
+
+def test_kernel_metadata_requests_a_concrete_gpu_type(monkeypatch):
+    """enable_gpu alone lets the scheduler hand out a P100 (sm_60), which the
+    PyTorch in Kaggle's image cannot execute on -- pin the machine shape."""
+    monkeypatch.setattr(settings, "kaggle_machine_shape", "NvidiaTeslaT4")
+    metadata = kaggle_tts._kernel_metadata("user1", "some-slug", "user1/data")
+    assert metadata["machine_shape"] == "NvidiaTeslaT4"
+
+
+def test_handle_waits_for_the_dataset_before_pushing(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+    seen = []
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "dataset_status",
+        lambda account, ref: seen.append(ref) or ("ready" if len(seen) > 2 else "pending"),
+    )
+    pushed = []
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "push_kernel",
+        lambda account, *a, **k: pushed.append(1) or f"{account.username}/slug",
+    )
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.COMPLETE)
+
+    def fake_output(account, kernel_ref, dest_dir):
+        _write_result_for(dest_dir, patch_id)
+        return []
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output", fake_output)
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    assert kaggle_tts.handle(ctx) == {"imported": 1}
+    assert len(seen) >= 2  # polled at least once before the single push
+    assert pushed == [1]
+
+
+def test_handle_fails_fast_when_the_dataset_is_broken(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "dataset_status", lambda *a, **k: "failed")
+    pushed = []
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda *a, **k: pushed.append(1))
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    with pytest.raises(JobFatalError, match="failed"):
+        kaggle_tts.handle(ctx)
+    assert pushed == []  # never push a kernel whose input can never attach
+
+
+def test_handle_fails_fast_when_the_dataset_is_empty(tmp_path, monkeypatch):
+    """A "ready" yet empty dataset attaches fine and the kernel runs -- then dies
+    in Cell 4 after burning GPU quota. Refuse to push instead (observed live)."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "dataset_files", lambda *a, **k: [])
+    pushed = []
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda *a, **k: pushed.append(1))
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    with pytest.raises(JobFatalError, match="rỗng"):
+        kaggle_tts.handle(ctx)
+    assert pushed == []  # no GPU session burned on an input-less kernel
 
 
 def test_handle_completes_when_one_kernel_run_imports_the_patch(tmp_path, monkeypatch):
@@ -98,6 +252,11 @@ def test_handle_completes_when_one_kernel_run_imports_the_patch(tmp_path, monkey
 
     assert result == {"imported": 1}
     assert repository.get_patch(conn, patch_id).status == "done"
+    # Layout chuẩn audio/{book}_{episode}.wav, cùng chỗ audiobook_tts/light_tts ghi.
+    from pathlib import Path as _Path
+    expected = repository.get_patch_audio_path(book_id, 0)
+    assert repository.get_patch(conn, patch_id).audio_path == str(expected)
+    assert _Path(expected).is_file()
     assert ka.get_account(conn, account_id)["status"] == "idle"
     assert ka.get_account(conn, account_id)["in_use_by_job_id"] is None
 
@@ -185,3 +344,112 @@ def test_handle_rotates_to_a_second_account_when_the_first_runs_out_of_quota(tmp
     assert repository.get_patch(conn, patch_b).status == "done"
     assert ka.get_account(conn, account1)["status"] == "cooldown"
     assert ka.get_account(conn, account2)["status"] == "idle"
+
+
+def test_handle_raises_fatal_when_kernel_errors(tmp_path, monkeypatch):
+    """When the Kaggle kernel finishes with ERROR (e.g. P100 GPU), the handler
+    must raise JobFatalError immediately instead of trying to download output.
+    Uses omnivoice (a GPU-required model) so the test matches the real P100 case."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    clip = tmp_path / "voice.wav"
+    sf.write(clip, np.zeros(8000, dtype=np.float32), 16000)
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn, voice_clip_path=str(clip))
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda account, *a, **k: f"{account.username}/slug")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.ERROR)
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "omnivoice"})
+    with pytest.raises(JobFatalError, match="thất bại"):
+        kaggle_tts.handle(ctx)
+
+
+def test_handle_repushes_the_same_dataset_when_the_kernel_runs_without_input(tmp_path, monkeypatch):
+    """SaveKernel can accept the dataset while the session starts before Kaggle can
+    mount it (observed live: dataset READY + files listed, Cell 4 still asserted
+    "No attached Kaggle input"). The handler must push a new kernel version with
+    the SAME (now older) dataset instead of failing the job."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts, "_ATTACH_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+
+    created = []
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "create_dataset",
+        lambda account, *a, **k: created.append(1) or f"{account.username}/data",
+    )
+    pushed_sources = []
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "push_kernel",
+        lambda account, package_dir, metadata: pushed_sources.append(metadata["dataset_sources"]) or f"{account.username}/slug",
+    )
+    statuses = [KernelStatus.ERROR, KernelStatus.COMPLETE]
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: statuses.pop(0))
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "kernel_log",
+        lambda *a, **k: "AssertionError: No attached Kaggle input has a batch_manifest.json",
+    )
+
+    def fake_output(account, kernel_ref, dest_dir):
+        _write_result_for(dest_dir, patch_id)
+        return []
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output", fake_output)
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    assert kaggle_tts.handle(ctx) == {"imported": 1}
+    assert created == [1]  # no fresh dataset for the retry
+    assert len(pushed_sources) == 2  # pushed again...
+    assert pushed_sources[0] == pushed_sources[1]  # ...with the same dataset
+
+
+def test_handle_gives_up_after_repeated_runs_without_input(tmp_path, monkeypatch):
+    """The attach retry is bounded: a kernel that never sees its input fails the
+    job (with the real log tail, not the P100 guess) instead of looping forever."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts, "_ATTACH_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(kaggle_tts, "_ATTACH_RETRY_ATTEMPTS", 2)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+    pushed = []
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda *a, **k: pushed.append(1) or "user1/slug")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.ERROR)
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "kernel_log",
+        lambda *a, **k: "No attached Kaggle input has a batch_manifest.json with batch_id=X",
+    )
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    with pytest.raises(JobFatalError, match="batch_id=X"):
+        kaggle_tts.handle(ctx)
+    assert pushed == [1, 1]
+
+
+def test_handle_fatal_kernel_error_includes_the_real_log_tail(tmp_path, monkeypatch):
+    """A genuinely failed kernel (e.g. P100 GPU) must surface its actual log tail
+    instead of only the P100 guess, so the next debug step is obvious."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda *a, **k: "user1/slug")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.ERROR)
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "kernel_log", lambda *a, **k: "torch cuda error: no kernel image",
+    )
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    with pytest.raises(JobFatalError, match="no kernel image"):
+        kaggle_tts.handle(ctx)
