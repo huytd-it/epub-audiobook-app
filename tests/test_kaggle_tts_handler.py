@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
 import soundfile as sf
 
-from app import db, kaggle_accounts as ka, repository
+from app import db, repository
+from app import kaggle_accounts as ka
 from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.context import JobContext
@@ -63,7 +65,7 @@ def _add_patch(conn, book_id, patch_index):
 
 
 def _ctx(conn, payload, *, cancel=False):
-    job_id = store.enqueue(conn, "kaggle_tts", payload=payload)
+    store.enqueue(conn, "kaggle_tts", payload=payload)
     job = store.claim(conn, "kaggle_tts", "w")
     return JobContext(job, conn, JobLogger(job.id, "kaggle_tts"), lambda: cancel)
 
@@ -79,6 +81,10 @@ def _dataset_already_ready(monkeypatch):
         lambda *a, **k: [{"name": "epub-tts-data-x.zip", "totalBytes": 42}],
     )
     monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_log", lambda *a, **k: "")
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "gpu_quota",
+        lambda *a, **k: kaggle_tts.kaggle_api.GpuQuota(3600, "2026-09-13T00:00:00Z"),
+    )
 
 
 def _write_result_for(package_dir, patch_id):
@@ -236,6 +242,9 @@ def test_handle_completes_when_one_kernel_run_imports_the_patch(tmp_path, monkey
     monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
     conn = _conn(tmp_path)
     account_id = ka.create_account(conn, "acc1", "user1", "key1")
+    # Regression: old local wall-clock accounting could park an account for days
+    # even while Kaggle's own dashboard still showed available GPU time.
+    ka.release_account(conn, account_id, cooldown_until="2099-01-01T00:00:00+00:00")
     book_id, patch_id = _seed_book_and_patch(conn)
 
     monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
@@ -261,16 +270,49 @@ def test_handle_completes_when_one_kernel_run_imports_the_patch(tmp_path, monkey
     assert ka.get_account(conn, account_id)["in_use_by_job_id"] is None
 
 
-def test_handle_raises_job_rescheduled_when_no_account_has_quota(tmp_path):
+def test_handle_does_not_push_again_when_complete_kernel_has_no_result(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data",
+    )
+    pushes = []
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "push_kernel",
+        lambda account, *a, **k: pushes.append(account.username) or f"{account.username}/slug",
+    )
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.COMPLETE,
+    )
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output", lambda *a, **k: [])
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    with pytest.raises(JobFatalError, match="không tự chạy lại"):
+        kaggle_tts.handle(ctx)
+
+    assert pushes == ["user1"]
+
+
+def test_handle_reschedules_briefly_when_an_account_is_legitimately_busy(tmp_path):
     conn = _conn(tmp_path)
     book_id, patch_id = _seed_book_and_patch(conn)
     account_id = ka.create_account(conn, "acc1", "user1", "key1")
-    ka.claim_idle_account(conn, job_id=999)  # busy elsewhere -> claim_idle_account finds nothing
+    owner_id = store.enqueue(
+        conn, "kaggle_tts",
+        payload={"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"},
+    )
+    store.claim(conn, "kaggle_tts", "other-worker")
+    ka.claim_idle_account(conn, job_id=owner_id)  # legitimately busy in another running job
     assert ka.get_account(conn, account_id)["status"] == "busy"
 
     ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
-    with pytest.raises(JobRescheduled):
+    with pytest.raises(JobRescheduled, match="busy or disabled") as excinfo:
         kaggle_tts.handle(ctx)
+    retry_at = datetime.fromisoformat(excinfo.value.next_retry_at)
+    assert retry_at < datetime.now(timezone.utc) + timedelta(minutes=6)
 
 
 def test_handle_raises_job_fatal_error_when_patches_are_gone(tmp_path):
@@ -307,7 +349,6 @@ def test_handle_returns_none_and_releases_account_when_cancelled(tmp_path, monke
 
 def test_handle_rotates_to_a_second_account_when_the_first_runs_out_of_quota(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
-    monkeypatch.setattr(settings, "kaggle_weekly_gpu_quota_hours", 0)  # any usage exhausts quota
     monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
     conn = _conn(tmp_path)
     account1 = ka.create_account(conn, "acc1", "user1", "key1")
@@ -324,6 +365,10 @@ def test_handle_rotates_to_a_second_account_when_the_first_runs_out_of_quota(tmp
     monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.COMPLETE)
 
     output_calls = {"n": 0}
+    def fake_quota(account):
+        remaining = 0 if account.username == "user1" and output_calls["n"] else 3600
+        return kaggle_tts.kaggle_api.GpuQuota(remaining, "2026-09-13T00:00:00Z")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "gpu_quota", fake_quota)
     def fake_output(account, kernel_ref, dest_dir):
         output_calls["n"] += 1
         # First (Kaggle session timeout simulation) run only finishes patch_a; the
@@ -456,15 +501,15 @@ def test_handle_fatal_kernel_error_includes_the_real_log_tail(tmp_path, monkeypa
 
 
 def _success_stubs(monkeypatch, tmp_path, write_for):
-    """Network fakes for a kernel run that COMPLETES; write_for(patch_id, dest_dir)
+    """Network fakes for a kernel run that COMPLETES; write_for(dest_dir)
     materializes that patch's result wav like a real kernel would."""
     monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
     monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda *a, **k: "user1/slug")
     monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.COMPLETE)
-    monkeypatch.setattr(
-        kaggle_tts.kaggle_api, "kernel_output",
-        lambda account, kernel_ref, dest_dir: (write_for(dest_dir), []),
-    )
+    def fake_output(account, kernel_ref, dest_dir):
+        write_for(dest_dir)
+        return []
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output", fake_output)
 
 
 def _automation_spies(monkeypatch):

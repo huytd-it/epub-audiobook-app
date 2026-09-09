@@ -129,6 +129,31 @@ def release_account(
     conn.commit()
 
 
+def recover_unavailable_accounts(conn: sqlite3.Connection) -> None:
+    """Recover accounts blocked by stale local state before querying Kaggle.
+
+    Older versions derived cooldowns from wall-clock kernel durations, which can be
+    higher than Kaggle's billed GPU time and leave usable accounts blocked for days.
+    A process restart could also leave an account busy after its owning job was deleted
+    or stopped. The handler claims recovered accounts and validates quota with Kaggle.
+    """
+    conn.execute(
+        """UPDATE kaggle_account SET status='idle', cooldown_until=NULL, updated_at=?
+             WHERE (status='cooldown' AND in_use_by_job_id IS NULL)
+                OR (status='busy' AND NOT EXISTS (
+                    SELECT 1 FROM job
+                     WHERE job.id=kaggle_account.in_use_by_job_id
+                       AND job.status IN ('running', 'cancelling')
+                ))""",
+        (_now_iso(),),
+    )
+    conn.execute(
+        """UPDATE kaggle_account SET in_use_by_job_id=NULL
+             WHERE status='idle' AND in_use_by_job_id IS NOT NULL"""
+    )
+    conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Usage ledger / quota estimate
 # ---------------------------------------------------------------------------
@@ -170,9 +195,13 @@ def remaining_quota_seconds(conn: sqlite3.Connection, account_id: int) -> int:
 
 
 def earliest_quota_reset(conn: sqlite3.Connection) -> str | None:
-    """The earliest moment any account's quota window frees up: 7 days after the oldest
-    usage row still counted against quota, across every account. None if no usage in
-    the last 7 days counts against anyone."""
+    """Earliest server-reported cooldown, falling back to the old ledger estimate."""
+    row = conn.execute(
+        "SELECT MIN(cooldown_until) AS reset_at FROM kaggle_account "
+        "WHERE status='cooldown' AND cooldown_until IS NOT NULL"
+    ).fetchone()
+    if row is not None and row["reset_at"] is not None:
+        return row["reset_at"]
     cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     row = conn.execute(
         "SELECT MIN(started_at) AS oldest FROM kaggle_usage WHERE started_at >= ?",

@@ -12,8 +12,17 @@ import json
 import pytest
 
 from app.kaggle_api import (
-    KaggleAccount, KernelStatus, cancel_kernel, create_dataset, dataset_files,
-    dataset_status, kernel_log, kernel_output, kernel_status, normalize_kernel_ref,
+    KaggleAccount,
+    KernelStatus,
+    cancel_kernel,
+    create_dataset,
+    dataset_files,
+    dataset_status,
+    gpu_quota,
+    kernel_log,
+    kernel_output,
+    kernel_status,
+    normalize_kernel_ref,
     push_kernel,
 )
 
@@ -29,6 +38,25 @@ class FakeRequest:
 
 
 ACCOUNT = KaggleAccount(username="user1", api_key="secret-key")
+
+
+def test_gpu_quota_uses_kaggles_authoritative_allowance_and_refresh_time():
+    fake = FakeRequest([{"status": 200, "body": json.dumps({
+        "quotaRefreshTime": "2026-09-13T00:00:00Z",
+        "gpuQuota": {
+            "timeUsed": "3600s",
+            "timeReserved": {"seconds": "1800"},
+            "totalTimeAllowed": "108000s",
+        },
+    })}])
+
+    quota = gpu_quota(ACCOUNT, request=fake)
+
+    assert quota.remaining_seconds == 102600
+    assert quota.refresh_at == "2026-09-13T00:00:00Z"
+    assert fake.calls[0][0].endswith(
+        "/kernels.KernelsApiService/GetAcceleratorQuotaStatistics"
+    )
 
 NOTEBOOK_JSON = json.dumps({
     "cells": [
@@ -240,6 +268,28 @@ def test_kernel_output_skips_hidden_cache_blobs():
     assert len(fake.calls) == 2  # listing + the one real download, no blob fetch
 
 
+def test_kernel_output_follows_pages_past_hidden_cache_files(tmp_path):
+    fake = FakeRequest([
+        {"status": 200, "body": json.dumps({
+            "files": [{"fileName": ".cache/model/blob", "url": "https://signed/blob"}],
+            "nextPageToken": "page-2",
+        })},
+        {"status": 200, "body": json.dumps({"files": [
+            {"fileName": "result/19_089.wav", "url": "https://signed/result.wav"},
+        ]})},
+        {"status": 200, "body": b"WAVDATA"},
+    ])
+
+    paths = kernel_output(ACCOUNT, "user1/x", tmp_path, version_label="v1", request=fake)
+
+    assert [path.relative_to(tmp_path).as_posix() for path in paths] == ["result/19_089.wav"]
+    assert json.loads(fake.calls[1][3]) == {
+        "userName": "user1", "kernelSlug": "x", "pageSize": 100,
+        "pageToken": "page-2", "versionLabel": "v1",
+    }
+    assert fake.calls[2][0] == "https://signed/result.wav"
+
+
 def test_kernel_output_returns_empty_list_when_no_files():
     fake = FakeRequest([{"status": 200, "body": json.dumps({"files": []})}])
     assert kernel_output(ACCOUNT, "user1/x", "/tmp/does-not-matter", request=fake) == []
@@ -360,7 +410,7 @@ def test_kernel_log_concatenates_the_json_entries():
     ]
     fake = FakeRequest([{"status": 200, "body": json.dumps({"log": json.dumps(entries)})}])
     assert kernel_log(ACCOUNT, "user1/x", request=fake) == "hello boom\n"
-    url, method, _, body = fake.calls[0]
+    url, method, _, _body = fake.calls[0]
     assert url == "https://api.kaggle.com/v1/kernels.KernelsApiService/ListKernelSessionOutput"
     assert method == "POST"
 

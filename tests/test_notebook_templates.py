@@ -555,14 +555,14 @@ def test_kaggle_native_branch_leaves_no_drive_persist_hooks():
         assert name not in branch
 
 
-def test_batch_notebook_has_no_result_zip_cell():
+def test_batch_notebook_creates_and_verifies_kaggle_result_zip():
     nb = json.loads(TEMPLATES[0].read_text(encoding="utf-8"))
-    assert len(nb["cells"]) == 9
-    for cell in nb["cells"]:
-        src = "".join(cell["source"])
-        assert "make_archive" not in src
-        assert "results.zip" not in src
-        assert "Cell 9" not in src
+    assert len(nb["cells"]) == 10
+    src = "".join(nb["cells"][-1]["source"])
+    assert "Cell 9" in src
+    assert 'archive_base = "/kaggle/working/result"' in src
+    assert "shutil.make_archive" in src
+    assert "assert os.path.isfile(archive_path)" in src
     # Cell 8 must still be the eighth code cell for the other tests in this file
     assert "_CHUNK_PAUSE_MS = 300" in _code_cells(TEMPLATES[0])[7]
 

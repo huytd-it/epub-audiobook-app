@@ -4,7 +4,9 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 
-from app import db, kaggle_accounts as ka
+from app import db
+from app import kaggle_accounts as ka
+from app.jobqueue import store
 
 
 def _conn(tmp_path=None):
@@ -74,6 +76,23 @@ def test_claim_skips_busy_and_disabled_accounts():
     second = ka.create_account(conn, "acc2", "user2", "key2")
     ka.set_disabled(conn, second, True)
     assert ka.claim_idle_account(conn, job_id=2) is None
+
+
+def test_recover_unavailable_accounts_releases_only_orphaned_busy_claims():
+    conn = _conn()
+    orphaned = ka.create_account(conn, "orphaned", "user1", "key1")
+    active = ka.create_account(conn, "active", "user2", "key2")
+    ka.claim_idle_account(conn, job_id=999999)
+    job_id = store.enqueue(conn, "kaggle_tts", payload={"book_id": 1, "patch_ids": [1]})
+    store.claim(conn, "kaggle_tts", "worker")
+    ka.claim_idle_account(conn, job_id=job_id)
+
+    ka.recover_unavailable_accounts(conn)
+
+    assert ka.get_account(conn, orphaned)["status"] == "idle"
+    assert ka.get_account(conn, orphaned)["in_use_by_job_id"] is None
+    assert ka.get_account(conn, active)["status"] == "busy"
+    assert ka.get_account(conn, active)["in_use_by_job_id"] == job_id
 
 
 def test_claim_self_heals_an_expired_cooldown():
@@ -223,6 +242,15 @@ def test_earliest_quota_reset_is_none_with_no_usage():
     conn = _conn()
     ka.create_account(conn, "acc1", "user1", "key1")
     assert ka.earliest_quota_reset(conn) is None
+
+
+def test_earliest_quota_reset_prefers_authoritative_account_cooldown():
+    conn = _conn()
+    account_id = ka.create_account(conn, "acc1", "user1", "key1")
+    reset_at = "2026-09-13T00:00:00+00:00"
+    ka.release_account(conn, account_id, cooldown_until=reset_at)
+
+    assert ka.earliest_quota_reset(conn) == reset_at
 
 
 def test_earliest_quota_reset_is_7_days_after_the_oldest_counted_usage():

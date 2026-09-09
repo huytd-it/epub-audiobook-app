@@ -64,10 +64,10 @@ import json
 import urllib.error
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable
 
 BASE_URL = "https://api.kaggle.com/v1"
 _TIMEOUT_SECONDS = 60.0
@@ -79,6 +79,12 @@ RequestFn = Callable[..., dict]
 class KaggleAccount:
     username: str
     api_key: str
+
+
+@dataclass(frozen=True)
+class GpuQuota:
+    remaining_seconds: int
+    refresh_at: str | None
 
 
 class KernelStatus(str, Enum):
@@ -123,7 +129,7 @@ DATASET_FAILED_STATUSES = frozenset({"failed", "deleted"})
 
 
 def _auth_header(account: KaggleAccount) -> dict[str, str]:
-    token = base64.b64encode(f"{account.username}:{account.api_key}".encode("utf-8")).decode("ascii")
+    token = base64.b64encode(f"{account.username}:{account.api_key}".encode()).decode("ascii")
     return {"Authorization": f"Basic {token}"}
 
 
@@ -160,6 +166,33 @@ def _rpc(request: RequestFn, account: KaggleAccount, service: str, method: str, 
         headers=_auth_header(account), body=json.dumps(body),
     )
     return json.loads(raw)
+
+
+def _duration_seconds(value) -> int:
+    """Decode protobuf Duration JSON emitted by either Kaggle gateway version."""
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        return int(float(value.removesuffix("s")))
+    if isinstance(value, dict):
+        return int(value.get("seconds") or 0)
+    return 0
+
+
+def gpu_quota(account: KaggleAccount, *, request: RequestFn = _request) -> GpuQuota:
+    """Return Kaggle's authoritative GPU allowance for the current quota window."""
+    data = _rpc(
+        request, account, "kernels.KernelsApiService",
+        "GetAcceleratorQuotaStatistics", {},
+    )
+    quota = data.get("gpuQuota") or data.get("gpu_quota") or {}
+    total = _duration_seconds(quota.get("totalTimeAllowed") or quota.get("total_time_allowed"))
+    if total <= 0:
+        raise ValueError("Kaggle quota response omitted total GPU allowance")
+    used = _duration_seconds(quota.get("timeUsed") or quota.get("time_used"))
+    reserved = _duration_seconds(quota.get("timeReserved") or quota.get("time_reserved"))
+    refresh_at = data.get("quotaRefreshTime") or data.get("quota_refresh_time")
+    return GpuQuota(max(0, total - used - reserved), str(refresh_at) if refresh_at else None)
 
 
 # Path segments that can sit in front of "username/slug" in a kernel URL, and so must
@@ -281,13 +314,11 @@ def kernel_status(
 
 
 def kernel_output(
-    account: KaggleAccount, kernel_ref: str, dest_dir: Path, *, request: RequestFn = _request,
+    account: KaggleAccount, kernel_ref: str, dest_dir: Path, *,
+    version_label: str | None = None, request: RequestFn = _request,
 ) -> list[Path]:
     """Download the batch's result files into dest_dir (mirroring each entry's
-    fileName as a relative path) and return the local paths written. Only the
-    first page is fetched -- a batch's output (a handful of result WAVs +
-    timelines) fits in one page in practice; add nextPageToken handling if that
-    stops being true.
+    fileName as a relative path) and return the local paths written.
 
     Hidden paths (any segment starting with ".", e.g. the notebook's
     /kaggle/working/.cache with its GBs of HuggingFace/pip blobs) are skipped:
@@ -296,10 +327,25 @@ def kernel_output(
     the locally-built patch manifests."""
     username, slug = _kernel_slug(kernel_ref)
     dest_dir = Path(dest_dir)
-    data = _rpc(request, account, "kernels.KernelsApiService", "ListKernelSessionOutput", {
-        "userName": username, "kernelSlug": slug, "pageSize": 100,
-    })
-    entries = data.get("files") or []
+    entries = []
+    page_token = ""
+    seen_tokens = set()
+    while True:
+        body = {"userName": username, "kernelSlug": slug, "pageSize": 100}
+        if page_token:
+            body["pageToken"] = page_token
+        if version_label:
+            body["versionLabel"] = version_label
+        data = _rpc(
+            request, account, "kernels.KernelsApiService",
+            "ListKernelSessionOutput", body,
+        )
+        entries.extend(data.get("files") or [])
+        next_token = str(data.get("nextPageToken") or data.get("next_page_token") or "")
+        if not next_token or next_token in seen_tokens:
+            break
+        seen_tokens.add(next_token)
+        page_token = next_token
 
     written = []
     for entry in entries:

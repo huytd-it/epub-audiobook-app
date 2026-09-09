@@ -22,7 +22,10 @@ from app.jobqueue.context import JobContext
 from app.jobqueue.models import JobFatalError, JobRescheduled
 from app.kaggle_api import KernelStatus
 from app.patch_publishing import (
-    enqueue_patch_video, fetch_thumbnail_inputs, on_patch_audio_ready, warm_patch_thumbnail,
+    enqueue_patch_video,
+    fetch_thumbnail_inputs,
+    on_patch_audio_ready,
+    warm_patch_thumbnail,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,14 +41,27 @@ AUTOMATION_AFTER_ALL = "after_all"
 # time from (kaggle_accounts.earliest_quota_reset returns None), come back in a few
 # hours rather than guessing a full week - a fresh account could be added any time.
 _FALLBACK_RESCHEDULE_HOURS = 6
-# Same fallback for a single account's cooldown when it ran out of quota but has no
-# usage history of its own to estimate a reset from (should not normally happen -
-# remaining_quota_seconds only reaches 0 once usage exists).
-_FALLBACK_COOLDOWN_DAYS = 7
+_BUSY_ACCOUNT_RETRY_MINUTES = 5
 # How long to wait for a freshly-created dataset to finish processing before
 # pushing the kernel that attaches it. Pushing early does NOT fail -- Kaggle
 # silently drops the not-yet-ready source and the kernel runs without input.
 _DATASET_READY_TIMEOUT_SECONDS = 600
+
+
+def _authoritative_quota(ctx: JobContext, account: dict) -> kaggle_api.GpuQuota | None:
+    account_ref = kaggle_api.KaggleAccount(
+        username=account["username"], api_key=account["api_key"],
+    )
+    try:
+        return kaggle_api.gpu_quota(account_ref)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        # Quota lookup is a guard, not a reason to block valid work when this
+        # auxiliary endpoint is temporarily unavailable.
+        ctx.log(
+            f"Không đọc được quota trực tiếp của {account['username']}; vẫn thử chạy: {exc}",
+            level=logging.WARNING,
+        )
+        return None
 
 
 def _missing_patch_ids(conn, book_id: int, patch_ids: list[int]) -> list[int]:
@@ -133,7 +149,7 @@ def _fetch_kernel_log_text(
     chung thay vì làm hỏng cả job vì một call chẩn đoán."""
     try:
         return kaggle_api.kernel_log(account_ref, kernel_ref)
-    except Exception as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         ctx.log(f"Không đọc được kernel log của {kernel_ref}: {exc}", level=logging.WARNING)
         return ""
 
@@ -310,9 +326,13 @@ def handle(ctx: JobContext) -> dict | None:
     imported_this_job: list[int] = []
     ctx.progress(0, total, phase="preparing")
     try:
+        # Self-heal cooldowns written by older releases from an inaccurate local
+        # wall-clock estimate. Each claimed account is checked against Kaggle below.
+        kaggle_accounts.recover_unavailable_accounts(conn)
         while True:
             missing = _missing_patch_ids(conn, book_id, patch_ids)
             done = total - len(missing)
+            imported_in_cycle = 0
             if not missing:
                 if automation_active and automation_mode == AUTOMATION_AFTER_ALL:
                     _automate_after_all(ctx, conn, book_id, patch_ids, imported_this_job, request_policy)
@@ -327,13 +347,34 @@ def handle(ctx: JobContext) -> dict | None:
                 account = kaggle_accounts.claim_idle_account(conn, ctx.job.id)
                 if account is None:
                     reset = kaggle_accounts.earliest_quota_reset(conn)
-                    fallback = (
+                    if reset:
+                        message = "no Kaggle GPU quota available in any account this week"
+                        retry_at = reset
+                    else:
+                        message = "no idle Kaggle account available; all accounts are busy or disabled"
+                        retry_at = (
+                            datetime.now(timezone.utc)
+                            + timedelta(minutes=_BUSY_ACCOUNT_RETRY_MINUTES)
+                        ).isoformat()
+                    raise JobRescheduled(
+                        retry_at,
+                        message,
+                    )
+
+                quota = _authoritative_quota(ctx, account)
+                if quota is not None and quota.remaining_seconds <= 0:
+                    cooldown_until = quota.refresh_at or (
                         datetime.now(timezone.utc) + timedelta(hours=_FALLBACK_RESCHEDULE_HOURS)
                     ).isoformat()
-                    raise JobRescheduled(
-                        reset or fallback,
-                        "no Kaggle GPU quota available in any account this week",
+                    ctx.log(
+                        f"Account {account['username']} hết quota theo Kaggle; "
+                        f"cooldown tới {cooldown_until}"
                     )
+                    kaggle_accounts.release_account(
+                        conn, account["id"], cooldown_until=cooldown_until,
+                    )
+                    account = None
+                    continue
 
             try:
                 package_dir, _batch_manifest = drive_export.build_kaggle_export_package(
@@ -428,7 +469,11 @@ def handle(ctx: JobContext) -> dict | None:
             # Tải output có thể chậm (hàng chục file); giữ nhịp tim suốt bước này để
             # reaper không tưởng job chết mà trả về pending giữa chừng.
             with ctx.keep_alive():
-                kaggle_api.kernel_output(account_ref, kernel_ref, package_dir)
+                downloaded = kaggle_api.kernel_output(account_ref, kernel_ref, package_dir)
+                ctx.log(
+                    f"Downloaded {len(downloaded)} output file(s): "
+                    f"{[path.relative_to(package_dir).as_posix() for path in downloaded]}"
+                )
 
                 ctx.progress(done, total, phase="importing")
             for patch in patches:
@@ -459,6 +504,7 @@ def handle(ctx: JobContext) -> dict | None:
                 # after_all + active: bỏ qua hook cũ ở đây, _automate_after_all lo
                 # một lượt khi cả batch xong (tránh render trùng với hook cũ).
                 imported_this_job.append(patch.id)
+                imported_in_cycle += 1
                 done += 1
                 ctx.progress(done, total, phase="importing")
                 ctx.log(f"Imported patch {patch.id} from kernel {kernel_ref} ({done}/{total})")
@@ -466,17 +512,23 @@ def handle(ctx: JobContext) -> dict | None:
             shutil.rmtree(package_dir, ignore_errors=True)
             package_dir = None
 
+            if imported_in_cycle == 0:
+                raise JobFatalError(
+                    f"Kernel {kernel_ref} hoàn tất nhưng không có WAV kết quả hợp lệ; "
+                    "không tự chạy lại để tránh tốn thêm quota Kaggle."
+                )
+
             if not _missing_patch_ids(conn, book_id, patch_ids):
                 if automation_active and automation_mode == AUTOMATION_AFTER_ALL:
                     _automate_after_all(ctx, conn, book_id, patch_ids, imported_this_job, request_policy)
                 ctx.progress(total, total, phase="done")
                 return {"imported": len(patch_ids)}
 
-            if kaggle_accounts.remaining_quota_seconds(conn, account["id"]) <= 0:
-                cooldown_until = (
-                    kaggle_accounts.account_quota_reset(conn, account["id"])
-                    or (datetime.now(timezone.utc) + timedelta(days=_FALLBACK_COOLDOWN_DAYS)).isoformat()
-                )
+            quota = _authoritative_quota(ctx, account)
+            if quota is not None and quota.remaining_seconds <= 0:
+                cooldown_until = quota.refresh_at or (
+                    datetime.now(timezone.utc) + timedelta(hours=_FALLBACK_RESCHEDULE_HOURS)
+                ).isoformat()
                 ctx.log(f"Account {account['username']} out of quota; cooling down until {cooldown_until}")
                 kaggle_accounts.release_account(conn, account["id"], cooldown_until=cooldown_until)
                 account = None
