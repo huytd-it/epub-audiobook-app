@@ -11,6 +11,108 @@ from app import tts_model_manager
 router = APIRouter(prefix="/tts-models", tags=["tts-models"])
 
 
+@router.get("/providers")
+def list_custom_providers():
+    from app import tts_api_providers
+
+    return {"providers": tts_api_providers.list_custom_providers()}
+
+
+@router.post("/providers")
+async def create_custom_provider(request: Request):
+    from app import tts_api_providers
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "payload must be an object")
+    try:
+        saved = tts_api_providers.save_custom_provider(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    sanitized = {key: value for key, value in saved.items() if key != "api_key"}
+    sanitized["has_api_key"] = bool(saved.get("api_key"))
+    sanitized["custom"] = True
+    return {"provider": sanitized}
+
+
+@router.post("/providers/test")
+async def test_custom_provider(request: Request):
+    """Synthesize a short sample with an unsaved provider payload (test before save)."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "payload must be an object")
+    config = body.get("config") if isinstance(body.get("config"), dict) else body
+    text = str(body.get("text") or "Xin chào, đây là bản nghe thử.").strip()[:300]
+    voice = str(body.get("voice") or config.get("voice") or "").strip() or None
+    if not text:
+        raise HTTPException(400, "Cần nội dung text để test")
+    from app import tts_api_providers
+
+    try:
+        normalized = tts_api_providers.validate_provider_payload(dict(config), is_update=True)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if voice:
+        normalized["voice"] = voice
+    if body.get("api_key"):
+        normalized["api_key"] = str(body["api_key"])
+    engine = tts_api_providers.ApiTTSEngine.__new__(tts_api_providers.ApiTTSEngine)
+    engine.engine_id = normalized.get("id") or "test-provider"
+    engine.config = normalized
+    engine.voice = normalized.get("voice")
+    engine._sample_rate = int(normalized.get("sample_rate") or 24000)
+    try:
+        started = time.perf_counter()
+        audio = engine.synthesize_chunk(text)
+        elapsed = time.perf_counter() - started
+        sample_rate = int(engine.sample_rate)
+        output = io.BytesIO()
+        sf.write(output, audio, sample_rate, format="WAV")
+        duration = len(audio) / sample_rate if sample_rate else 0
+        return {
+            "audio_base64": base64.b64encode(output.getvalue()).decode("ascii"),
+            "mime_type": "audio/wav",
+            "sample_rate": sample_rate,
+            "latency_seconds": round(elapsed, 3),
+            "duration_seconds": round(duration, 3),
+            "realtime_factor": round(elapsed / duration, 3) if duration else None,
+        }
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Test provider thất bại: {exc}") from exc
+
+
+@router.put("/providers/{provider_id}")
+async def update_custom_provider(provider_id: str, request: Request):
+    from app import tts_api_providers
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "payload must be an object")
+    try:
+        saved = tts_api_providers.save_custom_provider(body, provider_id=provider_id)
+    except KeyError as exc:
+        raise HTTPException(404, f"Không tìm thấy provider {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    sanitized = {key: value for key, value in saved.items() if key != "api_key"}
+    sanitized["has_api_key"] = bool(saved.get("api_key"))
+    sanitized["custom"] = True
+    return {"provider": sanitized}
+
+
+@router.delete("/providers/{provider_id}")
+def delete_custom_provider(provider_id: str):
+    from app import tts_api_providers
+
+    try:
+        tts_api_providers.delete_custom_provider(provider_id)
+    except KeyError as exc:
+        raise HTTPException(404, f"Không tìm thấy provider {exc}") from exc
+    return {"status": "ok", "id": provider_id}
+
+
 @router.get("")
 def list_tts_models():
     return {"models": tts_model_manager.list_models()}

@@ -10,12 +10,14 @@ import base64
 import io
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import wave
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -23,10 +25,44 @@ import soundfile as sf
 
 
 BUILTIN_API_ENGINES = frozenset({"edge-tts", "gtts"})
-SUPPORTED_ADAPTERS = frozenset({"openai", "gemini", "elevenlabs", "vbee"})
+SUPPORTED_ADAPTERS = frozenset({"openai", "custom", "gemini", "elevenlabs", "vbee", "google"})
+_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
 
 
-def _configs() -> list[dict[str, Any]]:
+def _custom_file() -> Path:
+    from app.config import settings
+
+    return Path(settings.data_root) / "tts_custom_providers.json"
+
+
+def _read_custom_providers() -> list[dict[str, Any]]:
+    path = _custom_file()
+    if not path.is_file():
+        return []
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _write_custom_providers(items: list[dict[str, Any]]) -> None:
+    path = _custom_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _normalize_config(item: dict[str, Any]) -> dict[str, Any]:
+    provider_id = str(item.get("id") or "").strip()
+    adapter = str(item.get("adapter") or "openai").strip().lower()
+    if not _ID_RE.match(provider_id) or provider_id in BUILTIN_API_ENGINES:
+        raise ValueError(f"TTS API provider id không hợp lệ hoặc trùng: {provider_id!r} (chỉ a-z, 0-9, -, _)")
+    if adapter not in SUPPORTED_ADAPTERS:
+        raise ValueError(f"Adapter {adapter!r} chưa được hỗ trợ; chọn: {', '.join(sorted(SUPPORTED_ADAPTERS))}")
+    return {**item, "id": provider_id, "adapter": adapter}
+
+
+def _env_configs() -> list[dict[str, Any]]:
     from app.config import settings
 
     raw = settings.tts_api_providers.strip()
@@ -43,19 +79,129 @@ def _configs() -> list[dict[str, Any]]:
     for item in value:
         if not isinstance(item, dict):
             raise ValueError("Mỗi TTS API provider phải là một object")
-        provider_id = str(item.get("id") or "").strip()
-        adapter = str(item.get("adapter") or "openai").strip().lower()
-        if not provider_id or provider_id in seen or provider_id in BUILTIN_API_ENGINES:
-            raise ValueError(f"TTS API provider id không hợp lệ hoặc trùng: {provider_id!r}")
-        if adapter not in SUPPORTED_ADAPTERS:
-            raise ValueError(f"Adapter {adapter!r} chưa được hỗ trợ; chọn: {', '.join(sorted(SUPPORTED_ADAPTERS))}")
-        seen.add(provider_id)
-        result.append({**item, "id": provider_id, "adapter": adapter})
+        normalized = _normalize_config(item)
+        if normalized["id"] in seen:
+            raise ValueError(f"TTS API provider id trùng: {normalized['id']!r}")
+        seen.add(normalized["id"])
+        result.append(normalized)
     return result
+
+
+def _configs() -> list[dict[str, Any]]:
+    """Env providers (read-only) merged with UI-managed custom providers from disk."""
+    merged = _env_configs()
+    seen = {item["id"] for item in merged}
+    for item in _read_custom_providers():
+        if not isinstance(item, dict):
+            continue
+        try:
+            normalized = _normalize_config(item)
+        except ValueError:
+            continue
+        if normalized["id"] in seen:
+            continue
+        seen.add(normalized["id"])
+        merged.append({**normalized, "custom": True})
+    return merged
+
+
+def list_custom_providers(*, include_secret: bool = False) -> list[dict[str, Any]]:
+    """Raw custom providers from disk, sanitized for the UI unless include_secret."""
+    result = []
+    for item in _read_custom_providers():
+        if not isinstance(item, dict):
+            continue
+        try:
+            normalized = _normalize_config(item)
+        except ValueError:
+            continue
+        sanitized = dict(normalized)
+        secret = str(sanitized.pop("api_key", "") or "")
+        sanitized["custom"] = True
+        sanitized["has_api_key"] = bool(secret)
+        if include_secret and secret:
+            sanitized["api_key"] = secret
+        result.append(sanitized)
+    return result
+
+
+def validate_provider_payload(data: dict[str, Any], *, is_update: bool = False) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("Payload provider phải là một object")
+    payload = dict(data)
+    if is_update:
+        payload.pop("id", None)
+    normalized = _normalize_config(payload)
+    adapter = normalized["adapter"]
+    if adapter == "vbee" and not is_update:
+        if not str(normalized.get("app_id") or "").strip() or not str(normalized.get("callback_url") or "").strip():
+            raise ValueError("Vbee cần app_id và callback_url")
+    voices = normalized.get("voices")
+    if voices is not None and not isinstance(voices, list):
+        raise ValueError("voices phải là một array")
+    if isinstance(voices, list):
+        cleaned = []
+        for voice in voices:
+            if isinstance(voice, str) and voice.strip():
+                cleaned.append({"id": voice.strip(), "label": voice.strip(), "language": ""})
+            elif isinstance(voice, dict) and str(voice.get("id") or "").strip():
+                cleaned.append({
+                    "id": str(voice["id"]).strip(),
+                    "label": str(voice.get("label") or voice["id"]).strip(),
+                    "language": str(voice.get("language") or ""),
+                })
+        normalized["voices"] = cleaned
+    api_key = str(normalized.pop("api_key", "") or "")
+    if api_key:
+        if len(api_key) > 4096:
+            raise ValueError("API key quá dài")
+        normalized["api_key"] = api_key
+    return normalized
+
+
+def save_custom_provider(data: dict[str, Any], *, provider_id: str | None = None) -> dict[str, Any]:
+    items = [item for item in _read_custom_providers() if isinstance(item, dict)]
+    if provider_id is not None:
+        target = next((item for item in items
+                       if isinstance(item, dict) and str(item.get("id") or "") == provider_id), None)
+        if target is None:
+            raise KeyError(provider_id)
+        merged = {**target, **data, "id": provider_id}
+        if not str(data.get("api_key") or "") and target.get("api_key"):
+            merged["api_key"] = target["api_key"]
+        normalized = validate_provider_payload(merged)
+        if normalized["id"] in {str(item.get("id") or "") for item in _env_configs()}:
+            raise ValueError(f"Id {normalized['id']!r} trùng với provider cấu hình trong TTS_API_PROVIDERS")
+        items = [normalized if item is target else item for item in items]
+        _write_custom_providers(items)
+        return normalized
+    normalized = validate_provider_payload(data)
+    existing = {str(item.get("id") or "") for item in items} | {item["id"] for item in _env_configs()}
+    if normalized["id"] in existing:
+        raise ValueError(f"TTS API provider id trùng: {normalized['id']!r}")
+    items.append(normalized)
+    _write_custom_providers(items)
+    return normalized
+
+
+def delete_custom_provider(provider_id: str) -> None:
+    items = [item for item in _read_custom_providers() if isinstance(item, dict)]
+    kept = [item for item in items if str(item.get("id") or "") != provider_id]
+    if len(kept) == len(items):
+        raise KeyError(provider_id)
+    _write_custom_providers(kept)
 
 
 def provider_config(engine_id: str) -> dict[str, Any] | None:
     return next((item for item in _configs() if item["id"] == engine_id), None)
+
+
+def _resolve_api_key(cfg: dict[str, Any]) -> str:
+    direct = str(cfg.get("api_key") or "").strip()
+    if direct:
+        return direct
+    key_env = str(cfg.get("api_key_env") or _default_key_env(str(cfg.get("adapter") or "openai")))
+    return os.getenv(key_env, "")
 
 
 def is_api_engine(engine_id: str | None) -> bool:
@@ -65,8 +211,8 @@ def is_api_engine(engine_id: str | None) -> bool:
 def list_api_models() -> list[dict[str, Any]]:
     models = []
     for cfg in _configs():
-        key_env = str(cfg.get("api_key_env") or _default_key_env(cfg["adapter"]))
-        configured = bool(os.getenv(key_env))
+        key_env = str(cfg.get("api_key_env") or _default_key_env(str(cfg["adapter"])))
+        configured = bool(_resolve_api_key(cfg))
         voices = cfg.get("voices") if isinstance(cfg.get("voices"), list) else []
         normalized_voices = [
             {"id": str(v["id"]), "label": str(v.get("label") or v["id"]), "language": str(v.get("language") or "")}
@@ -89,13 +235,20 @@ def list_api_models() -> list[dict[str, Any]]:
             "voices": normalized_voices,
             "options_schema": [],
             "configured": configured,
+            "custom": bool(cfg.get("custom")),
+            "has_api_key": bool(str(cfg.get("api_key") or "")),
             "config_hint": f"Đặt secret trong biến môi trường {key_env}",
         })
     return models
 
 
 def _default_key_env(adapter: str) -> str:
-    return {"gemini": "GEMINI_API_KEY", "elevenlabs": "ELEVENLABS_API_KEY", "vbee": "VBEE_API_KEY"}.get(adapter, "OPENAI_API_KEY")
+    return {
+        "gemini": "GEMINI_API_KEY",
+        "elevenlabs": "ELEVENLABS_API_KEY",
+        "vbee": "VBEE_API_KEY",
+        "google": "GOOGLE_TTS_API_KEY",
+    }.get(adapter, "OPENAI_API_KEY")
 
 
 def _request(url: str, *, payload: dict[str, Any] | None, headers: dict[str, str], timeout: float) -> tuple[bytes, str]:
@@ -149,10 +302,10 @@ class ApiTTSEngine:
 
     def _synthesize(self, text: str) -> bytes:
         adapter = self.config["adapter"]
-        key_env = str(self.config.get("api_key_env") or _default_key_env(adapter))
-        api_key = os.getenv(key_env, "")
+        api_key = _resolve_api_key(self.config)
         if not api_key:
-            raise RuntimeError(f"Thiếu API key: đặt biến môi trường {key_env}")
+            key_env = str(self.config.get("api_key_env") or _default_key_env(adapter))
+            raise RuntimeError(f"Thiếu API key: nhập key trong UI hoặc đặt biến môi trường {key_env}")
         timeout = float(self.config.get("timeout_seconds") or 120)
         if adapter == "gemini":
             return self._gemini(text, api_key, timeout)
@@ -160,6 +313,8 @@ class ApiTTSEngine:
             return self._vbee(text, api_key, timeout)
         if adapter == "elevenlabs":
             return self._elevenlabs(text, api_key, timeout)
+        if adapter == "google":
+            return self._google(text, api_key, timeout)
         return self._openai(text, api_key, timeout)
 
     def _openai(self, text: str, api_key: str, timeout: float) -> bytes:
@@ -205,6 +360,27 @@ class ApiTTSEngine:
             raise RuntimeError("Gemini không trả về output_audio.data")
         self._sample_rate = int(self.config.get("sample_rate") or 24000)
         return _pcm_wav(base64.b64decode(encoded), self._sample_rate)
+
+    def _google(self, text: str, api_key: str, timeout: float) -> bytes:
+        """Google Cloud Text-to-Speech: https://cloud.google.com/text-to-speech/docs."""
+        base = str(self.config.get("base_url") or "https://texttospeech.googleapis.com/v1").rstrip("/")
+        url = f"{base}/text:synthesize?key={urllib.parse.quote(api_key, safe='')}"
+        voice_name = str(self.voice or self.config.get("voice") or "vi-VN-Standard-A")
+        language_code = str(self.config.get("language_code") or "-".join(voice_name.split("-")[:2]) or "vi-VN")
+        sample_rate = int(self.config.get("sample_rate") or 24000)
+        speaking_rate = float(self.config.get("speaking_rate") or 1.0)
+        body, _ = _request(url, payload={
+            "input": {"text": text},
+            "voice": {"languageCode": language_code, "name": voice_name},
+            "audioConfig": {"audioEncoding": "LINEAR16", "sampleRateHertz": sample_rate,
+                            "speakingRate": speaking_rate},
+        }, headers={"Content-Type": "application/json"}, timeout=timeout)
+        response = json.loads(body)
+        encoded = response.get("audioContent")
+        if not encoded:
+            raise RuntimeError(f"Google TTS không trả về audioContent: {str(response)[:300]}")
+        self._sample_rate = sample_rate
+        return _pcm_wav(base64.b64decode(encoded), sample_rate)
 
     def _vbee(self, text: str, api_key: str, timeout: float) -> bytes:
         """Submit Vbee's asynchronous request, poll it, then fetch the WAV result."""
