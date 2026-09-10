@@ -829,6 +829,111 @@ def delete_book(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
     return True
 
 
+def clear_book_source(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
+    """Remove an EPUB and all content derived from it without deleting book settings.
+
+    Stable book artwork (patch_overlays and podcast_cover.png) is deliberately kept so
+    the replacement EPUB can reuse the existing thumbnail setup.
+    """
+    book = get_book(conn, book_id)
+    if book is None:
+        return False
+
+    patches = list_patches(conn, book_id)
+    for patch in patches:
+        _delete_chunk_dir(book_id, patch.patch_index, patch.id)
+
+    now = _now()
+    patch_ids = [patch.id for patch in patches]
+    if patch_ids:
+        placeholders = ",".join("?" for _ in patch_ids)
+        conn.execute(
+            f"UPDATE gameplay_clip SET status='available', reserved_patch_id=NULL "
+            f"WHERE reserved_patch_id IN ({placeholders})",
+            patch_ids,
+        )
+        conn.execute(f"DELETE FROM videos WHERE patch_id IN ({placeholders})", patch_ids)
+    # Patch-bound jobs cascade below; remove book-level jobs as well so no stale work
+    # can recreate output after its source has gone.
+    conn.execute("DELETE FROM job WHERE book_id = ?", (book_id,))
+    conn.execute("DELETE FROM book_job WHERE book_id = ?", (book_id,))
+    conn.execute(
+        """UPDATE patch SET status='pending', updated_at=?
+             WHERE book_id=? AND status='processing'""",
+        (now, book_id),
+    )
+    conn.execute("DELETE FROM patch WHERE book_id = ?", (book_id,))
+    conn.execute("DELETE FROM chapter WHERE book_id = ?", (book_id,))
+    conn.execute(
+        """UPDATE book
+              SET original_filename='', epub_path='', status='ready',
+                  final_audio_path=NULL, final_video_path=NULL, updated_at=?
+            WHERE id=?""",
+        (now, book_id),
+    )
+    conn.commit()
+
+    for raw_path in (book.epub_path, book.final_audio_path, book.final_video_path):
+        if not raw_path:
+            continue
+        try:
+            Path(raw_path).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("clear_book_source: could not unlink %s: %s", raw_path, exc)
+
+    book_dir = Path(data_root) / "books" / str(book_id)
+    for dirname in ("audio", "videos", "patches", "patch_videos"):
+        shutil.rmtree(book_dir / dirname, ignore_errors=True)
+    # Uploaded per-patch images are keyed by obsolete patch ids. Book-level media and
+    # generated stable overlays live elsewhere and remain untouched.
+    shutil.rmtree(Path(data_root) / "uploads" / str(book_id) / "patches", ignore_errors=True)
+    return True
+
+
+def install_book_source(
+    conn: sqlite3.Connection,
+    book_id: int,
+    *,
+    original_filename: str,
+    epub_path: str,
+    chapters: list[ParsedChapter],
+) -> Book:
+    """Attach a parsed EPUB to an empty book shell while retaining its settings."""
+    book = get_book(conn, book_id)
+    if book is None:
+        raise LookupError("book not found")
+    has_content = conn.execute(
+        """SELECT EXISTS(SELECT 1 FROM chapter WHERE book_id=?)
+                  OR EXISTS(SELECT 1 FROM patch WHERE book_id=?) AS present""",
+        (book_id, book_id),
+    ).fetchone()["present"]
+    if book.epub_path or has_content:
+        raise ValueError("Hãy xóa EPUB gốc trước khi tải EPUB mới.")
+    if not chapters:
+        raise ValueError("EPUB không chứa chương hợp lệ.")
+
+    conn.executemany(
+        """INSERT INTO chapter
+                  (book_id, chapter_index, title, text, char_count, chapter_no, text_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                book_id, index, chapter.title, chapter.text, chapter.char_count,
+                detect_chapter_number(chapter.title), text_hash(chapter.text),
+            )
+            for index, chapter in enumerate(chapters)
+        ],
+    )
+    conn.execute(
+        """UPDATE book
+              SET original_filename=?, epub_path=?, status='ready', updated_at=?
+            WHERE id=?""",
+        (original_filename, epub_path, _now(), book_id),
+    )
+    conn.commit()
+    return get_book(conn, book_id)
+
+
 # ---------------------------------------------------------------------------
 # Chapter exclude
 # ---------------------------------------------------------------------------

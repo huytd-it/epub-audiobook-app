@@ -137,7 +137,13 @@ def test_synthesize_chunk_without_prompt_text_omits_prompt_arguments(monkeypatch
     assert "prompt_text" not in model.calls[0]
 
 
-def test_model_catalog_and_factory_are_unified():
+def test_model_catalog_and_factory_are_unified(tmp_path, monkeypatch):
+    # Không có isolation thì test đọc data/tts_custom_providers.json thật và
+    # provider người dùng tự thêm sẽ lọt vào danh sách.
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(settings, "tts_api_providers", "")
     models = list_tts_models()
     assert [model["id"] for model in models] == [
         "voxcpm2", "omnivoice", "confucius4", "f5-vivoice", "vieneu-fast", "zerotts", "edge-tts", "gtts",

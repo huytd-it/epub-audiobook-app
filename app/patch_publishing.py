@@ -633,7 +633,12 @@ def enqueue_patch_video(conn: sqlite3.Connection, patch_id: int, *,
         enqueue_patch_publish(conn, patch_id)
     else:
         pipeline_row = _row(conn, patch_id)
-        if pipeline_row["stage"] == "pending" and not (pipeline_row["config_snapshot"] or "").strip("{} \n\t"):
+        if pipeline_row.get("stage") == "cancelled":
+            discard_stale_patch_video(conn, patch.book_id, patch_id)
+            enqueue_patch_publish(conn, patch_id, force_new=True)
+        elif pipeline_row["stage"] == "pending" and not (pipeline_row["config_snapshot"] or "").strip("{} \n\t"):
+            enqueue_patch_publish(conn, patch_id, force_new=True)
+        elif not pipeline_row.get("thumbnail_path") or not Path(pipeline_row["thumbnail_path"]).is_file():
             enqueue_patch_publish(conn, patch_id, force_new=True)
     pipeline = _row(conn, patch_id)
     if not pipeline["thumbnail_path"] or not Path(pipeline["thumbnail_path"]).is_file():
@@ -726,8 +731,8 @@ def reconcile_patch_automation(conn: sqlite3.Connection, *,
                 continue
             pipeline = _row(conn, patch_id) or {}
             if pipeline.get("stage") == "cancelled":
-                stats["skipped"] += 1
-                continue
+                discard_stale_patch_video(conn, int(row["book_id"]), patch_id)
+                pipeline = _row(conn, patch_id) or {}
             upload_id = pipeline.get("youtube_upload_id")
             if upload_id:
                 upload = conn.execute(

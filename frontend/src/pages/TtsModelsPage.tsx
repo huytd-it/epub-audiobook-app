@@ -23,6 +23,7 @@ type ManagedModel = TtsModel & {
 type CustomProvider = {
   id: string; name?: string; adapter: string; base_url?: string; model?: string;
   voice?: string; voices?: { id: string; label?: string; language?: string }[];
+  models?: { id: string; label?: string }[];
   api_key_env?: string; sample_rate?: number; timeout_seconds?: number;
   instructions?: string; app_id?: string; callback_url?: string; speed_rate?: number;
   language_code?: string; speaking_rate?: number; has_api_key?: boolean; custom?: boolean;
@@ -44,6 +45,7 @@ const EMPTY_FORM: CustomProvider = {
 
 const SAMPLE_TEXT = "Xin chào, đây là bản nghe thử để kiểm tra chất giọng, độ rõ và tốc độ tổng hợp tiếng Việt.";
 const isApi = (model: ManagedModel) => model.capabilities.kind === "api" || model.capabilities.runtime === "api";
+const providerIdOf = (catalogId: string) => catalogId.split(":")[0];
 const size = (bytes: number) => bytes ? `${(bytes / 1024 / 1024).toFixed(bytes > 1024 ** 3 ? 0 : 1)} ${bytes > 1024 ** 3 ? "GB" : "MB"}` : "—";
 
 export function TtsModelsPage() {
@@ -64,6 +66,7 @@ export function TtsModelsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<CustomProvider>(EMPTY_FORM);
   const [formVoices, setFormVoices] = useState("");
+  const [formModels, setFormModels] = useState("");
   const [formKey, setFormKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
@@ -146,29 +149,41 @@ export function TtsModelsPage() {
   const inputClass = "h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30";
 
   const openCreate = () => {
-    setEditingId(null); setForm(EMPTY_FORM); setFormVoices(""); setFormKey("");
-    setFormError(""); setTestError(""); setTestAudio(""); setDialogOpen(true);
+    setEditingId(null); setForm(EMPTY_FORM); setFormVoices(""); setFormModels(""); setFormKey("");
+    setFormError(""); setTestError(""); setTestAudio("");
+    setRuntime("api");
+    setDialogOpen(true);
   };
 
-  const openEdit = (id: string) => {
+  const openEdit = (catalogId: string) => {
+    // Provider nhiều model hiện mỗi model một card, id dạng "<provider>:<model slug>".
+    const id = providerIdOf(catalogId);
     const found = customProviders.find((item) => item.id === id);
     if (!found) return;
     setEditingId(id);
     setForm({ ...EMPTY_FORM, ...found });
     setFormVoices((found.voices || []).map((voice) => [voice.id, voice.label || "", voice.language || ""].filter(Boolean).join("|")).join("\n"));
+    setFormModels((found.models || []).map((item) => [item.id, item.label || ""].filter(Boolean).join("|")).join("\n"));
     setFormKey("");
     setFormError(""); setTestError(""); setTestAudio(""); setDialogOpen(true);
   };
 
   const buildPayload = (): Record<string, unknown> => {
+    if (form.adapter === "custom" && !(form.base_url || "").trim())
+      throw new Error("Adapter Custom cần Base URL (vd: http://localhost:20128/v1); bỏ trống sẽ gọi nhầm api.openai.com.");
     const voices = formVoices.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
       const [id, label, language] = line.split("|").map((part) => part.trim());
       return { id, label: label || id, language: language || "" };
     }).filter((voice) => voice.id);
+    const models = formModels.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+      const [id, label] = line.split("|").map((part) => part.trim());
+      return { id, label: label || id };
+    }).filter((item) => item.id);
     const payload: Record<string, unknown> = {
       ...form,
       id: editingId || form.id.trim(),
       voices,
+      models,
       sample_rate: Number(form.sample_rate) || 24000,
       timeout_seconds: Number(form.timeout_seconds) || 120,
     };
@@ -192,8 +207,11 @@ export function TtsModelsPage() {
     } finally { setSaving(false); }
   };
 
-  const removeProvider = async (id: string) => {
-    if (!window.confirm(`Xóa custom provider "${id}"?`)) return;
+  const removeProvider = async (catalogId: string) => {
+    const id = providerIdOf(catalogId);
+    const siblings = models.filter((model) => model.custom && providerIdOf(model.id) === id).length;
+    const warning = siblings > 1 ? ` Provider này đang phục vụ ${siblings} model, tất cả sẽ bị xóa.` : "";
+    if (!window.confirm(`Xóa custom provider "${id}"?${warning}`)) return;
     setDeleting(id); setMessage("");
     try {
       await del(`/tts-models/providers/${id}`);
@@ -220,7 +238,11 @@ export function TtsModelsPage() {
   const adapterHint = ADAPTERS.find((item) => item.value === form.adapter)?.hint || "";
 
   return <div className="space-y-7">
-    <Header title="Model & provider TTS" subtitle="Model local dùng tài nguyên trên máy; provider API chạy trong pool riêng nên không phải chờ GPU local. Nghe thử và đo tốc độ trước khi dùng cho production." />
+    <Header
+      title="Model & provider TTS"
+      subtitle="Model local dùng tài nguyên trên máy; provider API chạy trong pool riêng nên không phải chờ GPU local. Nghe thử và đo tốc độ trước khi dùng cho production."
+      action={<Button onClick={openCreate}><Plus className="h-4 w-4" /> Thêm provider TTS</Button>}
+    />
 
 
     {message && <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{message}</div>}
@@ -248,9 +270,12 @@ export function TtsModelsPage() {
           : <div className="text-center text-muted-foreground"><Gauge className="mx-auto mb-3 h-8 w-8" /><p className="text-sm font-medium text-foreground">Chưa có phép đo</p><p className="mt-1 text-xs">RTF dưới 1× là nhanh hơn thời lượng audio.</p></div>}
       </div>
     </section>
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Catalog TTS</h2><p className="text-xs text-muted-foreground">Hai runtime độc lập, cùng dùng một pipeline audiobook.</p></div><div className="flex items-center gap-2"><div className="inline-flex rounded-lg border bg-muted/40 p-1"><Button size="sm" variant={runtime === "local" ? "secondary" : "ghost"} aria-pressed={runtime === "local"} onClick={() => setRuntime("local")}><Cpu className="h-3.5 w-3.5" /> Local ({models.filter((model) => !isApi(model)).length})</Button><Button size="sm" variant={runtime === "api" ? "secondary" : "ghost"} aria-pressed={runtime === "api"} onClick={() => setRuntime("api")}><Cloud className="h-3.5 w-3.5" /> API ({models.filter(isApi).length})</Button></div>{runtime === "api" && <Button size="sm" onClick={openCreate}><Plus className="h-3.5 w-3.5" /> Thêm provider</Button>}</div></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Catalog TTS</h2><p className="text-xs text-muted-foreground">Hai runtime độc lập, cùng dùng một pipeline audiobook.</p></div><div className="flex items-center gap-2"><div className="inline-flex rounded-lg border bg-muted/40 p-1"><Button size="sm" variant={runtime === "local" ? "secondary" : "ghost"} aria-pressed={runtime === "local"} onClick={() => setRuntime("local")}><Cpu className="h-3.5 w-3.5" /> Local ({models.filter((model) => !isApi(model)).length})</Button><Button size="sm" variant={runtime === "api" ? "secondary" : "ghost"} aria-pressed={runtime === "api"} onClick={() => setRuntime("api")}><Cloud className="h-3.5 w-3.5" /> API ({models.filter(isApi).length})</Button></div></div></div>
     {loading && <LoadingState text="Đang tải catalog TTS..." />}
-    {!loading && filteredModels.length === 0 && <EmptyState text={runtime === "api" ? "Chưa có provider API nào được cấu hình." : "Chưa có model TTS local nào."} />}
+    {!loading && filteredModels.length === 0 && <div className="space-y-3">
+      <EmptyState text={runtime === "api" ? "Chưa có provider API nào được cấu hình." : "Chưa có model TTS local nào."} />
+      {runtime === "api" && <div className="flex justify-center"><Button size="sm" variant="outline" onClick={openCreate}><Plus className="h-3.5 w-3.5" /> Thêm provider TTS đầu tiên</Button></div>}
+    </div>}
     <div className="grid gap-4 lg:grid-cols-2">
       {filteredModels.map((model) => {
         const { install, job } = model;
@@ -283,7 +308,7 @@ export function TtsModelsPage() {
             {job && <pre className={`max-h-28 overflow-auto whitespace-pre-wrap rounded p-2 text-[10px] ${job.state === "failed" ? "bg-destructive/10 text-destructive" : "bg-muted"}`}>{job.state === "running" ? "Đang tải…\n" : ""}{job.log || "Đang chờ dữ liệu..."}</pre>}
             {model.custom && <div className="flex flex-wrap items-center gap-2 border-t pt-2">
               <Button size="sm" variant="outline" onClick={() => openEdit(model.id)}><Pencil className="h-3.5 w-3.5" /> Sửa</Button>
-              <Button size="sm" variant="outline" onClick={() => removeProvider(model.id)} disabled={deleting === model.id}>{deleting === model.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Xóa</Button>
+              <Button size="sm" variant="outline" onClick={() => removeProvider(model.id)} disabled={deleting === providerIdOf(model.id)}>{deleting === providerIdOf(model.id) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Xóa</Button>
               <span className="text-muted-foreground">{model.has_api_key ? "Đã lưu API key" : "Key qua biến môi trường"}</span>
             </div>}
           </CardContent>
@@ -305,8 +330,8 @@ export function TtsModelsPage() {
             </select>
             {adapterHint && <span className="font-normal text-muted-foreground">{adapterHint}</span>}
           </label>
-          <label className="space-y-1.5 text-xs font-medium sm:col-span-2">Base URL (bỏ trống = mặc định của adapter)<input className={`${inputClass} font-mono`} value={form.base_url || ""} onChange={(event) => setField("base_url", event.target.value)} placeholder="https://custom-tts.example.com/v1" /></label>
-          <label className="space-y-1.5 text-xs font-medium">Model / voice model<input className={`${inputClass} font-mono`} value={form.model || ""} onChange={(event) => setField("model", event.target.value)} placeholder={form.adapter === "google" ? "không bắt buộc" : "vd: gpt-4o-mini-tts"} /></label>
+          <label className="space-y-1.5 text-xs font-medium sm:col-span-2">Base URL {form.adapter === "custom" ? <span className="text-destructive">(bắt buộc với adapter Custom)</span> : "(bỏ trống = mặc định của adapter)"}<input className={`${inputClass} font-mono`} value={form.base_url || ""} onChange={(event) => setField("base_url", event.target.value)} placeholder={form.adapter === "custom" ? "http://localhost:20128/v1" : "https://custom-tts.example.com/v1"} /></label>
+          <label className="space-y-1.5 text-xs font-medium">Model / voice model {formModels.trim() && <span className="font-normal text-muted-foreground">(bỏ qua khi có danh sách model)</span>}<input className={`${inputClass} font-mono`} value={form.model || ""} onChange={(event) => setField("model", event.target.value)} placeholder={form.adapter === "google" ? "không bắt buộc" : "vd: gpt-4o-mini-tts"} /></label>
           <label className="space-y-1.5 text-xs font-medium">Voice mặc định<input className={`${inputClass} font-mono`} value={form.voice || ""} onChange={(event) => setField("voice", event.target.value)} placeholder={form.adapter === "google" ? "vi-VN-Standard-A" : form.adapter === "elevenlabs" ? "voice-id" : "alloy / Kore"} /></label>
           <label className="space-y-1.5 text-xs font-medium">API key (lưu local, để trống = dùng biến môi trường)<input type="password" className={`${inputClass} font-mono`} value={formKey} onChange={(event) => setFormKey(event.target.value)} placeholder={editingId ? "Để trống để giữ key cũ" : "sk-..."} autoComplete="off" /></label>
           <label className="space-y-1.5 text-xs font-medium">Biến môi trường key<input className={`${inputClass} font-mono`} value={form.api_key_env || ""} onChange={(event) => setField("api_key_env", event.target.value)} placeholder="vd: GOOGLE_TTS_API_KEY" /></label>
@@ -321,6 +346,7 @@ export function TtsModelsPage() {
           </>}
           <label className="space-y-1.5 text-xs font-medium">Sample rate (Hz)<input type="number" min={8000} max={48000} step={1000} className={inputClass} value={form.sample_rate ?? 24000} onChange={(event) => setField("sample_rate", Number(event.target.value))} /></label>
           <label className="space-y-1.5 text-xs font-medium">Timeout (giây)<input type="number" min={10} max={600} className={inputClass} value={form.timeout_seconds ?? 120} onChange={(event) => setField("timeout_seconds", Number(event.target.value))} /></label>
+          <label className="space-y-1.5 text-xs font-medium sm:col-span-2">Danh sách model của provider (mỗi dòng: model|label) — mỗi model thành một mục riêng trong catalog, dùng chung base URL và API key<textarea className="min-h-16 w-full resize-y rounded-md border bg-background px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-primary/30" value={formModels} onChange={(event) => setFormModels(event.target.value)} placeholder={"google-tts/vi|Google VI\ngoogle-tts/en|Google EN"} /></label>
           <label className="space-y-1.5 text-xs font-medium sm:col-span-2">Danh sách voice (mỗi dòng: id|label|language)<textarea className="min-h-16 w-full resize-y rounded-md border bg-background px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-primary/30" value={formVoices} onChange={(event) => setFormVoices(event.target.value)} placeholder={"vi-VN-Standard-A|Nữ miền Nam|vi\nvi-VN-Wavenet-D|Nam miền Bắc|vi"} /></label>
         </div>
         {formError && <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{formError}</p>}

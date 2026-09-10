@@ -1020,6 +1020,79 @@ def delete_book(request: Request, book_id: int):
     return RedirectResponse(url="/books", status_code=303)
 
 
+@router.post("/books/{book_id}/source/delete")
+def delete_book_source(request: Request, book_id: int):
+    """Detach the EPUB and derived chapters/patches, retaining the book configuration."""
+    with locked_conn(request) as conn:
+        ok = repository.clear_book_source(conn, book_id, settings.data_root)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Không tìm thấy sách.")
+    return JSONResponse({"status": "deleted"})
+
+
+@router.post("/books/{book_id}/source")
+async def upload_book_source(
+    request: Request,
+    book_id: int,
+    epub_file: UploadFile = File(...),
+):
+    """Attach a new EPUB to a book whose previous source has been removed."""
+    filename = Path(epub_file.filename or "").name
+    if not filename or Path(filename).suffix.lower() != ".epub":
+        raise HTTPException(status_code=400, detail="Chỉ hỗ trợ tệp EPUB.")
+
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy sách.")
+        if book.epub_path or repository.list_chapters(conn, book_id) or repository.list_patches(conn, book_id):
+            raise HTTPException(status_code=409, detail="Hãy xóa EPUB gốc trước khi tải EPUB mới.")
+
+    uploads_dir = Path(settings.data_root) / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    temporary_path = uploads_dir / f"_tmp_source_{book_id}_{uuid.uuid4().hex}.epub"
+    final_path = uploads_dir / f"{book_id}.epub"
+    try:
+        with open(temporary_path, "wb") as handle:
+            shutil.copyfileobj(epub_file.file, handle)
+        chapters = await asyncio.to_thread(parse_epub, str(temporary_path))
+        if not chapters:
+            raise HTTPException(status_code=400, detail="EPUB không chứa chương hợp lệ.")
+
+        installed_file = False
+        try:
+            with locked_conn(request) as conn:
+                current = repository.get_book(conn, book_id)
+                if current is None:
+                    raise LookupError("Không tìm thấy sách.")
+                if current.epub_path or repository.list_chapters(conn, book_id) or repository.list_patches(conn, book_id):
+                    raise ValueError("Hãy xóa EPUB gốc trước khi tải EPUB mới.")
+                # Recheck and install under the same lock: concurrent uploads must not
+                # overwrite the source file selected by the first successful request.
+                temporary_path.replace(final_path)
+                installed_file = True
+                repository.install_book_source(
+                    conn,
+                    book_id,
+                    original_filename=filename,
+                    epub_path=str(final_path),
+                    chapters=chapters,
+                )
+        except (LookupError, ValueError) as exc:
+            if installed_file:
+                final_path.unlink(missing_ok=True)
+            status_code = 404 if isinstance(exc, LookupError) else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        except Exception:
+            if installed_file:
+                final_path.unlink(missing_ok=True)
+            raise
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+    return JSONResponse({"status": "uploaded", "chapters": len(chapters), "filename": filename})
+
+
 @router.post("/books/{book_id}/voice-select")
 def select_voice(
     request: Request, book_id: int,

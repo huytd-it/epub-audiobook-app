@@ -4,6 +4,7 @@ export type Book = {
   status: string;
   priority: number;
   original_filename: string;
+  epub_path?: string;
   created_at: string;
   normalize_numbers_enabled?: number;
   normalize_junk_enabled?: number;

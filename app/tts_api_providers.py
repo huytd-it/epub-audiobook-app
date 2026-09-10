@@ -105,6 +105,34 @@ def _configs() -> list[dict[str, Any]]:
     return merged
 
 
+def _model_slug(model_id: str) -> str:
+    """Engine ids travel through URLs and job payloads, so a model id like
+    ``google-tts/vi`` becomes ``google-tts-vi``."""
+    return re.sub(r"[^a-z0-9_-]+", "-", model_id.strip().lower()).strip("-")
+
+
+def _model_entries(cfg: dict[str, Any]) -> list[dict[str, str]]:
+    """The models one provider serves. Empty for a legacy single-model config,
+    which keeps using its bare ``model`` field and the provider id as engine id."""
+    raw = cfg.get("models")
+    if not isinstance(raw, list):
+        return []
+    entries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if isinstance(item, str):
+            item = {"id": item}
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        slug = _model_slug(model_id)
+        if not model_id or not slug or slug in seen:
+            continue
+        seen.add(slug)
+        entries.append({"id": model_id, "label": str(item.get("label") or model_id).strip(), "slug": slug})
+    return entries
+
+
 def list_custom_providers(*, include_secret: bool = False) -> list[dict[str, Any]]:
     """Raw custom providers from disk, sanitized for the UI unless include_secret."""
     result = []
@@ -130,9 +158,16 @@ def validate_provider_payload(data: dict[str, Any], *, is_update: bool = False) 
         raise ValueError("Payload provider phải là một object")
     payload = dict(data)
     if is_update:
+        # Payload chưa lưu (test trước khi lưu): id không dùng tới, nhưng _normalize_config
+        # vẫn bắt buộc id hợp lệ nên phải mượn một slug placeholder rồi bỏ đi.
         payload.pop("id", None)
+        payload["id"] = "provider-preview"
     normalized = _normalize_config(payload)
+    if is_update:
+        normalized.pop("id", None)
     adapter = normalized["adapter"]
+    if adapter == "custom" and not str(normalized.get("base_url") or "").strip():
+        raise ValueError("Adapter 'custom' cần base_url; bỏ trống sẽ gọi nhầm https://api.openai.com/v1")
     if adapter == "vbee" and not is_update:
         if not str(normalized.get("app_id") or "").strip() or not str(normalized.get("callback_url") or "").strip():
             raise ValueError("Vbee cần app_id và callback_url")
@@ -151,6 +186,12 @@ def validate_provider_payload(data: dict[str, Any], *, is_update: bool = False) 
                     "language": str(voice.get("language") or ""),
                 })
         normalized["voices"] = cleaned
+    models = normalized.get("models")
+    if models is not None and not isinstance(models, list):
+        raise ValueError("models phải là một array")
+    if isinstance(models, list):
+        normalized["models"] = [{"id": entry["id"], "label": entry["label"]}
+                                for entry in _model_entries(normalized)]
     api_key = str(normalized.pop("api_key", "") or "")
     if api_key:
         if len(api_key) > 4096:
@@ -193,7 +234,22 @@ def delete_custom_provider(provider_id: str) -> None:
 
 
 def provider_config(engine_id: str) -> dict[str, Any] | None:
-    return next((item for item in _configs() if item["id"] == engine_id), None)
+    configs = _configs()
+    direct = next((item for item in configs if item["id"] == engine_id), None)
+    if direct is not None:
+        return direct
+    # Multi-model provider: engine id is "<provider>:<model slug>".
+    base_id, separator, slug = str(engine_id or "").partition(":")
+    if not separator:
+        return None
+    cfg = next((item for item in configs if item["id"] == base_id), None)
+    if cfg is None:
+        return None
+    entry = next((item for item in _model_entries(cfg) if item["slug"] == slug), None)
+    if entry is None:
+        return None
+    return {**cfg, "id": engine_id, "model": entry["id"], "provider_id": base_id,
+            "name": f"{cfg.get('name') or base_id} · {entry['label']}"}
 
 
 def _resolve_api_key(cfg: dict[str, Any]) -> str:
@@ -210,35 +266,44 @@ def is_api_engine(engine_id: str | None) -> bool:
 
 def list_api_models() -> list[dict[str, Any]]:
     models = []
-    for cfg in _configs():
-        key_env = str(cfg.get("api_key_env") or _default_key_env(str(cfg["adapter"])))
-        configured = bool(_resolve_api_key(cfg))
-        voices = cfg.get("voices") if isinstance(cfg.get("voices"), list) else []
-        normalized_voices = [
-            {"id": str(v["id"]), "label": str(v.get("label") or v["id"]), "language": str(v.get("language") or "")}
-            for v in voices if isinstance(v, dict) and v.get("id")
-        ]
-        default_voice = str(cfg.get("voice") or (normalized_voices[0]["id"] if normalized_voices else "")) or None
-        models.append({
-            "id": cfg["id"],
-            "name": str(cfg.get("name") or cfg["id"]),
-            "model_id": str(cfg.get("model") or ""),
-            "package": "api",
-            "sample_rate": int(cfg.get("sample_rate") or 24000),
-            "supports_reference": False,
-            "capabilities": {
-                "kind": "api", "runtime": "api", "provider": cfg["adapter"],
-                "reference_audio": False, "voice_selection": True,
-                "offline": False, "online": True,
-            },
-            "default_voice": default_voice,
-            "voices": normalized_voices,
-            "options_schema": [],
-            "configured": configured,
-            "custom": bool(cfg.get("custom")),
-            "has_api_key": bool(str(cfg.get("api_key") or "")),
-            "config_hint": f"Đặt secret trong biến môi trường {key_env}",
-        })
+    for provider in _configs():
+        # One catalog entry per model the provider serves; a provider without a
+        # ``models`` list stays a single entry keyed by its own id.
+        variants = [
+            {**provider, "id": f"{provider['id']}:{entry['slug']}", "model": entry["id"],
+             "provider_id": provider["id"],
+             "name": f"{provider.get('name') or provider['id']} · {entry['label']}"}
+            for entry in _model_entries(provider)
+        ] or [provider]
+        for cfg in variants:
+            key_env = str(cfg.get("api_key_env") or _default_key_env(str(cfg["adapter"])))
+            configured = bool(_resolve_api_key(cfg))
+            voices = cfg.get("voices") if isinstance(cfg.get("voices"), list) else []
+            normalized_voices = [
+                {"id": str(v["id"]), "label": str(v.get("label") or v["id"]), "language": str(v.get("language") or "")}
+                for v in voices if isinstance(v, dict) and v.get("id")
+            ]
+            default_voice = str(cfg.get("voice") or (normalized_voices[0]["id"] if normalized_voices else "")) or None
+            models.append({
+                "id": cfg["id"],
+                "name": str(cfg.get("name") or cfg["id"]),
+                "model_id": str(cfg.get("model") or ""),
+                "package": "api",
+                "sample_rate": int(cfg.get("sample_rate") or 24000),
+                "supports_reference": False,
+                "capabilities": {
+                    "kind": "api", "runtime": "api", "provider": cfg["adapter"],
+                    "reference_audio": False, "voice_selection": True,
+                    "offline": False, "online": True,
+                },
+                "default_voice": default_voice,
+                "voices": normalized_voices,
+                "options_schema": [],
+                "configured": configured,
+                "custom": bool(cfg.get("custom")),
+                "has_api_key": bool(str(cfg.get("api_key") or "")),
+                "config_hint": f"Đặt secret trong biến môi trường {key_env}",
+            })
     return models
 
 

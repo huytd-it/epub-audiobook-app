@@ -12,6 +12,7 @@ import {
   Pencil,
   Settings,
   Trash2,
+  UploadCloud,
   Video,
 } from "lucide-react";
 import { api, Patch, post, postForm, postJson } from "@/api";
@@ -180,6 +181,9 @@ export function BookDetail() {
   const [batchKind, setBatchKind] = useState<BatchKind>("audio");
   const [batchTargets, setBatchTargets] = useState<number[]>([]);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const [sourceFile, setSourceFile] = useState<File>();
+  const [sourceBusy, setSourceBusy] = useState<"delete" | "upload">();
   const [automation, setAutomation] = useState<BatchAutomation>(DEFAULT_AUTOMATION);
   const [settings, setSettings] = useState<AudioSettings>({
     modelId: "edge-tts",
@@ -213,7 +217,7 @@ export function BookDetail() {
   );
 
   // Dừng polling khi đang mở dialog hoặc đang chạy thao tác: tránh ghi đè state giữa chừng.
-  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || batchOpen || busyCount > 0;
+  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || batchOpen || sourceOpen || busyCount > 0;
   const { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh } = useBookDetail(
     bookId,
     paused
@@ -544,6 +548,41 @@ export function BookDetail() {
     }
   }, [bookId, bookTitle, refresh, renaming]);
 
+  const deleteBookSource = useCallback(async () => {
+    if (sourceBusy) return;
+    setSourceBusy("delete");
+    try {
+      await post(`/books/${bookId}/source/delete`);
+      setSelectedIds([]);
+      setSourceFile(undefined);
+      showToast("Đã xóa EPUB gốc và dữ liệu patch. Cấu hình sản xuất và thumbnail được giữ lại.");
+      await Promise.all([refresh(), chapterVal.reload()]);
+    } catch (err) {
+      showToast(errorText(err));
+    } finally {
+      setSourceBusy(undefined);
+    }
+  }, [bookId, chapterVal, refresh, sourceBusy]);
+
+  const uploadBookSource = useCallback(async () => {
+    if (!sourceFile || sourceBusy) return;
+    setSourceBusy("upload");
+    try {
+      const form = new FormData();
+      form.append("epub_file", sourceFile);
+      const result = await postForm<{ chapters: number }>(`/books/${bookId}/source`, form);
+      showToast(`Đã tải EPUB mới với ${result.chapters} chương. Bạn có thể xây dựng patch mới.`);
+      setSourceOpen(false);
+      setSourceFile(undefined);
+      setTab("chapters");
+      await Promise.all([refresh(), chapterVal.reload()]);
+    } catch (err) {
+      showToast(errorText(err));
+    } finally {
+      setSourceBusy(undefined);
+    }
+  }, [bookId, chapterVal, refresh, sourceBusy, sourceFile]);
+
   // Sau khi ghi chương (sửa nội dung hoặc chuẩn hoá tiêu đề): làm mới báo cáo kiểm tra
   // trước (không bị inFlight-guard chặn), rồi làm mới data chính — best-effort.
   const onChapterSaved = useCallback(async () => {
@@ -570,6 +609,7 @@ export function BookDetail() {
     );
 
   const chapterMax = Math.max(0, data.chapters.length - 1);
+  const hasBookSource = Boolean(data.book.epub_path);
   const selectionLabel = selectedIds.length ? `${selectedIds.length} patch đã chọn` : "Toàn bộ patch";
 
   const steps = [
@@ -655,9 +695,12 @@ export function BookDetail() {
               )}
           </span>
         }
-        subtitle={`#${bookId} · ${data.book.original_filename} · ${new Date(data.book.created_at).toLocaleDateString("vi-VN")}`}
+        subtitle={`#${bookId} · ${data.book.original_filename || "Chưa có EPUB"} · ${new Date(data.book.created_at).toLocaleDateString("vi-VN")}`}
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setSourceOpen(true)}>
+              <UploadCloud className="h-3.5 w-3.5" /> {hasBookSource ? "Quản lý EPUB" : "Upload EPUB"}
+            </Button>
             <LiveIndicator
               live={live}
               refreshing={refreshing}
@@ -669,6 +712,19 @@ export function BookDetail() {
           </div>
         }
       />
+
+      {!hasBookSource && (
+        <div className="flex flex-col gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 sm:flex-row sm:items-center">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+          <div className="flex-1">
+            <div className="font-bold">Sách chưa có EPUB nguồn</div>
+            <div className="mt-0.5 text-amber-800">Cấu hình sản xuất và thumbnail vẫn được giữ. Upload EPUB mới để tạo lại mục lục và patch.</div>
+          </div>
+          <Button type="button" size="sm" onClick={() => setSourceOpen(true)}>
+            <UploadCloud className="h-3.5 w-3.5" /> Chọn EPUB mới
+          </Button>
+        </div>
+      )}
 
       {Boolean(data.last_error) && (
         <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">
@@ -901,6 +957,64 @@ export function BookDetail() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={sourceOpen}
+        onOpenChange={(open) => {
+          if (sourceBusy) return;
+          setSourceOpen(open);
+          if (!open) setSourceFile(undefined);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{hasBookSource ? "Gỡ EPUB gốc" : "Upload EPUB mới"}</DialogTitle>
+            <DialogDescription>
+              {hasBookSource
+                ? "Thao tác này xóa EPUB, mục lục, patch và các đầu ra audio/video của patch. Cấu hình sản xuất, branding, overlay và artwork thumbnail của sách vẫn được giữ lại."
+                : "EPUB mới sẽ được nạp vào chính hồ sơ sách này. Tên đã chỉnh, cấu hình sản xuất và thumbnail hiện tại không bị thay đổi."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {hasBookSource ? (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-800">
+              <div className="font-semibold">Dữ liệu sẽ bị xóa vĩnh viễn</div>
+              <div className="mt-1 break-all font-mono text-[11px]">{data.book.original_filename}</div>
+              <div className="mt-1">{data.chapters.length} chương · {patches.length} patch</div>
+            </div>
+          ) : (
+            <label className="flex cursor-pointer flex-col items-center gap-3 rounded-md border-2 border-dashed border-border bg-muted/20 px-5 py-7 text-center transition-colors hover:border-primary/60">
+              <UploadCloud className="h-8 w-8 text-primary" />
+              <span className="text-sm font-semibold">{sourceFile ? sourceFile.name : "Chọn tệp EPUB từ máy"}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {sourceFile ? `${(sourceFile.size / 1024 / 1024).toFixed(2)} MB` : "Chỉ hỗ trợ định dạng .epub"}
+              </span>
+              <input
+                type="file"
+                accept=".epub,application/epub+zip"
+                className="hidden"
+                disabled={Boolean(sourceBusy)}
+                onChange={(event) => setSourceFile(event.target.files?.[0])}
+              />
+            </label>
+          )}
+
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={Boolean(sourceBusy)} onClick={() => setSourceOpen(false)}>
+              Hủy
+            </Button>
+            {hasBookSource ? (
+              <Button type="button" variant="destructive" disabled={Boolean(sourceBusy)} onClick={deleteBookSource}>
+                <Trash2 className="h-3.5 w-3.5" /> {sourceBusy === "delete" ? "Đang xóa..." : "Xóa EPUB và patch"}
+              </Button>
+            ) : (
+              <Button type="button" disabled={!sourceFile || Boolean(sourceBusy)} onClick={uploadBookSource}>
+                <UploadCloud className="h-3.5 w-3.5" /> {sourceBusy === "upload" ? "Đang tải..." : "Upload EPUB"}
+              </Button>
+            )}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
