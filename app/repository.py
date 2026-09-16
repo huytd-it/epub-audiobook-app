@@ -829,16 +829,12 @@ def delete_book(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
     return True
 
 
-def clear_book_source(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
-    """Remove an EPUB and all content derived from it without deleting book settings.
+def _purge_book_content(conn: sqlite3.Connection, book_id: int) -> None:
+    """Delete chapters, patches and every DB row derived from the source text.
 
-    Stable book artwork (patch_overlays and podcast_cover.png) is deliberately kept so
-    the replacement EPUB can reuse the existing thumbnail setup.
+    The book row itself is left to the caller: this only clears produced content, so
+    both "gỡ EPUB" and "nạp lại mục lục" can share the same teardown. No commit.
     """
-    book = get_book(conn, book_id)
-    if book is None:
-        return False
-
     patches = list_patches(conn, book_id)
     for patch in patches:
         _delete_chunk_dir(book_id, patch.patch_index, patch.id)
@@ -864,30 +860,104 @@ def clear_book_source(conn: sqlite3.Connection, book_id: int, data_root: str) ->
     )
     conn.execute("DELETE FROM patch WHERE book_id = ?", (book_id,))
     conn.execute("DELETE FROM chapter WHERE book_id = ?", (book_id,))
-    conn.execute(
-        """UPDATE book
-              SET original_filename='', epub_path='', status='ready',
-                  final_audio_path=NULL, final_video_path=NULL, updated_at=?
-            WHERE id=?""",
-        (now, book_id),
-    )
-    conn.commit()
 
-    for raw_path in (book.epub_path, book.final_audio_path, book.final_video_path):
+
+def _purge_book_content_files(book: Book, data_root: str, *, drop_epub: bool) -> None:
+    """Remove the on-disk output of the rows cleared by `_purge_book_content`.
+
+    Call after the DB transaction commits. Stable book artwork (patch_overlays and
+    podcast_cover.png) and book-level media are deliberately kept so the replacement
+    source can reuse the existing thumbnail setup.
+    """
+    stale_paths = [book.final_audio_path, book.final_video_path]
+    if drop_epub:
+        stale_paths.append(book.epub_path)
+    for raw_path in stale_paths:
         if not raw_path:
             continue
         try:
             Path(raw_path).unlink(missing_ok=True)
         except OSError as exc:
-            logger.warning("clear_book_source: could not unlink %s: %s", raw_path, exc)
+            logger.warning("purge_book_content: could not unlink %s: %s", raw_path, exc)
 
-    book_dir = Path(data_root) / "books" / str(book_id)
+    book_dir = Path(data_root) / "books" / str(book.id)
     for dirname in ("audio", "videos", "patches", "patch_videos"):
         shutil.rmtree(book_dir / dirname, ignore_errors=True)
     # Uploaded per-patch images are keyed by obsolete patch ids. Book-level media and
     # generated stable overlays live elsewhere and remain untouched.
-    shutil.rmtree(Path(data_root) / "uploads" / str(book_id) / "patches", ignore_errors=True)
+    shutil.rmtree(Path(data_root) / "uploads" / str(book.id) / "patches", ignore_errors=True)
+
+
+def _insert_chapters(conn: sqlite3.Connection, book_id: int, chapters: list[ParsedChapter]) -> None:
+    """Write a freshly parsed table of contents; chapter_index follows parse order."""
+    conn.executemany(
+        """INSERT INTO chapter
+                  (book_id, chapter_index, title, text, char_count, chapter_no, text_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                book_id, index, chapter.title, chapter.text, chapter.char_count,
+                detect_chapter_number(chapter.title), text_hash(chapter.text),
+            )
+            for index, chapter in enumerate(chapters)
+        ],
+    )
+
+
+def clear_book_source(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
+    """Remove an EPUB and all content derived from it without deleting book settings.
+
+    Stable book artwork (patch_overlays and podcast_cover.png) is deliberately kept so
+    the replacement EPUB can reuse the existing thumbnail setup.
+    """
+    book = get_book(conn, book_id)
+    if book is None:
+        return False
+
+    _purge_book_content(conn, book_id)
+    conn.execute(
+        """UPDATE book
+              SET original_filename='', epub_path='', status='ready',
+                  final_audio_path=NULL, final_video_path=NULL, updated_at=?
+            WHERE id=?""",
+        (_now(), book_id),
+    )
+    conn.commit()
+    _purge_book_content_files(book, data_root, drop_epub=True)
     return True
+
+
+def reimport_book_chapters(
+    conn: sqlite3.Connection,
+    book_id: int,
+    data_root: str,
+    chapters: list[ParsedChapter],
+) -> Book:
+    """Replace the table of contents with a fresh parse of the book's own EPUB.
+
+    Chapter edits, patches and the audio/video built from them are dropped — patches
+    address chapters by index, so they cannot survive a re-parse — while the EPUB,
+    book settings, branding and thumbnail artwork stay in place.
+    """
+    book = get_book(conn, book_id)
+    if book is None:
+        raise LookupError("book not found")
+    if not book.epub_path:
+        raise ValueError("Sách chưa có EPUB nguồn để nạp lại.")
+    if not chapters:
+        raise ValueError("EPUB không chứa chương hợp lệ.")
+
+    _purge_book_content(conn, book_id)
+    _insert_chapters(conn, book_id, chapters)
+    conn.execute(
+        """UPDATE book
+              SET status='ready', final_audio_path=NULL, final_video_path=NULL, updated_at=?
+            WHERE id=?""",
+        (_now(), book_id),
+    )
+    conn.commit()
+    _purge_book_content_files(book, data_root, drop_epub=False)
+    return get_book(conn, book_id)
 
 
 def install_book_source(
@@ -912,18 +982,7 @@ def install_book_source(
     if not chapters:
         raise ValueError("EPUB không chứa chương hợp lệ.")
 
-    conn.executemany(
-        """INSERT INTO chapter
-                  (book_id, chapter_index, title, text, char_count, chapter_no, text_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        [
-            (
-                book_id, index, chapter.title, chapter.text, chapter.char_count,
-                detect_chapter_number(chapter.title), text_hash(chapter.text),
-            )
-            for index, chapter in enumerate(chapters)
-        ],
-    )
+    _insert_chapters(conn, book_id, chapters)
     conn.execute(
         """UPDATE book
               SET original_filename=?, epub_path=?, status='ready', updated_at=?

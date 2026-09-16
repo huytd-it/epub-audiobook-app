@@ -511,15 +511,26 @@ def test_kaggle_native_branch_is_gated_behind_is_kaggle_and_mode():
     )
 
 
-def test_kaggle_native_branch_never_touches_drive_credentials():
-    """kaggle_native mode must do exactly what its name promises: no GDRIVE_CREDS,
-    no Drive API client, no network call - just find the attached kernel data."""
+def test_kaggle_native_branch_drive_sync_is_optional_and_offline_safe():
+    """kaggle_native unpacks the attached zip with no network by default, but when
+    the app bakes GDRIVE_CREDS in (Drive connected) it mirrors chunk/output files
+    to Drive so a retry resumes instead of restarting from scratch (same
+    drive_persist path as the manual Drive notebook). Sync is best-effort: any
+    failure falls back to offline, results still travel via kernel output."""
     src = _code_cells(TEMPLATES[0])[3]
     branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
-    assert "GDRIVE_CREDS" not in branch
-    assert "drive_service" not in branch
-    assert "build(\"drive\"" not in branch
-    assert "/kaggle/input" in branch
+    assert "GDRIVE_CREDS" in branch  # optional sync identity
+    assert "drive_persist" in branch
+    assert "drive_fetch_many" in branch
+    assert "_drive_file_ids" in branch
+    assert "/kaggle/input" in branch  # still unpacks attached data first
+    assert "zipfile" in branch
+    # Offline fallback: no creds -> keep going without Drive.
+    assert "running fully offline" in branch
+    # Best-effort: Drive errors must never fail the kernel.
+    assert "continuing offline" in branch
+    # Resume signal Cell 8 reads: remote inventory of finished chunks/results.
+    assert "resume" in branch.lower()
 
 
 def test_gpu_required_models_reject_too_old_cuda_capability():
@@ -545,14 +556,20 @@ def test_kaggle_native_branch_unpacks_one_zip_into_working():
     assert '"/kaggle/working"' in branch
 
 
-def test_kaggle_native_branch_leaves_no_drive_persist_hooks():
-    """Cell 8 falls back to no-op persist/REMOTE/drive_fetch_many via
-    globals().get(...) - the kaggle_native branch must not accidentally define any
-    of them, or Cell 8 would think it has a live Drive connection."""
+def test_kaggle_native_branch_defines_drive_hooks_only_for_resume():
+    """Cell 8 picks up persist/REMOTE/drive_fetch_many via globals().get(...) with
+    no-op fallbacks - the kaggle_native branch must define them (for resume across
+    retries) exactly when Drive creds resolve, and define none of them when
+    offline. Either way Cell 8 takes one code path."""
     src = _code_cells(TEMPLATES[0])[3]
     branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
     for name in ("drive_persist", "drive_fetch_many", "_drive_file_ids"):
-        assert name not in branch
+        assert name in branch
+    # Sync folder is found by the stable batch_id (same across retries of one job),
+    # created on the first synced run (then manifests are uploaded so the next
+    # retry can find it).
+    assert "batch_id" in branch.lower()
+    assert "BATCH_ID" in branch
 
 
 def test_batch_notebook_creates_and_verifies_kaggle_result_zip():

@@ -32,6 +32,10 @@ VIDEO_BACKGROUND_EXTENSIONS = {".mp4", ".webm", ".mov"}
 # depends on the engine. 48kHz stereo is YouTube's recommended upload format.
 AUDIO_SAMPLE_RATE = 48000
 AUDIO_CHANNELS = 2
+# Normalize the final narration mix, not each TTS chunk.  A single output-stage
+# pass keeps patch-to-patch loudness consistent, raises naturally quiet voices,
+# and leaves true-peak headroom for AAC encoding.
+AUDIO_LOUDNESS_FILTER = "loudnorm=I=-18:TP=-1.5:LRA=11"
 
 # Still-image sources (JPEG/PNG) decode as full-range YUV, and '-pix_fmt yuv420p'
 # keeps that range: x264 tags the stream full-range and ffprobe reports the
@@ -628,6 +632,12 @@ def generate_segment(
     else:
         audio_map_label = narration_label
 
+    # Normalize after the optional music mix so every output path has the same
+    # perceived loudness and the narration/music ratio remains unchanged.
+    if music_idx is not None or waveform:
+        audio_chains.append(f"{audio_map_label}{AUDIO_LOUDNESS_FILTER}[anorm]")
+        audio_map_label = "[anorm]"
+
     if music_idx is not None or waveform:
         # Label the video chain: ffmpeg 5+ rejects mapping raw 0:v once it is
         # consumed by the complex filtergraph.
@@ -675,6 +685,7 @@ def generate_segment(
             *map_args,
             "-c:v", video_codec,
             *tune_args,
+            "-af", AUDIO_LOUDNESS_FILTER,
             "-c:a", "aac", "-b:a", audio_bitrate,
             "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
             "-pix_fmt", "yuv420p",
@@ -1006,6 +1017,9 @@ def generate_background_sequence(
             inputs += (["-stream_loop", "-1"] if loop_music else []) + ["-i", music_path]
             chains.extend(["[2:a]volume=" + str(music_volume) + "[music]", f"{audio_map}[music]amix=inputs=2:duration=first:normalize=0[aout]"])
             audio_map = "[aout]"
+        audio_in = audio_map if audio_map.startswith("[") else f"[{audio_map}]"
+        chains.append(f"{audio_in}{AUDIO_LOUDNESS_FILTER}[anorm]")
+        audio_map = "[anorm]"
         cmd = inputs
         if chains:
             cmd += ["-filter_complex", ";".join(chains)]

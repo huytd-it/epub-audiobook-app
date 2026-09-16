@@ -308,6 +308,14 @@ def test_segment_argv_pins_audio_format(tmp_path, monkeypatch, music):
     assert cmd[cmd.index("-ar") + 1] == str(video_gen.AUDIO_SAMPLE_RATE)
     assert "-ac" in cmd, "output channel count is not pinned"
     assert cmd[cmd.index("-ac") + 1] == str(video_gen.AUDIO_CHANNELS)
+    if music:
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert f"[aout]{video_gen.AUDIO_LOUDNESS_FILTER}[anorm]" in graph
+        assert cmd[cmd.index("-map", cmd.index("-filter_complex")) + 1] == "[vout]"
+        assert "[anorm]" in cmd
+    else:
+        assert "-af" in cmd, "plain narration must be loudness-normalized"
+        assert cmd[cmd.index("-af") + 1] == video_gen.AUDIO_LOUDNESS_FILTER
 
 
 def test_background_sequence_argv_pins_audio_format(tmp_path, monkeypatch):
@@ -343,3 +351,6 @@ def test_background_sequence_argv_pins_audio_format(tmp_path, monkeypatch):
     for cmd in mux:
         assert cmd[cmd.index("-ar") + 1] == str(video_gen.AUDIO_SAMPLE_RATE)
         assert cmd[cmd.index("-ac") + 1] == str(video_gen.AUDIO_CHANNELS)
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert f"[1:a]{video_gen.AUDIO_LOUDNESS_FILTER}[anorm]" in graph
+        assert "[anorm]" in cmd

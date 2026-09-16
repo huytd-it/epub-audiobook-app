@@ -1030,6 +1030,40 @@ def delete_book_source(request: Request, book_id: int):
     return JSONResponse({"status": "deleted"})
 
 
+@router.post("/books/{book_id}/chapters/reimport")
+async def reimport_book_chapters(request: Request, book_id: int):
+    """Re-parse the book's own EPUB and replace the chapter data with the result.
+
+    Used to discard chapter edits/normalisation gone wrong. Patches and their audio
+    or video go with them — patches address chapters by index — but the EPUB itself,
+    the production config and the thumbnail artwork are kept.
+    """
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy sách.")
+        epub_path = book.epub_path
+
+    if not epub_path or not Path(epub_path).is_file():
+        raise HTTPException(
+            status_code=400,
+            detail="Không còn tệp EPUB gốc trên đĩa — hãy upload lại EPUB thay vì nạp lại mục lục.",
+        )
+
+    chapters = await asyncio.to_thread(parse_epub, epub_path)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="EPUB không chứa chương hợp lệ.")
+
+    with locked_conn(request) as conn:
+        try:
+            repository.reimport_book_chapters(conn, book_id, settings.data_root, chapters)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="Không tìm thấy sách.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"chapters": len(chapters)})
+
+
 @router.post("/books/{book_id}/source")
 async def upload_book_source(
     request: Request,

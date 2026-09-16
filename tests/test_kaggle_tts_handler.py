@@ -614,3 +614,75 @@ def test_legacy_job_without_flags_keeps_the_old_publish_hook(tmp_path, monkeypat
     assert kaggle_tts.handle(ctx) == {"imported": 1}
     assert ("legacy", patch_id) in events
     assert not [e for e in events if e[0] == "video"]
+
+
+def test_stable_batch_id_survives_retries_but_isolates_voices():
+    """Cùng patch set + cùng TTS params -> cùng batch_id qua mọi retry (Drive sync
+    folder chung, resume được); khác voice/model -> khác id (không resume nhầm)."""
+    slug = kaggle_tts._kernel_slug(7, [3, 1, 2])
+    assert kaggle_tts._stable_batch_id(slug, "zerotts", None, 0, False) == \
+        kaggle_tts._stable_batch_id(slug, "zerotts", None, 0, False)
+    assert kaggle_tts._stable_batch_id(slug, "zerotts", "voice-a", 0, False) != \
+        kaggle_tts._stable_batch_id(slug, "zerotts", "voice-b", 0, False)
+    assert kaggle_tts._stable_batch_id(slug, "zerotts", None, 0, False) != \
+        kaggle_tts._stable_batch_id(slug, "voxcpm2", None, 0, False)
+    assert kaggle_tts._stable_batch_id(slug, "zerotts", None, 0, False).startswith(slug)
+
+
+def test_drive_creds_for_kernel_is_none_without_drive(tmp_path):
+    """Chưa kết nối Drive -> None (kernel offline), không raise."""
+    conn = _conn(tmp_path)
+    assert kaggle_tts._drive_creds_for_kernel(conn) is None
+
+
+def test_drive_creds_for_kernel_returns_first_usable_account(tmp_path, monkeypatch):
+    """Có Drive account với refresh token -> trả payload kaggle_credentials."""
+    from app import google_drive
+
+    conn = _conn(tmp_path)
+    conn.execute(
+        "INSERT INTO drive_oauth_client (name, client_id, client_secret, created_at, updated_at) "
+        "VALUES ('c', 'cid', 'cs', '2026-01-01', '2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO google_drive_credentials (account_email, access_token, refresh_token, "
+        "token_expiry, oauth_client_id, created_at, updated_at) "
+        "VALUES ('a@x.com', 'at', 'rt', '2026-01-01', 1, '2026-01-01', '2026-01-01')"
+    )
+    conn.commit()
+    creds = kaggle_tts._drive_creds_for_kernel(conn)
+    assert creds is not None
+    assert creds["refresh_token"] == "rt"
+    assert google_drive.list_accounts(conn)
+
+
+def test_handle_passes_stable_batch_id_and_drive_creds_to_package(tmp_path, monkeypatch):
+    """handle() build package với cùng batch_id ổn định + creds mỗi cycle, để
+    retry resume qua Drive thay vì làm lại từ đầu."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+    _success_stubs(monkeypatch, tmp_path, lambda dest: _write_result_for(dest, patch_id))
+
+    seen = {}
+    real_build = kaggle_tts.drive_export.build_kaggle_export_package
+
+    def _spy(c, patches, **kwargs):
+        seen.setdefault("batch_ids", []).append(kwargs.get("batch_id"))
+        seen.setdefault("creds", []).append(kwargs.get("gdrive_creds"))
+        seen["folder"] = kwargs.get("drive_folder_name")
+        return real_build(c, patches, **kwargs)
+
+    monkeypatch.setattr(kaggle_tts.drive_export, "build_kaggle_export_package", _spy)
+    monkeypatch.setattr(
+        kaggle_tts, "_drive_creds_for_kernel",
+        lambda c: {"client_id": "cid", "client_secret": "cs", "refresh_token": "rt"},
+    )
+
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    assert kaggle_tts.handle(ctx) == {"imported": 1}
+    assert seen["batch_ids"] and all(b == seen["batch_ids"][0] for b in seen["batch_ids"])
+    assert all(c is not None for c in seen["creds"])
+    assert seen["folder"] == kaggle_tts._kernel_slug(book_id, [patch_id])

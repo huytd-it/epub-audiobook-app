@@ -135,7 +135,10 @@ def evaluate_patch_preflight(conn: sqlite3.Connection, patch_id: int, *,
         return {"state": "no_automation", "code": None, "error": None, "policy": policy}
     pipeline = _row(conn, patch_id) or {}
     published_before = bool(pipeline.get("youtube_upload_id")) or pipeline.get("stage") == "published"
-    if published_before:
+    # Chỉ chặn khi request có thể tạo thêm một upload YouTube. Dựng lại video local
+    # là thao tác độc lập: video đã publish vẫn được giữ nguyên và bản local chỉ được
+    # thay atomically sau khi job render mới thành công.
+    if published_before and policy["auto_upload_youtube"]:
         if pipeline.get("republish_confirmed_for") != audio_fingerprint(patch):
             return {"state": "awaiting_republish_confirmation",
                     "code": "republish_confirmation_required",

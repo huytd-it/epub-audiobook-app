@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { FileText, ListChecks, ScanText, Search, Wand2 } from "lucide-react";
+import { FileText, ListChecks, RotateCcw, ScanText, Search, Wand2 } from "lucide-react";
 import { Chapter } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -18,6 +18,8 @@ export function ChaptersPanel({
   onAnalyze,
   onOpenChapter,
   onOpenNormalize,
+  onReimport,
+  canReimport,
 }: {
   chapters: Chapter[];
   report?: ChaptersValidation;
@@ -25,6 +27,10 @@ export function ChaptersPanel({
   onAnalyze: () => void;
   onOpenChapter: (chapterIndex: number) => void;
   onOpenNormalize: () => void;
+  /** Mở hộp thoại xác nhận xóa mục lục hiện tại và nạp lại từ EPUB gốc. */
+  onReimport: () => void;
+  /** Sách còn EPUB gốc — không có thì chỉ còn đường upload lại tệp. */
+  canReimport: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ChapterFilter>("all");
@@ -86,6 +92,20 @@ export function ChaptersPanel({
                   disabled={!titles || titles.fixable === 0}
                 >
                   <Wand2 className="h-3.5 w-3.5" /> Chuẩn hoá tiêu đề{titles?.fixable ? ` (${titles.fixable})` : ""}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onReimport}
+                  disabled={!canReimport}
+                  title={
+                    canReimport
+                      ? "Xóa mục lục hiện tại và đọc lại chương từ EPUB gốc"
+                      : "Sách chưa có EPUB gốc để nạp lại"
+                  }
+                  className="text-red-700 hover:bg-red-50 hover:text-red-800"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" /> Xóa &amp; nạp lại mục lục
                 </Button>
               </div>
             }

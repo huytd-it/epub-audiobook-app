@@ -75,6 +75,13 @@ cần đã thêm nhiều tài khoản ở Bước 2.
 - App poll trạng thái kernel mỗi ~30 giây (`KAGGLE_POLL_INTERVAL_SECONDS`).
 - Khi xong (hoặc khi phiên Kaggle bị ngắt giữa chừng), app tải file kết quả về và
   import những patch đã có, giữ nguyên patch chưa xong để lượt sau tiếp tục.
+- **Resume qua Drive (nếu đã kết nối Drive ở trang `/drive`):** mỗi kernel tự
+  mirror từng chunk `.wav` + file `result/` lên Drive ngay khi tổng hợp xong
+  (cùng đường `drive_persist()` như notebook chạy tay). Mọi retry của cùng một
+  batch dùng chung một `batch_id` ổn định nên kernel sau thấy file của kernel
+  trước và **bỏ qua chunk đã xong** thay vì tổng hợp lại từ đầu. Chưa kết nối
+  Drive thì kernel chạy offline như trước (retry làm lại từ đầu, kết quả vẫn về
+  qua API bình thường).
 - Quota GPU mỗi tài khoản được **ước tính nội bộ** (app tự cộng dồn thời gian mỗi lần
   chạy, không lấy số liệu thật từ Kaggle vì Kaggle không cung cấp API cho việc này) —
   xem cột "còn ~Xh GPU tuần này" ở trang `/drive`.
@@ -150,6 +157,21 @@ ra thì **dataset rỗng (0 file)** dù mọi API call đều 2xx — blob PUT k
 `ready`, app gọi `ListDatasetFiles` xác minh và **fail job ngay khi dataset rỗng**
 thay vì đốt một session GPU để Cell 4 phát hiện ra. Log job in số file trong dataset
 (`contains N file(s)`) để lần sau nhìn log là biết upload có vào hay không.
+
+### Retry không làm lại từ đầu (Drive sync, 16/09/2026)
+
+Trước đây kernel `kaggle_native` chạy offline hoàn toàn: retry (kernel version
+mới) mất hết chunk đã tổng hợp và làm lại từ đầu, trong khi notebook chạy tay
+(Drive mode) resume được nhờ `drive_persist()` + kiểm tra file đã có. Nay:
+
+- Nếu app đã kết nối tài khoản Google Drive, mỗi package Kaggle được bake sẵn
+  `GDRIVE_CREDS` và một `batch_id` ổn định cho cả job (theo patch set + TTS
+  params — đổi voice/model thì id khác, không resume nhầm audio cũ).
+- Kernel tự tạo/tìm thư mục sync trên Drive theo `batch_id`, mirror mọi chunk
+  `.wav` + file `result/` lên đó ngay khi xong, và kernel retry sau đọc inventory
+  để bỏ qua phần đã xong — giống hệt notebook chạy tay.
+- Đồng bộ là best-effort: lỗi Drive không bao giờ làm hỏng kernel (kết quả vẫn
+  về qua API như cũ). Chưa kết nối Drive thì mọi thứ giữ nguyên (offline).
 
 ### Vẫn chưa xác minh được với tài khoản thật
 
