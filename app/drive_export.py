@@ -53,12 +53,21 @@ def publish_package(package_dir: Path, target_folder: str, folder_name: str) -> 
 def publish_package_to_drive_api(
     conn: sqlite3.Connection, account_id: int, package_dir: Path, folder_name: str,
 ) -> dict:
-    """Upload a batch package through the Drive API and return its folder metadata."""
+    """Upload a batch package through the Drive API and return its folder metadata.
+
+    Reuses an existing batch folder with the same name when present so a job retry
+    (same stable slug) resumes the previous run's Drive/result files instead of
+    starting from a fresh empty folder. New files overwrite by name on upload.
+    """
     from app import google_drive
 
     service = google_drive.get_drive_service(conn, account_id)
     root_id = google_drive.get_or_create_root_folder(service)
-    batch_folder = google_drive.create_folder(service, folder_name, parent_id=root_id)
+    existing_id = google_drive.find_subfolder(service, root_id, folder_name)
+    if existing_id:
+        batch_folder = {"id": existing_id, "link": f"https://drive.google.com/drive/folders/{existing_id}"}
+    else:
+        batch_folder = google_drive.create_folder(service, folder_name, parent_id=root_id)
     google_drive.upload_directory(service, batch_folder["id"], str(package_dir))
     return batch_folder
 
@@ -216,12 +225,14 @@ def build_batch_export_package(
     the app's own video rendering, so keeping them out keeps the Drive sync small.
     Returns (package_dir, batch_manifest); caller is responsible for deleting the directory.
 
-    ``mode`` sets the notebook's own MODE global ("drive", "kaggle_native", or
-    "kaggle_drive" - see
-    Cell 1/Cell 4 of the template): "kaggle_native" tells Cell 4 to find the batch
-    under /kaggle/input/ instead of talking to Google Drive. For kaggle_native,
-    prefer build_kaggle_export_package, which additionally wires ``gdrive_creds``
-    into the optional Drive-sync resume path.
+    ``mode`` sets the notebook's own MODE global ("drive" or "kaggle_drive" - see
+    Cell 1/Cell 4 of the template): "kaggle_drive" tells the pushed Kaggle kernel
+    to find the batch through the Google Drive API and persist every chunk/output
+    + merged result file back to Drive/result as it goes. There is no Kaggle
+    Output zip to create or download; the worker imports only Drive's ``result``
+    folder, checking it on every poll so each finished patch is installed
+    progressively. "kaggle_native" remains accepted as a legacy alias of
+    "kaggle_drive" for notebooks exported before the Drive-only transport.
 
     ``batch_id`` overrides the generated id. The Kaggle handler passes a stable id
     (derived from the kernel slug + TTS params) so every retry of the same job maps
@@ -372,8 +383,9 @@ def build_kaggle_export_package(
 ) -> tuple[Path, dict]:
     """Same package as build_batch_export_package, but for the Kaggle Kernels API
     round trip: the notebook finds its input through the Google Drive API and
-    writes its output there. The worker later downloads only Drive's ``result``
-    folder for import.
+    writes its output there. No zip is created and nothing is downloaded from
+    Kaggle directly -- the worker later checks Drive's ``result`` folder on every
+    poll and imports each newly finished patch progressively.
 
     When ``gdrive_creds`` is given (the app's Drive account credentials), they are
     baked into the notebook copy so Cell 4 can read and write the same Drive
@@ -383,7 +395,7 @@ def build_kaggle_export_package(
         conn, patches, drive_folder_name=drive_folder_name, hf_token=hf_token,
         gdrive_creds=gdrive_creds,
         model_id=model_id, voice_id=voice_id, max_chars=max_chars,
-        with_effects=with_effects, mode="kaggle_native",
+        with_effects=with_effects, mode="kaggle_drive",
         batch_id=batch_id,
     )
 

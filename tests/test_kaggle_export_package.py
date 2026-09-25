@@ -1,7 +1,9 @@
 """build_kaggle_export_package: a batch package for the Kaggle Kernels API round
 trip - same manifest/reference-clip construction as the Drive package, with MODE
-set to "kaggle_native". Drive creds are baked only when the app has a Drive
-account (retry resume via Drive sync); without creds the kernel stays offline."""
+set to "kaggle_drive" (Drive-only transport: no zip, no Kaggle Output download).
+Drive creds are baked when the app has a Drive account so the kernel reads and
+persists through Drive/result; the worker checks that folder every poll and
+imports each finished patch progressively."""
 from __future__ import annotations
 
 import json
@@ -52,13 +54,13 @@ def _seed_book_and_patch(conn, voice_clip_path=None):
     return repository.get_patch(conn, cur.lastrowid)
 
 
-def test_kaggle_package_sets_mode_kaggle_native(conn, tmp_path, monkeypatch):
+def test_kaggle_package_sets_mode_kaggle_drive(conn, tmp_path, monkeypatch):
     monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
     patch = _seed_book_and_patch(conn)
 
     package_dir, _ = drive_export.build_kaggle_export_package(conn, [patch], model_id="zerotts")
     try:
-        assert 'MODE = "kaggle_native"' in _cell1_source(package_dir)
+        assert 'MODE = "kaggle_drive"' in _cell1_source(package_dir)
     finally:
         import shutil
         shutil.rmtree(package_dir, ignore_errors=True)
@@ -86,9 +88,10 @@ def test_kaggle_package_enables_is_kaggle(conn, tmp_path, monkeypatch):
         shutil.rmtree(package_dir, ignore_errors=True)
 
 
-def test_kaggle_package_without_creds_stays_offline(conn, tmp_path, monkeypatch):
-    """No Drive account -> empty GDRIVE_CREDS placeholder, kernel runs fully
-    offline and results travel back only through kernel_output()."""
+def test_kaggle_package_without_creds_leaves_secret_fallback(conn, tmp_path, monkeypatch):
+    """No Drive account -> empty GDRIVE_CREDS placeholder; the notebook falls back
+    to the GDRIVE_CREDS Kaggle secret. Results still travel only via Drive/result
+    (no zip, no Kaggle Output download)."""
     monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
     patch = _seed_book_and_patch(conn)
 
@@ -104,9 +107,9 @@ def test_kaggle_package_without_creds_stays_offline(conn, tmp_path, monkeypatch)
 
 
 def test_kaggle_package_with_creds_bakes_drive_sync(conn, tmp_path, monkeypatch):
-    """With a Drive account the creds are baked into BOTH Drive branches of Cell 4
-    (manual-drive mode and kaggle_native retry-resume), so the kernel can mirror
-    chunk/output files to Drive and a retry resumes instead of restarting."""
+    """With a Drive account the creds are baked into Cell 4 so the kernel reads
+    the batch and mirrors chunk/output files to Drive/result; a retry with the
+    same stable batch_id resumes instead of restarting."""
     monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
     patch = _seed_book_and_patch(conn)
     creds = {"client_id": "cid", "client_secret": "cs", "refresh_token": "rt"}

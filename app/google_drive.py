@@ -522,3 +522,46 @@ def download_result_directory(service, batch_folder_id: str, dest_root: str) -> 
         download_file(service, entry["id"], str(target))
         downloaded.append(str(target))
     return downloaded
+
+
+def list_result_files(service, batch_folder_id: str) -> list[dict]:
+    """List (without downloading) the batch's direct ``result`` folder.
+
+    Powers the "check Drive/result" option: the UI/worker can show which merged
+    WAVs + timeline sidecars are already on Drive and let the user import only
+    selected patches progressively instead of waiting for the whole batch.
+    Returns [{id, name, modifiedTime, size}] sorted by name; [] when no result
+    folder exists yet.
+    """
+    result_folder_id = find_subfolder(service, batch_folder_id, "result")
+    if not result_folder_id:
+        return []
+    return sorted(list_files(service, result_folder_id), key=lambda f: f.get("name") or "")
+
+
+def download_selected_results(
+    service, batch_folder_id: str, dest_root: str, names: set[str] | None = None,
+) -> list[str]:
+    """Download only selected files from the batch's ``result`` folder.
+
+    ``names`` is an optional allow-list of exact Drive file names (e.g. only the
+    WAV + timeline sidecar of one patch). None/empty downloads everything, same
+    as download_result_directory. Path traversal names are skipped.
+    """
+    result_folder_id = find_subfolder(service, batch_folder_id, "result")
+    if not result_folder_id:
+        return []
+    allow = set(names) if names else None
+    destination = Path(dest_root) / "result"
+    destination.mkdir(parents=True, exist_ok=True)
+    downloaded: list[str] = []
+    for entry in list_files(service, result_folder_id):
+        name = entry.get("name") or ""
+        if not name or "/" in name or "\\" in name:
+            continue
+        if allow is not None and name not in allow:
+            continue
+        target = destination / name
+        download_file(service, entry["id"], str(target))
+        downloaded.append(str(target))
+    return downloaded

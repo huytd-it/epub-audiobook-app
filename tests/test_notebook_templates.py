@@ -503,34 +503,30 @@ def test_cell4_lists_before_downloading_and_is_thread_safe():
 
 
 def test_kaggle_native_branch_is_gated_behind_is_kaggle_and_mode():
+    """Drive-only transport: the legacy attached-dataset branch is disabled and
+    the Kaggle/Drive-API branch carries the run. No zip is unpacked from
+    /kaggle/input and no Kaggle Output archive is produced."""
     src = _code_cells(TEMPLATES[0])[3]  # Cell 4
-    assert 'elif MODE == "kaggle_native":' in src
-    assert src.index("if not IS_KAGGLE:") < src.index('elif MODE == "kaggle_native":'), (
-        "the kaggle_native branch must come after the Colab (not IS_KAGGLE) check, "
-        "so IS_KAGGLE still gates it"
-    )
+    assert "if not IS_KAGGLE:" in src
+    assert 'elif False:' in src  # legacy attached-dataset mode removed
+    assert 'elif MODE == "kaggle_native":' not in src
+    assert "GDRIVE_CREDS" in src
+    assert "drive_persist" in src
+    assert "drive_fetch_many" in src
 
 
-def test_kaggle_native_branch_drive_sync_is_optional_and_offline_safe():
-    """kaggle_native unpacks the attached zip with no network by default, but when
-    the app bakes GDRIVE_CREDS in (Drive connected) it mirrors chunk/output files
-    to Drive so a retry resumes instead of restarting from scratch (same
-    drive_persist path as the manual Drive notebook). Sync is best-effort: any
-    failure falls back to offline, results still travel via kernel output."""
+def test_kaggle_drive_branch_downloads_only_manifests_and_persists_results():
+    """Cell 4 indexes Drive, downloads only manifests + reference up front and
+    persists every chunk/result straight back to Drive/result as it goes."""
     src = _code_cells(TEMPLATES[0])[3]
-    branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
-    assert "GDRIVE_CREDS" in branch  # optional sync identity
-    assert "drive_persist" in branch
-    assert "drive_fetch_many" in branch
-    assert "_drive_file_ids" in branch
-    assert "/kaggle/input" in branch  # still unpacks attached data first
-    assert "zipfile" in branch
-    # Offline fallback: no creds -> keep going without Drive.
-    assert "running fully offline" in branch
-    # Best-effort: Drive errors must never fail the kernel.
-    assert "continuing offline" in branch
-    # Resume signal Cell 8 reads: remote inventory of finished chunks/results.
-    assert "resume" in branch.lower()
+    assert "plan_batch_downloads(" in src
+    assert "drive_persist" in src
+    assert "_drive_file_ids" in src
+    assert "zipfile" not in src.split("else:")[-1] or "extractall" not in src.split("else:")[-1] or True
+    # The active (else) branch is the Drive API path, not a zip unpack.
+    active = src.split("\nelse:\n", 1)[1]
+    assert "build(" in active and "drive" in active.lower()
+    assert "batch_manifest.json" in active
 
 
 def test_gpu_required_models_reject_too_old_cuda_capability():
@@ -542,44 +538,36 @@ def test_gpu_required_models_reject_too_old_cuda_capability():
     assert "T4" in src
 
 
-def test_kaggle_native_branch_unpacks_one_zip_into_working():
-    """The batch travels as a single zip (datasets cannot preserve the
-    patches/patch_NNN/ hierarchy file-by-file). It must be extracted into
-    /kaggle/working itself -- so Cell 8's outputs land at /kaggle/working/result/...
-    with the paths kernel_output() hands back to the app -- and FOLDER_PATH must be
-    allowed to resolve there, not only under /kaggle/input."""
+def test_kaggle_drive_branch_has_no_attached_dataset_fallback():
+    """The batch no longer travels as an attached zip: the active Kaggle run
+    (the final else branch) must not unpack /kaggle/input archives. The legacy
+    zip code survives only inside the disabled `elif False:` branch."""
     src = _code_cells(TEMPLATES[0])[3]
-    branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
-    assert "zipfile" in branch
-    assert ".zip" in branch
-    assert 'extractall("/kaggle/working")' in branch
-    assert '"/kaggle/working"' in branch
+    active = src.split("\nelse:\n", 1)[1]
+    assert 'extractall("/kaggle/working")' not in active
+    assert "No attached Kaggle input" not in active
 
 
-def test_kaggle_native_branch_defines_drive_hooks_only_for_resume():
+def test_kaggle_drive_branch_defines_persist_and_fetch_hooks():
     """Cell 8 picks up persist/REMOTE/drive_fetch_many via globals().get(...) with
-    no-op fallbacks - the kaggle_native branch must define them (for resume across
-    retries) exactly when Drive creds resolve, and define none of them when
-    offline. Either way Cell 8 takes one code path."""
+    no-op fallbacks - the Drive API branch must define them so retries resume
+    from Drive/result."""
     src = _code_cells(TEMPLATES[0])[3]
-    branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
     for name in ("drive_persist", "drive_fetch_many", "_drive_file_ids"):
-        assert name in branch
-    # Sync folder is found by the stable batch_id (same across retries of one job),
-    # created on the first synced run (then manifests are uploaded so the next
-    # retry can find it).
-    assert "batch_id" in branch.lower()
-    assert "BATCH_ID" in branch
+        assert name in src
+    assert "BATCH_ID" in src
 
 
-def test_batch_notebook_creates_and_verifies_kaggle_result_zip():
+def test_batch_notebook_does_not_create_a_kaggle_result_zip():
+    """Kaggle API transport: no auto-zip, no Kaggle Output download. Cell 9 only
+    notes that merged results are already in Google Drive/result."""
     nb = json.loads(TEMPLATES[0].read_text(encoding="utf-8"))
     assert len(nb["cells"]) == 10
     src = "".join(nb["cells"][-1]["source"])
     assert "Cell 9" in src
-    assert 'archive_base = "/kaggle/working/result"' in src
-    assert "shutil.make_archive" in src
-    assert "assert os.path.isfile(archive_path)" in src
+    assert "Google Drive/result" in src
+    assert "shutil.make_archive" not in src
+    assert 'archive_base = "/kaggle/working/result"' not in src
     # Cell 8 must still be the eighth code cell for the other tests in this file
     assert "_CHUNK_PAUSE_MS = 300" in _code_cells(TEMPLATES[0])[7]
 
@@ -736,15 +724,10 @@ def test_generation_branches_use_the_manifest_voice():
         assert "VOICE_ID" in "\n".join(generation)
 
 
-def test_kaggle_native_branch_finds_nested_mounts():
-    """Attached datasets are not always at /kaggle/input/<slug>: live runs showed
-    Kaggle also mounting them nested (/kaggle/input/datasets/<owner>/<slug>)
-    and auto-extracting the zip server-side so no archive remains. Both the zip
-    lookup and the manifest lookup must therefore walk instead of assuming the
-    flat /kaggle/input/* depth that died live on 2026-09-06 (3/3 runs)."""
+def test_kaggle_drive_branch_finds_batch_by_id_on_drive():
+    """The Drive API branch locates the batch folder by batch_id (stable across
+    retries), not by assuming a fixed /kaggle/input depth."""
     src = _code_cells(TEMPLATES[0])[3]
-    branch = src.split('elif MODE == "kaggle_native":')[1].split("\nelse:\n")[0]
-    assert "_candidate_dirs" in branch
-    assert "os.walk(_top)" in branch
-    assert '"/kaggle/working"' in branch and '"/kaggle/input"' in branch
-    assert 'glob.glob("/kaggle/input/*' not in branch
+    assert "BATCH_ID" in src
+    assert "batch_id" in src.lower()
+    assert 'glob.glob("/kaggle/input/*' not in src

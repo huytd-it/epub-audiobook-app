@@ -869,6 +869,133 @@ def export_batch_to_kaggle(
     return JSONResponse({"job_id": job_id})
 
 
+@router.get("/books/{book_id}/patches/kaggle-drive-result")
+def check_kaggle_drive_result(
+    request: Request, book_id: int, account_id: int = Query(...), batch: str = Query(...),
+):
+    """Check (không tải) thư mục Drive/result của một batch Kaggle.
+
+    Kaggle API không tạo zip và không tải trực tiếp từ Kaggle: kernel ghi merged
+    WAV + timeline sidecar vào Drive/result, worker/app chỉ đọc thư mục này.
+    Endpoint này liệt kê file đã có để UI tick chọn từng patch rồi gọi
+    kaggle-drive-import tải dần từng patch thay vì đợi cả batch.
+    """
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        if google_drive.get_account(conn, account_id) is None:
+            raise HTTPException(status_code=400, detail="Google Drive account not found")
+        try:
+            service = google_drive.get_drive_service(conn, account_id)
+            folder_id = google_drive.find_batch_folder(service, batch)
+            if folder_id is None:
+                return JSONResponse({"batch": batch, "files": [], "patches": []})
+            files = google_drive.list_result_files(service, folder_id)
+        except Exception as exc:
+            logger.exception("check Drive/result failed for batch %s", batch)
+            raise HTTPException(status_code=500, detail=f"Drive/result check failed: {exc}")
+        patches = repository.list_patches(conn, book_id)
+        available = {f.get("name") for f in files}
+        items = []
+        for p in patches:
+            wav = drive_export.result_wav_name(p)
+            items.append({
+                "patch_id": p.id,
+                "patch_index": p.patch_index,
+                "status": p.status,
+                "result_wav": wav,
+                "ready": wav in available,
+            })
+    return JSONResponse({"batch": batch, "files": files, "patches": items})
+
+
+@router.post("/books/{book_id}/patches/kaggle-drive-import")
+def import_kaggle_drive_result(
+    request: Request, book_id: int,
+    account_id: int = Form(...), batch: str = Form(...), patch_ids: list[int] = Form(...),
+    auto_create_video: int | None = Form(None),
+    auto_upload_youtube: int | None = Form(None),
+    automation_mode: str = Form("per_patch"),
+):
+    """Tải từng patch đã chọn từ Drive/result và cài đặt dần (progressive import).
+
+    Chỉ tải đúng WAV + timeline sidecar của các patch được tick, không tải cả
+    thư mục result, không đụng tới Kaggle Output/zip. Mỗi patch xong được
+    mark done + chuỗi automation ngay (per_patch) hoặc hook cũ khi không bật
+    automation, nên kernel còn chạy vẫn tạo được audio/video dần dần.
+    """
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        if google_drive.get_account(conn, account_id) is None:
+            raise HTTPException(status_code=400, detail="Google Drive account not found")
+        patches = []
+        for pid in dict.fromkeys(patch_ids):
+            p = repository.get_patch(conn, pid)
+            if p is None or p.book_id != book_id:
+                raise HTTPException(status_code=404, detail=f"patch {pid} not found")
+            patches.append(p)
+        if not patches:
+            raise HTTPException(status_code=400, detail="no patches selected")
+        wanted: set[str] = set()
+        for p in patches:
+            wav = drive_export.result_wav_name(p)
+            wanted.add(wav)
+            wanted.add(Path(wav).stem + ".timeline.json")
+    tmp_dir = Path(tempfile.mkdtemp(prefix="kaggle-drive-import-"))
+    try:
+        with locked_conn(request) as conn:
+            service = google_drive.get_drive_service(conn, account_id)
+            folder_id = google_drive.find_batch_folder(service, batch)
+            if folder_id is None:
+                raise HTTPException(status_code=404, detail=f"Drive batch folder not found: {batch}")
+            downloaded = google_drive.download_selected_results(service, folder_id, str(tmp_dir), wanted)
+        by_name = {Path(d).name: Path(d) for d in downloaded}
+        imported: list[int] = []
+        missing: list[int] = []
+        for p in patches:
+            src = by_name.get(drive_export.result_wav_name(p))
+            if src is None or not src.is_file():
+                missing.append(p.id)
+                continue
+            try:
+                sf.info(str(src))
+            except Exception:
+                logger.warning("Drive/result WAV invalid for patch %s", p.id, exc_info=True)
+                missing.append(p.id)
+                continue
+            audio_path = repository.get_patch_audio_path(book_id, p.patch_index)
+            try:
+                patch_import.install_imported_wav(src, audio_path)
+            except Exception:
+                logger.warning("install Drive/result WAV failed for patch %s", p.id, exc_info=True)
+                missing.append(p.id)
+                continue
+            _warm_thumbnail(request, p.id)
+            with locked_conn(request) as conn:
+                repository.mark_patch_done(conn, p.id, str(audio_path))
+                want_video = bool(auto_create_video) if auto_create_video is not None else False
+                want_upload = bool(auto_upload_youtube) if auto_upload_youtube is not None else False
+                if want_video or want_upload:
+                    policy = {"auto_create_video": want_video, "auto_upload_youtube": want_upload}
+                    if want_upload:
+                        policy["auto_create_video"] = True
+                    enqueue_patch_video(conn, p.id, request_policy=policy)
+                else:
+                    on_patch_audio_ready(conn, p.id)
+            imported.append(p.id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("import Drive/result failed for batch %s", batch)
+        raise HTTPException(status_code=500, detail=f"Drive/result import failed: {exc}")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return JSONResponse({"imported": imported, "missing": missing})
+
+
 @router.post("/books/{book_id}/patches/{patch_id}/import")
 def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
     with locked_conn(request) as conn:
