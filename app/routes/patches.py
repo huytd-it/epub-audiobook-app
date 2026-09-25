@@ -317,6 +317,7 @@ def _wants_json(request: Request, ajax: int) -> bool:
 async def generate_patch_video(
     request: Request, book_id: int, patch_id: int,
     upload_youtube: bool = Form(default=False),
+    requeue: bool = Form(default=False),
     privacy: str = Form(default=""),
     ajax: int = Query(default=0),
 ):
@@ -330,7 +331,44 @@ async def generate_patch_video(
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
         video_config = get_effective_video_config(conn, book)
-        if video_config.get("background_type") == "gameplay":
+        dedupe_key = f"patch_video:patch={patch_id}"
+        existing_job = store.find_live_by_dedupe(conn, dedupe_key)
+        if existing_job is not None:
+            job_id = existing_job.id
+            deduplicated = True
+        else:
+            pipeline = conn.execute(
+                "SELECT stage,upload_status,youtube_upload_id FROM patch_pipeline WHERE patch_id=?",
+                (patch_id,),
+            ).fetchone()
+            upload_active = bool(
+                pipeline
+                and (
+                    (pipeline["youtube_upload_id"] and pipeline["upload_status"] in {"claiming", "queued", "pending", "uploading"})
+                    or pipeline["stage"] in {"thumbnail_setting", "playlist"}
+                )
+            )
+            if requeue and upload_active:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Patch đang upload YouTube; hãy chờ upload hoàn tất trước khi dựng lại video",
+                )
+            if requeue and pipeline:
+                # Đây là retry do người dùng chủ động: mở một chu kỳ render mới nhưng giữ
+                # file/video YouTube hiện tại tới khi bản mới render thành công.
+                conn.execute(
+                    """UPDATE patch_pipeline SET
+                           stage=CASE WHEN stage='published' THEN stage ELSE 'video' END,
+                           video_status='pending', render_attempts=0,
+                           validation_report_json=NULL, last_error=NULL,
+                           preflight_status='pending', preflight_error_code=NULL,
+                           preflight_error=NULL, updated_at=?
+                         WHERE patch_id=?""",
+                    (datetime.now(timezone.utc).isoformat(), patch_id),
+                )
+                conn.commit()
+
+        if existing_job is None and video_config.get("background_type") == "gameplay":
             from app.patch_publishing import enqueue_patch_video
             result = enqueue_patch_video(
                 conn, patch_id,
@@ -341,19 +379,17 @@ async def generate_patch_video(
                 raise HTTPException(status_code=400, detail=result.get("error") or "Could not enqueue patch video")
             job_id = result["job_id"]
             deduplicated = bool(result.get("deduplicated"))
-        else:
+        elif existing_job is None:
             fallback_bg = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
             raw_bg = video_gen.resolve_configured_patch_image(patch, video_config, fallback_bg or "")
             if not raw_bg:
                 raise HTTPException(status_code=400, detail="No background image available")
-            dedupe_key = f"patch_video:patch={patch_id}"
-            existing = store.find_live_by_dedupe(conn, dedupe_key)
-            job_id = existing.id if existing else store.enqueue(
+            job_id = store.enqueue(
                 conn, "patch_video",
                 payload={"patch_id": patch_id, "upload_youtube": upload_youtube, "privacy": privacy},
                 book_id=book_id, dedupe_key=dedupe_key,
             )
-            deduplicated = existing is not None
+            deduplicated = False
     if job_id is None:
         raise HTTPException(status_code=500, detail="Could not enqueue patch video")
     if _wants_json(request, ajax):
@@ -1002,6 +1038,53 @@ async def upload_patch_audio(
         on_patch_audio_ready(conn, patch_id)
 
     return JSONResponse({"ok": True, "patch_id": patch_id})
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/audio-settings")
+async def set_patch_audio_settings(request: Request, book_id: int, patch_id: int):
+    """Gán giọng đọc riêng cho patch (model + voice). Chuỗi rỗng = kế thừa sách.
+
+    Giọng riêng luôn thắng cấu hình chung khi chạy TTS; muốn đổi hàng loạt thì
+    reset patch về kế thừa qua /patches/reset-voices."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+    tts_model = str(body.get("tts_model") or "").strip() or None
+    tts_voice_id = str(body.get("tts_voice_id") or "").strip() or None
+    if tts_model is not None:
+        from app.tts_engine import resolve_engine_id
+
+        try:
+            tts_model = resolve_engine_id(tts_model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        repository.set_patch_audio_settings(conn, patch_id, tts_model, tts_voice_id)
+    return JSONResponse({"ok": True, "patch_id": patch_id,
+                         "tts_model": tts_model, "tts_voice_id": tts_voice_id})
+
+
+@router.post("/books/{book_id}/patches/reset-voices")
+async def reset_patch_voices(request: Request, book_id: int):
+    """Xoá giọng riêng của các patch (về kế thừa cấu hình sách)."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+    try:
+        patch_ids = [int(value) for value in body.get("patch_ids") or []]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="patch_ids must be a list of integers")
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        owned = {patch.id for patch in repository.list_patches(conn, book_id)}
+        reset = repository.clear_patch_audio_settings(
+            conn, [patch_id for patch_id in patch_ids if patch_id in owned])
+    return JSONResponse({"ok": True, "reset": reset})
 
 
 def _youtube_patch(conn, book_id, patch_id):

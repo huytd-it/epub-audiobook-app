@@ -156,6 +156,53 @@ export type TtsOptions = {
   currentVoiceName: string;
 };
 
+/** Điều kiện cần gọi mạng lấy giọng online (giống hook): model chọn giọng nhưng
+ *  không mang sẵn cast và không clone theo clip. */
+export function modelNeedsOnlineVoices(model: TtsModel | null | undefined): boolean {
+  return Boolean(model && !model.supports_reference && !(model.voices || []).length);
+}
+
+/** Dựng voice options cho MỘT model bất kỳ — logic dùng chung cho dialog cấu hình
+ *  sách (qua hook) và cột giọng từng patch. */
+export function buildVoiceOptions({
+  ttsModels,
+  modelId,
+  localVoices,
+  onlineVoices,
+  currentVoiceName,
+}: {
+  ttsModels: TtsModel[];
+  modelId: string;
+  localVoices: VoiceItem[];
+  onlineVoices: OnlineVoice[];
+  currentVoiceName: string;
+}): VoiceOption[] {
+  const selectedModel = ttsModels.find((model) => model.id === modelId) || null;
+  const builtInVoices = selectedModel?.voices || [];
+  if (builtInVoices.length) {
+    return builtInVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
+  }
+  if (selectedModel && !selectedModel.supports_reference) {
+    if (onlineVoices.length) {
+      return onlineVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
+    }
+    // Model chọn giọng nhưng chưa liệt kê được (chưa tải weights / chưa cài package):
+    // ít nhất vẫn đưa ra giọng mặc định thay vì một dropdown trống không lời giải thích.
+    return selectedModel.default_voice
+      ? [{ value: selectedModel.default_voice, label: selectedModel.default_voice }]
+      : [];
+  }
+  // Model clone: audio mẫu đã upload trong thư viện, cộng thêm giọng preset của
+  // VieNeu/ZeroTTS — chọn preset thì app tự sinh clip mẫu để clone, khỏi cần thu âm.
+  const names = new Set([...localVoices.map((voice) => voice.name), currentVoiceName]);
+  return [
+    ...Array.from(names)
+      .filter(Boolean)
+      .map((name) => ({ value: name, label: name })),
+    ...presetVoiceOptions(ttsModels),
+  ];
+}
+
 /** Danh sách model TTS + voice khả dụng theo model đang chọn. */
 export function useTtsOptions(data: Detail | undefined, modelId: string): TtsOptions {
   const [localVoices, setLocalVoices] = useState<VoiceItem[]>([]);
@@ -177,7 +224,7 @@ export function useTtsOptions(data: Detail | undefined, modelId: string): TtsOpt
   const builtInVoices = useMemo(() => selectedModel?.voices || [], [selectedModel]);
 
   useEffect(() => {
-    if (!selectedModel || selectedModel.supports_reference || builtInVoices.length) {
+    if (!modelNeedsOnlineVoices(selectedModel)) {
       setOnlineVoices([]);
       return;
     }
@@ -190,30 +237,10 @@ export function useTtsOptions(data: Detail | undefined, modelId: string): TtsOpt
     };
   }, [modelId, selectedModel, builtInVoices]);
 
-  const voiceOptions = useMemo<VoiceOption[]>(() => {
-    if (builtInVoices.length) {
-      return builtInVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
-    }
-    if (selectedModel && !selectedModel.supports_reference) {
-      if (onlineVoices.length) {
-        return onlineVoices.map((voice) => ({ value: voice.id, label: voice.label || voice.id }));
-      }
-      // Model chọn giọng nhưng chưa liệt kê được (chưa tải weights / chưa cài package):
-      // ít nhất vẫn đưa ra giọng mặc định thay vì một dropdown trống không lời giải thích.
-      return selectedModel.default_voice
-        ? [{ value: selectedModel.default_voice, label: selectedModel.default_voice }]
-        : [];
-    }
-    // Model clone: audio mẫu đã upload trong thư viện, cộng thêm giọng preset của
-    // VieNeu/ZeroTTS — chọn preset thì app tự sinh clip mẫu để clone, khỏi cần thu âm.
-    const names = new Set([...localVoices.map((voice) => voice.name), currentVoiceName]);
-    return [
-      ...Array.from(names)
-        .filter(Boolean)
-        .map((name) => ({ value: name, label: name })),
-      ...presetVoiceOptions(ttsModels),
-    ];
-  }, [selectedModel, builtInVoices, onlineVoices, localVoices, currentVoiceName, ttsModels]);
+  const voiceOptions = useMemo<VoiceOption[]>(
+    () => buildVoiceOptions({ ttsModels, modelId, localVoices, onlineVoices, currentVoiceName }),
+    [ttsModels, modelId, localVoices, onlineVoices, currentVoiceName]
+  );
 
   return { ttsModels, voiceOptions, currentVoiceName };
 }

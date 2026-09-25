@@ -135,7 +135,10 @@ def evaluate_patch_preflight(conn: sqlite3.Connection, patch_id: int, *,
         return {"state": "no_automation", "code": None, "error": None, "policy": policy}
     pipeline = _row(conn, patch_id) or {}
     published_before = bool(pipeline.get("youtube_upload_id")) or pipeline.get("stage") == "published"
-    if published_before:
+    # Chỉ chặn khi request có thể tạo thêm một upload YouTube. Dựng lại video local
+    # là thao tác độc lập: video đã publish vẫn được giữ nguyên và bản local chỉ được
+    # thay atomically sau khi job render mới thành công.
+    if published_before and policy["auto_upload_youtube"]:
         if pipeline.get("republish_confirmed_for") != audio_fingerprint(patch):
             return {"state": "awaiting_republish_confirmation",
                     "code": "republish_confirmation_required",
@@ -244,7 +247,7 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
     if not isinstance(render_config, dict):
         render_config = {"resolution": book.video_resolution or "1920x1080",
                          "fps": book.video_fps or 30, "fit_mode": "auto", "codec": "libx264",
-                         "crf": 23, "audio_bitrate": "192k"}
+                         "crf": 20, "audio_bitrate": "320k"}
     sequence, backgrounds, raw_bg, image, image_type = _resolve_sequence_inputs(
         book, patch, config, branding=branding)
     background_type = config.get("background_type", "media")
@@ -267,7 +270,7 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
             raise ValueError("waveform không tương thích với một game đã chọn trong vòng xoay")
         clips = ensure_patch_coverage(conn, patch.id, duration, width=width, height=height,
                                        fps=int(render_config.get("fps") or 30), game_id=game_id,
-                                       game_ids=game_ids, quality=int(render_config.get("crf") or 23),
+                                       game_ids=game_ids, quality=int(render_config.get("crf") or 20),
                                        config=gameplay_config)
         gameplay = {
             "game_id": game_id,

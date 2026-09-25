@@ -48,7 +48,7 @@ def test_enqueue_freezes_complete_patch_render_configuration(tmp_path, monkeypat
     assert config["resolution"] == "1920x1080"
     assert config["fps"] == 30
     assert config["codec"] == "libx264"
-    assert config["crf"] == 23
+    assert config["crf"] == 20
     assert config["audio_bitrate"] == "320k"
     assert {"music_path", "music_volume", "intro_audio", "outro_audio"} <= config.keys()
     # Gap music is frozen with everything else, so changing the setting later

@@ -6,13 +6,15 @@ import {
   FileSearch,
   Film,
   Layers,
+  Mic,
   RotateCcw,
   ScanText,
+  Search,
   ShieldAlert,
   Video,
   Wrench,
 } from "lucide-react";
-import { api, Chapter, Patch, post, postJson } from "@/api";
+import { api, Chapter, Patch, VoiceItem, post, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/Header";
@@ -30,19 +32,47 @@ import {
 import { cn } from "@/lib/utils";
 import { MediaBrowser } from "@/components/media-browser/MediaBrowser";
 import {
+  OnlineVoice,
   PatchRangeReport,
   PatchRangesReport,
   PatchReport,
   PatchTextCheckSummary,
   PipelineInfo,
+  TtsModel,
+  VoiceOption,
   errorText,
   stageBlockedReason,
 } from "./types";
-import { SectionHead, TabBar, checkboxClass } from "./parts";
+import { buildVoiceOptions, modelNeedsOnlineVoices } from "./useBookDetail";
+import { SectionHead, Field, checkboxClass, fieldClass, selectClass } from "./parts";
 import { patchMediaDir } from "./paths";
 import { PatchIssuesDialog } from "./PatchIssuesDialog";
 
-type Filter = "all" | "processing" | "done" | "failed";
+type StatusFilter = "all" | "unqueued" | "processing" | "done" | "failed";
+type PresenceFilter = "all" | "yes" | "no";
+
+/** Patch chưa từng chạm vào hàng đợi nào: chưa chạy TTS (status pending)
+ * đồng thời chưa có pipeline video/YouTube. */
+export function isUnqueued(patch: Patch, pipelines: Record<string, PipelineInfo>) {
+  return patch.status === "pending" && !pipelines[String(patch.id)];
+}
+
+/** Các trạng thái đầu ra dùng chung với badge trong từng dòng và bộ lọc. */
+export function hasAudio(patch: Patch) {
+  return patch.status === "done";
+}
+
+export function hasVideo(pipeline?: PipelineInfo) {
+  return pipeline?.video_status === "done";
+}
+
+export function hasYoutube(pipeline?: PipelineInfo) {
+  return pipeline?.upload_state === "published" || pipeline?.stage === "published";
+}
+
+function matchesPresence(filter: PresenceFilter, present: boolean) {
+  return filter === "all" || (filter === "yes" ? present : !present);
+}
 
 type TextTotals = { totals: Record<string, number>; total: number };
 
@@ -72,7 +102,58 @@ type RowProps = {
   onUploadVideo: (patch: Patch) => void;
   onRetryPublish: (patch: Patch) => void;
   onRepublish: (patch: Patch) => void;
+  voice: VoiceCtx;
 };
+
+type VoiceCtx = {
+  ttsModels: TtsModel[];
+  bookModelId: string;
+  bookVoiceId: string;
+  bookVoiceName: string;
+  localVoices: VoiceItem[];
+  onlineCache: Record<string, OnlineVoice[]>;
+  ensureOnlineVoices: (modelId: string) => void;
+};
+
+/** Nhãn giọng hiệu lực của patch (chỉ hiển thị): giọng riêng đã lưu, nếu không
+ *  thì giọng chung của sách. Gán/tự động lưu khi chạy TTS. */
+function PatchVoiceLabel({ patch, voice }: { patch: Patch; voice: VoiceCtx }) {
+  const { ttsModels, bookModelId, bookVoiceId, bookVoiceName, localVoices, onlineCache, ensureOnlineVoices } = voice;
+  const hasOverride = Boolean(patch.tts_model || patch.tts_voice_id);
+  const effectiveModel = patch.tts_model || bookModelId;
+  const rawVoice = patch.tts_voice_id != null ? patch.tts_voice_id : bookVoiceId;
+  const model = ttsModels.find((item) => item.id === effectiveModel) || null;
+
+  useEffect(() => {
+    if (modelNeedsOnlineVoices(model)) ensureOnlineVoices(effectiveModel);
+  }, [model, effectiveModel, ensureOnlineVoices]);
+
+  const options: VoiceOption[] = useMemo(
+    () =>
+      buildVoiceOptions({
+        ttsModels,
+        modelId: effectiveModel,
+        localVoices,
+        onlineVoices: onlineCache[effectiveModel] || [],
+        currentVoiceName: bookVoiceName,
+      }),
+    [ttsModels, effectiveModel, localVoices, onlineCache, bookVoiceName]
+  );
+
+  const voiceLabel = rawVoice
+    ? options.find((option) => option.value === rawVoice)?.label || rawVoice
+    : "—";
+  return (
+    <div
+      className="min-w-0 max-w-44"
+      title={hasOverride ? `Giọng riêng patch này (tự lưu khi chạy TTS): ${model?.name || effectiveModel} · ${voiceLabel}` : `Theo cấu hình chung của sách: ${model?.name || effectiveModel} · ${voiceLabel}`}
+    >
+      <p className="truncate text-[11px] font-medium">{voiceLabel}</p>
+      <p className="truncate font-mono text-[10px] text-muted-foreground">{model?.name || effectiveModel}</p>
+      {hasOverride && <span className="text-[10px] font-medium text-primary">Giọng riêng</span>}
+    </div>
+  );
+}
 
 /** Memo hoá theo từng dòng: nhịp polling chỉ vẽ lại patch thực sự đổi. */
 const PatchRow = React.memo(function PatchRow({
@@ -91,6 +172,7 @@ const PatchRow = React.memo(function PatchRow({
   onUploadVideo,
   onRetryPublish,
   onRepublish,
+  voice,
 }: RowProps) {
   const percent = patch.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
   const rangeBad = rangeReport && rangeReport.severity !== "ok";
@@ -100,6 +182,7 @@ const PatchRow = React.memo(function PatchRow({
   const numberedChapters = patchChapters.map((chapter) => chapter.chapter_no).filter((value) => value != null);
   const actualStart = numberedChapters[0];
   const actualEnd = numberedChapters[numberedChapters.length - 1];
+  const patchLabel = patch.name || `Patch ${patch.patch_index + 1}`;
 
   // Bấm vào phần trống của dòng để chọn; nút/link/ô nhập bên trong vẫn giữ hành vi riêng.
   const selectFromEvent = (event: React.MouseEvent, fallback: SelectMode) =>
@@ -133,12 +216,16 @@ const PatchRow = React.memo(function PatchRow({
         />
       </TableCell>
 
+      <TableCell className="w-[50px] min-w-[50px] px-2 py-2.5 text-center font-mono text-xs text-muted-foreground">
+        {patch.patch_index + 1}
+      </TableCell>
+
       <TableCell className="min-w-56 py-2.5">
-        <button className="block text-left" onClick={() => onOpen(patch)}>
-          <span className="text-xs font-semibold hover:text-primary">
-            #{patch.patch_index + 1} · {patch.name || `Patch ${patch.patch_index + 1}`}
+        <button className="block min-w-0 max-w-[18rem] text-left" onClick={() => onOpen(patch)}>
+          <span className="block truncate text-xs font-semibold hover:text-primary" title={patchLabel}>
+            #{patch.patch_index + 1} · {patchLabel}
           </span>
-          <span className="mt-0.5 block font-mono text-[10px] text-muted-foreground">
+          <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
              {actualStart != null
                ? `Chương ${actualStart}${actualEnd !== actualStart ? `–${actualEnd}` : ""}`
                : `Mục ${patch.chapter_start + 1}–${patch.chapter_end + 1}`}
@@ -205,18 +292,18 @@ const PatchRow = React.memo(function PatchRow({
 
       <TableCell className="min-w-28 py-2.5">
         <div className="flex flex-wrap gap-1">
-          {patch.status === "done" && (
+          {hasAudio(patch) && (
             <button onClick={() => onOpen(patch)} title="Nghe audio patch" className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 hover:bg-emerald-100">
               <FileAudio2 className="h-2.5 w-2.5" /> Audio
             </button>
           )}
-          {pipeline?.video_status === "done" && (
+          {hasVideo(pipeline) && (
             <button onClick={() => window.open(`/books/${patch.book_id}/patches/${patch.id}/video/preview`, "_blank", "noopener,noreferrer")} title="Xem trước video" className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100">
               <Film className="h-2.5 w-2.5" /> Video
             </button>
           )}
-          {pipeline?.upload_state === "published" && (
-            <button onClick={() => pipeline.youtube_video_id && window.open(`https://www.youtube.com/watch?v=${pipeline.youtube_video_id}`, "_blank", "noopener,noreferrer")} title="Mở video trên YouTube" className="inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-100">
+          {hasYoutube(pipeline) && (
+            <button onClick={() => pipeline?.youtube_video_id && window.open(`https://www.youtube.com/watch?v=${pipeline.youtube_video_id}`, "_blank", "noopener,noreferrer")} title="Mở video trên YouTube" className="inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-100">
               <Video className="h-2.5 w-2.5" /> YouTube
             </button>
           )}
@@ -263,13 +350,17 @@ const PatchRow = React.memo(function PatchRow({
         </div>
       </TableCell>
 
+      <TableCell className="min-w-44 py-2.5">
+        <PatchVoiceLabel patch={patch} voice={voice} />
+      </TableCell>
+
       <TableCell className="py-2.5 text-right">
         <StatusBadge value={patch.status} />
       </TableCell>
 
       <TableCell className="py-2.5 pr-4 text-right">
         <div className="flex items-center justify-end gap-1">
-          {pipeline?.video_status === "done" && pipeline.upload_state !== "published" && (
+          {pipeline && hasVideo(pipeline) && !hasYoutube(pipeline) && (
             <Button
               size="sm"
               variant="ghost"
@@ -336,6 +427,10 @@ export function PatchesPanel({
   onMessage,
   onRefresh,
   onBusyChange,
+  ttsModels,
+  bookModelId,
+  bookVoiceId,
+  bookVoiceName,
 }: {
   bookId: string;
   patches: Patch[];
@@ -347,8 +442,20 @@ export function PatchesPanel({
   onMessage: (message: string) => void;
   onRefresh: () => Promise<void> | void;
   onBusyChange: (busy: boolean) => void;
+  /** Catalog TTS của sách — dựng cột giọng riêng từng patch. */
+  ttsModels: TtsModel[];
+  /** Model audio hiện tại của sách (kế thừa khi patch không gán riêng). */
+  bookModelId: string;
+  /** Voice audio hiện tại của sách (kế thừa khi patch không gán riêng). */
+  bookVoiceId: string;
+  /** Tên file clip mẫu của sách (cho model clone). */
+  bookVoiceName: string;
 }) {
-  const [filter, setFilter] = useState<Filter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [audioFilter, setAudioFilter] = useState<PresenceFilter>("all");
+  const [videoFilter, setVideoFilter] = useState<PresenceFilter>("all");
+  const [youtubeFilter, setYoutubeFilter] = useState<PresenceFilter>("all");
+  const [query, setQuery] = useState("");
   const [importingId, setImportingId] = useState<number>();
   const [chunkReports, setChunkReports] = useState<Record<number, PatchReport>>();
   const [checkingChunks, setCheckingChunks] = useState(false);
@@ -356,6 +463,74 @@ export function PatchesPanel({
   const [textChecks, setTextChecks] = useState<Record<number, TextTotals>>();
   const [checkingText, setCheckingText] = useState(false);
   const [resyncing, setResyncing] = useState(false);
+
+  // Giọng riêng từng patch: clip thư viện tải một lần; giọng online tải theo
+  // model khi dòng cần (edge-tts/gTTS), cache theo model để không gọi lặp.
+  const [localVoices, setLocalVoices] = useState<VoiceItem[]>([]);
+  const [onlineCache, setOnlineCache] = useState<Record<string, OnlineVoice[]>>({});
+  const onlineInflight = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    api<{ voices: VoiceItem[] }>("/api/ui/media")
+      .then((res) => setLocalVoices(res.voices || []))
+      .catch(() => {});
+  }, []);
+  const ensureOnlineVoices = useCallback((modelId: string) => {
+    if (!modelId) return;
+    setOnlineCache((prev) => {
+      if (prev[modelId] || onlineInflight.current.has(modelId)) return prev;
+      onlineInflight.current.add(modelId);
+      api<{ voices: OnlineVoice[] }>(`/text-studio/light-tts/voices?backend=${encodeURIComponent(modelId)}`)
+        .then((res) =>
+          setOnlineCache((cur) => (cur[modelId] ? cur : { ...cur, [modelId]: res.voices || [] }))
+        )
+        .catch(() =>
+          setOnlineCache((cur) => (cur[modelId] ? cur : { ...cur, [modelId]: [] }))
+        )
+        .finally(() => {
+          onlineInflight.current.delete(modelId);
+        });
+      return prev;
+    });
+  }, []);
+
+  const [resettingVoices, setResettingVoices] = useState(false);
+  const resetPatchVoices = useCallback(async () => {
+    if (!selectedIds.length) {
+      onMessage("Chọn ít nhất một patch để reset giọng về theo sách.");
+      return;
+    }
+    setResettingVoices(true);
+    onBusyChange(true);
+    try {
+      const result = await postJson<{ reset: number }>(`/books/${bookId}/patches/reset-voices`, {
+        patch_ids: selectedIds,
+      });
+      onMessage(
+        result.reset
+          ? `Đã reset ${result.reset} patch về giọng của sách.`
+          : "Các patch đã chọn vốn dùng giọng sách — không có gì để reset."
+      );
+      await onRefresh();
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setResettingVoices(false);
+      onBusyChange(false);
+    }
+  }, [bookId, selectedIds, onBusyChange, onMessage, onRefresh]);
+
+  const voiceCtx = useMemo(
+    () => ({
+      ttsModels,
+      bookModelId,
+      bookVoiceId,
+      bookVoiceName,
+      localVoices,
+      onlineCache,
+      ensureOnlineVoices,
+    }),
+    [ttsModels, bookModelId, bookVoiceId, bookVoiceName, localVoices, onlineCache, ensureOnlineVoices]
+  );
 
   const checkChunks = useCallback(async () => {
     setCheckingChunks(true);
@@ -424,15 +599,24 @@ export function PatchesPanel({
     }
   }, [bookId, loadRanges, onMessage, onRefresh, onBusyChange]);
 
-  const counts = useMemo(
-    () => ({
+  const counts = useMemo(() => {
+    const hasAudioCount = patches.filter((patch) => hasAudio(patch)).length;
+    const hasVideoCount = patches.filter((patch) => hasVideo(pipelines[String(patch.id)])).length;
+    const hasYoutubeCount = patches.filter((patch) => hasYoutube(pipelines[String(patch.id)])).length;
+    return {
       all: patches.length,
+      unqueued: patches.filter((patch) => isUnqueued(patch, pipelines)).length,
       processing: patches.filter((patch) => patch.status === "processing").length,
       done: patches.filter((patch) => patch.status === "done").length,
       failed: patches.filter((patch) => patch.status === "failed").length,
-    }),
-    [patches]
-  );
+      hasAudio: hasAudioCount,
+      noAudio: patches.length - hasAudioCount,
+      hasVideo: hasVideoCount,
+      noVideo: patches.length - hasVideoCount,
+      hasYoutube: hasYoutubeCount,
+      noYoutube: patches.length - hasYoutubeCount,
+    };
+  }, [patches, pipelines]);
 
   const rangeSummary = ranges?.summary;
   const rangeByPatchId = useMemo(() => {
@@ -455,15 +639,46 @@ export function PatchesPanel({
     setMediaOpen(true);
   }, []);
 
-  const visible = useMemo(
-    () => (filter === "all" ? patches : patches.filter((patch) => patch.status === filter)),
-    [patches, filter]
-  );
+  const visible = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase("vi-VN").replace(/^#/, "");
+    return patches.filter((patch) => {
+      const pipeline = pipelines[String(patch.id)];
+      if (statusFilter === "unqueued" && !isUnqueued(patch, pipelines)) return false;
+      if (statusFilter === "processing" && patch.status !== "processing") return false;
+      if (statusFilter === "done" && patch.status !== "done") return false;
+      if (statusFilter === "failed" && patch.status !== "failed") return false;
+      if (!matchesPresence(audioFilter, hasAudio(patch))) return false;
+      if (!matchesPresence(videoFilter, hasVideo(pipeline))) return false;
+      if (!matchesPresence(youtubeFilter, hasYoutube(pipeline))) return false;
+      if (!needle) return true;
+
+      const searchable = [
+        patch.name || "",
+        String(patch.id),
+        String(patch.patch_index + 1),
+        ...chapters.flatMap((chapter) =>
+          chapter.chapter_index >= patch.chapter_start && chapter.chapter_index <= patch.chapter_end
+            ? [
+                chapter.title || "",
+                String(chapter.chapter_index + 1),
+                chapter.chapter_no == null ? "" : String(chapter.chapter_no),
+              ]
+            : []
+        ),
+      ]
+        .join(" ")
+        .toLocaleLowerCase("vi-VN");
+      return searchable.includes(needle);
+    });
+  }, [audioFilter, chapters, patches, pipelines, query, statusFilter, videoFilter, youtubeFilter]);
 
   const allVisibleSelected = visible.length > 0 && visible.every((patch) => selectedIds.includes(patch.id));
 
   // Dòng neo cho shift+click: lần bấm gần nhất không phải quét khoảng.
   const anchorId = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    anchorId.current = undefined;
+  }, [audioFilter, query, statusFilter, videoFilter, youtubeFilter]);
 
   const select = useCallback(
     (patchId: number, mode: SelectMode) => {
@@ -568,7 +783,7 @@ export function PatchesPanel({
         <SectionHead
           icon={Layers}
           title={`Patches (${patches.length})`}
-          detail="Bấm vào dòng để chọn · Ctrl+click chọn thêm · Shift+click quét khoảng. Hành động hàng loạt nằm ở thanh dưới màn hình."
+          detail="Lọc nhanh theo đầu ra hoặc tìm patch theo chương."
           action={
             <div className="flex shrink-0 flex-wrap items-center gap-2">
               <Button size="sm" variant="outline" onClick={checkText} disabled={checkingText}>
@@ -576,6 +791,15 @@ export function PatchesPanel({
               </Button>
               <Button size="sm" variant="outline" onClick={checkChunks} disabled={checkingChunks}>
                 <FileSearch className={cn("h-3.5 w-3.5", checkingChunks && "animate-pulse")} /> Soát chunk
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={resetPatchVoices}
+                disabled={resettingVoices || !selectedIds.length}
+                title="Xoá giọng riêng của các patch đã chọn — về kế thừa giọng chung của sách"
+              >
+                <Mic className={cn("h-3.5 w-3.5", resettingVoices && "animate-pulse")} /> Reset giọng
               </Button>
               <Link to="/queue" className="text-xs text-primary hover:underline">
                 Hàng đợi →
@@ -610,17 +834,71 @@ export function PatchesPanel({
             )}
           </div>
         )}
-        <TabBar<Filter>
-          value={filter}
-          onChange={setFilter}
-          className="bg-background"
-          tabs={[
-            { value: "all", label: "Tất cả", badge: counts.all },
-            { value: "processing", label: "Đang chạy", badge: counts.processing },
-            { value: "done", label: "Hoàn thành", badge: counts.done },
-            { value: "failed", label: "Lỗi", badge: counts.failed },
-          ]}
-        />
+        <div className="space-y-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search"
+              className={`${fieldClass} pl-9`}
+              placeholder="Tìm theo tên chương hoặc patch ID..."
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              aria-label="Tìm theo tên chương hoặc patch ID"
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="Trạng thái">
+              <select
+                className={selectClass}
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+                aria-label="Lọc theo trạng thái patch"
+              >
+                <option value="all">Tất cả ({counts.all})</option>
+                <option value="unqueued">Chưa vào hàng đợi ({counts.unqueued})</option>
+                <option value="processing">Đang chạy ({counts.processing})</option>
+                <option value="done">Hoàn thành ({counts.done})</option>
+                <option value="failed">Lỗi ({counts.failed})</option>
+              </select>
+            </Field>
+            <Field label="Audio">
+              <select
+                className={selectClass}
+                value={audioFilter}
+                onChange={(event) => setAudioFilter(event.target.value as PresenceFilter)}
+                aria-label="Lọc theo audio"
+              >
+                <option value="all">Tất cả</option>
+                <option value="yes">Có audio ({counts.hasAudio})</option>
+                <option value="no">Chưa có audio ({counts.noAudio})</option>
+              </select>
+            </Field>
+            <Field label="Video">
+              <select
+                className={selectClass}
+                value={videoFilter}
+                onChange={(event) => setVideoFilter(event.target.value as PresenceFilter)}
+                aria-label="Lọc theo video"
+              >
+                <option value="all">Tất cả</option>
+                <option value="yes">Có Video ({counts.hasVideo})</option>
+                <option value="no">Chưa có Video ({counts.noVideo})</option>
+              </select>
+            </Field>
+            <Field label="YouTube">
+              <select
+                className={selectClass}
+                value={youtubeFilter}
+                onChange={(event) => setYoutubeFilter(event.target.value as PresenceFilter)}
+                aria-label="Lọc theo YouTube"
+              >
+                <option value="all">Tất cả</option>
+                <option value="yes">Có YT ({counts.hasYoutube})</option>
+                <option value="no">Chưa có YT ({counts.noYoutube})</option>
+              </select>
+            </Field>
+          </div>
+        </div>
       </CardHeader>
 
       <CardContent className="p-0">
@@ -640,9 +918,13 @@ export function PatchesPanel({
                       aria-label="Chọn tất cả patch đang hiển thị"
                     />
                   </TableHead>
+                  <TableHead className="w-[50px] min-w-[50px] px-2 text-center" title="Thứ tự">
+                    STT
+                  </TableHead>
                   <TableHead>Patch</TableHead>
                   <TableHead>Tiến độ</TableHead>
                   <TableHead>Pipeline</TableHead>
+                  <TableHead>Giọng đọc</TableHead>
                   <TableHead className="text-right">Trạng thái</TableHead>
                   <TableHead className="pr-4 text-right">Thao tác</TableHead>
                 </TableRow>
@@ -666,6 +948,7 @@ export function PatchesPanel({
                     onUploadVideo={uploadVideo}
                     onRetryPublish={retryPublish}
                     onRepublish={(patch) => setRepublishPatch(patch)}
+                    voice={voiceCtx}
                   />
                 ))}
               </TableBody>

@@ -10,6 +10,7 @@ from pathlib import Path
 import soundfile as sf
 
 from app import audio_merge, repository
+from app.audio_mastering import normalize_wav_in_place
 from app.config import settings
 from app.jobqueue.models import JobFatalError
 
@@ -135,11 +136,12 @@ def handle(ctx) -> dict:
 
 
 def _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects, pauses) -> None:
-    info = sf.info(audio_path)
-    chapters, _ = audio_merge.build_chapter_marks(plan, [sf.info(p).frames for p in chunk_paths], info.samplerate, pauses)
-    audio_merge.try_write_timeline(Path(audio_path).with_suffix(".timeline.json"), info.samplerate, chapters, info.frames)
     if with_effects:
         from app.routes.text_studio import _mix_effects
         mixed = _mix_effects(Path(audio_path).read_bytes(), "\n\n".join(i["text"] for i in plan), ctx.conn)
         Path(audio_path).write_bytes(mixed)
+    normalize_wav_in_place(audio_path)
+    info = sf.info(audio_path)
+    chapters, _ = audio_merge.build_chapter_marks(plan, [sf.info(p).frames for p in chunk_paths], info.samplerate, pauses)
+    audio_merge.try_write_timeline(Path(audio_path).with_suffix(".timeline.json"), info.samplerate, chapters, info.frames)
     repository.mark_patch_done(ctx.conn, patch_id, audio_path)

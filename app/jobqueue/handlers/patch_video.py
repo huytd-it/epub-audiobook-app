@@ -170,8 +170,8 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
         "fps": int(render_config.get("fps") or 30),
         "fit_mode": render_config.get("fit_mode") or "auto",
         "codec": render_config.get("codec") or "libx264",
-        "quality": int(render_config.get("crf") or 23),
-        "audio_bitrate": render_config.get("audio_bitrate") or "192k",
+        "quality": int(render_config.get("crf") or 20),
+        "audio_bitrate": render_config.get("audio_bitrate") or "320k",
     }
     intro = render_config.get("intro_audio")
     outro = render_config.get("outro_audio")
@@ -220,7 +220,13 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                         apply_replay_stats(ctx.conn, int(replay_id))
                     paths.append(path)
                 visual = str(Path(tmp) / "visual.mp4")
-                video_gen.concat_video_segments(paths, visual)
+                video_gen.concat_video_segments(
+                    paths,
+                    visual,
+                    resolution=common["resolution"],
+                    fps=common["fps"],
+                    quality=common["quality"],
+                )
                 waveform_policy = gameplay.get("waveform_policy", "forbidden")
                 effects = {**seq_config, "waveform_enabled": bool(seq_config.get("waveform_enabled"))
                            and waveform_policy != "forbidden"}
@@ -399,6 +405,7 @@ def handle(ctx) -> dict:
                 image = image_overlay.ensure_patch_overlay(
                     book, patch, settings.default_font_path or None, background_path=raw_bg,
                     branding=branding,
+                    extra_overlays=image_overlay.narrator_credit_overlays(book, config, patch),
                 ) or raw_bg
                 image_type = patch.image_type if patch.image_type and patch.image_type != "static" else (book.default_image_animation or "none")
             music_path = None

@@ -1,6 +1,7 @@
 """build_kaggle_export_package: a batch package for the Kaggle Kernels API round
-trip - same manifest/reference-clip construction as the Drive package, but the
-notebook copy has MODE set to "kaggle_native" and never bakes a Drive secret."""
+trip - same manifest/reference-clip construction as the Drive package, with MODE
+set to "kaggle_native". Drive creds are baked only when the app has a Drive
+account (retry resume via Drive sync); without creds the kernel stays offline."""
 from __future__ import annotations
 
 import json
@@ -85,7 +86,9 @@ def test_kaggle_package_enables_is_kaggle(conn, tmp_path, monkeypatch):
         shutil.rmtree(package_dir, ignore_errors=True)
 
 
-def test_kaggle_package_never_bakes_a_gdrive_secret(conn, tmp_path, monkeypatch):
+def test_kaggle_package_without_creds_stays_offline(conn, tmp_path, monkeypatch):
+    """No Drive account -> empty GDRIVE_CREDS placeholder, kernel runs fully
+    offline and results travel back only through kernel_output()."""
     monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
     patch = _seed_book_and_patch(conn)
 
@@ -95,6 +98,51 @@ def test_kaggle_package_never_bakes_a_gdrive_secret(conn, tmp_path, monkeypatch)
         assert "__GDRIVE_CREDS__" not in notebook
         # The placeholder resolves to an empty string - never a live refresh token/secret.
         assert 'GDRIVE_CREDS = \\"\\"' in notebook
+    finally:
+        import shutil
+        shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_kaggle_package_with_creds_bakes_drive_sync(conn, tmp_path, monkeypatch):
+    """With a Drive account the creds are baked into BOTH Drive branches of Cell 4
+    (manual-drive mode and kaggle_native retry-resume), so the kernel can mirror
+    chunk/output files to Drive and a retry resumes instead of restarting."""
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn)
+    creds = {"client_id": "cid", "client_secret": "cs", "refresh_token": "rt"}
+
+    package_dir, _ = drive_export.build_kaggle_export_package(
+        conn, [patch], model_id="zerotts", gdrive_creds=creds,
+    )
+    try:
+        nb = json.loads((package_dir / "colab_kaggle_batch_tts_template.ipynb").read_text(encoding="utf-8"))
+        cell4 = "".join(nb["cells"][4]["source"])
+        assert "__GDRIVE_CREDS__" not in cell4
+        # Escaped JSON payload lands in the notebook (not the raw refresh token).
+        assert "rt" not in cell4 or "refresh_token" in cell4
+        assert cell4.count("cid") >= 2  # both branches
+    finally:
+        import shutil
+        shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_kaggle_package_accepts_stable_batch_id(conn, tmp_path, monkeypatch):
+    """The handler passes one stable batch_id per job so every retry maps to the
+    same Drive sync folder; it must land in the manifest and every BATCH_ID slot."""
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn)
+
+    package_dir, manifest = drive_export.build_kaggle_export_package(
+        conn, [patch], model_id="zerotts", batch_id="stable-batch-1",
+        drive_folder_name="stable-folder",
+    )
+    try:
+        assert manifest["batch_id"] == "stable-batch-1"
+        nb = json.loads((package_dir / "colab_kaggle_batch_tts_template.ipynb").read_text(encoding="utf-8"))
+        cell4 = "".join(nb["cells"][4]["source"])
+        assert "__BATCH_ID__" not in cell4
+        assert cell4.count("stable-batch-1") >= 2  # native + drive branches
+        assert "stable-folder" in cell4
     finally:
         import shutil
         shutil.rmtree(package_dir, ignore_errors=True)

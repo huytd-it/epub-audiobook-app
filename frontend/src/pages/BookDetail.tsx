@@ -10,6 +10,7 @@ import {
   Layers,
   Mic,
   Pencil,
+  RotateCcw,
   Settings,
   Trash2,
   UploadCloud,
@@ -69,6 +70,10 @@ const DEFAULT_AUTOMATION: BatchAutomation = {
 export function BatchRunDialog({
   kind,
   targets,
+  existingTargets,
+  publishedTargets,
+  skippedTargets,
+  overrideCount,
   automation,
   onAutomationChange,
   open,
@@ -78,6 +83,11 @@ export function BatchRunDialog({
 }: {
   kind: BatchKind;
   targets: number;
+  existingTargets: number;
+  publishedTargets: number;
+  skippedTargets: number;
+  /** Số patch có giọng riêng — chúng giữ nguyên giọng đó thay vì giọng dialog. */
+  overrideCount: number;
   automation: BatchAutomation;
   onAutomationChange: (patch: Partial<BatchAutomation>) => void;
   open: boolean;
@@ -86,6 +96,7 @@ export function BatchRunDialog({
   running: boolean;
 }) {
   const isAudio = kind === "audio";
+  const isRequeue = !isAudio && existingTargets === targets && targets > 0;
   const toggleUpload = (value: boolean) => {
     onAutomationChange({ autoUploadYoutube: value, autoCreateVideo: value ? true : automation.autoCreateVideo });
   };
@@ -94,16 +105,48 @@ export function BatchRunDialog({
       <DialogContent className="max-h-[90vh] max-w-lg overflow-auto">
         <DialogHeader>
           <DialogTitle>
-            {isAudio ? `Tạo audio cho ${targets} patch` : `Dựng video cho ${targets} patch`}
+            {isAudio
+              ? `Tạo audio cho ${targets} patch`
+              : isRequeue
+                ? `Đưa lại ${targets} patch vào hàng đợi video`
+                : `Xếp ${targets} patch vào hàng đợi video`}
           </DialogTitle>
           <DialogDescription>
             {isAudio
               ? "Đưa các patch vào hàng đợi TTS. Bật tự động hoá để nối tiếp dây chuyền video/YouTube ngay sau khi audio hoàn thành."
-              : "Đưa các patch vào hàng đợi dựng video. Bật tự động hoá để upload thẳng lên YouTube ngay sau khi video dựng xong."}
+              : "Mỗi patch sẽ có đúng một job video đang hoạt động. Nếu patch đã nằm trong hàng đợi, hệ thống giữ nguyên job hiện tại thay vì tạo bản trùng."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
+          {!isAudio && (
+            <div className="space-y-1.5 rounded-md border border-border bg-muted/20 p-3 text-xs">
+              <div className="font-medium">{targets} patch đủ điều kiện</div>
+              <div className="text-muted-foreground">
+                {existingTargets > 0
+                  ? `${existingTargets} patch đã có video sẽ được đưa lại vào hàng đợi. Video hiện tại chỉ bị thay thế sau khi bản mới dựng thành công.`
+                  : "Các patch sẽ được đưa vào hàng đợi tạo video mới."}
+              </div>
+              {publishedTargets > 0 && (
+                <div className="text-amber-700">
+                  {publishedTargets} patch đã publish chỉ dựng lại video local; video YouTube hiện tại vẫn được giữ nguyên.
+                </div>
+              )}
+              {skippedTargets > 0 && (
+                <div className="text-amber-700">
+                  Bỏ qua {skippedTargets} patch chưa có audio hoặc đang upload YouTube.
+                </div>
+              )}
+            </div>
+          )}
+
+          {isAudio && overrideCount > 0 && (
+            <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-[11px]">
+              {overrideCount} patch có giọng riêng sẽ <span className="font-semibold">giữ nguyên giọng đó</span> thay
+              vì giọng trong cấu hình sách. Reset về “Theo sách” ở cột Giọng đọc nếu muốn đổi hàng loạt.
+            </div>
+          )}
+
           <div className="space-y-3 rounded-md border border-border p-3">
             {isAudio && (
               <CheckField
@@ -114,12 +157,15 @@ export function BatchRunDialog({
               />
             )}
             <CheckField
-              checked={automation.autoUploadYoutube}
+              checked={automation.autoUploadYoutube && (isAudio || publishedTargets < targets)}
+              disabled={!isAudio && publishedTargets === targets && targets > 0}
               onChange={isAudio ? toggleUpload : (value) => onAutomationChange({ autoUploadYoutube: value })}
               label={
                 isAudio
                   ? "Tự động upload lên YouTube sau khi dựng video"
-                  : "Tự động upload lên YouTube sau khi dựng video xong"
+                  : publishedTargets > 0
+                    ? "Tự động upload các patch chưa publish sau khi dựng xong"
+                    : "Tự động upload lên YouTube sau khi dựng video xong"
               }
             />
             {isAudio && automation.autoUploadYoutube && (
@@ -152,7 +198,11 @@ export function BatchRunDialog({
 
         <DialogFooter>
           <Button onClick={onConfirm} disabled={running || !targets}>
-            {running ? "Đang gửi..." : `Đưa ${targets} patch vào hàng đợi`}
+            {running
+              ? "Đang gửi..."
+              : isAudio
+                ? `Đưa ${targets} patch vào hàng đợi`
+                : `Đưa ${targets} patch vào hàng đợi video`}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -181,10 +231,13 @@ export function BookDetail() {
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchKind, setBatchKind] = useState<BatchKind>("audio");
   const [batchTargets, setBatchTargets] = useState<number[]>([]);
+  const [batchSkipped, setBatchSkipped] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [sourceOpen, setSourceOpen] = useState(false);
   const [sourceFile, setSourceFile] = useState<File>();
   const [sourceBusy, setSourceBusy] = useState<"delete" | "upload">();
+  const [reimportOpen, setReimportOpen] = useState(false);
+  const [reimporting, setReimporting] = useState(false);
   const [automation, setAutomation] = useState<BatchAutomation>(DEFAULT_AUTOMATION);
   const [settings, setSettings] = useState<AudioSettings>({
     modelId: "edge-tts",
@@ -218,7 +271,9 @@ export function BookDetail() {
   );
 
   // Dừng polling khi đang mở dialog hoặc đang chạy thao tác: tránh ghi đè state giữa chừng.
-  const paused = previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || batchOpen || sourceOpen || busyCount > 0;
+  const paused =
+    previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || batchOpen || sourceOpen ||
+    reimportOpen || busyCount > 0;
   const { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh } = useBookDetail(
     bookId,
     paused
@@ -375,12 +430,27 @@ export function BookDetail() {
 
   const runBatch = useCallback(
     async (kind: "audio" | "video" | "youtube") => {
-      const fallback =
-        kind === "audio" ? patches : patches.filter((patch) => patch.status === "done");
-      const targets = selectedIds.length ? selectedIds : fallback.map((patch) => patch.id);
+      const requested = selectedIds.length
+        ? patches.filter((patch) => selectedIds.includes(patch.id))
+        : patches;
+      const eligible = requested.filter((patch) => {
+        if (kind === "audio") return true;
+        const currentPipeline = pipeline?.pipelines[String(patch.id)];
+        if (kind === "youtube") return currentPipeline?.video_status === "done";
+        return (
+          patch.status === "done" &&
+          currentPipeline?.upload_state !== "active" &&
+          currentPipeline?.upload_state !== "postprocessing"
+        );
+      });
+      const targets = eligible.map((patch) => patch.id);
       if (!targets.length) {
         showToast(
-          kind === "audio" ? "Không có patch để tạo âm thanh." : "Không có patch đã có audio để chạy bước này."
+          kind === "audio"
+            ? "Không có patch để tạo âm thanh."
+            : kind === "video"
+              ? "Không có patch đã có audio và sẵn sàng để tạo video."
+              : "Không có patch đã có video để upload YouTube."
         );
         return;
       }
@@ -390,7 +460,20 @@ export function BookDetail() {
       if (kind === "audio" || kind === "video") {
         setBatchKind(kind);
         setBatchTargets(targets);
+        setBatchSkipped(requested.length - eligible.length);
         setBatchOpen(true);
+        return;
+      }
+
+      const forceNewTargets = targets.filter(
+        (patchId) => pipeline?.pipelines[String(patchId)]?.can_force_new
+      );
+      if (
+        forceNewTargets.length > 0 &&
+        !window.confirm(
+          `Có ${forceNewTargets.length} patch đã đăng lên YouTube. Tiếp tục sẽ tạo video YouTube mới và giữ nguyên video cũ.`
+        )
+      ) {
         return;
       }
 
@@ -404,8 +487,17 @@ export function BookDetail() {
         // Gửi tuần tự để hàng đợi giữ đúng thứ tự patch.
         for (const patchId of targets) {
           try {
-            await post(`/books/${bookId}/patches/${patchId}/${endpoint}`);
-            queued++;
+            const form = new FormData();
+            if (forceNewTargets.includes(patchId)) form.append("force_new", "true");
+            const result = await postForm<{ status: "queued" | "skipped"; detail?: string }>(
+              `/books/${bookId}/patches/${patchId}/${endpoint}`,
+              form
+            );
+            if (result.status === "queued") {
+              queued++;
+            } else if (!firstError) {
+              firstError = new Error(result.detail || "YouTube đã bỏ qua patch này.");
+            }
           } catch (err) {
             if (!firstError) firstError = err;
           }
@@ -423,7 +515,7 @@ export function BookDetail() {
         setBusy(false);
       }
     },
-    [bookId, patches, selectedIds, settings, refresh, setBusy]
+    [bookId, patches, pipeline, selectedIds, refresh, setBusy]
   );
 
   const openPatch = useCallback((patch: Patch) => {
@@ -493,22 +585,42 @@ export function BookDetail() {
     setBusy(true);
     try {
       let queued = 0;
+      let alreadyQueued = 0;
       let firstError: unknown;
       for (const patchId of targets) {
         try {
+          const currentPipeline = pipeline?.pipelines[String(patchId)];
+          const requeue = currentPipeline?.video_status === "done";
+          // Dựng lại video local không được âm thầm tạo thêm một video YouTube.
+          // Patch chưa publish vẫn có thể nối tiếp auto-upload như cấu hình trong dialog.
+          const uploadYoutube = automation.autoUploadYoutube && !currentPipeline?.can_force_new;
           const form = new FormData();
-          form.append("upload_youtube", automation.autoUploadYoutube ? "true" : "false");
-          await postForm(`/books/${bookId}/patches/${patchId}/generate-video`, form);
-          queued++;
+          form.append("upload_youtube", uploadYoutube ? "true" : "false");
+          if (requeue) form.append("requeue", "true");
+          const result = await postForm<{ status: "queued"; job_id: number; deduplicated: boolean }>(
+            `/books/${bookId}/patches/${patchId}/generate-video?ajax=1`,
+            form
+          );
+          if (result.deduplicated) alreadyQueued++;
+          else queued++;
         } catch (err) {
           if (!firstError) firstError = err;
         }
       }
-      const chain = automation.autoUploadYoutube ? " → tự động upload YouTube" : "";
+      const accepted = queued + alreadyQueued;
+      const uploadableCount = targets.filter(
+        (patchId) => !pipeline?.pipelines[String(patchId)]?.can_force_new
+      ).length;
+      const chain = automation.autoUploadYoutube && uploadableCount > 0
+        ? ` → ${uploadableCount} patch sẽ tự động upload YouTube`
+        : "";
+      const deduplicated = alreadyQueued
+        ? ` ${alreadyQueued} patch đã có sẵn trong hàng đợi nên không tạo job trùng.`
+        : "";
       showToast(
-        queued === targets.length
-          ? `Đã đưa ${queued} patch vào hàng đợi video${chain}.`
-          : `Đã đưa ${queued}/${targets.length} patch vào hàng đợi video${chain}. ${errorText(firstError)}`
+        accepted === targets.length
+          ? `Đã đưa ${queued} patch vào hàng đợi video${chain}.${deduplicated}`
+          : `Đã nhận ${accepted}/${targets.length} patch vào hàng đợi video${chain}.${deduplicated} ${errorText(firstError)}`
       );
       await refresh();
     } catch (err) {
@@ -518,7 +630,7 @@ export function BookDetail() {
       setBusy(false);
       setBatchOpen(false);
     }
-  }, [automation, batchTargets, bookId, refresh, running, setBusy]);
+  }, [automation, batchTargets, bookId, pipeline, refresh, running, setBusy]);
 
   const openChapter = useCallback((index: number) => {
     setChapterIndex(index);
@@ -564,6 +676,24 @@ export function BookDetail() {
       setSourceBusy(undefined);
     }
   }, [bookId, chapterVal, refresh, sourceBusy]);
+
+  /** Đọc lại chương từ chính EPUB đang lưu: bỏ mọi chỉnh sửa mục lục và patch
+   * phái sinh, giữ EPUB, cấu hình sản xuất và thumbnail. */
+  const reimportChapters = useCallback(async () => {
+    if (reimporting) return;
+    setReimporting(true);
+    try {
+      const result = await api<{ chapters: number }>(`/books/${bookId}/chapters/reimport`, { method: "POST" });
+      setSelectedIds([]);
+      setReimportOpen(false);
+      showToast(`Đã nạp lại ${result.chapters} chương từ EPUB gốc. Hãy xây dựng patch mới.`);
+      await Promise.all([refresh(), chapterVal.reload()]);
+    } catch (err) {
+      showToast(errorText(err));
+    } finally {
+      setReimporting(false);
+    }
+  }, [bookId, chapterVal, refresh, reimporting]);
 
   const uploadBookSource = useCallback(async () => {
     if (!sourceFile || sourceBusy) return;
@@ -827,6 +957,10 @@ export function BookDetail() {
             onMessage={showToast}
             onRefresh={refresh}
             onBusyChange={setBusy}
+            ttsModels={ttsModels}
+            bookModelId={settings.modelId}
+            bookVoiceId={settings.voiceId}
+            bookVoiceName={currentVoiceName}
           />
           <ExportPanel
             bookId={bookId}
@@ -865,6 +999,8 @@ export function BookDetail() {
           onAnalyze={chapterVal.reload}
           onOpenChapter={openChapter}
           onOpenNormalize={() => setNormalizeOpen(true)}
+          onReimport={() => setReimportOpen(true)}
+          canReimport={hasBookSource}
         />
       )}
 
@@ -926,6 +1062,21 @@ export function BookDetail() {
       <BatchRunDialog
         kind={batchKind}
         targets={batchTargets.length}
+        existingTargets={batchTargets.filter(
+          (patchId) => pipeline?.pipelines[String(patchId)]?.video_status === "done"
+        ).length}
+        publishedTargets={batchTargets.filter(
+          (patchId) => pipeline?.pipelines[String(patchId)]?.can_force_new
+        ).length}
+        skippedTargets={batchSkipped}
+        overrideCount={
+          batchKind === "audio"
+            ? batchTargets.filter((patchId) => {
+                const patch = patches.find((item) => item.id === patchId);
+                return patch?.tts_model || patch?.tts_voice_id;
+              }).length
+            : 0
+        }
         automation={automation}
         onAutomationChange={(patch) => setAutomation((current) => ({ ...current, ...patch }))}
         open={batchOpen}
@@ -1020,6 +1171,42 @@ export function BookDetail() {
                 <UploadCloud className="h-3.5 w-3.5" /> {sourceBusy === "upload" ? "Đang tải..." : "Upload EPUB"}
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={reimportOpen}
+        onOpenChange={(open) => {
+          if (reimporting) return;
+          setReimportOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Xóa &amp; nạp lại mục lục</DialogTitle>
+            <DialogDescription>
+              Đọc lại chương từ chính EPUB đang lưu của sách này. Mọi chỉnh sửa nội dung chương, chuẩn hoá tiêu đề và
+              đánh dấu loại trừ sẽ mất. EPUB, cấu hình sản xuất, branding và thumbnail được giữ nguyên.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-800">
+            <div className="font-semibold">Patch và đầu ra của patch cũng bị xóa</div>
+            <div className="mt-1">
+              Patch tham chiếu chương theo số thứ tự nên không thể giữ lại sau khi nạp lại: {patches.length} patch cùng
+              audio/video đã dựng sẽ bị xóa.
+            </div>
+            <div className="mt-1 break-all font-mono text-[11px]">{data.book.original_filename}</div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={reimporting} onClick={() => setReimportOpen(false)}>
+              Hủy
+            </Button>
+            <Button type="button" variant="destructive" disabled={reimporting} onClick={reimportChapters}>
+              <RotateCcw className="h-3.5 w-3.5" /> {reimporting ? "Đang nạp lại..." : "Xóa và nạp lại"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

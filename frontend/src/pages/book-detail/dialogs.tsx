@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search, Square } from "lucide-react";
+import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search, SkipBack, SkipForward, Square } from "lucide-react";
 import { api, Chapter, Patch, post, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -8,6 +8,7 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { VoicePreviewButton } from "@/components/common/VoicePreviewButton";
 import { WaveformPreview } from "@/components/common/WaveformPreview";
 import { Textarea } from "@/components/ui/textarea";
+import { Combobox } from "@/components/ui/combobox";
 import { cn } from "@/lib/utils";
 import {
   Dialog,
@@ -37,8 +38,14 @@ import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
 import { YouTubeConfigFields } from "./YouTubeFields";
 import { useTtsOptions } from "./useBookDetail";
 
-const WAVEFORM_TEMPLATES = [
-  { id: "bold", name: "Dải nổi", description: "Line sáng trên nền tối", style: "line", layout: "horizontal", color: "#ffffff", background: "#050816", backgroundOpacity: 0.68, position: "bottom", height: 150, opacity: 1 },
+type PreviewChunk = { index: number; text: string; pause_ms: number };
+
+function formatPreviewTime(totalSeconds: number) {
+  const total = Math.max(0, Math.floor(totalSeconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+const WAVEFORM_TEMPLATES = [  { id: "bold", name: "Dải nổi", description: "Line sáng trên nền tối", style: "line", layout: "horizontal", color: "#ffffff", background: "#050816", backgroundOpacity: 0.68, position: "bottom", height: 150, opacity: 1 },
   { id: "studio", name: "Studio", description: "Sóng đối xứng giữa khung", style: "cline", layout: "horizontal", color: "#22d3ee", background: "#082f49", backgroundOpacity: 0.62, position: "center", height: 200, opacity: 1 },
   { id: "vertical", name: "Cột nhịp", description: "Dải sóng dọc bên trái", style: "p2p", layout: "vertical", color: "#facc15", background: "#1c1917", backgroundOpacity: 0.72, position: "center", height: 300, opacity: 1 },
   { id: "orbit", name: "Quỹ đạo", description: "Waveform tròn ở trung tâm", style: "line", layout: "circular", color: "#fb7185", background: "#2e1065", backgroundOpacity: 0.58, position: "center", height: 280, opacity: 1 },
@@ -78,8 +85,19 @@ export function PatchPreviewDialog({
   const [chunkPreviewState, setChunkPreviewState] = useState<"idle" | "loading" | "playing">("idle");
   const [chunkCaption, setChunkCaption] = useState("");
   const [completedChunksTts, setCompletedChunksTts] = useState<{ engine?: string; voice?: string; source?: string }>();
-  const chunkPreviewAudio = useRef<HTMLAudioElement | null>(null);
-  const chunkPreviewCancelled = useRef(false);
+  // Phát tạm nối nhiều file chunk nên progress/seek tính trên tổng thời lượng:
+  // durations nạp sẵn qua metadata, pos/time bám theo audio đang phát.
+  const [previewChunks, setPreviewChunks] = useState<PreviewChunk[]>([]);
+  const [previewDurations, setPreviewDurations] = useState<Record<number, number>>({});
+  const [previewPos, setPreviewPos] = useState(0);
+  const [previewTime, setPreviewTime] = useState(0);
+  // Mirror đồng bộ của chunks/durations cho engine (tránh đọc state cũ ngay sau load).
+  const previewData = useRef<{ chunks: PreviewChunk[]; durations: Record<number, number> }>({
+    chunks: [],
+    durations: {},
+  });
+  const previewRun = useRef<{ audio: HTMLAudioElement | null; cancelled: boolean } | null>(null);
+  const previewRunId = useRef(0);
   const quickTts = useTtsOptions(data, quickModelId);
 
   useEffect(() => {
@@ -107,15 +125,46 @@ export function PatchPreviewDialog({
     };
   }, [open, patch, chapters, bookId, onMessage, defaultModelId, defaultVoiceId]);
 
-  const stopChunkPreview = () => {
-    chunkPreviewCancelled.current = true;
-    chunkPreviewAudio.current?.pause();
-    chunkPreviewAudio.current = null;
+  const stopChunkPreview = useCallback((fullReset = false) => {
+    previewRunId.current += 1;
+    const run = previewRun.current;
+    if (run?.audio) {
+      try {
+        run.audio.pause();
+      } catch {
+        // Bỏ qua lỗi pause trên audio đã hủy.
+      }
+      run.audio.src = "";
+      run.audio = null;
+    }
+    previewRun.current = null;
     setChunkPreviewState("idle");
     setChunkCaption("");
-  };
+    if (fullReset) {
+      // Đóng dialog / đổi patch: quên hết để lần sau nạp mới.
+      previewData.current = { chunks: [], durations: {} };
+      setPreviewChunks([]);
+      setPreviewDurations({});
+      setPreviewPos(0);
+      setPreviewTime(0);
+      setCompletedChunksTts(undefined);
+    }
+    // Dừng tay thì giữ nguyên vị trí thanh tua để bấm phát lại tiếp tục từ đó.
+  }, []);
 
-  useEffect(() => stopChunkPreview, [open, patch?.id]);
+  useEffect(() => () => stopChunkPreview(true), [open, patch?.id, stopChunkPreview]);
+
+  const previewTotal = useMemo(
+    () => previewChunks.reduce((sum, chunk) => sum + (previewDurations[chunk.index] || 0), 0),
+    [previewChunks, previewDurations]
+  );
+  const previewElapsed = useMemo(() => {
+    let elapsed = 0;
+    for (let i = 0; i < previewPos && i < previewChunks.length; i++) {
+      elapsed += previewDurations[previewChunks[i].index] || 0;
+    }
+    return elapsed + previewTime;
+  }, [previewChunks, previewDurations, previewPos, previewTime]);
 
   const percent = patch?.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
   const patchChapters = patch
@@ -169,47 +218,215 @@ export function PatchPreviewDialog({
     }
   };
 
+  const playPreviewChunk = useCallback(
+    (chunk: { index: number; text: string }, offset: number) =>
+      new Promise<void>((resolve, reject) => {
+        const run = previewRun.current;
+        if (!run || !patch) {
+          reject(new Error("Phiên phát đã kết thúc."));
+          return;
+        }
+        const audio = new Audio(`/books/${bookId}/patches/${patch.id}/chunk-audio/${chunk.index}`);
+        audio.preload = "auto";
+        run.audio = audio;
+        const detach = () => {
+          audio.removeEventListener("timeupdate", onTimeUpdate);
+          audio.removeEventListener("ended", onEnded);
+          audio.removeEventListener("error", onError);
+        };
+        const onTimeUpdate = () => setPreviewTime(audio.currentTime);
+        const onEnded = () => {
+          detach();
+          resolve();
+        };
+        const onError = () => {
+          detach();
+          reject(new Error(`Không thể phát chunk ${chunk.index + 1}.`));
+        };
+        audio.addEventListener("timeupdate", onTimeUpdate);
+        audio.addEventListener("ended", onEnded);
+        audio.addEventListener("error", onError);
+        const start = () => {
+          try {
+            if (offset > 0 && Number.isFinite(audio.duration) && offset < audio.duration) {
+              audio.currentTime = offset;
+            }
+          } catch {
+            // Metadata chưa sẵn — phát từ đầu chunk.
+          }
+          setPreviewTime(audio.currentTime || 0);
+          audio.play().catch(reject);
+        };
+        if (audio.readyState >= 1) start();
+        else audio.addEventListener("loadedmetadata", start, { once: true });
+      }),
+    [bookId, patch]
+  );
+
+  const runPreviewLoop = useCallback(
+    async (runId: number, chunks: { index: number; text: string; pause_ms: number }[], startPos: number, startOffset: number) => {
+      let pos = startPos;
+      let offset = startOffset;
+      while (pos < chunks.length) {
+        const run = previewRun.current;
+        if (!run || run.cancelled || previewRunId.current !== runId) return;
+        const chunk = chunks[pos];
+        setPreviewPos(pos);
+        // Tua vào giữa chunk thì bỏ khoảng nghỉ đầu chunk đó.
+        if (offset <= 0 && chunk.pause_ms) {
+          await new Promise((resolve) => window.setTimeout(resolve, chunk.pause_ms));
+          if (!previewRun.current || previewRun.current.cancelled || previewRunId.current !== runId) return;
+        }
+        setChunkCaption(chunk.text);
+        try {
+          await playPreviewChunk(chunk, offset);
+        } catch (error) {
+          if (previewRun.current && !previewRun.current.cancelled && previewRunId.current === runId) {
+            onMessage(errorText(error));
+          }
+          return;
+        }
+        pos += 1;
+        offset = 0;
+      }
+      if (previewRun.current && !previewRun.current.cancelled && previewRunId.current === runId) {
+        stopChunkPreview();
+      }
+    },
+    [playPreviewChunk, onMessage, stopChunkPreview]
+  );
+
+  /** Nhảy tới chunk/offset bất kỳ: đang phát thì tua tiếp, đang dừng thì phát từ đó. */
+  const jumpPreview = useCallback(
+    (pos: number, offset = 0) => {
+      const { chunks } = previewData.current;
+      if (!chunks.length) return;
+      const clamped = Math.max(0, Math.min(chunks.length - 1, pos));
+      previewRunId.current += 1;
+      const run = previewRun.current;
+      if (run?.audio) {
+        try {
+          run.audio.pause();
+        } catch {
+          // Bỏ qua lỗi pause trên audio đã hủy.
+        }
+        run.audio.src = "";
+        run.audio = null;
+      }
+      const runId = previewRunId.current;
+      previewRun.current = { audio: null, cancelled: false };
+      setChunkPreviewState("playing");
+      void runPreviewLoop(runId, chunks, clamped, Math.max(0, offset));
+    },
+    [runPreviewLoop]
+  );
+
+  const seekPreview = useCallback(
+    (fraction: number) => {
+      const { chunks, durations } = previewData.current;
+      const total = chunks.reduce((sum, chunk) => sum + (durations[chunk.index] || 0), 0);
+      if (!chunks.length || total <= 0) return;
+      const target = Math.min(Math.max(fraction, 0), 1) * total;
+      let acc = 0;
+      for (let i = 0; i < chunks.length; i++) {
+        const duration = durations[chunks[i].index] || 0;
+        if (target < acc + duration || i === chunks.length - 1) {
+          jumpPreview(i, Math.max(0, target - acc));
+          return;
+        }
+        acc += duration;
+      }
+    },
+    [jumpPreview]
+  );
+
+  const stepPreviewChunk = useCallback(
+    (delta: number) => {
+      if (!previewData.current.chunks.length) return;
+      jumpPreview(previewPos + delta, 0);
+    },
+    [previewPos, jumpPreview]
+  );
+
+  const loadPreviewChunks = useCallback(async () => {
+    if (!patch) return null;
+    const preview = await api<{
+      chunks: PreviewChunk[];
+      tts: { tts_engine?: string; voice?: string; source?: string };
+    }>(
+      `/books/${bookId}/patches/${patch.id}/completed-chunks-preview`
+    );
+    setCompletedChunksTts({ engine: preview.tts.tts_engine, voice: preview.tts.voice, source: preview.tts.source });
+    if (!preview.chunks.length) {
+      onMessage("Chưa có chunk audio hoàn thành để phát thử.");
+      return null;
+    }
+    // Nạp sẵn thời lượng từng chunk để thanh tua biết tổng độ dài.
+    const durations: Record<number, number> = {};
+    await Promise.all(
+      preview.chunks.map(
+        (chunk) =>
+          new Promise<void>((resolve) => {
+            const probe = new Audio(`/books/${bookId}/patches/${patch.id}/chunk-audio/${chunk.index}`);
+            probe.preload = "metadata";
+            const done = () => {
+              if (Number.isFinite(probe.duration) && probe.duration > 0) {
+                durations[chunk.index] = probe.duration;
+              }
+              probe.src = "";
+              resolve();
+            };
+            probe.addEventListener("loadedmetadata", done, { once: true });
+            probe.addEventListener("error", done, { once: true });
+            window.setTimeout(done, 8000);
+          })
+      )
+    );
+    previewData.current = { chunks: preview.chunks, durations };
+    setPreviewChunks(preview.chunks);
+    setPreviewDurations(durations);
+    return { chunks: preview.chunks, durations };
+  }, [bookId, patch, onMessage]);
+
   const playCompletedChunks = async () => {
-    if (!patch || chunkPreviewState !== "idle") {
+    if (!patch || chunkPreviewState === "loading") return;
+    if (chunkPreviewState === "playing") {
       stopChunkPreview();
       return;
     }
-    chunkPreviewCancelled.current = false;
+    // Giữ tỉ lệ thanh tua đang đứng để phát tiếp từ đó sau khi nạp mới.
+    const keptFraction = previewTotal > 0 ? previewElapsed / previewTotal : 0;
     setChunkPreviewState("loading");
     try {
-      const preview = await api<{
-        chunks: { index: number; text: string; pause_ms: number }[];
-        tts: { tts_engine?: string; voice?: string; source?: string };
-      }>(
-        `/books/${bookId}/patches/${patch.id}/completed-chunks-preview`
-      );
-      setCompletedChunksTts({ engine: preview.tts.tts_engine, voice: preview.tts.voice, source: preview.tts.source });
-      if (!preview.chunks.length) {
-        onMessage("Chưa có chunk audio hoàn thành để phát thử.");
+      const loaded = await loadPreviewChunks();
+      if (!loaded) {
+        setChunkPreviewState("idle");
         return;
       }
+      const total = loaded.chunks.reduce((sum, chunk) => sum + (loaded.durations[chunk.index] || 0), 0);
+      const target = keptFraction * total;
+      let acc = 0;
+      let startPos = 0;
+      let startOffset = 0;
+      for (let i = 0; i < loaded.chunks.length; i++) {
+        const duration = loaded.durations[loaded.chunks[i].index] || 0;
+        if (target < acc + duration || i === loaded.chunks.length - 1) {
+          startPos = i;
+          startOffset = Math.max(0, target - acc);
+          break;
+        }
+        acc += duration;
+      }
+      previewRunId.current += 1;
+      const runId = previewRunId.current;
+      previewRun.current = { audio: null, cancelled: false };
+      setPreviewPos(startPos);
+      setPreviewTime(startOffset);
       setChunkPreviewState("playing");
-      for (const chunk of preview.chunks) {
-        if (chunkPreviewCancelled.current) return;
-        if (chunk.pause_ms) await new Promise((resolve) => window.setTimeout(resolve, chunk.pause_ms));
-        if (chunkPreviewCancelled.current) return;
-        setChunkCaption(chunk.text);
-        const audio = new Audio(`/books/${bookId}/patches/${patch.id}/chunk-audio/${chunk.index}`);
-        chunkPreviewAudio.current = audio;
-        await new Promise<void>((resolve, reject) => {
-          audio.onended = () => resolve();
-          audio.onerror = () => reject(new Error(`Không thể phát chunk ${chunk.index + 1}.`));
-          void audio.play().catch(reject);
-        });
-      }
+      await runPreviewLoop(runId, loaded.chunks, startPos, startOffset);
     } catch (error) {
-      if (!chunkPreviewCancelled.current) onMessage(errorText(error));
-    } finally {
-      if (!chunkPreviewCancelled.current) {
-        chunkPreviewAudio.current = null;
-        setChunkPreviewState("idle");
-        setChunkCaption("");
-      }
+      onMessage(errorText(error));
+      stopChunkPreview();
     }
   };
 
@@ -240,11 +457,17 @@ export function PatchPreviewDialog({
               {quickTts.ttsModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
             </select>
           </Field>
-          <Field label="Voice">
-            <select className={selectClass} value={quickVoiceId} onChange={(event) => setQuickVoiceId(event.target.value)}>
-              <option value="">Mặc định của model</option>
-              {quickTts.voiceOptions.map((voice) => <option key={voice.value} value={voice.value}>{voice.label}</option>)}
-            </select>
+          <Field label="Voice ID">
+            <Combobox
+              value={quickVoiceId}
+              options={[
+                { value: "", label: "Mặc định của model" },
+                ...quickTts.voiceOptions.map((option) => ({ ...option, description: option.value })),
+              ]}
+              onChange={setQuickVoiceId}
+              placeholder="Tìm hoặc chọn voice..."
+              aria-label="Voice ID"
+            />
           </Field>
           <Button size="sm" disabled={!patch || quickGenerating} onClick={generatePatchAudio}>
             {quickGenerating ? "Đang gửi..." : "Tạo audio Patch"}
@@ -274,6 +497,51 @@ export function PatchPreviewDialog({
                 <Captions className="h-3 w-3" /> Phụ đề
               </div>
               {chunkCaption}
+            </div>
+          )}
+          {previewChunks.length > 0 && (
+            <div className="mt-3 space-y-1.5" aria-label="Tua nhanh audio nghe thử">
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 shrink-0 px-1.5"
+                  disabled={chunkPreviewState === "loading" || previewPos <= 0}
+                  onClick={() => stepPreviewChunk(-1)}
+                  title="Lùi một chunk"
+                  aria-label="Lùi một chunk"
+                >
+                  <SkipBack className="h-3.5 w-3.5" />
+                </Button>
+                <input
+                  type="range"
+                  min={0}
+                  max={1000}
+                  aria-label="Tua tới vị trí"
+                  className="w-full accent-primary"
+                  disabled={chunkPreviewState === "loading" || previewTotal <= 0}
+                  value={previewTotal > 0 ? Math.round((previewElapsed / previewTotal) * 1000) : 0}
+                  onChange={(event) => seekPreview(Number(event.target.value) / 1000)}
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 shrink-0 px-1.5"
+                  disabled={chunkPreviewState === "loading" || previewPos >= previewChunks.length - 1}
+                  onClick={() => stepPreviewChunk(1)}
+                  title="Tới một chunk"
+                  aria-label="Tới một chunk"
+                >
+                  <SkipForward className="h-3.5 w-3.5" />
+                </Button>
+                <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {formatPreviewTime(previewElapsed)} / {formatPreviewTime(previewTotal)}
+                </span>
+              </div>
+              <p className="font-mono text-[10px] text-muted-foreground">
+                Chunk {Math.min(previewPos + 1, previewChunks.length)}/{previewChunks.length}
+                {chunkPreviewState === "idle" ? " · bấm Phát tạm để nghe từ vị trí đã tua" : ""}
+              </p>
             </div>
           )}
         </div>
@@ -637,23 +905,16 @@ export function ConfigDialog({
                   )}
                 </select>
               </Field>
-              <Field label="Voice">
+              <Field label="Voice ID">
                 <div className="flex items-center gap-1">
-                  <select
-                    className={selectClass}
+                  <Combobox
+                    className="min-w-0 flex-1"
                     value={settings.voiceId}
-                    onChange={(event) => onSettingsChange({ voiceId: event.target.value })}
-                  >
-                    {voiceOptions.length ? (
-                      voiceOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))
-                    ) : (
-                      <option value="">—</option>
-                    )}
-                  </select>
+                    options={voiceOptions.map((option) => ({ ...option, description: option.value }))}
+                    onChange={(voiceId) => onSettingsChange({ voiceId })}
+                    placeholder="Tìm hoặc chọn voice..."
+                    aria-label="Voice ID"
+                  />
                   <VoicePreviewButton
                     modelId={settings.modelId}
                     voiceId={settings.voiceId}
@@ -716,7 +977,7 @@ export function ConfigDialog({
                   <>
                     Audio mẫu:{" "}
                     <span className="font-medium text-foreground">{settings.voiceId}</span> — giọng chọn
-                    ở ô Voice được dùng thay cho voice clip của sách.
+                    ở ô Voice ID được dùng thay cho voice clip của sách.
                   </>
                 ) : (
                   <>
@@ -812,7 +1073,7 @@ export function ConfigDialog({
                     value={videoConfig.resolution}
                     onChange={(event) => setVideoConfig({ ...videoConfig, resolution: event.target.value })}
                   >
-                    <option value="1920x1080">1920×1080 (16:9)</option>
+                    <option value="1920x1080">1920×1080 (Full HD · khuyên dùng)</option>
                     <option value="1280x720">1280×720 (16:9)</option>
                     <option value="854x480">854×480 (16:9)</option>
                     <option value="1080x1920">1080×1920 (9:16 — Shorts/Reels)</option>
@@ -841,7 +1102,7 @@ export function ConfigDialog({
                     onChange={(event) => setVideoConfig({ ...videoConfig, fps: Number(event.target.value) })}
                   >
                     <option value="24">24</option>
-                    <option value="30">30</option>
+                    <option value="30">30 (khuyên dùng)</option>
                     <option value="60">60</option>
                   </select>
                 </Field>
@@ -851,7 +1112,7 @@ export function ConfigDialog({
                     value={videoConfig.codec}
                     onChange={(event) => setVideoConfig({ ...videoConfig, codec: event.target.value })}
                   >
-                    <option value="libx264">libx264 (CPU)</option>
+                    <option value="libx264">libx264 (CPU · chất lượng cao)</option>
                     <option value="h264_nvenc">h264_nvenc (GPU)</option>
                   </select>
                 </Field>
@@ -864,10 +1125,10 @@ export function ConfigDialog({
                     <option value="128k">128k</option>
                     <option value="192k">192k</option>
                     <option value="256k">256k</option>
-                    <option value="320k">320k</option>
+                    <option value="320k">320k (khuyên dùng)</option>
                   </select>
                 </Field>
-                <Field label="Chất lượng" hint="CRF 18–28">
+                <Field label="Chất lượng" hint="CRF 20 khuyên dùng; số thấp hơn = file lớn hơn">
                   <input
                     className={fieldClass}
                     type="number"
@@ -1145,7 +1406,22 @@ export function ConfigDialog({
                   onChange={(value) => setVideoConfig({ ...videoConfig, progress_bar_enabled: value })}
                   label="Progress bar"
                 />
+                <CheckField
+                  checked={videoConfig.narrator_credit_enabled || false}
+                  onChange={(value) => setVideoConfig({ ...videoConfig, narrator_credit_enabled: value })}
+                  label="Hiện tên giọng đọc + TTS model"
+                />
               </div>
+              {videoConfig.narrator_credit_enabled && (
+                <p className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+                  Tự động thêm text overlay dưới mỗi khung hình:{" "}
+                  <span className="font-semibold">
+                    Giọng đọc: {voiceOptions.find((option) => option.value === settings.voiceId)?.label || settings.voiceId || "—"}
+                    {" · "}
+                    {ttsModels.find((model) => model.id === settings.modelId)?.name || settings.modelId}
+                  </span>
+                </p>
+              )}
 
               <section className="space-y-3 rounded-md border border-border p-3">
                 <div className="flex items-start justify-between gap-3">

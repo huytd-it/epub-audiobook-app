@@ -114,6 +114,32 @@ _F5_VIVOICE_OPTIONS = [
                  {"value": "cpu", "label": "CPU"}]},
 ]
 
+def _vieneu_default_voice() -> str:
+    """Default preset from the installed wheel's own meta (demo shows the same).
+
+    Falls back to "Hải Đăng" (SDK 3.8.x default) and then the legacy "Adam"
+    when the package or its meta is absent."""
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("vieneu")
+    except (ImportError, ValueError):
+        return "Hải Đăng"
+    if not spec or not spec.origin:
+        return "Hải Đăng"
+    for index in (Path(spec.origin).parent / "assets" / "voices_v3_turbo.json",
+                  Path(spec.origin).parent / "assets" / "voices.json"):
+        if not index.exists():
+            continue
+        try:
+            default = json.loads(index.read_text(encoding="utf-8")).get("default_voice")
+        except (OSError, ValueError):
+            continue
+        if default:
+            return str(default)
+    return "Hải Đăng"
+
+
 _MODELS = {
     "voxcpm2": TTSModel(
         # 48 kHz: the model takes a 16 kHz reference but its AudioVAE decoder upsamples.
@@ -131,8 +157,9 @@ _MODELS = {
         capabilities=_CAP_LOCAL, options_schema=_F5_VIVOICE_OPTIONS,
     ),
     "vieneu-fast": TTSModel(
-        "vieneu-fast", "VieNeu fast", "pnnbao-ump/VieNeu-TTS-v3-Turbo", "vieneu", 48000,
-        supports_reference=False, capabilities=_CAP_LOCAL_VOICES, default_voice="Adam",
+        "vieneu-fast", "VieNeu V3 Turbo", "pnnbao-ump/VieNeu-TTS-v3-Turbo", "vieneu", 48000,
+        supports_reference=False, capabilities=_CAP_LOCAL_VOICES,
+        default_voice=_vieneu_default_voice(),
     ),
     "zerotts": TTSModel(
         "zerotts", "ZeroTTS", "zeroweight-ai/ZeroTTS", "zerotts", 48000,
@@ -206,7 +233,13 @@ def _vieneu_voices() -> list[dict]:
 
     ``vieneu/assets/voices_v3_turbo.json`` ships inside the wheel, so the cast is known
     without downloading the weights or importing vieneu (which pulls onnxruntime). Returns
-    [] when the package is absent -- the catalog still lists the model."""
+    [] when the package is absent -- the catalog still lists the model.
+
+    Newer SDK releases renamed the asset (voices.json / presets.json), so every
+    known location is tried in order. Ordering and ⭐ labels mirror the SDK's own
+    ``sorted_voices`` / ``voice_label`` (which is also what the official HF demo
+    lists via ``list_preset_voices``): editors' picks first by ``featured`` rank,
+    then the rest in file order."""
     try:
         import importlib.util
 
@@ -215,21 +248,96 @@ def _vieneu_voices() -> list[dict]:
         return []
     if not spec or not spec.origin:
         return []
-    index = Path(spec.origin).parent / "assets" / "voices_v3_turbo.json"
-    if not index.exists():
+    assets = Path(spec.origin).parent / "assets"
+    candidates = [
+        assets / "voices_v3_turbo.json",
+        assets / "voices.json",
+        assets / "presets.json",
+        Path(spec.origin).parent / "voices_v3_turbo.json",
+    ]
+    presets: dict = {}
+    for index in candidates:
+        if not index.exists():
+            continue
+        try:
+            payload = json.loads(index.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("presets"), dict):
+            presets = payload["presets"]
+        elif isinstance(payload, dict):
+            # Newer SDKs store the cast as a flat {name: info} mapping.
+            presets = {k: v for k, v in payload.items() if isinstance(v, dict)}
+        elif isinstance(payload, list):
+            presets = {str(item.get("name") or item.get("id")): item
+                       for item in payload if isinstance(item, dict)}
+        if presets:
+            break
+    if not presets:
         return []
-    try:
-        presets = json.loads(index.read_text(encoding="utf-8")).get("presets", {})
-    except (OSError, ValueError):
-        return []
+    # Editors' picks first by `featured` rank, then the rest in file order --
+    # exactly the SDK's `sorted_voices`, so this list matches the demo Space.
+    ordered = sorted(presets.items(),
+                     key=lambda kv: (kv[1].get("featured") is None, kv[1].get("featured") or 0))
     return [
         {
             "id": name,
-            "label": f"{name} — {info['description']}" if info.get("description") else name,
-            "language": "vi",
+            # SDK's `voice_label`: "⭐ Name — description" for editors' picks.
+            "label": (f"⭐ {name} — {info['description']}" if info.get("featured") is not None
+                      else (f"{name} — {info['description']}" if info.get("description") else name)),
+            "language": str(info.get("language") or "vi"),
         }
-        for name, info in presets.items()
+        for name, info in ordered
+        if name
     ]
+
+
+# Upstream locations for the lightweight "voice mẫu" catalog. ZeroTTS publishes
+# one preview.wav per voice plus voices/index.json, so the sample list can be
+# fetched without the ~900 MB weights; VieNeu presets ship inside the wheel.
+ZEROTTS_HF_REPO = "zeroweight-ai/ZeroTTS"
+ZEROTTS_HF_REVISION = "7fdb2342d1242fd84b738223281242e4f149825c"
+VIENEU_HF_REPO = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
+
+
+def sample_voices_dir() -> Path:
+    """Cache for downloaded voice-mẫu preview clips (<data_root>/voice_samples)."""
+    from app.config import settings
+
+    dest = Path(settings.data_root) / "voice_samples"
+    dest.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
+def fetch_zerotts_voice_index(*, timeout: float = 30.0) -> list[dict]:
+    """Voice cast without the weights: local index.json first, else HF (few KB).
+
+    Lets the UI offer "Tải danh sách voice mẫu" and quick-listen previews before
+    the full ~900 MB download finishes. Never raises -- callers fall back to []."""
+    local = _zerotts_voices(zerotts_model_dir())
+    if local:
+        return local
+    try:
+        import urllib.request
+
+        url = (f"https://huggingface.co/{ZEROTTS_HF_REPO}/resolve/"
+               f"{ZEROTTS_HF_REVISION}/voices/index.json")
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        entries = payload.get("voices", []) if isinstance(payload, dict) else []
+        return [
+            {
+                "id": voice["name"],
+                "label": voice.get("description")
+                and f"{voice.get('display_name') or voice['name']} — {voice['description']}"
+                or (voice.get("display_name") or voice["name"]),
+                "language": voice.get("language", ""),
+            }
+            for voice in entries
+            if isinstance(voice, dict) and voice.get("name")
+        ]
+    except Exception:
+        return []
 
 
 # Where each fixed-cast engine's voice list comes from. Also the set of engines a preset
@@ -793,10 +901,19 @@ class VieNeuFastEngine:
 
             # mode="v3turbo" is the factory default, but spelling it out pins which weights
             # load: the other modes ("standard", "fast", "turbo", ...) need vieneu[gpu].
-            kwargs = {"mode": "v3turbo", "backbone_repo": self.model_id, "precision": self.precision}
+            # Newer SDKs (3.8.x) renamed/added kwargs, so fall back gracefully instead
+            # of refusing to load after `pip install --upgrade vieneu`.
+            kwargs: dict = {"mode": "v3turbo", "backbone_repo": self.model_id, "precision": self.precision}
             if self.backend:
                 kwargs["backend"] = self.backend
-            self._model = Vieneu(**kwargs)
+            try:
+                self._model = Vieneu(**kwargs)
+            except TypeError:
+                fallback = {k: v for k, v in kwargs.items() if k in {"mode", "precision", "backend"}}
+                try:
+                    self._model = Vieneu(**fallback)
+                except TypeError:
+                    self._model = Vieneu()
 
     def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
         self._ensure_loaded()

@@ -248,6 +248,47 @@ def _verify_dataset_not_empty(
         )
 
 
+def _drive_creds_for_kernel(conn) -> dict | None:
+    """Best-effort Drive credentials for the kernel's optional output sync (see
+    Cell 4's kaggle_native branch): the first connected account that can mint a
+    GDRIVE_CREDS payload. Returns None when Drive is not connected -- the kernel
+    then runs fully offline and results travel back only through kernel_output().
+    Never raises: Drive sync must not block a run that would otherwise work."""
+    try:
+        from app import google_drive
+    except ImportError:
+        return None
+    try:
+        accounts = google_drive.list_accounts(conn)
+    except Exception as exc:
+        logger.warning("Drive account lookup for Kaggle sync failed: %s", exc)
+        return None
+    for account in accounts:
+        try:
+            creds = google_drive.kaggle_credentials(conn, account["id"])
+        except Exception as exc:
+            logger.warning(
+                "Drive creds lookup for Kaggle sync failed (account %s): %s",
+                account.get("id"), exc,
+            )
+            continue
+        if creds:
+            return creds
+    return None
+
+
+def _stable_batch_id(slug: str, model_id: str, voice_id: str | None,
+                     max_chars: int, with_effects: bool) -> str:
+    """One Drive-sync identity per (patch set, TTS params): every cycle and every
+    job retry of the same batch reuses it, so a new kernel version finds the
+    previous run's chunk/output files on Drive and resumes instead of starting
+    from scratch (same behaviour as the manual Drive notebook). A different
+    voice/model gets a different id so it never resumes from stale audio."""
+    key = f"{model_id}|{voice_id or ''}|{max_chars}|{int(with_effects)}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:6]
+    return f"{slug}-{digest}"
+
+
 def _automation_policy(payload: dict) -> tuple[dict, str, bool]:
     """(request_policy, mode, active) for the video/YouTube fallback chain.
 
@@ -324,6 +365,20 @@ def handle(ctx: JobContext) -> dict | None:
     package_dir: Path | None = None
     total = len(patch_ids)
     imported_this_job: list[int] = []
+    # Stable across every push in this job (based on the ORIGINAL full patch_ids
+    # plus the TTS params), so a retry -- same job, new kernel version -- maps to
+    # the same Drive sync folder and the notebook resumes finished chunks instead
+    # of re-synthesizing from scratch (like the manual Drive notebook).
+    slug = _kernel_slug(book_id, patch_ids)
+    stable_batch_id = _stable_batch_id(slug, model_id, voice_id, max_chars, with_effects)
+    drive_creds = _drive_creds_for_kernel(conn)
+    if drive_creds:
+        ctx.log(
+            f"Drive sync bật cho kernel này (batch {stable_batch_id}): "
+            "chunk/output tự mirror lên Drive, retry sẽ resume phần đã xong"
+        )
+    else:
+        ctx.log("Drive chưa kết nối - kernel chạy offline, retry sẽ làm lại từ đầu")
     ctx.progress(0, total, phase="preparing")
     try:
         # Self-heal cooldowns written by older releases from an inaccurate local
@@ -380,12 +435,13 @@ def handle(ctx: JobContext) -> dict | None:
                 package_dir, _batch_manifest = drive_export.build_kaggle_export_package(
                     conn, patches, model_id=model_id, voice_id=voice_id,
                     max_chars=max_chars, with_effects=with_effects,
+                    gdrive_creds=drive_creds, batch_id=stable_batch_id,
+                    drive_folder_name=slug,
                 )
             except ValueError as exc:
                 raise JobFatalError(str(exc)) from exc
 
             account_ref = kaggle_api.KaggleAccount(username=account["username"], api_key=account["api_key"])
-            slug = _kernel_slug(book_id, patch_ids)
 
             # A kernel push carries only its own notebook text -- the manifest and
             # reference clip travel as a Dataset instead, referenced by slug in the

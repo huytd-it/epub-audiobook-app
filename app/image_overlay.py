@@ -560,6 +560,105 @@ def expand_overlay_text(template: str, book: Book, patch: Patch) -> str:
     return text
 
 
+def resolve_narrator_credit(book: Book, patch: Patch | None = None) -> str:
+    """Dòng credit giọng đọc: ``Giọng đọc: <voice> · <model>``.
+
+    Giọng riêng của patch (nếu có) thắng cấu hình audio của sách — đúng combo đã
+    tổng hợp patch đó. Không bao giờ raise.
+    Chỉ dùng model sách đã lưu (book.tts_model); sách chưa lưu audio thì trả ""
+    chứ không đoán engine mặc định toàn cục. Trả về "" khi không có gì để hiện."""
+    try:
+        from app.tts_engine import list_tts_models, parse_preset_voice
+    except Exception:
+        return ""
+    engine_id = str(getattr(book, "tts_model", None) or "").strip()
+    voice_id = str(getattr(book, "tts_voice_id", None) or "").strip()
+    if patch is not None:
+        if getattr(patch, "tts_model", None):
+            engine_id = str(patch.tts_model).strip()
+        if getattr(patch, "tts_voice_id", None) is not None:
+            voice_id = str(patch.tts_voice_id).strip()
+    model_label = ""
+    voice_label = ""
+    try:
+        catalog = {model["id"]: model for model in list_tts_models()}
+    except Exception:
+        catalog = {}
+    if engine_id and engine_id in catalog:
+        model_label = str(catalog[engine_id].get("name") or engine_id)
+    elif engine_id:
+        model_label = engine_id
+    if voice_id:
+        parsed = None
+        try:
+            parsed = parse_preset_voice(voice_id)
+        except ValueError:
+            parsed = None
+        if parsed:
+            preset_engine, preset_voice = parsed
+            voices = catalog.get(preset_engine, {}).get("voices") or []
+            match = next((v for v in voices if str(v.get("id")) == preset_voice), None)
+            voice_label = str((match or {}).get("label") or preset_voice)
+        elif "/" not in voice_id and "\\" not in voice_id and voice_id != "..":
+            voice_label = _library_voice_label(voice_id) or voice_id
+        else:
+            voice_label = voice_id
+    if voice_label and model_label:
+        return f"Giọng đọc: {voice_label} · {model_label}"
+    if voice_label:
+        return f"Giọng đọc: {voice_label}"
+    if model_label:
+        return f"TTS: {model_label}"
+    return ""
+
+
+def _library_voice_label(filename: str) -> str | None:
+    """Mô tả đã lưu của clip trong thư viện voices (None khi chưa phân loại)."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT description FROM voice_meta WHERE filename = ?", (filename,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    if row and row[0]:
+        return str(row[0]).strip()
+    return Path(filename).stem.replace("_", " ") or None
+
+
+def narrator_credit_layer(credit: str) -> dict:
+    """Một text layer credit (dưới, giữa, chữ nhỏ) để nối vào overlays của video."""
+    layer = get_default_overlay_config()
+    layer.update({
+        "text": credit,
+        "position": "bottom",
+        "alignment": "center",
+        "font_size": 40,
+        "margin": 24,
+        "text_color": "#FFFFFF",
+    })
+    for key in _BOOK_LEVEL_KEYS:
+        layer.pop(key, None)
+    return layer
+
+
+def narrator_credit_overlays(book: Book, video_config: dict | None,
+                             patch: Patch | None = None) -> list[dict]:
+    """Extra overlays cho video khi bật ``narrator_credit_enabled``.
+
+    Trả về [] khi tắt hoặc khi không tra được credit — các đường render khác
+    giữ nguyên hành vi cũ."""
+    if not isinstance(video_config, dict) or not video_config.get("narrator_credit_enabled"):
+        return []
+    credit = resolve_narrator_credit(book, patch)
+    return [narrator_credit_layer(credit)] if credit else []
+
+
 def build_overlay_lines(image: "Image.Image", text: str, cfg: dict) -> list[str]:
     """Wrap overlay text against the image width, same as render_patch_overlay."""
     from PIL import ImageDraw
@@ -924,18 +1023,24 @@ def needs_rerender(book: Book, patch: Patch, out_path: Path) -> bool:
 def ensure_patch_overlay(
     book: Book, patch: Patch, font_path: str | None = None, *,
     background_path: str | None = None, out_path: str | None = None, force: bool = False,
-    branding: dict | None = None,
+    branding: dict | None = None, extra_overlays: list[dict] | None = None,
 ) -> str | None:
     """Build overlay config from legacy font_path arg and render if stale.
 
     ``branding`` is the resolved branding config; when provided and enabled,
     watermark/logo are applied after text layers in the resulting PNG.
+    ``extra_overlays`` appends caller-supplied text layers (e.g. narrator
+    credit) and forces a re-render, since their content can change while the
+    background file does not.
     """
     cfg = parse_overlay_config(book.overlay_config)
     if font_path:
         for overlay in cfg.get("overlays") or [cfg]:
             if not overlay.get("font_path"):
                 overlay["font_path"] = font_path
+    if extra_overlays:
+        cfg["overlays"] = [*(cfg.get("overlays") or []), *extra_overlays]
+        force = True
     if _resolve_background(book, background_path) is None:
         return None
     output = Path(out_path) if out_path else get_patch_overlay_path(book.id, patch.patch_index)

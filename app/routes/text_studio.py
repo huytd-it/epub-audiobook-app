@@ -525,17 +525,37 @@ async def generate_selected_tts(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
+        # Giọng riêng từng patch (nếu có) thắng cấu hình chung — validate theo combo
+        # hiệu lực của từng patch thay vì chỉ một combo cho cả đợt.
+        from app.tts_engine import resolve_engine_id
+        effective: list[tuple] = []
+        for patch_id in patch_ids:
+            patch = repository.get_patch(conn, patch_id)
+            if patch is None or patch.book_id != book_id:
+                continue
+            try:
+                eff_engine = resolve_engine_id(patch.tts_model or payload["tts_engine"])
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"patch #{patch.patch_index + 1} lưu model không hợp lệ: {exc}")
+            eff_voice = patch.tts_voice_id if patch.tts_voice_id is not None else payload["voice"]
+            effective.append((patch, eff_engine, eff_voice))
         # Only the cloning models need the book's own clip, and only when no preset voice
         # was picked - a "preset:..." voice brings its own (generated) reference along.
         try:
-            needs_book_clip = requires_book_reference(payload["tts_engine"], payload["voice"])
+            needs_book_clip = any(
+                requires_book_reference(eff_engine, eff_voice) for _, eff_engine, eff_voice in effective)
         except ValueError as exc:  # a "preset:..." voice naming no real engine/voice
             raise HTTPException(status_code=400, detail=str(exc))
         if needs_book_clip:
             if not book.voice_clip_path or not Path(book.voice_clip_path).is_file():
                 raise HTTPException(status_code=400, detail="model requires the book reference voice")
-        if payload["tts_engine"] in {"edge-tts", "gtts"} and not payload["voice"]:
-            raise HTTPException(status_code=400, detail="model requires a voice or language")
+        for patch, eff_engine, eff_voice in effective:
+            if eff_engine in {"edge-tts", "gtts"} and not eff_voice:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"patch #{patch.patch_index + 1} cần chọn voice cho model {eff_engine}")
         queued = enqueue_pending_patch_jobs(
             conn, book_id, payload["tts_engine"], voice=payload["voice"],
             max_chars=payload["max_chars"], with_effects=payload["with_effects"],

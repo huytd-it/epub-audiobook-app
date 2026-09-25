@@ -24,6 +24,7 @@ from pathlib import Path
 import soundfile as sf
 
 from app import audio_merge, repository, video_gen
+from app.audio_mastering import normalize_wav_in_place
 from app.config import settings
 from app.models import BookJob, Patch
 from app.production_defaults import get_effective_video_config, resolve_voice_clip
@@ -251,6 +252,7 @@ class PatchWorker:
                 plan, [len(arr) for arr in wavs], self.engine.sample_rate, _CHUNK_PAUSE_MS,
             )
             audio_merge.concat_chunks_to_wav(wavs, self.engine.sample_rate, audio_path, pause_ms=_CHUNK_PAUSE_MS)
+            normalize_wav_in_place(audio_path)
             self._try_write_timeline(timeline_path, self.engine.sample_rate, chapters, sf.info(audio_path).frames)
             return audio_path
 
@@ -292,6 +294,7 @@ class PatchWorker:
 
             chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(len(chunks))]
             audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
+            normalize_wav_in_place(audio_path)
             self._try_write_timeline(timeline_path, self.engine.sample_rate, chapters, sf.info(audio_path).frames)
             self._log_event("chunk.merged", patch_id=patch.id)
             # Chunk files are intentionally left on disk after a successful merge (not
@@ -327,6 +330,7 @@ class PatchWorker:
         book_dir.mkdir(parents=True, exist_ok=True)
         final_path = str(book_dir / "final.wav")
         audio_merge.concat_wavs(patch_wav_paths, final_path)
+        normalize_wav_in_place(final_path)
         with self.db_lock:
             repository.set_book_final_audio(self.conn, book_id, final_path)
         self._log_event("book.finalized", book_id=book_id, final_audio_path=final_path)

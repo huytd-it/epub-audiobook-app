@@ -136,3 +136,84 @@ def test_upload_book_source_requires_detached_book(tmp_path, monkeypatch):
 
     assert response.status_code == 409
     assert "xóa EPUB gốc" in response.json()["detail"]
+
+
+def test_reimport_chapters_reparses_epub_and_keeps_source(tmp_path, monkeypatch):
+    """Nạp lại mục lục: chương và patch cũ biến mất, EPUB + cấu hình ở nguyên chỗ."""
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    monkeypatch.setattr(settings, "data_root", str(data_root))
+    monkeypatch.setattr(settings, "enable_worker", False)
+
+    source_epub = data_root / "uploads" / "1.epub"
+    source_epub.parent.mkdir(parents=True)
+    _write_epub(source_epub, "Sách gốc")
+    audio = data_root / "books" / "1" / "audio" / "1_001.wav"
+    overlay = data_root / "books" / "1" / "patch_overlays" / "1_001.png"
+    for path in (audio, overlay):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(path.name.encode())
+
+    now = datetime.now(timezone.utc).isoformat()
+    automation_config = json.dumps({"audio": {"chunk_pause_ms": 700}})
+
+    with TestClient(app) as client:
+        conn = client.app.state.conn
+        conn.execute(
+            """INSERT INTO book
+                      (id, title, original_filename, epub_path, patch_size, status,
+                       final_audio_path, automation_config, created_at, updated_at)
+               VALUES (1, 'Tên đã chỉnh', 'old.epub', ?, 10, 'done', ?, ?, ?, ?)""",
+            (str(source_epub), str(audio), automation_config, now, now),
+        )
+        conn.execute(
+            """INSERT INTO chapter (book_id, chapter_index, title, text, char_count)
+               VALUES (1, 0, 'Chương đã sửa hỏng', 'Nội dung cũ', 12)"""
+        )
+        conn.execute(
+            """INSERT INTO patch
+                      (book_id, patch_index, chapter_start, chapter_end, status,
+                       audio_path, created_at, updated_at)
+               VALUES (1, 0, 0, 0, 'done', ?, ?, ?)""",
+            (str(audio), now, now),
+        )
+        conn.commit()
+
+        response = client.post("/books/1/chapters/reimport")
+
+        assert response.status_code == 200
+        assert response.json()["chapters"] == 1
+        assert source_epub.exists()
+        assert not audio.exists()
+        assert overlay.exists()
+        assert conn.execute("SELECT COUNT(*) FROM patch WHERE book_id=1").fetchone()[0] == 0
+        assert conn.execute("SELECT title FROM chapter WHERE book_id=1").fetchone()[0] == "Chương 1"
+
+        book = conn.execute("SELECT * FROM book WHERE id=1").fetchone()
+        assert book["title"] == "Tên đã chỉnh"
+        assert book["epub_path"] == str(source_epub)
+        assert book["original_filename"] == "old.epub"
+        assert book["automation_config"] == automation_config
+        assert book["final_audio_path"] is None
+        assert book["status"] == "ready"
+
+
+def test_reimport_chapters_without_source_file_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    monkeypatch.setattr(settings, "data_root", str(tmp_path / "data"))
+    monkeypatch.setattr(settings, "enable_worker", False)
+    now = datetime.now(timezone.utc).isoformat()
+
+    with TestClient(app) as client:
+        conn = client.app.state.conn
+        conn.execute(
+            """INSERT INTO book
+                      (id, title, original_filename, epub_path, patch_size, status, created_at, updated_at)
+               VALUES (1, 'Book', '', '', 10, 'ready', ?, ?)""",
+            (now, now),
+        )
+        conn.commit()
+        response = client.post("/books/1/chapters/reimport")
+
+    assert response.status_code == 400
+    assert "upload lại EPUB" in response.json()["detail"]

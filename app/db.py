@@ -624,6 +624,63 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _backfill_patch_voices_from_snapshots(conn: sqlite3.Connection) -> int:
+    """Điền tts_model/tts_voice_id còn trống từ .tts_request.json của patch đã chạy.
+
+    Chỉ chạm patch đang NULL cả hai cột — không bao giờ ghi đè giọng đã lưu tay
+    hay đã lưu từ lần chạy trước. Engine lạ (model đã gỡ) thì bỏ qua.
+    """
+    from pathlib import Path
+
+    try:
+        from app.config import settings
+    except Exception:
+        return 0
+    try:
+        rows = conn.execute(
+            "SELECT id, book_id, patch_index FROM patch "
+            "WHERE tts_model IS NULL AND tts_voice_id IS NULL"
+        ).fetchall()
+    except Exception:
+        return 0
+    filled = 0
+    for row in rows:
+        episode = f"{row['patch_index'] + 1:03d}"
+        candidates = [
+            Path(settings.data_root) / "books" / str(row["book_id"]) / "audio"
+            / f"{row['book_id']}_{episode}_chunks" / ".tts_request.json",
+            Path(settings.data_root) / "books" / str(row["book_id"]) / "patches"
+            / f"{row['id']}_chunks" / ".tts_request.json",
+        ]
+        payload = None
+        for path in candidates:
+            try:
+                if path.is_file():
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    break
+            except (OSError, ValueError):
+                continue
+        if not isinstance(payload, dict) or not payload.get("tts_engine"):
+            continue
+        try:
+            from app.tts_engine import resolve_engine_id
+
+            engine = resolve_engine_id(str(payload["tts_engine"]))
+        except Exception:
+            continue
+        voice = payload.get("voice")
+        voice = str(voice).strip() if voice else None
+        try:
+            conn.execute(
+                "UPDATE patch SET tts_model = ?, tts_voice_id = ? WHERE id = ?",
+                (engine, voice, row["id"]),
+            )
+            filled += 1
+        except Exception:
+            continue
+    return filled
+
+
 def _backfill_patch_video_links(conn: sqlite3.Connection) -> int:
     """Link legacy `videos` rows to the patch whose MP4 they hold.
 
@@ -850,6 +907,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE patch ADD COLUMN text_fingerprint TEXT")
     if "youtube_override" not in patch_existing:
         conn.execute("ALTER TABLE patch ADD COLUMN youtube_override TEXT")
+    # Giọng riêng từng patch (NULL = kế thừa cấu hình audio của sách). Chạy TTS
+    # xong worker lưu đúng combo đã dùng; patch dựng trước đó được khôi phục từ
+    # .tts_request.json cạnh chunk WAV để cột Giọng đọc hiện đúng giọng đã dùng
+    # thay vì cấu hình chung hiện tại.
+    voice_backfill = "tts_model" not in patch_existing or "tts_voice_id" not in patch_existing
+    if "tts_model" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN tts_model TEXT")
+    if "tts_voice_id" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN tts_voice_id TEXT")
+    if voice_backfill:
+        _backfill_patch_voices_from_snapshots(conn)
     if "normalize_numbers_enabled" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN normalize_numbers_enabled INTEGER NOT NULL DEFAULT 1")
     if "normalize_junk_enabled" not in existing:

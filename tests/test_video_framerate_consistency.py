@@ -140,6 +140,26 @@ def test_concat_rejects_mismatched_framerates(tmp_path):
         video_gen.concat_segments([str(a24), str(b30)], str(tmp_path / "o.mp4"))
 
 
+@requires_ffmpeg
+def test_gameplay_concat_repairs_legacy_mixed_framerates(tmp_path):
+    """A frozen snapshot may span clips reserved before and after an fps change."""
+    paths = []
+    for index, rate in enumerate((60, 30)):
+        path = tmp_path / f"gameplay_{rate}.mp4"
+        _run("-f", "lavfi", "-i", f"color=c=red:s=160x120:r={rate}", "-t", "2",
+             "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path))
+        paths.append(str(path))
+
+    out = tmp_path / "gameplay_joined.mp4"
+    video_gen.concat_video_segments(
+        paths, str(out), resolution=(160, 120), fps=30, quality=20
+    )
+
+    assert _video_fps(str(out)) == pytest.approx(30)
+    assert _probe(str(out), "stream=width,height")[:2] == ["160", "120"]
+    assert float(_probe(str(out), "format=duration")[0]) == pytest.approx(4, abs=0.15)
+
+
 # ---------------------------------------------------------------------------
 # argv-level guard, so the regression is visible without running ffmpeg.
 # ---------------------------------------------------------------------------

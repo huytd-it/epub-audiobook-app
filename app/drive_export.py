@@ -195,6 +195,7 @@ def build_batch_export_package(
     max_chars: int = 0,
     with_effects: bool = False,
     mode: str = "drive",
+    batch_id: str | None = None,
 ) -> tuple[Path, dict]:
     """Write a multi-patch package: batch_manifest.json + the batch notebook at the
     root, one shared voice reference clip, and one manifest.json per patch under
@@ -204,8 +205,14 @@ def build_batch_export_package(
 
     ``mode`` sets the notebook's own MODE global ("drive" or "kaggle_native" - see
     Cell 1/Cell 4 of the template): "kaggle_native" tells Cell 4 to find the batch
-    under /kaggle/input/ instead of talking to Google Drive. Callers building a
-    kaggle_native package should not pass gdrive_creds - see build_kaggle_export_package."""
+    under /kaggle/input/ instead of talking to Google Drive. For kaggle_native,
+    prefer build_kaggle_export_package, which additionally wires ``gdrive_creds``
+    into the optional Drive-sync resume path.
+
+    ``batch_id`` overrides the generated id. The Kaggle handler passes a stable id
+    (derived from the kernel slug + TTS params) so every retry of the same job maps
+    to the same Drive sync folder and the notebook can resume chunk/output files
+    instead of starting from scratch (same behaviour as the manual Drive notebook)."""
     if not patches:
         raise ValueError("no patches to export")
     book_ids = {p.book_id for p in patches}
@@ -250,7 +257,7 @@ def build_batch_export_package(
         })
 
     timestamp = datetime.now(timezone.utc)
-    batch_id = f"{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    batch_id = batch_id or f"{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     # Render settings only - the media they refer to stays in the app, which is where
     # video is rendered from the imported WAV.
     video_config = {
@@ -327,16 +334,28 @@ def build_kaggle_export_package(
     voice_id: str | None = None,
     max_chars: int = 0,
     with_effects: bool = False,
+    gdrive_creds: dict | None = None,
+    batch_id: str | None = None,
 ) -> tuple[Path, dict]:
     """Same package as build_batch_export_package, but for the Kaggle Kernels API
-    round trip: no Google Drive account, no GDRIVE_CREDS secret, no OAuth at all. The
-    notebook finds its input under /kaggle/input/ (Cell 4's kaggle_native branch,
-    matched by batch_id) instead of Google Drive, and its output travels back to the
-    app through kernel_output() instead of a Drive upload."""
+    round trip: the notebook finds its input under /kaggle/input/ (Cell 4's
+    kaggle_native branch, matched by batch_id) and its output travels back to the
+    app through kernel_output().
+
+    When ``gdrive_creds`` is given (the app's Drive account credentials), they are
+    baked into the notebook copy so Cell 4's kaggle_native branch can ALSO mirror
+    every chunk/output + merged result file up to Drive as it goes (same
+    drive_persist() path as the manual Drive notebook). A retry -- a new kernel
+    version with the same stable ``batch_id`` -- then finds the previous run's
+    files in the Drive folder and resumes instead of re-synthesizing every chunk
+    from scratch. Without creds the kernel stays fully offline (previous
+    behaviour); Drive sync is best-effort and never fails the run."""
     return build_batch_export_package(
         conn, patches, drive_folder_name=drive_folder_name, hf_token=hf_token,
+        gdrive_creds=gdrive_creds,
         model_id=model_id, voice_id=voice_id, max_chars=max_chars,
         with_effects=with_effects, mode="kaggle_native",
+        batch_id=batch_id,
     )
 
 

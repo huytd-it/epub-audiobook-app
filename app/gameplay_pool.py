@@ -106,18 +106,45 @@ def ensure_patch_coverage(conn, patch_id: int, required_seconds: float, *, width
         get_game(selected_game)
     conn.execute("BEGIN IMMEDIATE")
     try:
+        expected_profiles = {
+            selected_game: active_profile(
+                conn, width, height, fps, game_id=selected_game, quality=quality
+            )[0]
+            for selected_game in selected_games
+        }
         existing = conn.execute(
             """SELECT * FROM gameplay_clip WHERE reserved_patch_id=?
                AND status IN ('reserved','consumed') ORDER BY id""", (patch_id,)).fetchall()
         if existing:
-            if any(row["game_id"] not in selected_games for row in existing):
-                raise ValueError("patch already owns incompatible gameplay clips")
+            compatible = all(
+                row["game_id"] == selected_games[index % len(selected_games)]
+                and row["profile_key"] == expected_profiles[row["game_id"]]
+                for index, row in enumerate(existing)
+                if row["game_id"] in expected_profiles
+            ) and all(row["game_id"] in expected_profiles for row in existing)
+            if not compatible:
+                # A patch can be republished after its resolution/fps/quality or
+                # game rotation changes. Keeping its old reservation would mix
+                # render profiles in one concat (for example 60fps + 30fps).
+                # Detach the whole sequence so rotation restarts deterministically.
+                ids = [row["id"] for row in existing]
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"""UPDATE gameplay_clip
+                           SET status=CASE WHEN status='reserved' THEN 'available' ELSE status END,
+                               reserved_patch_id=NULL, reservation_token=NULL,
+                               updated_at=CURRENT_TIMESTAMP
+                         WHERE id IN ({placeholders})""",
+                    ids,
+                )
+                existing = []
+        if existing:
             total = sum(float(row["duration_seconds"]) for row in existing)
         else:
             total = 0.0
         token = existing[0]["reservation_token"] if existing else uuid.uuid4().hex
         if not existing and len(selected_games) == 1:
-            profile, _ = active_profile(conn, width, height, fps, game_id=game_id, quality=quality)
+            profile = expected_profiles[game_id]
             candidates = conn.execute(
                 """SELECT * FROM gameplay_clip WHERE profile_key=? AND status='available'
                    ORDER BY id""", (profile,),).fetchall()
