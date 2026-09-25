@@ -28,7 +28,9 @@ VIDEO_DEFAULTS = {
     "outro_voice": "",
     "codec": "libx264",
     "audio_bitrate": "320k",
-    "quality": 23,
+    # CRF 20 is visually transparent for 1080p audiobook artwork/gameplay while
+    # avoiding the very large files produced by near-lossless CRF 18.
+    "quality": 20,
     "concurrency": 3,
     "crossfade_enabled": False,
     "crossfade_seconds": 1,
@@ -51,6 +53,8 @@ VIDEO_DEFAULTS = {
     "subtitle_font_size": 46,
     "subtitle_color": "#ffffff",
     "subtitle_position": "bottom",
+    # Tự động thêm text overlay tên giọng đọc + TTS model dưới mỗi khung hình.
+    "narrator_credit_enabled": False,
 }
 
 _RESOLUTIONS = {"1920x1080", "1280x720", "854x480", "1080x1920", "1080x1080"}
@@ -134,7 +138,7 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("quality must be 18-28")
     if not isinstance(result["concurrency"], int) or result["concurrency"] not in {1, 2, 3, 4, 6, 8}:
         raise ValueError("invalid concurrency")
-    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool) or not isinstance(result["waveform_enabled"], bool) or not isinstance(result["subtitle_enabled"], bool):
+    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool) or not isinstance(result["waveform_enabled"], bool) or not isinstance(result["subtitle_enabled"], bool) or not isinstance(result["narrator_credit_enabled"], bool):
         raise ValueError("enhancement flags must be boolean")
     if not isinstance(result["crossfade_seconds"], (int, float)) or not 0 <= result["crossfade_seconds"] <= 3:
         raise ValueError("crossfade must be 0-3 seconds")

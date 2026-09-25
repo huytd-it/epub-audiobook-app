@@ -95,6 +95,9 @@ class Patch:
     clean_text_hash: str | None = None
     text_fingerprint: str | None = None
     youtube_override: str | None = None
+    # Giọng đọc riêng của patch (model + voice). NULL = kế thừa audio settings của sách.
+    tts_model: str | None = None
+    tts_voice_id: str | None = None
 
 
 @dataclass

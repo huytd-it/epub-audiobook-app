@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from app import music_bed
+from app.audio_mastering import VIDEO_SAMPLE_RATE, loudnorm_filter
 from app.config import settings
 from app.models import Book, Patch
 from app.subtitle_gen import ass_bgr
@@ -30,12 +31,12 @@ VIDEO_BACKGROUND_EXTENSIONS = {".mp4", ".webm", ".mov"}
 # allocated"). Segment audio must therefore never be inherited from the input:
 # greeting audio is a raw user upload and narration is TTS output whose rate
 # depends on the engine. 48kHz stereo is YouTube's recommended upload format.
-AUDIO_SAMPLE_RATE = 48000
+AUDIO_SAMPLE_RATE = VIDEO_SAMPLE_RATE
 AUDIO_CHANNELS = 2
 # Normalize the final narration mix, not each TTS chunk.  A single output-stage
 # pass keeps patch-to-patch loudness consistent, raises naturally quiet voices,
 # and leaves true-peak headroom for AAC encoding.
-AUDIO_LOUDNESS_FILTER = "loudnorm=I=-18:TP=-1.5:LRA=11"
+AUDIO_LOUDNESS_FILTER = loudnorm_filter(sample_rate=AUDIO_SAMPLE_RATE)
 
 # Still-image sources (JPEG/PNG) decode as full-range YUV, and '-pix_fmt yuv420p'
 # keeps that range: x264 tags the stream full-range and ffprobe reports the
@@ -510,7 +511,7 @@ def generate_segment(
     fps: int = 30,
     fit_mode: str = "contain",
     audio_bitrate: str = "320k",
-    crf: int = 23,
+    crf: int = 20,
     use_nvenc: bool = False,
     music_path: str | None = None,
     music_volume: float = 0.15,
@@ -659,9 +660,10 @@ def generate_segment(
             "-map", audio_map_label,
             "-c:v", video_codec,
             *tune_args,
-            "-c:a", "aac", "-b:a", audio_bitrate,
+            "-c:a", "aac", "-b:a", audio_bitrate, "-aac_coder", "twoloop",
             "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
             "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
             "-r", str(fps),
             *quality_args,
             *duration_args,
@@ -686,9 +688,10 @@ def generate_segment(
             "-c:v", video_codec,
             *tune_args,
             "-af", AUDIO_LOUDNESS_FILTER,
-            "-c:a", "aac", "-b:a", audio_bitrate,
+            "-c:a", "aac", "-b:a", audio_bitrate, "-aac_coder", "twoloop",
             "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
             "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
             "-r", str(fps),
             *quality_args,
             *duration_args,
@@ -733,6 +736,50 @@ def _probe_frame_rate(path: str) -> float:
     except (AttributeError, TypeError, ValueError, ZeroDivisionError):
         return 0.0
     return rate if rate > 0 else 0.0
+
+
+def _probe_video_geometry(path: str) -> tuple[int, int] | None:
+    result = subprocess.run(
+        [settings.get_ffprobe_path(), "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height",
+         "-of", "csv=p=0:s=x", path],
+        capture_output=True, text=True, check=True,
+    )
+    try:
+        width, height = (int(value) for value in result.stdout.strip().split("x", 1))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return (width, height) if width > 0 and height > 0 else None
+
+
+def _normalize_video_segment(
+    source: str,
+    target: str,
+    *,
+    resolution: tuple[int, int],
+    fps: int,
+    quality: int,
+) -> None:
+    """Make a legacy gameplay clip safe for stream-copy concat.
+
+    Only mismatching clips take this path. The intermediate CRF is two points
+    better than the requested final encode to minimize generational loss when
+    generate_segment later combines the visual with narration.
+    """
+    width, height = resolution
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        f"setsar=1,fps={fps},format=yuv420p"
+    )
+    _run_encoder([
+        settings.get_ffmpeg_path(), "-y", "-hide_banner", "-nostdin", "-nostats",
+        "-i", source, "-map", "0:v:0", "-an", "-vf", video_filter,
+        "-c:v", "libx264", "-preset", "veryfast",
+        "-crf", str(max(16, int(quality) - 2)),
+        "-r", str(int(fps)), "-fps_mode", "cfr", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", target,
+    ])
 
 
 def _assert_uniform_frame_rate(segment_paths: list[str]) -> None:
@@ -850,6 +897,7 @@ def concat_segments(
             "-f", "concat", "-safe", "0",
             "-i", list_file.name,
             "-c", "copy",
+            "-movflags", "+faststart",
             out_path,
         ]
         _emit(on_progress, "concat.ffmpeg_start", count=len(segment_paths))
@@ -871,23 +919,57 @@ def concat_segments(
     _emit(on_progress, "concat.done", count=len(segment_paths), path=out_path)
 
 
-def concat_video_segments(segment_paths: list[str], out_path: str) -> None:
-    """Concat pre-rendered video-only gameplay clips without audio assertions."""
+def concat_video_segments(
+    segment_paths: list[str],
+    out_path: str,
+    *,
+    resolution: tuple[int, int] | None = None,
+    fps: int | None = None,
+    quality: int = 20,
+) -> None:
+    """Concat video-only gameplay clips, repairing legacy profiles when asked.
+
+    With no target spec this remains a strict stream-copy concat. A target spec
+    lets patch rendering recover old snapshots that contain clips reserved under
+    different render profiles; only clips whose geometry or fps differs are
+    transcoded before the lossless concat step.
+    """
     if not segment_paths:
         raise ValueError("No video segments to concat")
     _assert_segments_exist(segment_paths)
     _ensure_out_dir(out_path)
-    _assert_uniform_frame_rate(segment_paths)
-    list_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
-    try:
-        for path in segment_paths:
-            safe = path.replace("\\", "/").replace("'", "'\\''")
-            list_file.write(f"file '{safe}'\n")
-        list_file.close()
-        _run_encoder([settings.get_ffmpeg_path(), "-y", "-f", "concat", "-safe", "0",
-                      "-i", list_file.name, "-c", "copy", out_path])
-    finally:
-        Path(list_file.name).unlink(missing_ok=True)
+    if (resolution is None) != (fps is None):
+        raise ValueError("resolution and fps must be provided together")
+
+    with tempfile.TemporaryDirectory(prefix="gameplay_concat_") as normalize_dir:
+        concat_paths = list(segment_paths)
+        if resolution is not None and fps is not None:
+            normalized: list[str] = []
+            for index, path in enumerate(segment_paths):
+                rate = _probe_frame_rate(path)
+                geometry = _probe_video_geometry(path)
+                rate_matches = rate > 0 and abs(rate - fps) / fps <= 0.005
+                if rate_matches and geometry == resolution:
+                    normalized.append(path)
+                    continue
+                repaired = str(Path(normalize_dir) / f"{index:04d}.mp4")
+                _normalize_video_segment(
+                    path, repaired, resolution=resolution, fps=fps, quality=quality
+                )
+                normalized.append(repaired)
+            concat_paths = normalized
+
+        _assert_uniform_frame_rate(concat_paths)
+        list_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
+        try:
+            for path in concat_paths:
+                safe = path.replace("\\", "/").replace("'", "'\\''")
+                list_file.write(f"file '{safe}'\n")
+            list_file.close()
+            _run_encoder([settings.get_ffmpeg_path(), "-y", "-f", "concat", "-safe", "0",
+                          "-i", list_file.name, "-c", "copy", "-movflags", "+faststart", out_path])
+        finally:
+            Path(list_file.name).unlink(missing_ok=True)
 
 
 def _probe_duration(path: str) -> float:
@@ -905,8 +987,8 @@ def generate_background_sequence(
     fit_mode: str = "contain",
     mode: str = "sequential", seed: str = "", music_path: str | None = None,
     music_volume: float = 0.15, music_gaps: dict | None = None,
-    codec: str = "libx264", quality: int = 23,
-    audio_bitrate: str = "192k", on_progress: ProgressCallback | None = None,
+    codec: str = "libx264", quality: int = 20,
+    audio_bitrate: str = "320k", on_progress: ProgressCallback | None = None,
     start_index: int = 0,
     crossfade: bool = False, crossfade_seconds: float = 1,
     ken_burns: bool = False, progress_bar: bool = False,
@@ -1032,9 +1114,9 @@ def generate_background_sequence(
         if reencode_video:
             cmd += ["-pix_fmt", "yuv420p", "-r", str(fps),
                     ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality)]
-        cmd += ["-c:a", "aac", "-b:a", audio_bitrate,
+        cmd += ["-c:a", "aac", "-b:a", audio_bitrate, "-aac_coder", "twoloop",
                 "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
-                "-shortest", out_path]
+                "-movflags", "+faststart", "-shortest", out_path]
         try:
             _run_encoder(cmd)
         finally:
@@ -1096,7 +1178,7 @@ def generate_full_video(
     music_volume: float = 0.15,
     music_gaps: dict | None = None,
     codec: str = "libx264",
-    quality: int = 23,
+    quality: int = 20,
     audio_bitrate: str = "320k",
     video_config: dict | None = None,
     intro_audio: str | None = None,
@@ -1188,7 +1270,10 @@ def generate_full_video(
                 image = raw_bg
                 anim = "none"
             else:
-                overlay = image_overlay.ensure_patch_overlay(book, patch, font_path, background_path=raw_bg)
+                overlay = image_overlay.ensure_patch_overlay(
+                    book, patch, font_path, background_path=raw_bg,
+                    extra_overlays=image_overlay.narrator_credit_overlays(book, video_config, patch),
+                )
                 image = overlay or raw_bg
                 anim = patch.image_type if patch.image_type and patch.image_type != "static" else (book.default_image_animation or "none")
 
@@ -1253,7 +1338,7 @@ def generate_standalone_video(
     codec: str = "libx264",
     audio_bitrate: str = "320k",
     image_type: str = "none",
-    crf: int = 23,
+    crf: int = 20,
     music_path: str | None = None,
     music_volume: float = 0.15,
     music_gaps: dict | None = None,

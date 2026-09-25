@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { VoicePreviewButton } from "@/components/common/VoicePreviewButton";
 import { WaveformPreview } from "@/components/common/WaveformPreview";
+import { Combobox } from "@/components/ui/combobox";
 import {
   BackgroundItem,
   BrandingConfig,
@@ -539,20 +540,19 @@ export function ProductionSettingsPage() {
                   )}
                 </select>
               </Field>
-              <Field label="Voice" hint="Bỏ trống = voice mặc định của model">
+              <Field label="Voice ID" hint="Bỏ trống = voice mặc định của model">
                 <div className="flex items-center gap-1">
-                  <select
-                    className={selectClass}
+                  <Combobox
+                    className="min-w-0 flex-1"
                     value={draft.audio.voice_id}
-                    onChange={(event) => patchGroup("audio", { voice_id: event.target.value })}
-                  >
-                    <option value="">—</option>
-                    {voiceOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: "", label: "Mặc định của model" },
+                      ...voiceOptions.map((option) => ({ ...option, description: option.value })),
+                    ]}
+                    onChange={(voiceId) => patchGroup("audio", { voice_id: voiceId })}
+                    placeholder="Tìm hoặc chọn voice..."
+                    aria-label="Voice ID"
+                  />
                   <VoicePreviewButton
                     modelId={draft.audio.model_id}
                     voiceId={draft.audio.voice_id}
@@ -629,7 +629,7 @@ export function ProductionSettingsPage() {
                     value={video.resolution}
                     onChange={(event) => setVideo({ resolution: event.target.value })}
                   >
-                    <option value="1920x1080">1920×1080 (16:9)</option>
+                    <option value="1920x1080">1920×1080 (Full HD · khuyên dùng)</option>
                     <option value="1280x720">1280×720 (16:9)</option>
                     <option value="854x480">854×480 (16:9)</option>
                     <option value="1080x1920">1080×1920 (9:16 — Shorts/Reels)</option>
@@ -655,7 +655,7 @@ export function ProductionSettingsPage() {
                     onChange={(event) => setVideo({ fps: Number(event.target.value) })}
                   >
                     <option value="24">24</option>
-                    <option value="30">30</option>
+                    <option value="30">30 (khuyên dùng)</option>
                     <option value="60">60</option>
                   </select>
                 </Field>
@@ -665,7 +665,7 @@ export function ProductionSettingsPage() {
                     value={video.codec}
                     onChange={(event) => setVideo({ codec: event.target.value })}
                   >
-                    <option value="libx264">libx264 (CPU)</option>
+                    <option value="libx264">libx264 (CPU · chất lượng cao)</option>
                     <option value="h264_nvenc">h264_nvenc (GPU)</option>
                   </select>
                 </Field>
@@ -678,10 +678,10 @@ export function ProductionSettingsPage() {
                     <option value="128k">128k</option>
                     <option value="192k">192k</option>
                     <option value="256k">256k</option>
-                    <option value="320k">320k</option>
+                    <option value="320k">320k (khuyên dùng)</option>
                   </select>
                 </Field>
-                <Field label="Chất lượng" hint="CRF 18–28">
+                <Field label="Chất lượng" hint="CRF 20 khuyên dùng; số thấp hơn = file lớn hơn">
                   <input
                     className={fieldClass}
                     type="number"
@@ -958,6 +958,11 @@ export function ProductionSettingsPage() {
                   checked={video.progress_bar_enabled}
                   onChange={(value) => setVideo({ progress_bar_enabled: value })}
                   label="Progress bar"
+                />
+                <CheckField
+                  checked={video.narrator_credit_enabled || false}
+                  onChange={(value) => setVideo({ narrator_credit_enabled: value })}
+                  label="Hiện tên giọng đọc + TTS model"
                 />
               </div>
 

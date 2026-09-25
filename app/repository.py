@@ -1153,6 +1153,44 @@ def update_patch_image_type(conn: sqlite3.Connection, patch_id: int, image_type:
     return cur.rowcount > 0
 
 
+def set_patch_audio_settings(
+    conn: sqlite3.Connection, patch_id: int,
+    tts_model: str | None, tts_voice_id: str | None,
+) -> bool:
+    """Lưu giọng đọc riêng của patch (None = kế thừa cấu hình audio của sách).
+
+    Trả về True khi giá trị thật sự đổi — worker gọi mỗi lần chạy TTS để patch
+    "nhớ" đúng combo đã dùng mà không chạm updated_at vô ích."""
+    row = conn.execute(
+        "SELECT tts_model, tts_voice_id FROM patch WHERE id = ?", (patch_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    if row["tts_model"] == tts_model and row["tts_voice_id"] == tts_voice_id:
+        return False
+    cur = conn.execute(
+        "UPDATE patch SET tts_model = ?, tts_voice_id = ?, updated_at = ? WHERE id = ?",
+        (tts_model, tts_voice_id, _now(), patch_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def clear_patch_audio_settings(conn: sqlite3.Connection, patch_ids: list[int]) -> int:
+    """Xoá giọng riêng của các patch (về kế thừa sách). Trả về số patch đã reset."""
+    ids = list(dict.fromkeys(int(patch_id) for patch_id in patch_ids))
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    cur = conn.execute(
+        f"UPDATE patch SET tts_model = NULL, tts_voice_id = NULL, updated_at = ? "
+        f"WHERE id IN ({placeholders}) AND (tts_model IS NOT NULL OR tts_voice_id IS NOT NULL)",
+        (_now(), *ids),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def update_book_video_settings(
     conn: sqlite3.Connection,
     book_id: int,

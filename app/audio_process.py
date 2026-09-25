@@ -24,6 +24,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.audio_mastering import loudnorm_filter
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -225,7 +226,7 @@ def _build_filter_chain(ops: AudioOps) -> list[str]:
         chain.extend([strip, "areverse", strip, "areverse"])
 
     if ops.normalize:
-        chain.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+        chain.append(loudnorm_filter())
     if ops.gain_db:
         chain.append(f"volume={ops.gain_db:.2f}dB")
 

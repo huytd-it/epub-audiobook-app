@@ -308,3 +308,26 @@ def test_patch_coverage_rotates_selected_games(tmp_path):
                                   game_ids=["snake_arena", "aurora_veil"], config={"preset": "calm"})
     assert [clip["game_id"] for clip in clips[:2]] == ["snake_arena", "aurora_veil"]
     assert {clip["game_id"] for clip in clips} == {"snake_arena", "aurora_veil"}
+
+
+def test_patch_coverage_replaces_clips_when_render_profile_changes(tmp_path):
+    from app.gameplay_pool import ensure_patch_coverage
+    conn = _conn(str(tmp_path / "profile-change.db"))
+    conn.execute("INSERT INTO book (title,original_filename,epub_path,status,created_at,updated_at) VALUES ('b','b','b','done','n','n')")
+    book_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO patch (book_id,patch_index,chapter_start,chapter_end,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+                 (book_id, 0, 0, 0, "done", "n", "n"))
+    patch_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+
+    old = ensure_patch_coverage(conn, patch_id, 220, width=854, height=480, fps=60,
+                                game_id="snake_arena", quality=23, config={"preset": "calm"})
+    new = ensure_patch_coverage(conn, patch_id, 220, width=1280, height=720, fps=30,
+                                game_id="snake_arena", quality=20, config={"preset": "calm"})
+
+    assert {row["id"] for row in old}.isdisjoint({row["id"] for row in new})
+    assert len({row["profile_key"] for row in new}) == 1
+    assert new[0]["profile_key"] != old[0]["profile_key"]
+    old_row = conn.execute("SELECT status,reserved_patch_id FROM gameplay_clip WHERE id=?",
+                           (old[0]["id"],)).fetchone()
+    assert (old_row["status"], old_row["reserved_patch_id"]) == ("available", None)

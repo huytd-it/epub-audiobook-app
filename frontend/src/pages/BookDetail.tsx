@@ -72,6 +72,7 @@ export function BatchRunDialog({
   existingTargets,
   publishedTargets,
   skippedTargets,
+  overrideCount,
   automation,
   onAutomationChange,
   open,
@@ -84,6 +85,8 @@ export function BatchRunDialog({
   existingTargets: number;
   publishedTargets: number;
   skippedTargets: number;
+  /** Số patch có giọng riêng — chúng giữ nguyên giọng đó thay vì giọng dialog. */
+  overrideCount: number;
   automation: BatchAutomation;
   onAutomationChange: (patch: Partial<BatchAutomation>) => void;
   open: boolean;
@@ -133,6 +136,13 @@ export function BatchRunDialog({
                   Bỏ qua {skippedTargets} patch chưa có audio hoặc đang upload YouTube.
                 </div>
               )}
+            </div>
+          )}
+
+          {isAudio && overrideCount > 0 && (
+            <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-[11px]">
+              {overrideCount} patch có giọng riêng sẽ <span className="font-semibold">giữ nguyên giọng đó</span> thay
+              vì giọng trong cấu hình sách. Reset về “Theo sách” ở cột Giọng đọc nếu muốn đổi hàng loạt.
             </div>
           )}
 
@@ -945,6 +955,10 @@ export function BookDetail() {
             onMessage={showToast}
             onRefresh={refresh}
             onBusyChange={setBusy}
+            ttsModels={ttsModels}
+            bookModelId={settings.modelId}
+            bookVoiceId={settings.voiceId}
+            bookVoiceName={currentVoiceName}
           />
           <ExportPanel
             bookId={bookId}
@@ -1049,6 +1063,14 @@ export function BookDetail() {
           (patchId) => pipeline?.pipelines[String(patchId)]?.can_force_new
         ).length}
         skippedTargets={batchSkipped}
+        overrideCount={
+          batchKind === "audio"
+            ? batchTargets.filter((patchId) => {
+                const patch = patches.find((item) => item.id === patchId);
+                return patch?.tts_model || patch?.tts_voice_id;
+              }).length
+            : 0
+        }
         automation={automation}
         onAutomationChange={(patch) => setAutomation((current) => ({ ...current, ...patch }))}
         open={batchOpen}

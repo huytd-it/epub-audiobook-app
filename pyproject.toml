@@ -34,10 +34,10 @@ omnivoice = [
     "omnivoice",
 ]
 vieneu-fast = [
-    "vieneu",
+    "vieneu>=3.8.3",
 ]
 zerotts = [
-    "zerotts>=0.1.1",
+    "zerotts>=0.1.5",
 ]
 confucius4 = [
     # Install the upstream clone's requirements from its own checkout; it is
@@ -50,8 +50,8 @@ f5-vivoice = [
 all-tts = [
     "voxcpm",
     "omnivoice",
-    "vieneu",
-    "zerotts>=0.1.1",
+    "vieneu>=3.8.3",
+    "zerotts>=0.1.5",
     "f5-tts",
     "cached-path",
 ]

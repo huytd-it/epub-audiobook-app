@@ -14,6 +14,7 @@ from pathlib import Path
 import soundfile as sf
 
 from app import audio_merge, repository, subtitle_gen
+from app.audio_mastering import normalize_wav_in_place
 from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
@@ -62,6 +63,10 @@ def handle(ctx) -> dict:
     with_effects = bool(payload.get("with_effects"))
     tts_options = payload.get("tts_options") or {}
     pause_config = (payload["chunk_pause_ms"], payload["chapter_pause_ms"])
+
+    # Lưu giọng đọc theo patch khi sử dụng: patch "nhớ" đúng combo đã tổng hợp,
+    # lần chạy sau giọng riêng này thắng cấu hình chung của sách.
+    repository.set_patch_audio_settings(ctx.conn, patch_id, engine_id, voice)
 
     # A retry can be claimed after synthesis succeeded but before the queue row was
     # committed as done (process crash, DB lock, shutdown). The patch audio is the
@@ -176,6 +181,7 @@ def synthesize_patch(
         chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, pauses)
         audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_chunks_to_wav(wavs, engine.sample_rate, p, pause_ms=pauses))
         _apply_effects(ctx, with_effects, audio_path, plan)
+        normalize_wav_in_place(audio_path)
         audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
         subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, pauses)
         ctx.progress(total, total, phase="synthesizing")
@@ -227,6 +233,7 @@ def synthesize_patch(
     ctx.progress(total, total, phase="merging")
     audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_wavs(chunk_paths, p, pause_ms=pauses))
     _apply_effects(ctx, with_effects, audio_path, plan)
+    normalize_wav_in_place(audio_path)
     audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
     subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, pauses)
     ctx.progress(total, total, phase="synthesizing")
@@ -258,6 +265,7 @@ def finalize_book_if_ready(ctx, book_id: int) -> str | None:
     final_path = str(book_dir / "final.wav")
     ctx.progress(ctx.job.progress_current, ctx.job.progress_total, phase="merging_book")
     audio_merge.concat_wavs(paths, final_path)
+    normalize_wav_in_place(final_path)
     repository.set_book_final_audio(ctx.conn, book_id, final_path)
     ctx.log(f"gộp xong final.wav cho sách {book_id}")
     if book is None:

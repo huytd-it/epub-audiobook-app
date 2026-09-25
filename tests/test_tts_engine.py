@@ -181,7 +181,7 @@ def test_catalog_carries_capability_metadata():
     # VieNeu could clone, but the app drives it from the same fixed cast instead.
     assert models["vieneu-fast"]["capabilities"] == models["zerotts"]["capabilities"]
     assert models["vieneu-fast"]["supports_reference"] is False
-    assert models["vieneu-fast"]["default_voice"] == "Adam"
+    assert models["vieneu-fast"]["default_voice"] == "Hải Đăng"
 
 
 def test_normalize_payload_accepts_legacy_shapes_and_canonicalises():
@@ -256,8 +256,8 @@ def test_vieneu_fast_speaks_a_preset_and_ignores_any_reference_clip():
 
 
 def test_vieneu_fast_falls_back_to_the_catalog_default_voice():
-    assert VieNeuFastEngine().voice == "Adam"
-    assert "Adam" in VieNeuFastEngine().config_fingerprint()
+    assert VieNeuFastEngine().voice == "Hải Đăng"
+    assert "Hải Đăng" in VieNeuFastEngine().config_fingerprint()
     # The voice changes the audio, so it has to change the chunk cache key too.
     assert (VieNeuFastEngine(voice="Mai Anh").config_fingerprint()
             != VieNeuFastEngine(voice="Thái Sơn").config_fingerprint())
@@ -459,7 +459,7 @@ def test_preset_reference_options_are_offered_as_voice_ids(monkeypatch):
 
     assert options == [{
         "value": "preset:vieneu-fast:Adam",
-        "label": "VieNeu fast · Adam — nam trầm",
+        "label": "VieNeu V3 Turbo · Adam — nam trầm",
         "language": "vi",
     }]
     assert parse_preset_voice(options[0]["value"]) == ("vieneu-fast", "Adam")

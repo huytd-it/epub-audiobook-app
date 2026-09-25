@@ -14,7 +14,7 @@ def test_video_config_defaults_match_video_creator():
     config = validate_video_config({})
     assert config["codec"] == "libx264"
     assert config["audio_bitrate"] == "320k"
-    assert config["quality"] == 23
+    assert config["quality"] == 20
     assert config["concurrency"] == 3
     assert config["image_duration_seconds"] == 15
     assert config["waveform_enabled"] is False

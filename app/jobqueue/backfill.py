@@ -108,16 +108,16 @@ def enqueue_pending_patch_jobs(
             params.append(book_id)
         params.extend(ids)
         rows = conn.execute(
-            f"SELECT id, book_id, audio_path FROM patch WHERE status!='processing'{where_book} AND id IN ({placeholders}) ORDER BY book_id, patch_index",
+            f"SELECT id, book_id, audio_path, tts_model, tts_voice_id FROM patch WHERE status!='processing'{where_book} AND id IN ({placeholders}) ORDER BY book_id, patch_index",
             params,
         ).fetchall()
     elif book_id is None:
         rows = conn.execute(
-            "SELECT id, book_id FROM patch WHERE status='pending' ORDER BY book_id, patch_index"
+            "SELECT id, book_id, tts_model, tts_voice_id FROM patch WHERE status='pending' ORDER BY book_id, patch_index"
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT id, book_id FROM patch WHERE status='pending' AND book_id=? ORDER BY patch_index",
+            "SELECT id, book_id, tts_model, tts_voice_id FROM patch WHERE status='pending' AND book_id=? ORDER BY patch_index",
             (book_id,),
         ).fetchall()
 
@@ -147,11 +147,15 @@ def enqueue_pending_patch_jobs(
     for row in rows:
         if missing_audio_only and row["audio_path"] and Path(row["audio_path"]).is_file():
             continue
+        # Giọng riêng của patch (đã lưu từ lần chạy trước hoặc gán tay) luôn thắng
+        # cấu hình chung — từng field độc lập, field nào trống thì kế thừa.
+        patch_engine = row["tts_model"] or None
+        patch_voice = row["tts_voice_id"] or None
         if not explicit_config:
             audio = _audio_config(row["book_id"])
             request = {
-                "tts_engine": audio.get("model_id") or settings.tts_engine,
-                "voice": voice if voice else audio.get("voice_id"),
+                "tts_engine": patch_engine or audio.get("model_id") or settings.tts_engine,
+                "voice": patch_voice if patch_voice is not None else (voice or audio.get("voice_id")),
                 "max_chars": audio.get("max_chars") or 0,
                 "with_effects": bool(audio.get("with_effects", False)), "tts_options": audio.get("tts_options"),
                 "chunk_pause_ms": audio.get("chunk_pause_ms"),
@@ -162,7 +166,9 @@ def enqueue_pending_patch_jobs(
             # spacing, so the pauses still come from the book's own audio config.
             audio = _audio_config(row["book_id"])
             request = {
-                "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
+                "tts_engine": patch_engine or engine_id,
+                "voice": patch_voice if patch_voice is not None else voice,
+                "max_chars": max_chars,
                 "with_effects": with_effects, "tts_options": tts_options or {},
                 "chunk_pause_ms": audio.get("chunk_pause_ms"),
                 "chapter_pause_ms": audio.get("chapter_pause_ms"),

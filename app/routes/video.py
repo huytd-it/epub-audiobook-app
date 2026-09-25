@@ -262,7 +262,7 @@ async def generate_video(
     codec: str = Form(default="libx264"),
     audio_bitrate: str = Form(default="320k"),
     image_type: str = Form(default="none"),
-    crf: int = Form(default=23),
+    crf: int = Form(default=20),
     fit_mode: str = Form(default="auto"),
 ):
     audio_ext = Path(audio.filename or "").suffix.lower()
@@ -415,7 +415,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
             "codec": "libx264",
             "audio_bitrate": "320k",
             "image_type": "none",
-            "crf": 23
+            "crf": 20
         }
     }
 
@@ -450,7 +450,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
         raw_cfg.get("codec", "libx264"),
         raw_cfg.get("audio_bitrate", "320k"),
         raw_cfg.get("image_type", "none"),
-        raw_cfg.get("crf", 23),
+        raw_cfg.get("crf", 20),
         raw_cfg.get("fit_mode", "auto"),
     )
 

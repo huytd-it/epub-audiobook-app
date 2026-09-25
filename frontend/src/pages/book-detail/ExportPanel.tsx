@@ -4,6 +4,7 @@ import { api, DriveAccount, DriveTarget, KaggleAccount, Patch, post, postJson } 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { Combobox } from "@/components/ui/combobox";
 import { cn } from "@/lib/utils";
 import { AudioSettings, TtsModel, VoiceOption, downloadForm, errorText } from "./types";
 import { CheckField, Field, SectionHead, fieldClass, selectClass } from "./parts";
@@ -242,22 +243,14 @@ export function ExportPanel({
               )}
             </select>
           </Field>
-          <Field label="Voice">
-            <select
-              className={selectClass}
+          <Field label="Voice ID">
+            <Combobox
               value={settings.voiceId}
-              onChange={(event) => onSettingsChange({ voiceId: event.target.value })}
-            >
-              {voiceOptions.length ? (
-                voiceOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))
-              ) : (
-                <option value="">—</option>
-              )}
-            </select>
+              options={voiceOptions.map((option) => ({ ...option, description: option.value }))}
+              onChange={(voiceId) => onSettingsChange({ voiceId })}
+              placeholder="Tìm hoặc chọn voice..."
+              aria-label="Voice ID"
+            />
           </Field>
           <Field label="Max chars" hint="0 = mặc định">
             <input

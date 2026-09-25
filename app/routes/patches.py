@@ -1040,6 +1040,53 @@ async def upload_patch_audio(
     return JSONResponse({"ok": True, "patch_id": patch_id})
 
 
+@router.post("/books/{book_id}/patches/{patch_id}/audio-settings")
+async def set_patch_audio_settings(request: Request, book_id: int, patch_id: int):
+    """Gán giọng đọc riêng cho patch (model + voice). Chuỗi rỗng = kế thừa sách.
+
+    Giọng riêng luôn thắng cấu hình chung khi chạy TTS; muốn đổi hàng loạt thì
+    reset patch về kế thừa qua /patches/reset-voices."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+    tts_model = str(body.get("tts_model") or "").strip() or None
+    tts_voice_id = str(body.get("tts_voice_id") or "").strip() or None
+    if tts_model is not None:
+        from app.tts_engine import resolve_engine_id
+
+        try:
+            tts_model = resolve_engine_id(tts_model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        repository.set_patch_audio_settings(conn, patch_id, tts_model, tts_voice_id)
+    return JSONResponse({"ok": True, "patch_id": patch_id,
+                         "tts_model": tts_model, "tts_voice_id": tts_voice_id})
+
+
+@router.post("/books/{book_id}/patches/reset-voices")
+async def reset_patch_voices(request: Request, book_id: int):
+    """Xoá giọng riêng của các patch (về kế thừa cấu hình sách)."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+    try:
+        patch_ids = [int(value) for value in body.get("patch_ids") or []]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="patch_ids must be a list of integers")
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        owned = {patch.id for patch in repository.list_patches(conn, book_id)}
+        reset = repository.clear_patch_audio_settings(
+            conn, [patch_id for patch_id in patch_ids if patch_id in owned])
+    return JSONResponse({"ok": True, "reset": reset})
+
+
 def _youtube_patch(conn, book_id, patch_id):
     book = repository.get_book(conn, book_id)
     patch = repository.get_patch(conn, patch_id)
