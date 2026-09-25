@@ -468,6 +468,12 @@ def find_subfolder(service, parent_id: str, name: str) -> str | None:
     return files[0]["id"] if files else None
 
 
+def find_batch_folder(service, name: str) -> str | None:
+    """Find a batch folder directly below the app's export root."""
+    root_id = get_or_create_root_folder(service)
+    return find_subfolder(service, root_id, name)
+
+
 def list_files(service, folder_id: str) -> list[dict]:
     """Return every non-trashed file directly inside folder_id: [{id, name, modifiedTime}]."""
     files: list[dict] = []
@@ -492,3 +498,27 @@ def download_file(service, file_id: str, dest_path: str) -> None:
         done = False
         while not done:
             _, done = downloader.next_chunk()
+
+
+def download_result_directory(service, batch_folder_id: str, dest_root: str) -> list[str]:
+    """Download only the batch's direct ``result`` folder.
+
+    Kaggle writes intermediate chunks under patch output folders, but the app only
+    needs merged WAVs and timeline sidecars to import a completed batch. Keeping this
+    operation scoped to ``result`` also prevents the worker from pulling the input
+    manifests or the potentially large intermediate chunk files back from Drive.
+    """
+    result_folder_id = find_subfolder(service, batch_folder_id, "result")
+    if not result_folder_id:
+        return []
+    destination = Path(dest_root) / "result"
+    destination.mkdir(parents=True, exist_ok=True)
+    downloaded: list[str] = []
+    for entry in list_files(service, result_folder_id):
+        name = entry.get("name") or ""
+        if not name or "/" in name or "\\" in name:
+            continue
+        target = destination / name
+        download_file(service, entry["id"], str(target))
+        downloaded.append(str(target))
+    return downloaded

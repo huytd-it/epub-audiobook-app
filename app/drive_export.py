@@ -50,6 +50,19 @@ def publish_package(package_dir: Path, target_folder: str, folder_name: str) -> 
         raise
 
 
+def publish_package_to_drive_api(
+    conn: sqlite3.Connection, account_id: int, package_dir: Path, folder_name: str,
+) -> dict:
+    """Upload a batch package through the Drive API and return its folder metadata."""
+    from app import google_drive
+
+    service = google_drive.get_drive_service(conn, account_id)
+    root_id = google_drive.get_or_create_root_folder(service)
+    batch_folder = google_drive.create_folder(service, folder_name, parent_id=root_id)
+    google_drive.upload_directory(service, batch_folder["id"], str(package_dir))
+    return batch_folder
+
+
 def _sanitize_name(name: str) -> str:
     """Strip characters that are unsafe in Drive/Windows file and folder names."""
     return re.sub(r"[^\w\- ]", "", name).strip()
@@ -203,7 +216,8 @@ def build_batch_export_package(
     the app's own video rendering, so keeping them out keeps the Drive sync small.
     Returns (package_dir, batch_manifest); caller is responsible for deleting the directory.
 
-    ``mode`` sets the notebook's own MODE global ("drive" or "kaggle_native" - see
+    ``mode`` sets the notebook's own MODE global ("drive", "kaggle_native", or
+    "kaggle_drive" - see
     Cell 1/Cell 4 of the template): "kaggle_native" tells Cell 4 to find the batch
     under /kaggle/input/ instead of talking to Google Drive. For kaggle_native,
     prefer build_kaggle_export_package, which additionally wires ``gdrive_creds``
@@ -290,13 +304,13 @@ def build_batch_export_package(
         "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]
     )
     notebook_src = notebook_src.replace("__HF_TOKEN__", (hf_token or settings.hf_token) or "")
-    if mode not in {"drive", "kaggle_native"}:
+    if mode not in {"drive", "kaggle_native", "kaggle_drive"}:
         raise ValueError(f"unknown notebook mode: {mode!r}")
     # Cell 1's MODE global, matched in its escaped-JSON-string form (the whole file is
     # edited as text, not re-serialized through json.dump) - see Cell 1/Cell 4 of the
     # template for what each value does.
     notebook_src = notebook_src.replace('MODE = \\"drive\\"', f'MODE = \\"{mode}\\"')
-    if mode == "kaggle_native":
+    if mode in {"kaggle_native", "kaggle_drive"}:
         # Cell 3 (Drive mount) and Cell 4 (Kaggle download) branch on IS_KAGGLE, not
         # on MODE: with IS_KAGGLE=False the pushed kernel runs Cell 3's Colab
         # drive.mount branch and dies with NotImplementedError (Kaggle has no Drive
@@ -320,6 +334,25 @@ def build_batch_export_package(
         creds_literal = json.dumps(json.dumps(gdrive_creds, separators=(",", ":")))[1:-1]
         creds_literal = json.dumps(creds_literal)[1:-1]
     notebook_src = notebook_src.replace("__GDRIVE_CREDS__", creds_literal)
+    if mode in {"kaggle_native", "kaggle_drive"}:
+        # Kaggle API runs use Drive as the transport. There is no Kaggle Output
+        # archive to create or download; the worker imports Drive/result instead.
+        notebook = json.loads(notebook_src)
+        if mode == "kaggle_native":
+            # Preserve the historical MODE value for existing exported notebooks,
+            # while disabling the obsolete attached-dataset branch.
+            notebook["cells"][4]["source"] = [
+                line.replace('elif MODE == "kaggle_native":', "elif False:")
+                for line in notebook["cells"][4]["source"]
+            ]
+        notebook["cells"][9]["source"] = [
+            "# Cell 9: Kaggle API transport\n",
+            "if IS_KAGGLE:\n",
+            "    print(\"Kaggle API mode: results are already persisted in Google Drive/result.\")\n",
+            "else:\n",
+            "    print(\"Colab mode: results remain in the mounted Google Drive folder.\")\n",
+        ]
+        notebook_src = json.dumps(notebook, ensure_ascii=False, indent=1)
     (package_dir / "colab_kaggle_batch_tts_template.ipynb").write_text(notebook_src, encoding="utf-8")
 
     return package_dir, batch_manifest
@@ -338,18 +371,14 @@ def build_kaggle_export_package(
     batch_id: str | None = None,
 ) -> tuple[Path, dict]:
     """Same package as build_batch_export_package, but for the Kaggle Kernels API
-    round trip: the notebook finds its input under /kaggle/input/ (Cell 4's
-    kaggle_native branch, matched by batch_id) and its output travels back to the
-    app through kernel_output().
+    round trip: the notebook finds its input through the Google Drive API and
+    writes its output there. The worker later downloads only Drive's ``result``
+    folder for import.
 
     When ``gdrive_creds`` is given (the app's Drive account credentials), they are
-    baked into the notebook copy so Cell 4's kaggle_native branch can ALSO mirror
-    every chunk/output + merged result file up to Drive as it goes (same
-    drive_persist() path as the manual Drive notebook). A retry -- a new kernel
-    version with the same stable ``batch_id`` -- then finds the previous run's
-    files in the Drive folder and resumes instead of re-synthesizing every chunk
-    from scratch. Without creds the kernel stays fully offline (previous
-    behaviour); Drive sync is best-effort and never fails the run."""
+    baked into the notebook copy so Cell 4 can read and write the same Drive
+    folder. A retry -- a new kernel version with the same stable ``batch_id`` --
+    then resumes from the files already on Drive."""
     return build_batch_export_package(
         conn, patches, drive_folder_name=drive_folder_name, hf_token=hf_token,
         gdrive_creds=gdrive_creds,

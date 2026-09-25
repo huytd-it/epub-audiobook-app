@@ -821,9 +821,10 @@ def export_batch_to_kaggle(
     auto_upload_youtube: int | None = Form(None),
     automation_mode: str = Form("after_all"),
 ):
-    """Enqueue a kaggle_tts job: pushes the batch through the Kaggle Kernels API and
-    imports results as they complete, no Google Drive involved. One live job per book
-    at a time (dedupe_key), same reasoning as the other export routes' dedupe keys.
+    """Enqueue a kaggle_tts job: the Kaggle kernel reads and writes the batch through
+    Google Drive API, and the worker imports only the Drive ``result`` folder. One
+    live job per book at a time (dedupe_key), same reasoning as the other export
+    routes' dedupe keys.
 
     Automation mirrors the "Tạo âm thanh" dialog (/tts/generate): auto_create_video /
     auto_upload_youtube (absent = legacy behavior, only the old publish hook runs)
