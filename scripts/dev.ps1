@@ -64,7 +64,7 @@ try {
     $waited = 0
     while ($waited -lt $maxWait) {
         try {
-            $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/health" -TimeoutSec 2 -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
             if ($response.StatusCode -eq 200) {
                 Write-Host "  Backend is ready!" -ForegroundColor Green
                 break

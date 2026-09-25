@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Upload, X } from "lucide-react";
 import { api, post, postForm, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -23,26 +23,84 @@ import { MediaBrowser, MediaEntry } from "@/components/media-browser/MediaBrowse
 /** Backend luôn trả về podcast_cover; giữ default cho cấu hình cũ chưa có khóa này. */
 const DEFAULT_PODCAST_COVER: PodcastCover = { enabled: false, focus_x: 50, focus_y: 50, size: 1280 };
 
+/** Số dòng hiển thị mỗi đợt trong combobox background — tránh render/load ồ ạt. */
+const BG_PAGE_SIZE = 20;
+
 const emptyLayer = (): OverlayLayer => ({
-  text: "{book_title} - {patch_name}",
-  position: "bottom",
-  alignment: "center",
-  font_size: 100,
+  text: "Tập {episode}",
+  position: "top",
+  alignment: "left",
+  font_size: 86,
   font_path: "",
   text_transform: "none",
   line_spacing: 8,
   max_width: 90,
   stroke_width: 0,
   stroke_color: "#000000",
-  text_color: "#FFFFFF",
+  text_color: "#111111",
   margin: 40,
   offset_x: 0,
   offset_y: 0,
-  shadow: { enabled: true, color: "#000000", offset: 3 },
-  box: { enabled: false, color: "#000000", opacity: 60, padding_x: 24, padding_y: 12, radius: 12 },
+  shadow: { enabled: false, color: "#000000", offset: 0 },
+  box: { enabled: true, color: "#FACC15", opacity: 96, padding_x: 38, padding_y: 20, radius: 10 },
 });
 
-const boxTemplates = [
+/** Style "Vàng nổi bật" dùng cho Layer 1 mặc định: Cambria · size 86 · Top · Left. */
+const DEFAULT_YELLOW_BOX = {
+  text_color: "#111111",
+  font_size: 86,
+  position: "top",
+  alignment: "left",
+  box: { enabled: true, color: "#FACC15", opacity: 96, padding_x: 38, padding_y: 20, radius: 10 },
+  shadow: { enabled: false, color: "#000000", offset: 0 },
+} as const;
+
+/** Tìm font Cambria trong danh sách backend trả về (ưu tiên path, fallback tên). */
+function findCambriaFontPath(fonts: { name: string; path: string }[]): string {
+  const byPath = fonts.find((font) => font.path.toLowerCase().endsWith("cambria.ttc"));
+  if (byPath) return byPath.path;
+  const byName = fonts.find((font) => font.name.toLowerCase().includes("cambria"));
+  return byName?.path || "";
+}
+
+/** Slug hoá book title thành tên file an toàn: lowercase, khoảng trắng -> "-". */
+function slugifyTitle(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug || "background";
+}
+
+/** Layer trông như factory-default cũ (chưa từng tuỳ chỉnh) thì được nâng lên default mới. */
+function isFactoryDefaultLayer(layer: OverlayLayer): boolean {
+  return (
+    (layer.text === "" || layer.text === "{book_title} - {patch_name}") &&
+    !layer.box.enabled
+  );
+}
+
+type BoxTemplate = {
+  name: string;
+  description: string;
+  swatch: string;
+  text_color: string;
+  box: { enabled: boolean; color: string; opacity: number; padding_x: number; padding_y: number; radius: number };
+  shadow: { enabled: boolean; color: string; offset: number };
+  /** Mẫu "Vàng nổi bật" kéo theo font Cambria + size 86 + Top/Left. */
+  font_size?: number;
+  position?: OverlayLayer["position"];
+  alignment?: OverlayLayer["alignment"];
+  use_cambria?: boolean;
+};
+
+const boxTemplates: BoxTemplate[] = [
   {
     name: "Điện ảnh",
     description: "Nền đen đậm",
@@ -53,9 +111,13 @@ const boxTemplates = [
   },
   {
     name: "Vàng nổi bật",
-    description: "Tương phản mạnh",
+    description: "Cambria · 86 · Top/Left",
     swatch: "bg-amber-300 text-amber-950",
     text_color: "#111111",
+    font_size: 86,
+    position: "top",
+    alignment: "left",
+    use_cambria: true,
     box: { enabled: true, color: "#FACC15", opacity: 96, padding_x: 38, padding_y: 20, radius: 10 },
     shadow: { enabled: false, color: "#000000", offset: 0 },
   },
@@ -75,7 +137,7 @@ const boxTemplates = [
     box: { enabled: true, color: "#FFFFFF", opacity: 92, padding_x: 36, padding_y: 18, radius: 18 },
     shadow: { enabled: true, color: "#000000", offset: 2 },
   },
-] as const;
+];
 
 const typeTemplates = [
   { name: "Tiêu đề lớn", font_size: 120, text_transform: "uppercase", line_spacing: 10, max_width: 86, stroke_width: 2 },
@@ -185,11 +247,13 @@ function BrandingEditor({
 
 export function OverlayEditor({
   bookId,
+  bookTitle,
   patchIds,
   onMessage,
   onSaved,
 }: {
   bookId: string;
+  bookTitle: string;
   patchIds: number[];
   onMessage: (message: string) => void;
   onSaved: () => Promise<void>;
@@ -199,15 +263,40 @@ export function OverlayEditor({
   const [background, setBackground] = useState<BackgroundItem>();
   const [preview, setPreview] = useState("");
   const [coverPreview, setCoverPreview] = useState("");
-  const [thumbnailRevision, setThumbnailRevision] = useState(0);
-  const [thumbnailFile, setThumbnailFile] = useState<File>();
-  const [thumbnailPreview, setThumbnailPreview] = useState("");
-  const [thumbnailApplying, setThumbnailApplying] = useState(false);
-  const [thumbnailProgress, setThumbnailProgress] = useState(0);
-  const thumbnailInputRef = useRef<HTMLInputElement>(null);
+  const [bgUploading, setBgUploading] = useState(false);
+  const bgInputRef = useRef<HTMLInputElement>(null);
+  // Combobox background: tìm theo tên + giới hạn số dòng để nhẹ khi thư viện lớn.
+  const [bgSearch, setBgSearch] = useState("");
+  const [bgOpen, setBgOpen] = useState(false);
+  const [bgCount, setBgCount] = useState(BG_PAGE_SIZE);
+  const bgComboRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
   const layers = config?.overlays?.length ? config.overlays : config ? [config] : [];
   const podcast = config?.podcast_cover || DEFAULT_PODCAST_COVER;
+
+  // Danh sách ảnh (bỏ video — thumbnail overlay không dùng video) + lọc theo tên.
+  const bgImages = useMemo(
+    () => (response?.backgrounds || []).filter((item) => !item.is_video),
+    [response]
+  );
+  const bgFiltered = useMemo(() => {
+    const query = bgSearch.trim().toLowerCase();
+    if (!query) return bgImages;
+    return bgImages.filter((item) => item.name.toLowerCase().includes(query));
+  }, [bgImages, bgSearch]);
+  const bgShown = bgFiltered.slice(0, bgCount);
+
+  // Đóng dropdown khi bấm ra ngoài combobox.
+  useEffect(() => {
+    if (!bgOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (bgComboRef.current && !bgComboRef.current.contains(event.target as Node)) {
+        setBgOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [bgOpen]);
 
   // Branding state
   const [brandingMode, setBrandingMode] = useState<ProductionMode>("inherit");
@@ -225,7 +314,34 @@ export function OverlayEditor({
       .then((value) => {
         if (cancelled) return;
         setResponse(value);
-        setConfig(value.config);
+        const cambriaPath = findCambriaFontPath(value.fonts);
+        // Layer 1 mặc định: Tập {episode} · Top · Left · Cambria · Vàng nổi bật.
+        // Chỉ nâng cấu hình còn nguyên factory-default, không đè tuỳ chỉnh của user.
+        const applyDefault = (layer: OverlayLayer): OverlayLayer => ({
+          ...layer,
+          text: "Tập {episode}",
+          position: "top",
+          alignment: "left",
+          font_size: 86,
+          font_path: layer.font_path || cambriaPath,
+          text_color: DEFAULT_YELLOW_BOX.text_color,
+          box: { ...DEFAULT_YELLOW_BOX.box },
+          shadow: { ...DEFAULT_YELLOW_BOX.shadow },
+        });
+        let nextConfig = value.config;
+        if (!nextConfig.overlays.length) {
+          if (isFactoryDefaultLayer(nextConfig as unknown as OverlayLayer)) {
+            nextConfig = { ...nextConfig, ...applyDefault(nextConfig as unknown as OverlayLayer), overlays: [] };
+          } else if (cambriaPath && !(nextConfig as unknown as OverlayLayer).font_path) {
+            nextConfig = { ...nextConfig, font_path: cambriaPath };
+          }
+        } else if (isFactoryDefaultLayer(nextConfig.overlays[0])) {
+          nextConfig = {
+            ...nextConfig,
+            overlays: [applyDefault(nextConfig.overlays[0]), ...nextConfig.overlays.slice(1)],
+          };
+        }
+        setConfig(nextConfig);
         setBackground(
           value.backgrounds.find((item) => item.path === value.background_path && !item.is_video)
             || value.backgrounds.find((item) => !item.is_video)
@@ -334,10 +450,6 @@ export function OverlayEditor({
     if (coverPreview) URL.revokeObjectURL(coverPreview);
   }, [coverPreview]);
 
-  useEffect(() => () => {
-    if (thumbnailPreview) URL.revokeObjectURL(thumbnailPreview);
-  }, [thumbnailPreview]);
-
   const update = (index: number, patch: Partial<OverlayLayer>) =>
     setConfig((current) =>
       current
@@ -350,48 +462,32 @@ export function OverlayEditor({
       current ? { ...current, podcast_cover: { ...(current.podcast_cover || DEFAULT_PODCAST_COVER), ...patch } } : current
     );
 
-  const selectThumbnail = (file?: File) => {
-    if (!file) return;
-    const nextPreview = URL.createObjectURL(file);
-    setThumbnailFile(file);
-    setThumbnailPreview((current) => {
-      if (current) URL.revokeObjectURL(current);
-      return nextPreview;
-    });
-    setThumbnailProgress(0);
-  };
-
-  const applyThumbnailToAll = async () => {
-    if (!thumbnailFile || !patchIds.length || thumbnailApplying) return;
-    setThumbnailApplying(true);
-    setThumbnailProgress(0);
-    let completed = 0;
-    let firstError: unknown;
-
+  /** Upload background mới: tự rename theo book title, dùng luôn sau khi tải lên. */
+  const uploadBackground = async (file?: File) => {
+    if (!file || bgUploading) return;
+    const ext = `.${(file.name.split(".").pop() || "").toLowerCase()}`;
+    if (![".jpg", ".jpeg", ".png", ".webp"].includes(ext)) {
+      onMessage("Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP.");
+      return;
+    }
+    setBgUploading(true);
     try {
-      for (const patchId of patchIds) {
-        const formData = new FormData();
-        formData.append("image", thumbnailFile);
-        try {
-          await postForm(`/books/${bookId}/patches/${patchId}/image`, formData);
-          completed += 1;
-          setThumbnailProgress(completed);
-        } catch (error) {
-          if (!firstError) firstError = error;
-        }
-      }
-
-      if (completed) {
-        setThumbnailRevision((current) => current + 1);
-        await onSaved();
-      }
-      onMessage(
-        completed === patchIds.length
-          ? `Đã dùng ảnh mới làm thumbnail cho ${completed} patch.`
-          : `Đã cập nhật ${completed}/${patchIds.length} patch. ${errorText(firstError)}`
+      const form = new FormData();
+      form.append("file", file, file.name);
+      form.append("name", `${slugifyTitle(bookTitle)}${ext}`);
+      const result = await postForm<{ name: string; path: string }>(`/video/upload-background`, form);
+      const item: BackgroundItem = { name: result.name, path: result.path, is_video: false };
+      setResponse((current) =>
+        current && !current.backgrounds.some((entry) => entry.path === item.path)
+          ? { ...current, backgrounds: [...current.backgrounds, item] }
+          : current
       );
+      setBackground(item);
+      onMessage(`Đã tải lên "${result.name}" và dùng làm background. Nhấn "Lưu & tạo lại thumbnail" để áp dụng.`);
+    } catch (error) {
+      onMessage(errorText(error));
     } finally {
-      setThumbnailApplying(false);
+      setBgUploading(false);
     }
   };
 
@@ -419,11 +515,9 @@ export function OverlayEditor({
       await api(`/books/${bookId}/overlay-config`, { method: "POST", body: form });
       if (regenerate && patchIds.length) {
         await postJson(`/books/${bookId}/thumbnails/regenerate`, { patch_ids: patchIds });
-        setThumbnailRevision((current) => current + 1);
       }
       if (regenerate && podcast.enabled) {
         await post(`/books/${bookId}/podcast-cover/regenerate`);
-        setThumbnailRevision((current) => current + 1);
       }
       onMessage(regenerate
         ? podcast.enabled
@@ -457,7 +551,6 @@ export function OverlayEditor({
       if (podcast.enabled) {
         await post(`/books/${bookId}/podcast-cover/regenerate`);
       }
-      setThumbnailRevision((c) => c + 1);
       onMessage("Đã lưu branding và tạo lại thumbnail.");
       await onSaved();
     } catch (error) {
@@ -479,11 +572,9 @@ export function OverlayEditor({
       setBrandingDraft(null);
       if (patchIds.length) {
         await postJson(`/books/${bookId}/thumbnails/regenerate`, { patch_ids: patchIds });
-        setThumbnailRevision((c) => c + 1);
       }
       if (podcast.enabled) {
         await post(`/books/${bookId}/podcast-cover/regenerate`);
-        setThumbnailRevision((c) => c + 1);
       }
       onMessage("Đã chuyển về mặc định toàn cục.");
       await onSaved();
@@ -501,87 +592,138 @@ export function OverlayEditor({
       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
         Placeholder: {response.placeholders.map((item) => `{${item.key}}`).join(", ")}
       </div>
-      <Field label="Background preview">
-        <select
-          aria-label="Background preview"
-          className={selectClass}
-          value={background?.path || ""}
-          onChange={(event) => setBackground(response.backgrounds.find((item) => item.path === event.target.value))}
-        >
-          {response.backgrounds.map((item) => (
-            <option key={item.path} value={item.path}>{item.name}{item.is_video ? " (video)" : ""}</option>
-          ))}
-        </select>
-      </Field>
+
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="text-sm font-semibold">Background thumbnail</div>
+
+          {/* Option 1: chọn hình có sẵn từ thư viện background */}
+          <div className="space-y-2 rounded-md border border-border p-3">
+            <div className="text-xs font-semibold">Option 1 — Chọn hình có sẵn từ background</div>
+            <div ref={bgComboRef} className="relative">
+              <input
+                aria-label="Tìm background có sẵn"
+                className={fieldClass}
+                placeholder={background ? background.name : "Gõ tên để tìm..."}
+                value={bgOpen ? bgSearch : background?.name || bgSearch}
+                onFocus={() => {
+                  setBgOpen(true);
+                  setBgCount(BG_PAGE_SIZE);
+                }}
+                onChange={(event) => {
+                  setBgSearch(event.target.value);
+                  setBgCount(BG_PAGE_SIZE);
+                  setBgOpen(true);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setBgOpen(false);
+                  if (event.key === "Enter" && bgShown.length === 1) {
+                    setBackground(bgShown[0]);
+                    setBgSearch("");
+                    setBgCount(BG_PAGE_SIZE);
+                    setBgOpen(false);
+                  }
+                }}
+              />
+              {bgOpen && (
+                <div className="absolute inset-x-0 top-full z-20 mt-1 overflow-hidden rounded-md border border-border bg-card shadow-lg">
+                  <div className="max-h-56 overflow-auto py-1">
+                    {bgShown.length === 0 && (
+                      <div className="px-3 py-2 text-xs text-muted-foreground">
+                        Không tìm thấy ảnh nào khớp "{bgSearch.trim()}".
+                      </div>
+                    )}
+                    {bgShown.map((item) => (
+                      <button
+                        key={item.path}
+                        type="button"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          setBackground(item);
+                          setBgSearch("");
+                          setBgCount(BG_PAGE_SIZE);
+                          setBgOpen(false);
+                        }}
+                        title={item.path}
+                        className={cn(
+                          "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/60",
+                          background?.path === item.path && "bg-primary/10 font-semibold"
+                        )}
+                      >
+                        <span className="truncate">{item.name}</span>
+                        {background?.path === item.path && <span aria-hidden>✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">
+                    <span>
+                      Hiển thị {bgShown.length}/{bgFiltered.length}
+                      {bgImages.length !== bgFiltered.length || bgFiltered.length > bgShown.length
+                        ? ` (tổng ${bgImages.length} ảnh)`
+                        : ""}
+                    </span>
+                    {bgCount < bgFiltered.length && (
+                      <button
+                        type="button"
+                        className="font-semibold text-primary hover:underline"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => setBgCount((count) => count + BG_PAGE_SIZE)}
+                      >
+                        Xem thêm
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            <p className="text-[11px] leading-4 text-muted-foreground">
+              Gõ tên để lọc trong {bgImages.length} ảnh, danh sách tải từng đợt {BG_PAGE_SIZE} dòng — không load
+              thumbnail ồ ạt. Preview overlay của ảnh đang chọn hiển thị ngay bên dưới.
+            </p>
+          </div>
+
+          {/* Option 2: upload background mới, auto rename theo book title, dùng luôn */}
+          <div className="space-y-2 rounded-md border border-border p-3">
+            <div className="text-xs font-semibold">Option 2 — Upload background mới</div>
+            <p className="text-[11px] leading-4 text-muted-foreground">
+              File sẽ tự đổi tên theo tên sách ("{slugifyTitle(bookTitle || "background")}") rồi dùng luôn làm
+              background. Nhấn "Lưu & tạo lại thumbnail" để áp dụng cho toàn bộ patch.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                ref={bgInputRef}
+                type="file"
+                className="hidden"
+                accept=".jpg,.jpeg,.png,.webp"
+                disabled={bgUploading}
+                onChange={(event) => {
+                  void uploadBackground(event.target.files?.[0]);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={bgUploading}
+                onClick={() => bgInputRef.current?.click()}
+              >
+                <Upload className="h-3.5 w-3.5" />
+                {bgUploading ? "Đang tải lên..." : "Upload background mới"}
+              </Button>
+              {background && (
+                <span className="text-[11px] text-muted-foreground">Đang dùng: {background.name}</span>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
       {background?.is_video && (
         <div role="alert" className="text-xs text-amber-700">
           Video background không hỗ trợ preview overlay; overlay sẽ được dùng khi tạo thumbnail ảnh.
         </div>
       )}
       {preview && <img src={preview} alt="Overlay preview" className="max-h-64 w-full rounded-md object-contain" />}
-
-      <section className="grid gap-4 border-y border-border py-4 lg:grid-cols-[minmax(0,320px)_1fr] lg:items-center">
-        <figure className="overflow-hidden rounded-md border bg-muted/20">
-          <div className="aspect-video bg-muted">
-            {patchIds.length > 0 || thumbnailPreview ? (
-              <img
-                src={thumbnailPreview || `/books/${bookId}/patches/${patchIds[0]}/overlay-image?v=${thumbnailRevision}`}
-                alt={thumbnailPreview ? "Thumbnail mới đã chọn" : "Thumbnail hiện tại của patch đầu tiên"}
-                className="h-full w-full object-contain"
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
-                Chưa có patch để áp dụng thumbnail.
-              </div>
-            )}
-          </div>
-          <figcaption className="border-t px-3 py-2 text-[11px] text-muted-foreground">
-            {thumbnailFile ? thumbnailFile.name : "Ảnh thumbnail hiện tại"}
-          </figcaption>
-        </figure>
-
-        <div className="space-y-3">
-          <div>
-            <div className="text-sm font-semibold">Dùng một ảnh cho nhiều patch</div>
-            <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">
-              Tải ảnh JPG, PNG hoặc WebP, kiểm tra preview rồi áp dụng cùng lúc cho toàn bộ {patchIds.length} patch.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              ref={thumbnailInputRef}
-              type="file"
-              className="hidden"
-              accept=".jpg,.jpeg,.png,.webp"
-              disabled={thumbnailApplying}
-              onChange={(event) => {
-                selectThumbnail(event.target.files?.[0]);
-                event.currentTarget.value = "";
-              }}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={thumbnailApplying}
-              onClick={() => thumbnailInputRef.current?.click()}
-            >
-              <Upload className="h-3.5 w-3.5" />
-              Tải thumbnail mới
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={!thumbnailFile || !patchIds.length || thumbnailApplying}
-              onClick={applyThumbnailToAll}
-            >
-              {thumbnailApplying
-                ? `Đang áp dụng ${thumbnailProgress}/${patchIds.length}...`
-                : `Dùng cho tất cả ${patchIds.length} patch`}
-            </Button>
-          </div>
-        </div>
-      </section>
 
       <Card>
         <CardContent className="space-y-4 p-4">
@@ -685,12 +827,27 @@ export function OverlayEditor({
                   const active = layer.box.enabled
                     && layer.box.color.toLowerCase() === template.box.color.toLowerCase()
                     && layer.text_color.toLowerCase() === template.text_color.toLowerCase();
+                  const applyBoxTemplate = () => {
+                    const patch: Partial<OverlayLayer> = {
+                      text_color: template.text_color,
+                      box: { ...template.box },
+                      shadow: { ...template.shadow },
+                    };
+                    if (template.font_size !== undefined) patch.font_size = template.font_size;
+                    if (template.position) patch.position = template.position;
+                    if (template.alignment) patch.alignment = template.alignment;
+                    if (template.use_cambria) {
+                      const cambria = findCambriaFontPath(response.fonts);
+                      if (cambria) patch.font_path = cambria;
+                    }
+                    update(index, patch);
+                  };
                   return (
                     <button
                       key={template.name}
                       type="button"
                       aria-pressed={active}
-                      onClick={() => update(index, { text_color: template.text_color, box: { ...template.box }, shadow: { ...template.shadow } })}
+                      onClick={applyBoxTemplate}
                       className={cn(
                         "rounded-md border p-2 text-left transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                         active ? "border-primary bg-primary/5" : "bg-card"

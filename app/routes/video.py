@@ -737,15 +737,41 @@ def preview_background(path: str = ""):
 
 
 @router.post("/video/upload-background")
-async def upload_background(request: Request, file: UploadFile = File(...)):
-    """Upload a new background (image or looping video) to the backgrounds directory."""
+async def upload_background(request: Request, file: UploadFile = File(...), name: str = Form(default="")):
+    """Upload a new background (image or looping video) to the backgrounds directory.
+
+    `name` (optional) là tên file mong muốn — frontend thumbnail gửi slug của
+    book title để background tự mang tên sách (VD: "ten-sach.jpg"). Tên được
+    sanitize, giữ đúng extension của file upload, trùng tên thì thêm hậu tố số.
+    """
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_BACKGROUND_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported background format: {ext}")
 
     _BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
-    safe_name = f"{uuid.uuid4().hex[:8]}_{Path(file.filename).name}"
-    dest = _BACKGROUNDS_DIR / safe_name
+    desired = (name or "").strip()
+    if desired:
+        # Bỏ path traversal, chỉ giữ ký tự an toàn, ép đúng extension file upload.
+        desired = re.sub(r"[^\w\-. ]", "", desired.replace("/", "").replace("\\", "")).strip()
+        if desired:
+            if Path(desired).suffix.lower() != ext:
+                desired = f"{Path(desired).stem}{ext}"
+            # Chuẩn hoá: lowercase, khoảng trắng -> gạch ngang, bỏ gạch trùng.
+            stem = re.sub(r"\s+", "-", Path(desired).stem.strip().lower())
+            stem = re.sub(r"-+", "-", stem).strip("-") or "background"
+            desired = f"{stem}{ext}"
+    if desired:
+        dest = _BACKGROUNDS_DIR / desired
+        if dest.exists():
+            stem, suffix = dest.stem, dest.suffix
+            counter = 2
+            while (_BACKGROUNDS_DIR / f"{stem}-{counter}{suffix}").exists():
+                counter += 1
+            dest = _BACKGROUNDS_DIR / f"{stem}-{counter}{suffix}"
+        safe_name = dest.name
+    else:
+        safe_name = f"{uuid.uuid4().hex[:8]}_{Path(file.filename).name}"
+        dest = _BACKGROUNDS_DIR / safe_name
     with open(dest, "wb") as out:
         shutil.copyfileobj(file.file, out)
 

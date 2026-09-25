@@ -18,6 +18,14 @@ CREATE TABLE IF NOT EXISTS book (
     background_image_path TEXT,
     voice_clip_path TEXT,
     voice_transcript TEXT,
+    author          TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    language        TEXT NOT NULL DEFAULT '',
+    publisher       TEXT NOT NULL DEFAULT '',
+    subjects        TEXT NOT NULL DEFAULT '',
+    cover_image_path TEXT,
+    ai_content_json TEXT,
+    ai_thumbnail_path TEXT,
     normalize_numbers_enabled INTEGER NOT NULL DEFAULT 1,
     normalize_junk_enabled INTEGER NOT NULL DEFAULT 1,
     normalize_spellcheck_enabled INTEGER NOT NULL DEFAULT 1,
@@ -763,6 +771,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN voice_clip_path TEXT")
     if "voice_transcript" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN voice_transcript TEXT")
+    # Descriptive book metadata (EPUB OPF) + AI outputs — lets AI generation
+    # ground prompts in the real author/genre/synopsis saved at upload time.
+    for _col, _ddl in {
+        "author": "TEXT NOT NULL DEFAULT ''",
+        "description": "TEXT NOT NULL DEFAULT ''",
+        "language": "TEXT NOT NULL DEFAULT ''",
+        "publisher": "TEXT NOT NULL DEFAULT ''",
+        "subjects": "TEXT NOT NULL DEFAULT ''",
+        "cover_image_path": "TEXT",
+        "ai_content_json": "TEXT",
+        "ai_thumbnail_path": "TEXT",
+    }.items():
+        if _col not in existing:
+            conn.execute(f"ALTER TABLE book ADD COLUMN {_col} {_ddl}")
+            existing.add(_col)
     if "automation_config" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN automation_config TEXT")
     if "tts_model" not in existing:

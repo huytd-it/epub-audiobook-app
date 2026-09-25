@@ -47,6 +47,42 @@ class ParsedChapter:
         return len(self.text)
 
 
+@dataclass
+class EpubMetadata:
+    """Descriptive metadata read from the EPUB's OPF (Dublin Core).
+
+    Kept separate from chapter text: this is what lets AI generation produce
+    content that actually matches the book (real title/author/genre/synopsis
+    instead of guessing from the filename). All fields are plain strings
+    (subjects is a list) and safe to persist directly on the book row.
+    """
+
+    title: str = ""
+    creator: str = ""  # author — Dublin Core uses "creator"
+    language: str = ""
+    publisher: str = ""
+    description: str = ""
+    subjects: list[str] | None = None
+    identifier: str = ""
+    date: str = ""
+
+    def __post_init__(self) -> None:
+        if self.subjects is None:
+            self.subjects = []
+
+    def as_dict(self) -> dict:
+        return {
+            "title": self.title,
+            "creator": self.creator,
+            "language": self.language,
+            "publisher": self.publisher,
+            "description": self.description,
+            "subjects": list(self.subjects or []),
+            "identifier": self.identifier,
+            "date": self.date,
+        }
+
+
 def _remove_cjk(text: str) -> str:
     return _CJK_RE.sub("", text)
 
@@ -153,6 +189,154 @@ def _is_toc_chapter(chapter: ParsedChapter) -> bool:
     mean_len = sum(lengths) / len(lengths)
     short_ratio = sum(1 for n in lengths if n < _TOC_SHORT_LINE_LEN) / len(lengths)
     return mean_len < _TOC_MEAN_LINE_LEN or short_ratio > _TOC_SHORT_LINE_RATIO
+
+
+def _dc_first(book, name: str) -> str:
+    """First Dublin Core value for `name` (title/creator/language/...), or ""."""
+    try:
+        values = book.get_metadata("DC", name) or []
+    except Exception:
+        return ""
+    for value, _attrs in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _dc_all(book, name: str) -> list[str]:
+    """All non-empty Dublin Core values for `name` (used for multi-value subject)."""
+    try:
+        values = book.get_metadata("DC", name) or []
+    except Exception:
+        return []
+    seen: list[str] = []
+    for value, _attrs in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.append(text)
+    return seen
+
+
+def extract_epub_metadata(path: str) -> EpubMetadata:
+    """Read descriptive metadata (title/author/language/...) from an EPUB file.
+
+    Never raises: a broken or metadata-less file yields an empty EpubMetadata
+    so the upload flow can always fall back to filename/chapter heuristics.
+    """
+    try:
+        sanitized_path = _sanitize_epub(path)
+    except Exception:
+        return EpubMetadata()
+    try:
+        try:
+            book = epub.read_epub(sanitized_path, options={"ignore_ncx": True})
+        except Exception:
+            logger.warning("extract_epub_metadata: cannot read %s", path, exc_info=True)
+            return EpubMetadata()
+        subjects = _dc_all(book, "subject")
+        # Some converters join several genres into one "a, b" subject entry.
+        expanded: list[str] = []
+        for entry in subjects:
+            for part in re.split(r"[;,/|]", entry):
+                part = part.strip()
+                if part and part not in expanded:
+                    expanded.append(part)
+        return EpubMetadata(
+            title=_dc_first(book, "title"),
+            creator=_dc_first(book, "creator"),
+            language=_dc_first(book, "language"),
+            publisher=_dc_first(book, "publisher"),
+            description=_clean_text(_dc_first(book, "description"))[:2000],
+            subjects=expanded[:20],
+            identifier=_dc_first(book, "identifier"),
+            date=_dc_first(book, "date"),
+        )
+    finally:
+        if sanitized_path != path:
+            try:
+                Path(sanitized_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def extract_epub_cover(path: str) -> tuple[bytes, str] | None:
+    """Return (image_bytes, extension) of the EPUB cover, or None.
+
+    Strategy: ebooklib-flagged cover item first, then a filename heuristic
+    (cover/cover-image/bia...), preferring the largest image as a last resort.
+    Never raises — returns None when no usable image is found.
+    """
+    try:
+        sanitized_path = _sanitize_epub(path)
+    except Exception:
+        return None
+    try:
+        try:
+            book = epub.read_epub(sanitized_path, options={"ignore_ncx": True})
+        except Exception:
+            return None
+        import ebooklib as _ebooklib
+
+        images = list(book.get_items_of_type(_ebooklib.ITEM_IMAGE))
+        if not images:
+            return None
+
+        def _ext(item) -> str:
+            name = (item.get_name() or "").lower()
+            for ext in (".jpg", ".jpeg", ".png", ".webp"):
+                if name.endswith(ext):
+                    return ".jpg" if ext == ".jpeg" else ext
+            media = (item.media_type or "").lower()
+            if "png" in media:
+                return ".png"
+            if "webp" in media:
+                return ".webp"
+            return ".jpg"
+
+        # 1. Explicit cover id / properties.
+        for item in images:
+            item_id = (item.get_id() or "").lower()
+            name = (item.get_name() or "").lower()
+            if item_id in {"cover", "cover-image", "cover_image"} or "cover" in item_id or "cover" in name:
+                try:
+                    content = item.get_content()
+                except Exception:
+                    continue
+                if content:
+                    return bytes(content), _ext(item)
+        # 2. Filename heuristic for non-English covers (bia = Vietnamese "cover").
+        for item in images:
+            name = (item.get_name() or "").lower()
+            if any(key in name for key in ("bia", "front", "titlepage")):
+                try:
+                    content = item.get_content()
+                except Exception:
+                    continue
+                if content:
+                    return bytes(content), _ext(item)
+        # 3. Largest image — usually the cover in novels.
+        best = None
+        best_len = 0
+        for item in images:
+            try:
+                content = item.get_content()
+            except Exception:
+                continue
+            if content and len(content) > best_len:
+                best, best_len = item, len(content)
+        if best is not None and best_len > 0:
+            try:
+                return bytes(best.get_content()), _ext(best)
+            except Exception:
+                return None
+        return None
+    finally:
+        if sanitized_path != path:
+            try:
+                Path(sanitized_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def parse_epub(path: str, *, skip_toc: bool = True) -> list[ParsedChapter]:

@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import db, repository
 from app.config import settings
-from app.routes import (books, database_io, downloads, drive, effects, gameplay, kaggle, local_bridge, logs, media_browser, music,
+from app.routes import (ai, books, database_io, downloads, drive, effects, gameplay, kaggle, local_bridge, logs, media_browser, music,
     patches, photos, production_settings, queue, text_studio, tts_models, ui_api, validation, video, video_api, voices, youtube)
 import asyncio
 
@@ -132,6 +132,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EPUB Audiobook App", lifespan=lifespan)
+app.include_router(ai.router)
 app.include_router(books.router)
 app.include_router(patches.router)
 app.include_router(downloads.router)

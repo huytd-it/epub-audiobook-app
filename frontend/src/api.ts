@@ -6,6 +6,15 @@ export type Book = {
   original_filename: string;
   epub_path?: string;
   created_at: string;
+  /** Descriptive OPF metadata saved at upload — grounds AI generation. */
+  author?: string;
+  description?: string;
+  language?: string;
+  publisher?: string;
+  subjects?: string;
+  cover_image_path?: string | null;
+  ai_content_json?: string | null;
+  ai_thumbnail_path?: string | null;
   normalize_numbers_enabled?: number;
   normalize_junk_enabled?: number;
   normalize_spellcheck_enabled?: number;

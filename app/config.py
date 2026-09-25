@@ -92,6 +92,26 @@ class Settings(BaseSettings):
     # Remote providers: JSON array with id/name/adapter/model/voice/api_key_env and
     # optional base_url/voices. Secrets stay in their named environment variables.
     tts_api_providers: str = ""
+    # ------------------------------------------------------------------
+    # Generative AI (content + thumbnail). Extensible provider registry lives
+    # in app/ai_providers.py — "openai" works out of the box and any
+    # OpenAI-compatible server works via ai_base_url ("custom" adapter).
+    # Secrets stay in env vars (OPENAI_API_KEY / AI_API_KEY), never in the DB.
+    # ------------------------------------------------------------------
+    # Default provider id: "openai" | "custom" | a JSON-configured id.
+    ai_provider: str = "openai"
+    # Chat model for content generation (titles/descriptions/tags/prompts).
+    ai_text_model: str = "gpt-4o-mini"
+    # Image model for thumbnails/covers.
+    ai_image_model: str = "gpt-image-1"
+    # Base URL override for OpenAI-compatible servers (empty = api.openai.com).
+    ai_base_url: str = ""
+    # Extra providers as JSON array: [{"id","adapter":"openai"|"custom",
+    # "api_key_env","base_url","text_model","image_model"}]. Same shape idea as
+    # TTS_API_PROVIDERS so future adapters (gemini/anthropic/...) slot in.
+    ai_api_providers: str = ""
+    # Timeout (seconds) for a single AI HTTP call.
+    ai_timeout_seconds: float = 120.0
     # Queue job chạy nền
     # Loại nào không liệt kê ở đây nhận queue_default_concurrency.
     queue_concurrency: str = "audiobook_tts=1,audiobook_tts_api=4,video=2,youtube_upload=1,patch_video=1,gameplay_clip=1"

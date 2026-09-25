@@ -19,6 +19,17 @@ class Book:
     voice_transcript: str | None
     created_at: str
     updated_at: str
+    # --- Descriptive metadata from the EPUB OPF (Dublin Core) -----------------
+    # Saved at upload time so AI generation (content/thumbnail/...) can ground
+    # its prompts in the real author/genre/synopsis instead of the filename.
+    author: str = ""
+    description: str = ""  # synopsis from OPF <dc:description>, max ~2000 chars
+    language: str = ""
+    publisher: str = ""
+    subjects: str = ""  # genres/tags, comma-separated (multi-value dc:subject)
+    cover_image_path: str | None = None  # extracted EPUB cover, data/covers/
+    ai_content_json: str | None = None  # last AI-generated content draft (JSON)
+    ai_thumbnail_path: str | None = None  # last AI-generated book cover/thumbnail
     video_resolution: str = "1920x1080"
     video_fps: int = 30
     default_image_animation: str = "none"

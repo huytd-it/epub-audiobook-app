@@ -71,30 +71,32 @@ def resolve_media_path(virtual_path: str) -> str:
 
 
 # Default config — also used when book.overlay_config is missing/empty.
+# Layer 1 mặc định: "Tập {episode}" · Position Top · Alignment Left ·
+# font Cambria · style "Vàng nổi bật" (chữ đen trên nền vàng).
 DEFAULT_OVERLAY_CONFIG: dict[str, Any] = {
-    "text": "",                # empty = book title + patch name
+    "text": "Tập {episode}",
     "position": "top",        # top | center | bottom
-    "alignment": "center",    # left | center | right
-    "font_size": 100,
-    "font_path": "",          # empty = use fallback chain
-    "text_color": "#FFFFFF",
+    "alignment": "left",      # left | center | right
+    "font_size": 86,
+    "font_path": "",          # empty = use fallback chain (ưu tiên Cambria lúc runtime)
+    "text_color": "#111111",
     "text_transform": "none",
     "line_spacing": 8,
     "max_width": 90,          # percentage of image width
     "stroke_width": 0,
     "stroke_color": "#000000",
     "shadow": {
-        "enabled": True,
-        "color": "#000000",
-        "offset": 3,
-    },
-    "box": {
         "enabled": False,
         "color": "#000000",
-        "opacity": 60,        # 0–100
-        "padding_x": 24,
-        "padding_y": 12,
-        "radius": 12,         # rounded corners in px
+        "offset": 0,
+    },
+    "box": {
+        "enabled": True,
+        "color": "#FACC15",
+        "opacity": 96,        # 0–100
+        "padding_x": 38,
+        "padding_y": 20,
+        "radius": 10,         # rounded corners in px
     },
 
     "margin": 40,             # distance from image edge
@@ -123,7 +125,13 @@ PODCAST_COVER_MAX_SIZE = 2048
 
 def get_default_overlay_config() -> dict[str, Any]:
     from copy import deepcopy
-    return deepcopy(DEFAULT_OVERLAY_CONFIG)
+    cfg = deepcopy(DEFAULT_OVERLAY_CONFIG)
+    # Ưu tiên font Cambria nếu máy có — đúng default "Layer 1 dùng Cambria".
+    for candidate in _FONT_PATHS:
+        if Path(candidate).name.lower() == "cambria.ttc" and Path(candidate).is_file():
+            cfg["font_path"] = str(Path(candidate))
+            break
+    return cfg
 
 
 def parse_overlay_config(raw: str | None) -> dict[str, Any]:

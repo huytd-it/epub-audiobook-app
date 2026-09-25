@@ -41,8 +41,9 @@ import { ChaptersPanel } from "./book-detail/ChaptersPanel";
 import { ChapterDialog } from "./book-detail/ChapterDialog";
 import { ConfigDialog, DeletePatchDialog, PatchPreviewDialog, TitleNormalizeDialog } from "./book-detail/dialogs";
 import { OverlayEditor } from "./book-detail/OverlayEditor";
+import { AiPanel } from "./book-detail/AiPanel";
 
-type MainTab = "patches" | "build" | "chapters" | "thumbnail";
+type MainTab = "patches" | "build" | "chapters" | "thumbnail" | "ai";
 
 /** Hai bước chạy hàng loạt cần xác nhận trước khi vào hàng đợi. */
 type BatchKind = "audio" | "video";
@@ -809,6 +810,7 @@ export function BookDetail() {
           { value: "build", label: "Xây dựng" },
           { value: "chapters", label: "Mục lục", badge: data.chapters.length },
           { value: "thumbnail", label: "Thumbnail" },
+          { value: "ai", label: "AI" },
         ]}
       />
 
@@ -867,7 +869,11 @@ export function BookDetail() {
       )}
 
       {tab === "thumbnail" && (
-        <OverlayEditor bookId={bookId} patchIds={patchIds} onMessage={showToast} onSaved={refresh} />
+        <OverlayEditor bookId={bookId} bookTitle={data.book.title} patchIds={patchIds} onMessage={showToast} onSaved={refresh} />
+      )}
+
+      {tab === "ai" && (
+        <AiPanel bookId={bookId} onMessage={showToast} onSaved={refresh} />
       )}
 
       {/* Thanh hành động theo lựa chọn: chỉ hiện khi có patch được chọn. */}

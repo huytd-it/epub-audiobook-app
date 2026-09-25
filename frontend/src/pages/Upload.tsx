@@ -20,6 +20,14 @@ export function Upload() {
   const [parsedTitle, setParsedTitle] = useState("");
   const [parsedDescription, setParsedDescription] = useState("");
   const [parsing, setParsing] = useState(false);
+  // Descriptive OPF metadata — persisted on the book row at upload so AI
+  // generation (content/thumbnail/...) is grounded in the real book.
+  const [metaAuthor, setMetaAuthor] = useState("");
+  const [metaDescription, setMetaDescription] = useState("");
+  const [metaLanguage, setMetaLanguage] = useState("");
+  const [metaPublisher, setMetaPublisher] = useState("");
+  const [metaSubjects, setMetaSubjects] = useState("");
+  const [metaTitle, setMetaTitle] = useState("");
   const [playlists, setPlaylists] = useState<PlaylistOption[]>([]);
   const [playlistsLoading, setPlaylistsLoading] = useState(false);
   const [playlistConnected, setPlaylistConnected] = useState(true);
@@ -35,6 +43,12 @@ export function Upload() {
       setParsedDescription("");
       setCustomPlaylistTitle("");
       setCustomPlaylistDesc("");
+      setMetaAuthor("");
+      setMetaDescription("");
+      setMetaLanguage("");
+      setMetaPublisher("");
+      setMetaSubjects("");
+      setMetaTitle("");
       return;
     }
     let cancelled = false;
@@ -54,6 +68,13 @@ export function Upload() {
         setParsedDescription(desc);
         setCustomPlaylistTitle(title);
         setCustomPlaylistDesc(desc);
+        const meta = data.metadata || {};
+        setMetaTitle(String(meta.title || title || ""));
+        setMetaAuthor(String(meta.creator || ""));
+        setMetaDescription(String(meta.description || "").slice(0, 2000));
+        setMetaLanguage(String(meta.language || ""));
+        setMetaPublisher(String(meta.publisher || ""));
+        setMetaSubjects(Array.isArray(meta.subjects) ? meta.subjects.join(", ") : String(meta.subjects || ""));
         // auto-detect playlist trùng tên
         // sẽ xử lý sau khi playlists tải xong
       })
@@ -116,6 +137,13 @@ export function Upload() {
     form.append("playlist_country", playlistCountry || "VN");
     form.append("playlist_title", customPlaylistTitle || parsedTitle);
     form.append("playlist_description", customPlaylistDesc || parsedDescription);
+    // Descriptive metadata for AI grounding (editable, prefilled from OPF).
+    form.append("book_title", metaTitle || parsedTitle);
+    form.append("book_author", metaAuthor);
+    form.append("book_description", metaDescription);
+    form.append("book_language", metaLanguage);
+    form.append("book_publisher", metaPublisher);
+    form.append("book_subjects", metaSubjects);
     try {
       const response = await fetch("/books/upload", {
         method: "POST",
@@ -189,6 +217,49 @@ export function Upload() {
                 </div>
               )}
             </div>
+
+            {/* Thông tin sách — lưu vào book row để AI generate đúng nội dung */}
+            {selectedFile && (
+              <Card className="border-border bg-muted/20">
+                <CardContent className="p-4 space-y-3">
+                  <div className="flex items-center gap-2 text-sm font-semibold">
+                    <FileText className="h-4 w-4 text-primary" />
+                    Thông tin sách cho AI
+                    {parsing && <span className="text-xs font-normal text-muted-foreground">(đang đọc metadata EPUB...)</span>}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Tự đọc từ file EPUB (tên sách, tác giả, ngôn ngữ, thể loại, tóm tắt). Sửa tại đây nếu
+                    thiếu — AI dùng đúng thông tin này để tạo nội dung và ảnh bìa.
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block text-xs font-medium">
+                      Tên sách
+                      <Input className="mt-1 h-9 text-sm" value={metaTitle} onChange={(e) => setMetaTitle(e.target.value)} placeholder={parsedTitle || "Tên sách"} />
+                    </label>
+                    <label className="block text-xs font-medium">
+                      Tác giả
+                      <Input className="mt-1 h-9 text-sm" value={metaAuthor} onChange={(e) => setMetaAuthor(e.target.value)} placeholder="Tác giả trong EPUB (nếu có)" />
+                    </label>
+                    <label className="block text-xs font-medium">
+                      Ngôn ngữ
+                      <Input className="mt-1 h-9 text-sm" value={metaLanguage} onChange={(e) => setMetaLanguage(e.target.value)} placeholder="vi" />
+                    </label>
+                    <label className="block text-xs font-medium">
+                      Nhà xuất bản
+                      <Input className="mt-1 h-9 text-sm" value={metaPublisher} onChange={(e) => setMetaPublisher(e.target.value)} placeholder="NXB (nếu có)" />
+                    </label>
+                  </div>
+                  <label className="block text-xs font-medium">
+                    Thể loại (phân tách dấu phẩy)
+                    <Input className="mt-1 h-9 text-sm" value={metaSubjects} onChange={(e) => setMetaSubjects(e.target.value)} placeholder="kiếm hiệp, tiên hiệp" />
+                  </label>
+                  <label className="block text-xs font-medium">
+                    Tóm tắt
+                    <Textarea className="mt-1 min-h-20 text-xs" value={metaDescription} onChange={(e) => setMetaDescription(e.target.value)} placeholder="Tóm tắt trong EPUB (nếu có)..." maxLength={2000} />
+                  </label>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Playlist combobox — hiển thị sau khi chọn file */}
             {selectedFile && (

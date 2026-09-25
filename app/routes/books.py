@@ -64,9 +64,21 @@ async def parse_epub_preview(request: Request, epub_file: UploadFile = File(...)
             shutil.copyfileobj(epub_file.file, f)
 
         chapters = parse_epub(str(tmp_path))
+        # Descriptive OPF metadata — shown on the upload form and (on upload)
+        # persisted on the book row so AI generation stays grounded.
+        from app.epub_parser import extract_epub_metadata
+
+        try:
+            meta = extract_epub_metadata(str(tmp_path))
+            metadata = meta.as_dict()
+        except Exception:
+            metadata = {}
+        fallback_title = Path(epub_file.filename).stem
+        title = (metadata.get("title") or "").strip() or fallback_title
         return JSONResponse({
             "filename": epub_file.filename,
-            "title": Path(epub_file.filename).stem,
+            "title": title,
+            "metadata": metadata,
             "chapters": [
                 {
                     "index": idx,
@@ -94,6 +106,15 @@ async def upload_book(
     playlist_country: str = Form(default="VN"),
     playlist_title: str = Form(default=""),
     playlist_description: str = Form(default=""),
+    # Descriptive metadata — prefilled by /books/parse-epub from the OPF, but
+    # editable on the upload form. Persisted on the book row so AI generation
+    # (content/thumbnail/...) is grounded in the real book, not the filename.
+    book_title: str = Form(default=""),
+    book_author: str = Form(default=""),
+    book_description: str = Form(default=""),
+    book_language: str = Form(default=""),
+    book_publisher: str = Form(default=""),
+    book_subjects: str = Form(default=""),
 ):
     """Upload and parse an EPUB; patches are configured later on the book page.
 
@@ -112,7 +133,24 @@ async def upload_book(
         shutil.copyfileobj(epub_file.file, f)
 
     chapters = parse_epub(str(tmp_epub_path))
-    title = Path(epub_file.filename).stem
+    # OPF metadata first; explicit form values (edited on the upload page) win.
+    from app.epub_parser import extract_epub_cover, extract_epub_metadata
+
+    try:
+        opf = extract_epub_metadata(str(tmp_epub_path))
+    except Exception:
+        opf = None
+    opf_subjects = ", ".join(opf.subjects) if opf and opf.subjects else ""
+    title = (book_title or "").strip() or (opf.title.strip() if opf and opf.title.strip() else "") or Path(epub_file.filename).stem
+    author = (book_author or "").strip() or (opf.creator.strip() if opf else "")
+    description = (book_description or "").strip() or (opf.description.strip() if opf else "")
+    language = (book_language or "").strip() or (opf.language.strip() if opf else "")
+    publisher = (book_publisher or "").strip() or (opf.publisher.strip() if opf else "")
+    subjects = (book_subjects or "").strip() or opf_subjects
+    try:
+        cover = extract_epub_cover(str(tmp_epub_path))
+    except Exception:
+        cover = None
 
     with locked_conn(request) as conn:
         book = repository.create_book(
@@ -123,7 +161,19 @@ async def upload_book(
             patch_size=10,
             chapters=chapters,
             background_image_path=None,
+            author=author[:200],
+            description=description[:2000],
+            language=language[:32],
+            publisher=publisher[:200],
+            subjects=subjects[:1000],
         )
+        # Persist the extracted cover next to the other runtime data.
+        if cover:
+            try:
+                repository.save_book_cover(conn, book.id, cover[0], cover[1])
+                book = repository.get_book(conn, book.id)
+            except Exception:
+                logger.warning("cover save failed for book %s", book.id, exc_info=True)
 
         final_epub_path = uploads_dir / f"{book.id}.epub"
         tmp_epub_path.rename(final_epub_path)
@@ -133,6 +183,26 @@ async def upload_book(
             (str(final_epub_path), book.id),
         )
         conn.commit()
+
+    # Prefill YouTube metadata from the saved book facts so the
+    # per-patch title/description templates start from real data:
+    # subjects -> genre_tags, title -> story_title notice.
+    try:
+        with locked_conn(request) as _mc:
+            _cfg = get_book_youtube_config(_mc, book.id)
+            _changed = False
+            if subjects and not (_cfg.get("genre_tags") or "").strip():
+                _cfg["genre_tags"] = subjects[:500]
+                _changed = True
+            _extra = dict(_cfg.get("description_extra") or {})
+            if title and not (_extra.get("story_title") or "").strip():
+                _extra["story_title"] = title[:200]
+                _cfg["description_extra"] = _extra
+                _changed = True
+            if _changed:
+                save_book_youtube_config(_mc, book.id, _cfg)
+    except Exception:
+        logger.warning("youtube prefill failed for book %s", book.id, exc_info=True)
 
     # Xử lý playlist YouTube theo lựa chọn từ combobox (auto/new/existing)
     # Lấy description mặc định từ Chương 1 (1200 ký tự đầu)
@@ -608,6 +678,81 @@ async def save_export_audio_settings(request: Request, book_id: int):
     }
 
 
+@router.get("/books/{book_id}/metadata")
+def get_book_metadata(request: Request, book_id: int):
+    """Descriptive book metadata (author/genre/synopsis/cover) saved at upload.
+
+    This is the grounding data AI generation uses — keep it accurate and the
+    generated titles/descriptions/thumbnails will match the real book.
+    """
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        return {
+            "title": book.title,
+            "author": getattr(book, "author", "") or "",
+            "description": getattr(book, "description", "") or "",
+            "language": getattr(book, "language", "") or "",
+            "publisher": getattr(book, "publisher", "") or "",
+            "subjects": getattr(book, "subjects", "") or "",
+            "cover_image_path": getattr(book, "cover_image_path", None),
+            "has_cover": bool(getattr(book, "cover_image_path", None)
+                              and Path(getattr(book, "cover_image_path") or "").is_file()),
+        }
+
+
+@router.post("/books/{book_id}/metadata")
+async def save_book_metadata(request: Request, book_id: int):
+    """Edit descriptive metadata (also refreshes the YouTube prefill)."""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Body phải là JSON object")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Body phải là JSON object")
+    allowed = {"title", "author", "description", "language", "publisher", "subjects"}
+    if not any(k in data for k in allowed):
+        raise HTTPException(status_code=400, detail="Không có trường metadata nào")
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        repository.update_book_metadata(
+            conn, book_id,
+            title=str(data["title"]) if "title" in data else None,
+            author=str(data["author"]) if "author" in data else None,
+            description=str(data["description"]) if "description" in data else None,
+            language=str(data["language"]) if "language" in data else None,
+            publisher=str(data["publisher"]) if "publisher" in data else None,
+            subjects=str(data["subjects"]) if "subjects" in data else None,
+        )
+        book = repository.get_book(conn, book_id)
+        return {
+            "title": book.title,
+            "author": getattr(book, "author", "") or "",
+            "description": getattr(book, "description", "") or "",
+            "language": getattr(book, "language", "") or "",
+            "publisher": getattr(book, "publisher", "") or "",
+            "subjects": getattr(book, "subjects", "") or "",
+        }
+
+
+@router.get("/books/{book_id}/cover")
+def get_book_cover(request: Request, book_id: int):
+    """Serve the original EPUB cover extracted at upload time."""
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        path = getattr(book, "cover_image_path", None) or ""
+    if not path or not Path(path).is_file():
+        raise HTTPException(status_code=404, detail="Sách này không có ảnh bìa gốc")
+    suffix = Path(path).suffix.lower()
+    media = "image/png" if suffix == ".png" else "image/webp" if suffix == ".webp" else "image/jpeg"
+    return FileResponse(path, media_type=media, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/books/{book_id}/music", name="get_book_music_legacy")
 def get_book_music(request: Request, book_id: int):
     with locked_conn(request) as conn:
@@ -1078,6 +1223,35 @@ async def upload_book_source(
                     epub_path=str(final_path),
                     chapters=chapters,
                 )
+                # Refresh grounding metadata from the new file — but only fill
+                # blanks, never overwrite what the user edited by hand.
+                try:
+                    from app.epub_parser import extract_epub_cover as _cover, extract_epub_metadata as _meta
+
+                    _opf = _meta(str(final_path))
+                    _cur = repository.get_book(conn, book_id)
+                    if _cur is not None:
+                        _patch: dict = {}
+                        if not (_cur.title or "").strip() and _opf.title.strip():
+                            _patch["title"] = _opf.title.strip()
+                        if not (getattr(_cur, "author", "") or "").strip() and _opf.creator.strip():
+                            _patch["author"] = _opf.creator.strip()
+                        if not (getattr(_cur, "description", "") or "").strip() and _opf.description.strip():
+                            _patch["description"] = _opf.description.strip()
+                        if not (getattr(_cur, "language", "") or "").strip() and _opf.language.strip():
+                            _patch["language"] = _opf.language.strip()
+                        if not (getattr(_cur, "publisher", "") or "").strip() and _opf.publisher.strip():
+                            _patch["publisher"] = _opf.publisher.strip()
+                        if not (getattr(_cur, "subjects", "") or "").strip() and _opf.subjects:
+                            _patch["subjects"] = ", ".join(_opf.subjects)
+                        if _patch:
+                            repository.update_book_metadata(conn, book_id, **_patch)
+                        if not getattr(_cur, "cover_image_path", None):
+                            _img = _cover(str(final_path))
+                            if _img:
+                                repository.save_book_cover(conn, book_id, _img[0], _img[1])
+                except Exception:
+                    logger.warning("source metadata refresh failed for book %s", book_id, exc_info=True)
         except (LookupError, ValueError) as exc:
             if installed_file:
                 final_path.unlink(missing_ok=True)

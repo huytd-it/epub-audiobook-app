@@ -204,16 +204,28 @@ def create_book(
     background_image_path: str | None,
     voice_clip_path: str | None = None,
     voice_transcript: str | None = None,
+    author: str = "",
+    description: str = "",
+    language: str = "",
+    publisher: str = "",
+    subjects: str = "",
+    cover_image_path: str | None = None,
 ) -> Book:
+    """Insert a book + its chapters. Descriptive metadata (author/subjects/...)
+    comes from the EPUB OPF parsed at upload time — it is what lets AI
+    generation stay grounded in the real book instead of the filename."""
     now = _now()
     cur = conn.execute(
         """INSERT INTO book (title, original_filename, epub_path, patch_size, status,
                               background_image_path, voice_clip_path, voice_transcript,
-                              created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?)""",
+                              author, description, language, publisher, subjects,
+                              cover_image_path, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             title, original_filename, epub_path, patch_size, background_image_path,
-            voice_clip_path, voice_transcript, now, now,
+            voice_clip_path, voice_transcript,
+            author or "", description or "", language or "", publisher or "",
+            subjects or "", cover_image_path, now, now,
         ),
     )
     book_id = cur.lastrowid
@@ -237,6 +249,65 @@ def create_book(
 def get_book(conn: sqlite3.Connection, book_id: int) -> Book | None:
     row = conn.execute("SELECT * FROM book WHERE id = ?", (book_id,)).fetchone()
     return _book_from_row(row) if row else None
+
+
+def update_book_metadata(
+    conn: sqlite3.Connection,
+    book_id: int,
+    *,
+    title: str | None = None,
+    author: str | None = None,
+    description: str | None = None,
+    language: str | None = None,
+    publisher: str | None = None,
+    subjects: str | list[str] | None = None,
+) -> None:
+    """Patch the descriptive fields (upload form edits / re-parsed OPF)."""
+    assignments: list[str] = []
+    values: list = []
+    if title is not None:
+        assignments.append("title = ?")
+        values.append(title.strip())
+    if author is not None:
+        assignments.append("author = ?")
+        values.append(author.strip())
+    if description is not None:
+        assignments.append("description = ?")
+        values.append(description.strip()[:2000])
+    if language is not None:
+        assignments.append("language = ?")
+        values.append(language.strip()[:32])
+    if publisher is not None:
+        assignments.append("publisher = ?")
+        values.append(publisher.strip()[:200])
+    if subjects is not None:
+        if isinstance(subjects, list):
+            subjects = ", ".join(s.strip() for s in subjects if s.strip())
+        assignments.append("subjects = ?")
+        values.append(subjects.strip()[:1000])
+    if not assignments:
+        return
+    assignments.append("updated_at = CURRENT_TIMESTAMP")
+    values.append(book_id)
+    conn.execute(f"UPDATE book SET {', '.join(assignments)} WHERE id = ?", values)
+    conn.commit()
+
+
+def save_book_cover(conn: sqlite3.Connection, book_id: int, image_bytes: bytes, ext: str) -> str:
+    """Persist the extracted EPUB cover under data/covers/ and link it to the book."""
+    from app.config import settings as _settings
+
+    ext = ext.lower() if ext.lower() in {".jpg", ".png", ".webp"} else ".jpg"
+    covers_dir = Path(_settings.data_root) / "covers"
+    covers_dir.mkdir(parents=True, exist_ok=True)
+    dest = covers_dir / f"{book_id}{ext}"
+    dest.write_bytes(image_bytes)
+    conn.execute(
+        "UPDATE book SET cover_image_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (str(dest), book_id),
+    )
+    conn.commit()
+    return str(dest)
 
 
 def list_books(conn: sqlite3.Connection, page: int = 1, per_page: int = 20) -> tuple[list[Book], int, int]:
