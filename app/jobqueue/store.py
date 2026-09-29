@@ -56,7 +56,10 @@ def enqueue(
     patch_id: int | None = None,
     depends_on: int | None = None,
 ) -> int | None:
-    """Trả về id job mới, hoặc None nếu đã có job cùng dedupe_key đang pending/running.
+    """Trả về id job mới, hoặc None nếu đã có job cùng dedupe_key đang live.
+
+    'Live' gồm cả 'cancelling': job đã bị bấm hủy nhưng worker chưa dừng xong vẫn
+    ôm slot và sẽ publish đè lên job mới (trường hợp job patch_video 6268/6287).
 
     Không tự kiểm tra trước rồi mới insert — chạy thẳng INSERT và bắt IntegrityError,
     vì partial unique index mới là thứ duy nhất đúng khi có nhiều tiến trình cùng gọi."""
@@ -101,7 +104,7 @@ def get(conn: sqlite3.Connection, job_id: int) -> Job | None:
 
 def find_live_by_dedupe(conn: sqlite3.Connection, dedupe_key: str) -> Job | None:
     row = conn.execute(
-        f"SELECT {_COLUMNS} FROM job WHERE dedupe_key=? AND status IN ('pending','running')",
+        f"SELECT {_COLUMNS} FROM job WHERE dedupe_key=? AND status IN ('pending','running','cancelling')",
         (dedupe_key,),
     ).fetchone()
     return Job.from_row(row) if row else None
@@ -364,7 +367,7 @@ def retry(conn: sqlite3.Connection, job_id: int) -> bool:
                      WHERE live.id != job.id
                        AND job.dedupe_key IS NOT NULL
                        AND live.dedupe_key = job.dedupe_key
-                       AND live.status IN ('pending', 'running')
+                       AND live.status IN ('pending', 'running', 'cancelling')
                 )""",
         (now, job_id),
     )
@@ -403,6 +406,10 @@ def reap_stale(
     được trả về 'pending'. attempt_count giữ nguyên nên nó vẫn tiêu một lượt retry —
     một job làm treo worker không được phép quay vòng vô hạn.
 
+    Job 'cancelling' mất nhịp cùng được chốt về 'cancelled' theo đúng ý người dùng:
+    không worker nào còn sống để kết thúc nó, và để nó treo sẽ khóa dedupe_key của
+    nó vĩnh viễn (partial index phủ cả cancelling).
+
     COALESCE(heartbeat_at, started_at): job vừa claim xong đã chết trước lần
     write_progress đầu tiên thì heartbeat_at vẫn là giá trị đặt lúc claim, nhưng phòng
     khi có bản ghi cũ để NULL."""
@@ -415,8 +422,16 @@ def reap_stale(
         RETURNING id""",
         (stamp.isoformat(), cutoff),
     ).fetchall()
+    cancelled = conn.execute(
+        """UPDATE job SET status='cancelled', worker_id=NULL,
+                           finished_at=COALESCE(finished_at, ?), updated_at=?
+            WHERE status='cancelling'
+              AND COALESCE(heartbeat_at, started_at, created_at) < ?
+        RETURNING id""",
+        (stamp.isoformat(), stamp.isoformat(), cutoff),
+    ).fetchall()
     conn.commit()
-    return [r["id"] for r in rows]
+    return [r["id"] for r in rows] + [r["id"] for r in cancelled]
 
 
 # -------------------------------------------------------------------- đọc list

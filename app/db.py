@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS job (
 CREATE INDEX IF NOT EXISTS idx_job_claim ON job(status, job_type, priority, id);
 CREATE INDEX IF NOT EXISTS idx_job_book ON job(book_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dedupe ON job(dedupe_key)
-    WHERE dedupe_key IS NOT NULL AND status IN ('pending','running');
+    WHERE dedupe_key IS NOT NULL AND status IN ('pending','running','cancelling');
 
 CREATE TABLE IF NOT EXISTS job_dependency (
     job_id INTEGER NOT NULL REFERENCES job(id) ON DELETE CASCADE,
@@ -448,7 +448,7 @@ CREATE TABLE IF NOT EXISTS job (
 CREATE INDEX IF NOT EXISTS idx_job_claim ON job(status, job_type, priority, id);
 CREATE INDEX IF NOT EXISTS idx_job_book  ON job(book_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dedupe ON job(dedupe_key)
-    WHERE dedupe_key IS NOT NULL AND status IN ('pending','running');
+    WHERE dedupe_key IS NOT NULL AND status IN ('pending','running','cancelling');
 
 CREATE TABLE IF NOT EXISTS material_cache (
     cache_key    TEXT PRIMARY KEY,
@@ -803,21 +803,77 @@ def _migrate(conn: sqlite3.Connection) -> None:
                   WHERE patch.id=CAST(json_extract(job.payload_json, '$.patch_id') AS INTEGER)
              )"""
     )
+    def _keep_live_id(rows) -> int:
+        # Giu mot job khi nhieu job live trung nhau: co 'running' thi giu ban
+        # running moi nhat (dang om worker/slot); chi 'cancelling' + 'pending'
+        # thi giu pending moi nhat (ban cancelling sap chet theo yeu cau huy,
+        # ban pending la viec thay the); con lai giu ban cu nhat (thu tu claim).
+        running = [row["id"] for row in rows if row["status"] == "running"]
+        if running:
+            return max(running)
+        pendings = [row["id"] for row in rows if row["status"] == "pending"]
+        if pendings and any(row["status"] == "cancelling" for row in rows):
+            return max(pendings)
+        return min(row["id"] for row in rows)
+
     live_duplicates = conn.execute(
-        """SELECT job_type, patch_id, MIN(id) AS keep_id FROM job
+        """SELECT job_type, patch_id FROM job
             WHERE patch_id IS NOT NULL
               AND status IN ('pending', 'running', 'cancelling')
             GROUP BY job_type, patch_id HAVING COUNT(*) > 1"""
     ).fetchall()
     for duplicate in live_duplicates:
+        rows = conn.execute(
+            """SELECT id, status FROM job
+                WHERE job_type=? AND patch_id=?
+                  AND status IN ('pending', 'running', 'cancelling')
+                ORDER BY id""",
+            (duplicate["job_type"], duplicate["patch_id"]),
+        ).fetchall()
+        keep_id = _keep_live_id(rows)
         conn.execute(
             """UPDATE job SET status='cancelled',
                               error_message='duplicate job_type/patch_id removed by migration',
                               finished_at=updated_at
                 WHERE job_type=? AND patch_id=? AND id<>?
                   AND status IN ('pending', 'running', 'cancelling')""",
-            (duplicate["job_type"], duplicate["patch_id"], duplicate["keep_id"]),
+            (duplicate["job_type"], duplicate["patch_id"], keep_id),
         )
+    # idx_job_dedupe từng chỉ phủ pending/running: một job đang 'cancelling' (người
+    # dùng vừa bấm hủy, worker chưa dừng xong) không chặn enqueue trùng khóa, nên cùng
+    # một patch có thể lọt hai job patch_video (job 6287/6268). Mở rộng index sang
+    # cancelling, sau khi gom các cặp trùng còn sót (giữ một bản theo
+    # _keep_live_id, hủy phần còn lại).
+    conn.execute("DROP INDEX IF EXISTS idx_job_dedupe")
+    dedupe_duplicates = conn.execute(
+        """SELECT dedupe_key FROM job
+            WHERE dedupe_key IS NOT NULL
+              AND status IN ('pending', 'running', 'cancelling')
+            GROUP BY dedupe_key HAVING COUNT(*) > 1"""
+    ).fetchall()
+    for duplicate in dedupe_duplicates:
+        rows = conn.execute(
+            """SELECT id, status FROM job
+                WHERE dedupe_key=? AND status IN ('pending', 'running', 'cancelling')
+                ORDER BY id""",
+            (duplicate["dedupe_key"],),
+        ).fetchall()
+        # Giu mot ban dang chay that (running moi nhat); ban cancelling sap chet
+        # thi nhuong cho ban pending thay the. Xem _keep_live_id.
+        keep_id = _keep_live_id(rows)
+        conn.execute(
+            """UPDATE job SET status='cancelled',
+                              error_message='duplicate dedupe_key removed by migration',
+                              finished_at=updated_at
+                WHERE dedupe_key=? AND id<>?
+                  AND status IN ('pending', 'running', 'cancelling')""",
+            (duplicate["dedupe_key"], keep_id),
+        )
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dedupe ON job(dedupe_key)
+            WHERE dedupe_key IS NOT NULL
+              AND status IN ('pending', 'running', 'cancelling')"""
+    )
     conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_job_live_type_patch
             ON job(job_type, patch_id)

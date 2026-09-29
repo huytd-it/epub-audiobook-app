@@ -61,13 +61,22 @@ def test_dedupe_key_blocks_a_second_live_job():
 
 
 def test_dedupe_key_is_free_again_once_the_first_job_is_terminal():
-    """Partial index chỉ phủ pending/running — job xong rồi thì khóa được tái sử dụng."""
+    """Partial index chỉ phủ pending/running/cancelling — job xong rồi thì khóa
+    được tái sử dụng."""
     conn = _conn()
     first = _insert(conn, dedupe_key="video:book_job=1")
     conn.execute("UPDATE job SET status='done' WHERE id=?", (first,))
     conn.commit()
     second = _insert(conn, dedupe_key="video:book_job=1")
     assert second != first
+
+
+def test_dedupe_key_blocks_a_second_job_while_the_first_is_cancelling():
+    """Hồi quy job 6268/6287: job đang 'cancelling' vẫn giữ khóa dedupe."""
+    conn = _conn()
+    _insert(conn, dedupe_key="video:book_job=1", status="cancelling")
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert(conn, dedupe_key="video:book_job=1")
 
 
 def test_null_dedupe_keys_do_not_collide():

@@ -163,3 +163,22 @@ async def test_runner_supplies_connection_factory_for_keep_alive(factory):
     await q.start(); await drain(conn); await q.stop(5)
     assert store.get(conn, job_id).status == "done"
     assert seen["factory"] is factory
+
+
+@pytest.mark.asyncio
+async def test_error_after_cancel_marks_job_cancelled_instead_of_retrying(factory):
+    """Job bị bấm hủy giữa chừng rồi handler mới lỗi: phải về 'cancelled', không
+    được quay lại 'pending' retry (người dùng hủy xong job vẫn sống lại là bug)."""
+    c = factory(); jid = store.enqueue(c, "demo", max_attempts=3)
+    started = threading.Event()
+    def fn(ctx):
+        started.set()
+        time.sleep(.2)
+        raise RuntimeError("boom sau khi huy")
+    q = queue(factory); q.register("demo", fn); await q.start()
+    await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+    store.request_cancel(c, jid); q.request_cancel(jid)
+    await drain(c, 10); await q.stop(5)
+    job = store.get(c, jid)
+    assert job.status == "cancelled"
+    assert job.attempt_count == 1

@@ -110,3 +110,27 @@ def test_patch_recovery_uses_full_frozen_render_snapshot(tmp_path, monkeypatch):
     patch_video.handle(JobContext(job,conn,JobLogger(job_id,"patch_video"),lambda:False))
     assert seen["kw"] == frozen
     assert seen["kw"]["codec"] == "h264_nvenc"
+
+
+def test_cancelled_job_skips_registration_and_publish(tmp_path, monkeypatch):
+    """Hồi quy job 6268: render xong cho job đã bị hủy thì giữ file nhưng không
+    đăng ký videos/pipeline và không enqueue youtube_upload."""
+    conn = db.connect(str(tmp_path / "cancel.db")); db.init_schema(conn)
+    now = datetime.now(timezone.utc).isoformat(); audio = tmp_path / "a.wav"; audio.write_bytes(b"a")
+    image = tmp_path / "bg.jpg"; image.write_bytes(b"i")
+    monkeypatch.setattr(settings, "data_root", str(tmp_path)); monkeypatch.setattr(settings, "default_background_image", str(image))
+    conn.execute("INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,video_resolution,video_fps,created_at,updated_at) VALUES (1,'B','b','b',1,'done','1280x720',24,?,?)", (now, now))
+    conn.execute("INSERT INTO patch (id,book_id,patch_index,chapter_start,chapter_end,status,audio_path,created_at,updated_at) VALUES (2,1,0,0,0,'done',?,?,?)", (str(audio), now, now)); conn.commit()
+    monkeypatch.setattr(patch_video.image_overlay, "ensure_patch_overlay", lambda *a, **k: str(image))
+    monkeypatch.setattr(patch_video.video_gen, "generate_segment", lambda a,b,out,**kw: Path(out).write_bytes(b"new"))
+    monkeypatch.setattr(patch_video, "validate_video", lambda p, **kw: ValidationResult(True,None,"",(),ValidationFacts(),0))
+    job_id = store.enqueue(conn, "patch_video", payload={"patch_id": 2, "upload_youtube": True}, book_id=1)
+    job = store.claim(conn, "patch_video", "w")
+    store.request_cancel(conn, job_id)
+    result = patch_video.handle(JobContext(job, conn, JobLogger(job_id, "patch_video"), lambda: True))
+    assert result["video_id"] is None
+    assert result["youtube"] is None
+    assert Path(result["output_path"]).is_file()
+    assert conn.execute("SELECT COUNT(*) AS c FROM videos").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) AS c FROM patch_pipeline").fetchone()["c"] == 0
+    assert [j.job_type for j in store.list_jobs(conn)] == ["patch_video"]

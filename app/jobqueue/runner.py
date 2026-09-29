@@ -172,22 +172,36 @@ class JobQueue:
             ctx.flush(); store.mark_cancelled(conn, job.id, worker_id=job.worker_id)
         except JobFatalError as exc:
             ctx.log(traceback.format_exc(), level=logging.ERROR)
-            ctx.flush(); store.fail(
-                conn, job.id, str(exc), fatal=True, worker_id=job.worker_id,
-            )
+            ctx.flush()
+            if self._cancelled(conn, job.id):
+                store.mark_cancelled(conn, job.id, worker_id=job.worker_id)
+            else:
+                store.fail(
+                    conn, job.id, str(exc), fatal=True, worker_id=job.worker_id,
+                )
         except JobRescheduled as exc:
             ctx.log(f"Hoãn tới {exc.next_retry_at}: {exc.message or exc}", level=logging.INFO)
-            ctx.flush(); store.reschedule(
-                conn, job.id, exc.next_retry_at, exc.message, worker_id=job.worker_id,
-            )
+            ctx.flush()
+            if self._cancelled(conn, job.id):
+                store.mark_cancelled(conn, job.id, worker_id=job.worker_id)
+            else:
+                store.reschedule(
+                    conn, job.id, exc.next_retry_at, exc.message, worker_id=job.worker_id,
+                )
         except Exception as exc:
             ctx.log(traceback.format_exc(), level=logging.ERROR)
-            # The enqueue request may set a per-job retry policy. HandlerSpec is
-            # only the default; do not overwrite the persisted max_attempts.
-            ctx.flush(); store.fail(
-                conn, job.id, str(exc), max_attempts=job.max_attempts,
-                worker_id=job.worker_id,
-            )
+            # Job đã bị bấm hủy mà còn lỗi: tôn trọng yêu cầu hủy thay vì đưa về
+            # pending retry (người dùng hủy xong job vẫn sống lại là bug).
+            ctx.flush()
+            if self._cancelled(conn, job.id):
+                store.mark_cancelled(conn, job.id, worker_id=job.worker_id)
+            else:
+                # The enqueue request may set a per-job retry policy. HandlerSpec is
+                # only the default; do not overwrite the persisted max_attempts.
+                store.fail(
+                    conn, job.id, str(exc), max_attempts=job.max_attempts,
+                    worker_id=job.worker_id,
+                )
         finally:
             ctx.close(); conn.close()
 

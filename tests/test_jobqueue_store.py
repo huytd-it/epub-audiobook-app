@@ -521,3 +521,63 @@ def test_pending_count_is_per_type():
     store.enqueue(conn, "light_tts")
     assert store.pending_count(conn, "video") == 1
     assert store.pending_count(conn, "youtube_upload") == 0
+
+
+def test_enqueue_is_blocked_while_an_identical_job_is_cancelling():
+    """Hồi quy job 6268/6287: job đang chạy bị bấm hủy (cancelling, worker chưa
+    dừng xong) vẫn phải chặn enqueue trùng dedupe_key."""
+    conn = _conn()
+    first = store.enqueue(conn, "patch_video", dedupe_key="patch_video:patch=1")
+    store.claim(conn, "patch_video", "w")
+    assert store.request_cancel(conn, first) == CANCELLING
+    assert store.enqueue(conn, "patch_video", dedupe_key="patch_video:patch=1") is None
+    assert store.find_live_by_dedupe(conn, "patch_video:patch=1").id == first
+
+
+def test_find_live_by_dedupe_sees_a_cancelling_job():
+    conn = _conn()
+    job_id = store.enqueue(conn, "video", dedupe_key="k")
+    assert store.find_live_by_dedupe(conn, "k").id == job_id
+    store.claim(conn, "video", "w")
+    assert store.find_live_by_dedupe(conn, "k").id == job_id
+    store.request_cancel(conn, job_id)
+    assert store.find_live_by_dedupe(conn, "k").id == job_id
+    store.mark_cancelled(conn, job_id)
+    assert store.find_live_by_dedupe(conn, "k") is None
+
+
+def test_retry_refuses_when_a_cancelling_job_holds_the_dedupe_key():
+    conn = _conn()
+    term = store.enqueue(conn, "video", dedupe_key="k")
+    store.claim(conn, "video", "w")
+    store.fail(conn, term, "old error", max_attempts=1)
+    assert store.get(conn, term).status == "failed"
+    live = store.enqueue(conn, "video", dedupe_key="k")
+    store.claim(conn, "video", "w")
+    store.request_cancel(conn, live)
+    assert store.retry(conn, term) is False
+    assert store.get(conn, term).status == "failed"
+
+
+def test_reap_closes_a_stale_cancelling_job():
+    """Worker chết giữa lúc hủy: job kẹt 'cancelling' phải về 'cancelled', nếu
+    không dedupe_key của nó bị khóa vĩnh viễn (partial index phủ cancelling)."""
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    store.claim(conn, "video", "w")
+    store.request_cancel(conn, job_id)
+    conn.execute("UPDATE job SET heartbeat_at=? WHERE id=?", (_iso(-3600), job_id))
+    conn.commit()
+    assert store.reap_stale(conn, older_than_seconds=120) == [job_id]
+    job = store.get(conn, job_id)
+    assert job.status == "cancelled"
+    assert job.worker_id is None
+
+
+def test_reap_leaves_a_fresh_cancelling_job_alone():
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    store.claim(conn, "video", "w")
+    store.request_cancel(conn, job_id)
+    assert store.reap_stale(conn, older_than_seconds=120) == []
+    assert store.get(conn, job_id).status == "cancelling"

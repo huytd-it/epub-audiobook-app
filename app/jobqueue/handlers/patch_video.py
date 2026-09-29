@@ -212,7 +212,20 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                     replay_id = clip.get("replay_id")
                     if not path or replay_id is None:
                         raise JobFatalError("source_unavailable: invalid gameplay clip snapshot")
-                    if not Path(path).is_file():
+                    needs_render = not Path(path).is_file()
+                    if not needs_render:
+                        try:
+                            corrupt = Path(path).stat().st_size == 0
+                        except OSError:
+                            corrupt = True
+                        if not corrupt:
+                            rate = video_gen._probe_frame_rate(path)
+                            geom = video_gen._probe_video_geometry(path)
+                            corrupt = (rate == 0.0 and geom is None)
+                        needs_render = corrupt
+                        if corrupt:
+                            ctx.log(f"gameplay clip corrupt, re-rendering: {path}", level=logging.WARNING)
+                    if needs_render:
                         Path(path).parent.mkdir(parents=True, exist_ok=True)
                         gameplay_renderer.render_replay(load_replay(ctx.conn, int(replay_id)), path,
                                                         resolution=common["resolution"], fps=common["fps"],
@@ -327,6 +340,13 @@ def handle(ctx) -> dict:
         _account_render_attempt(ctx, patch_id, pipeline_row, recovery_upload_id)
         output = _render_from_snapshot(ctx, patch, book, pipeline_row, snapshot)
         ctx.progress(4, 6, phase="registering")
+        if ctx.should_cancel():
+            # Render 36 phút cho một job đã bị hủy (trường hợp job 6268): giữ file
+            # trên đĩa nhưng không đăng ký videos/pipeline, để bản render thay thế
+            # (job 6287) không bị đè trạng thái.
+            ctx.log("job đã bị hủy: bỏ qua đăng ký video", level=logging.WARNING)
+            ctx.progress(6, 6, phase="done")
+            return {"output_path": output, "video_id": None, "youtube": None}
         video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                    file_path=output, resolution=book.video_resolution)
         _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
@@ -348,6 +368,10 @@ def handle(ctx) -> dict:
             if isinstance(persisted_snapshot, dict):
                 output = _render_from_snapshot(ctx, patch, book, recovery_pipeline, persisted_snapshot)
                 ctx.progress(4, 6, phase="registering")
+                if ctx.should_cancel():
+                    ctx.log("job đã bị hủy: bỏ qua đăng ký video", level=logging.WARNING)
+                    ctx.progress(6, 6, phase="done")
+                    return {"output_path": output, "video_id": None, "youtube": None}
                 video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                            file_path=output, resolution=book.video_resolution)
                 _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
@@ -493,12 +517,18 @@ def handle(ctx) -> dict:
             _persist_validation_report(ctx, patch_id, result, expected)
 
         ctx.progress(4, 6, phase="registering")
+        if ctx.should_cancel():
+            ctx.log("job đã bị hủy: bỏ qua đăng ký video", level=logging.WARNING)
+            ctx.progress(6, 6, phase="done")
+            return {"output_path": output, "video_id": None, "youtube": None}
         video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                    file_path=output, resolution=book.video_resolution)
         _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
 
     youtube_status = None
-    if recovery_upload_id is not None:
+    if ctx.should_cancel():
+        ctx.log("job đã bị hủy: bỏ qua publish/upload", level=logging.WARNING)
+    elif recovery_upload_id is not None:
         resume_upload_after_render(ctx.conn, recovery_upload_id)
     elif ctx.job.payload.get("upload_youtube"):
         from app.patch_publishing import run_patch_publish_stage
