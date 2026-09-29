@@ -5,15 +5,25 @@ Extensibility: every generatable artifact is a *task* registered via
 max_tokens, response_format}`` plus an optional ``saver(conn, book, result)``.
 New features (SEO keywords, chapter summaries, playlist descriptions, ...)
 only add a task here — the ``/ai/generate`` route dispatches generically.
+
+Provider I/O for YouTube metadata lives in the same module: ``ai_content_provider``
++ key in .env select the backend (Gemini ``:generateContent`` vs OpenAI-compatible
+``/chat/completions``); pure I/O + parse here, persistence in
+``app/jobqueue/handlers/youtube_metadata.py``.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+import requests
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -291,3 +301,351 @@ def generate_book_thumbnail(conn, book, *, prompt: str | None = None,
         conn.commit()
     return {"path": str(dest), "bytes": len(image_bytes),
             "prompt": final_prompt, "prompt_source": prompt_source, "saved": save}
+
+
+PROVIDERS: dict[str, dict[str, str]] = {
+    "gemini": {
+        "label": "Gemini",
+        "key_env": "GEMINI_API_KEY",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "model": "gemini-2.5-flash",
+    },
+    "openai": {
+        "label": "OpenAI",
+        "key_env": "OPENAI_API_KEY",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+    },
+    "custom": {
+        "label": "OpenAI-compatible",
+        "key_env": "AI_CONTENT_API_KEY",
+        "base_url": "",
+        "model": "gpt-4o-mini",
+    },
+}
+
+# YouTube cho 5000 ký tự mô tả; phần sinh ra chỉ chiếm đầu, còn khối app tự
+# nối (link playlist, timeline chương, thông báo bản quyền) đi sau.
+DESCRIPTION_LIMIT = 3000
+MAX_TAGS = 12
+# Model cần bối cảnh đủ để đoán thể loại, nhưng sách 1000 chương thì prompt
+# không tài nào đọc nổi — chỉ đưa tên chương của đoạn đầu và cuối.
+MAX_PROMPT_CHAPTERS = 30
+
+
+class ProviderNotConfigured(RuntimeError):
+    """Chưa cấu hình provider/key trong .env — thử lại cũng vô ích."""
+
+
+class GenerationError(RuntimeError):
+    """Đã gọi provider nhưng không lấy được nội dung dùng được."""
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    provider: str
+    model: str
+    api_key: str
+    base_url: str
+
+    @property
+    def label(self) -> str:
+        return f"{PROVIDERS[self.provider]['label']} · {self.model}"
+
+
+def selected_provider() -> str:
+    """Provider sẽ dùng, suy ra từ .env.
+
+    Ưu tiên AI_CONTENT_PROVIDER khi có ghi. Nếu không mà người dùng đã trỏ
+    AI_CONTENT_BASE_URL vào một endpoint riêng thì đó chắc chắn là server
+    OpenAI-compatible (gemini không nhận base_url tùy ý), nên coi như 'custom'
+    thay vì mặc định 'gemini' rồi gọi nhầm dạng :generateContent. Còn lại thì
+    mặc định gemini vì key của nó nằm sẵn trong biến môi trường chuẩn.
+    """
+    explicit = (settings.ai_content_provider or "").strip().lower()
+    if explicit:
+        return explicit
+    return "custom" if (settings.ai_content_base_url or "").strip() else "gemini"
+
+
+def resolve_provider() -> ProviderConfig:
+    provider = selected_provider()
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        supported = ", ".join(sorted(PROVIDERS))
+        raise ProviderNotConfigured(f"AI_CONTENT_PROVIDER không hợp lệ: {provider} (chọn: {supported})")
+    api_key = (settings.ai_content_api_key or os.getenv(spec["key_env"], "")).strip()
+    if not api_key:
+        raise ProviderNotConfigured(f"Chưa có API key cho provider {provider} — đặt {spec['key_env']} trong .env")
+    base_url = (settings.ai_content_base_url or spec["base_url"]).strip().rstrip("/")
+    if not base_url:
+        raise ProviderNotConfigured(f"Provider {provider} cần AI_CONTENT_BASE_URL (endpoint OpenAI-compatible)")
+    model = (settings.ai_content_model or spec["model"]).strip()
+    return ProviderConfig(provider=provider, model=model, api_key=api_key, base_url=base_url)
+
+
+def provider_status() -> dict[str, Any]:
+    """Trạng thái provider cho UI — không ném lỗi, nút bấm mới gọi resolve_provider."""
+    provider = selected_provider()
+    try:
+        config = resolve_provider()
+    except ProviderNotConfigured as exc:
+        return {"configured": False, "provider": provider, "model": "", "label": "", "detail": str(exc)}
+    return {
+        "configured": True,
+        "provider": provider,
+        "model": config.model,
+        "label": config.label,
+        "detail": "",
+    }
+
+
+# ------------------------------------------------------------------ gọi API
+
+def _raise_for_status(response: requests.Response) -> None:
+    if response.status_code < 400:
+        return
+    body = (response.text or "").strip()
+    raise GenerationError(f"provider trả HTTP {response.status_code}: {body[:400]}")
+
+
+def _gemini_text(prompt: str, config: ProviderConfig, timeout: float) -> str:
+    response = requests.post(
+        f"{config.base_url}/models/{config.model}:generateContent",
+        headers={"x-goog-api-key": config.api_key, "Content-Type": "application/json"},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.7, "responseMimeType": "application/json"},
+        },
+        timeout=timeout,
+    )
+    _raise_for_status(response)
+    payload = response.json()
+    candidates = payload.get("candidates") or []
+    if not candidates:
+        raise GenerationError(f"Gemini không trả về nội dung: {str(payload)[:300]}")
+    parts = ((candidates[0].get("content") or {}).get("parts")) or []
+    text = "".join(part.get("text", "") for part in parts).strip()
+    if not text:
+        raise GenerationError("Gemini trả về nội dung rỗng.")
+    return text
+
+
+def _chat_completion_text(response: requests.Response, config: ProviderConfig) -> str:
+    """Nội dung từ /chat/completions, chấp nhận cả dạng JSON lẫn SSE.
+
+    Gateway nội bộ (OpenCode server) trả chuỗi `data: {...}` dù payload đã yêu cầu
+    stream=false — nếu chỉ gọi response.json() thì body không parse được, job sẽ
+    fail trong khi provider thực ra đã sinh nội dung đúng.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        chunks: list[str] = []
+        for line in (response.text or "").splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            for choice in event.get("choices") or []:
+                delta = (choice.get("delta") or {}).get("content") or (choice.get("message") or {}).get("content")
+                if delta:
+                    chunks.append(delta)
+        text = "".join(chunks)
+        if not text.strip():
+            raise GenerationError(f"{config.label} trả về body không đọc được.")
+        return text.strip()
+
+    choices = body.get("choices") or []
+    if not choices:
+        raise GenerationError(f"{config.label} không trả về nội dung.")
+    text = ((choices[0].get("message") or {}).get("content")) or ""
+    if not text.strip():
+        raise GenerationError(f"{config.label} trả về nội dung rỗng.")
+    return text.strip()
+
+
+def _openai_text(prompt: str, config: ProviderConfig, timeout: float, *, json_mode: bool = True) -> str:
+    payload = {
+        "model": config.model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7,
+        # Job cần trả về một lần để parse; để tuỳ server có thể ra SSE nhiều
+        # dòng (xem _chat_completion_text).
+        "stream": False,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    response = requests.post(
+        f"{config.base_url}/chat/completions",
+        headers={"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=timeout,
+    )
+    if response.status_code == 400 and json_mode:
+        # Server OpenAI-compatible cũ thường chỉ biết /chat/completions mà không
+        # hiểu response_format. Prompt vẫn yêu cầu JSON nên bỏ cờ này vẫn parse được.
+        logger.info("%s không hỗ trợ response_format, thử lại không có cờ đó", config.label)
+        return _openai_text(prompt, config, timeout, json_mode=False)
+    _raise_for_status(response)
+    return _chat_completion_text(response, config)
+
+
+def complete(prompt: str, *, config: ProviderConfig | None = None) -> str:
+    """Một lượt gọi text, trả về nội dung thô của model."""
+    config = config or resolve_provider()
+    timeout = max(5.0, float(settings.ai_content_timeout_seconds))
+    if config.provider == "gemini":
+        return _gemini_text(prompt, config, timeout)
+    return _openai_text(prompt, config, timeout)
+
+
+# ------------------------------------------------------------------- prompt
+
+_SYSTEM_HINT = "Bạn là biên tập viên kênh sách nói tiếng Việt trên YouTube."
+
+
+def build_prompt(book_title: str, chapter_titles: list[str], config: dict | None = None) -> str:
+    """Prompt sinh metadata cho MỘT sách, không phụ thuộc tên patch/tập.
+
+    Mô tả của mỗi video được ghép lại: phần do app tự dựng (tiêu đề, danh sách
+    chương, link playlist, timeline) nằm ngoài `description`, còn `description`
+    chính là phần "về cuốn sách" mà model viết ra. Vì vậy prompt không nhắc tập
+    số, chương hiện tại hay template.
+    """
+    config = config or {}
+    titles = [title.strip() for title in chapter_titles if title and title.strip()]
+    if len(titles) > MAX_PROMPT_CHAPTERS:
+        head = titles[: MAX_PROMPT_CHAPTERS // 2]
+        tail = titles[-MAX_PROMPT_CHAPTERS // 2 :]
+        titles = [*head, "…", *tail]
+    existing = str(config.get("genre_tags") or "").strip()
+    extra = config.get("description_extra") if isinstance(config.get("description_extra"), dict) else {}
+    known = "\n".join(
+        f"- {label}: {value}"
+        for label, value in (
+            ("tên truyện trong khối bản quyền", extra.get("story_title")),
+            ("nguồn truyện", extra.get("story_source_name")),
+        )
+        if value
+    )
+    # Các khối văn bản dài dựng sẵn: biểu thức f-string không được chứa dấu \n
+    # trên Python < 3.12.
+    chapter_block = "Tên chương (đầu và cuối):\n" + "\n".join(f"- {title}" for title in titles) if titles else ""
+    known_block = f"Thông tin đã biết (đừng bịa thêm, nếu có thì ưu tiên số liệu này):\n{known}" if known else ""
+    genre_block = f"Thể loại đang dùng cho sách (có thể giữ lại hoặc bổ sung, không cần trùng hết): {existing}" if existing else ""
+    return f"""{_SYSTEM_HINT}
+
+Viết metadata YouTube cho cuốn sách nói dưới đây, bằng tiếng Việt.
+
+Tên sách: {book_title}
+Số chương: {len(chapter_titles)}
+{chapter_block}
+{known_block}
+{genre_block}
+
+Trả về DUY NHẤT một JSON object, không markdown, không giải thích ngoài JSON:
+{{
+  "description": "3-6 câu giới thiệu cuốn sách: nội dung chính, giọng đọc sách nói, vì sao đáng nghe. Không nhắc tập số/chương hiện tại, không chèn link, không chèn hashtag, không viết tiêu đề video. Dưới {DESCRIPTION_LIMIT} ký tự.",
+  "tags": ["tên sách", "sách nói", "audiobook", "thể loại", ...]
+}}
+
+tags: tối đa {MAX_TAGS} thẻ, viết thường (viết thường và số), mỗi thẻ một cụm từ ngắn, không lặp lại, không dùng ký tự đặc biệt. Ưu tiên thể loại và từ khóa tìm kiếm mà người nghe tiếng Việt hay dùng."""
+
+
+# -------------------------------------------------------------------- parse
+
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
+_OBJECT_RE = re.compile(r"\{.*\}", re.S)
+
+
+def _extract_json(text: str) -> dict[str, Any] | None:
+    """Model hay bọc JSON trong ```json ... ```; lấy object đầu tiên parse được."""
+    candidates: list[str] = []
+    fenced = _FENCE_RE.findall(text or "")
+    candidates.extend(block.strip() for block in fenced)
+    stripped = (text or "").strip()
+    if stripped:
+        candidates.append(stripped)
+        match = _OBJECT_RE.search(stripped)
+        if match:
+            candidates.append(match.group(0))
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _normalize_tags(value: Any) -> list[str]:
+    if isinstance(value, str):
+        parts: list[Any] = re.split(r"[,\n]", value)
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        parts = []
+    tags: list[str] = []
+    for part in parts:
+        tag = re.sub(r"^#+\s*", "", str(part or "").strip())
+        # Bỏ ký tự YouTube không nhận trong tag và chuẩn hoá khoảng trắng.
+        tag = re.sub(r"[#\"']+", " ", tag)
+        tag = re.sub(r"\s+", " ", tag).strip(" ,;:|/-")
+        if tag and tag.lower() not in {existing.lower() for existing in tags}:
+            tags.append(tag)
+    return tags[:MAX_TAGS]
+
+
+def parse_metadata(text: str) -> dict[str, Any]:
+    """JSON của model -> {"description", "genre_tags"} sạch, dùng được để lưu."""
+    payload = _extract_json(text)
+    if payload is None:
+        raise GenerationError(f"Model không trả về JSON hợp lệ: {(text or '')[:200]}")
+    description = str(payload.get("description") or payload.get("mo_ta") or "").strip()
+    tags = _normalize_tags(payload.get("tags", payload.get("genre_tags")))
+    if not description and not tags:
+        raise GenerationError("Model không sinh ra mô tả lẫn thẻ nào.")
+    if not description:
+        raise GenerationError("Model không sinh ra mô tả (description).")
+    if not tags:
+        raise GenerationError("Model không sinh ra thẻ nào (tags).")
+    return {
+        "description": description[:DESCRIPTION_LIMIT],
+        "genre_tags": ", ".join(tags),
+        "tags": tags,
+    }
+
+
+# ------------------------------------------------------------------- tiện ích
+
+def generate_book_metadata(conn, book_id: int, *, config_provider=None) -> dict[str, Any]:
+    """Sinh metadata cho một sách. Trả về description + genre_tags (đã nối) và
+    nhãn provider để log. Không ghi DB — handler lo việc đó."""
+    from app import repository
+    from app.production_defaults import get_effective_youtube_config
+
+    book = repository.get_book(conn, book_id)
+    if book is None:
+        raise GenerationError(f"book {book_id} không tồn tại")
+    chapters = repository.list_chapters(conn, book_id)
+    config = get_effective_youtube_config(conn, book)
+    provider = config_provider or resolve_provider()
+    prompt = build_prompt(book.title, [chapter.title for chapter in chapters], config)
+    raw = complete(prompt, config=provider)
+    result = parse_metadata(raw)
+    return {
+        "description": result["description"],
+        "genre_tags": result["genre_tags"],
+        "tags": result["tags"],
+        "provider": provider.provider,
+        "model": provider.model,
+        "label": provider.label,
+    }

@@ -101,7 +101,7 @@ async def parse_epub_preview(request: Request, epub_file: UploadFile = File(...)
 async def upload_book(
     request: Request,
     epub_file: UploadFile = File(...),
-    playlist_mode: str = Form(default="auto"),
+    playlist_mode: str = Form(default="new"),
     playlist_id: str = Form(default=""),
     playlist_country: str = Form(default="VN"),
     playlist_title: str = Form(default=""),
@@ -118,8 +118,7 @@ async def upload_book(
 ):
     """Upload and parse an EPUB; patches are configured later on the book page.
 
-    playlist_mode: auto | new | existing
-      - auto: tự động detect playlist trùng book_title (không phân biệt hoa/thường), nếu không có thì tạo mới
+    playlist_mode: new | existing  (auto cũ được map sang new để tương thích)
       - new: luôn tạo mới với tên = playlist_title hoặc book_title
       - existing: dùng playlist_id đã chọn
     playlist_country mặc định VN -> defaultLanguage=vi khi tạo playlist.
@@ -224,69 +223,15 @@ async def upload_book(
                 creds = youtube.get_creds_from_db(api_conn)
                 if creds and creds.get("channel_id"):
                     channel_id = creds["channel_id"]
-                    mode = (playlist_mode or "auto").strip().lower()
-                    if mode not in {"auto", "new", "existing"}:
-                        mode = "auto"
+                    # bỏ auto-detect: chỉ còn new / existing (auto cũ map sang new)
+                    mode = (playlist_mode or "new").strip().lower()
+                    if mode == "auto":
+                        mode = "new"
+                    if mode not in {"new", "existing"}:
+                        mode = "new"
                     pid = (playlist_id or "").strip()
 
-                    # Auto: detect playlist trùng book_title
-                    if mode == "auto":
-                        try:
-                            playlists = youtube.list_playlists(api_conn)
-                        except Exception:
-                            playlists = []
-                        # tìm playlist có title trùng book_title (case-insensitive, trim)
-                        matched = None
-                        norm_title = title.strip().lower()
-                        for pl in playlists:
-                            pl_title = (pl.get("title") or pl.get("snippet", {}).get("title") or "").strip().lower()
-                            if pl_title == norm_title:
-                                matched = pl.get("id") or pl.get("snippet", {}).get("playlistId")
-                                if matched:
-                                    break
-                        if matched:
-                            # dùng playlist có sẵn
-                            api_conn.execute(
-                                """INSERT INTO youtube_playlist_map (book_id, channel_id, playlist_id, mode, created_at, updated_at)
-                                   VALUES (?,?,?,?,?,?)
-                                   ON CONFLICT(book_id, channel_id) DO UPDATE SET playlist_id=excluded.playlist_id, updated_at=excluded.updated_at""",
-                                (book.id, channel_id, matched, "auto-detect", _now_iso(), _now_iso()),
-                            )
-                            api_conn.commit()
-                            # đồng bộ config youtube của sách
-                            try:
-                                with locked_conn(request) as _c:
-                                    from app.youtube_metadata import get_book_youtube_config
-                                    cfg = get_book_youtube_config(_c, book.id)
-                                    cfg["playlist"] = {"mode": "existing", "playlist_id": matched, "title_template": "{book_title}", "description_template": ""}
-                                    from app.youtube_metadata import save_book_youtube_config
-                                    save_book_youtube_config(_c, book.id, cfg)
-                            except Exception:
-                                pass
-                        else:
-                            # không có -> tạo mới
-                            try:
-                                pl = youtube.create_playlist(api_conn, effective_playlist_title, effective_playlist_description, privacy="private", default_language=default_lang)
-                                new_id = pl.get("id", "")
-                                if new_id:
-                                    api_conn.execute(
-                                        """INSERT INTO youtube_playlist_map (book_id, channel_id, playlist_id, mode, created_at, updated_at)
-                                           VALUES (?,?,?,?,?,?)
-                                           ON CONFLICT(book_id, channel_id) DO UPDATE SET playlist_id=excluded.playlist_id, updated_at=excluded.updated_at""",
-                                        (book.id, channel_id, new_id, "auto-create", _now_iso(), _now_iso()),
-                                    )
-                                    api_conn.commit()
-                                    try:
-                                        with locked_conn(request) as _c2:
-                                            from app.youtube_metadata import get_book_youtube_config, save_book_youtube_config
-                                            cfg2 = get_book_youtube_config(_c2, book.id)
-                                            cfg2["playlist"] = {"mode": "existing", "playlist_id": new_id, "title_template": "{book_title}", "description_template": ""}
-                                            save_book_youtube_config(_c2, book.id, cfg2)
-                                    except Exception:
-                                        pass
-                            except Exception as exc:
-                                logger.warning("auto playlist create failed for book %s: %s", book.id, exc, exc_info=True)
-                    elif mode == "new":
+                    if mode == "new":
                         try:
                             pl = youtube.create_playlist(api_conn, effective_playlist_title, effective_playlist_description, privacy="private", default_language=default_lang)
                             new_id = pl.get("id", "")
@@ -482,6 +427,7 @@ async def update_youtube_settings(request: Request, book_id: int):
 
 @router.get("/books/{book_id}/youtube-settings")
 def youtube_settings(request: Request, book_id: int):
+    from app import ai_content
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
         if book is None:
@@ -489,12 +435,38 @@ def youtube_settings(request: Request, book_id: int):
         creds = youtube.get_creds_from_db(conn)
         result = {"config": get_effective_youtube_config(conn, book), "connected": bool(creds), "channel_name": creds.get("channel_name") if creds else None,
                   "auto_create_video": bool(book.auto_create_video),
-                  "auto_upload_youtube": bool(book.auto_upload_youtube)}
+                  "auto_upload_youtube": bool(book.auto_upload_youtube),
+                  # Provider AI đọc từ .env: UI cần biết để bật/khoá nút sinh
+                  # nội dung mà không phải bắt thử rồi mới nhận lỗi.
+                  "ai_content": ai_content.provider_status()}
     try:
         result["playlists"] = _list_youtube_playlists() if result["connected"] else []
     except Exception:
         result["playlists"] = []
     return result
+
+
+@router.post("/books/{book_id}/youtube-metadata-generate")
+def generate_youtube_metadata(request: Request, book_id: int):
+    """Xếp job sinh mô tả + thẻ bằng API AI. Job ghi thẳng description và
+    genre_tags của cấu hình YouTube sách này (xem handler youtube_metadata)."""
+    from app import ai_content
+    from app.jobqueue import store
+
+    status = ai_content.provider_status()
+    if not status["configured"]:
+        raise HTTPException(400, status["detail"] or "Chưa cấu hình provider AI trong .env")
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(404, "book not found")
+        job_id = store.enqueue(
+            conn, "youtube_metadata_gen", payload={"book_id": book_id}, book_id=book_id,
+            dedupe_key=f"youtube_metadata_gen:book={book_id}", max_attempts=2,
+        )
+    if job_id is None:
+        raise HTTPException(409, "Sách này đang có job sinh nội dung chạy dở.")
+    return {"status": "queued", "job_id": job_id,
+            "provider": status["provider"], "model": status["model"]}
 
 
 

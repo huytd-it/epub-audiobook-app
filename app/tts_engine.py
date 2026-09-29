@@ -9,6 +9,7 @@ arrays at a learned sample rate, so they run the exact same audiobook pipeline
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -114,6 +115,21 @@ _F5_VIVOICE_OPTIONS = [
                  {"value": "cpu", "label": "CPU"}]},
 ]
 
+# Per-model tuning for OmniVoice (verified against omnivoice 0.2.1's generate()
+# + OmniVoiceGenerationConfig): num_step/guidance_scale ride **kwargs into the
+# config; language="vi" reads slightly better than language-agnostic mode.
+# Deliberately NOT exposed: instruct (voice-design is zh/en-only, unstable for
+# Vietnamese), normalize_text (needs the [tn] extra and only helps zh/en while
+# this app normalizes Vietnamese text itself), speed/duration (pacing knobs
+# that would fight the chunk-merge pauses).
+_OMNIVOICE_OPTIONS = [
+    {"key": "num_step", "label": "Số bước diffusion", "type": "number", "default": 32, "min": 8, "max": 64, "step": 1},
+    {"key": "guidance_scale", "label": "Guidance scale", "type": "number", "default": 2.0, "min": 0.0, "max": 5.0, "step": 0.1},
+    {"key": "language", "label": "Ngôn ngữ", "type": "select", "default": "vi",
+     "choices": [{"value": "vi", "label": "Tiếng Việt"}, {"value": "en", "label": "English"},
+                 {"value": "", "label": "Tự động"}]},
+]
+
 def _vieneu_default_voice() -> str:
     """Default preset from the installed wheel's own meta (demo shows the same).
 
@@ -147,6 +163,7 @@ _MODELS = {
     ),
     "omnivoice": TTSModel(
         "omnivoice", "OmniVoice", "k2-fsa/OmniVoice", "omnivoice", 24000, capabilities=_CAP_LOCAL,
+        options_schema=_OMNIVOICE_OPTIONS,
     ),
     "confucius4": TTSModel(
         "confucius4", "Confucius4-TTS", "netease-youdao/Confucius4-TTS", "confuciustts", 22050,
@@ -605,13 +622,84 @@ def _pause_value(raw, default: int) -> int:
         return default
 
 
+# Extra generate() flags that make VoxCPM2 read Vietnamese more accurately:
+# normalize runs upstream's text normalizer (numbers/dates/abbreviations come out
+# speakable instead of ambiguous digits), retry_badcase re-runs a chunk that
+# collapses into endless silence or babble. Both exist on current voxcpm wheels;
+# _voxcpm_extra_kwargs() only sends the ones the installed wheel accepts, so an
+# older install keeps working instead of dying with TypeError mid-batch.
+_VOXCPM_VI_EXTRAS = {
+    "normalize": True,
+    "retry_badcase": True,
+    "retry_badcase_max_times": 3,
+}
+
+
+def _supported_kwargs(model, wanted: dict) -> dict:
+    """Subset of ``wanted`` the model's generate() actually accepts.
+
+    Newer wheels take **kwargs (accept everything); older ones list explicit
+    params, so an unknown flag is dropped instead of dying with TypeError
+    mid-batch."""
+    try:
+        params = inspect.signature(model.generate).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(wanted)
+    return {k: v for k, v in wanted.items() if k in params}
+
+
+def _voxcpm_extra_kwargs(model) -> dict:
+    """Subset of _VOXCPM_VI_EXTRAS the installed voxcpm's generate() accepts."""
+    return _supported_kwargs(model, _VOXCPM_VI_EXTRAS)
+
+
+def clean_generated_audio(audio, sample_rate: int = 48000,
+                          silence_db: float = -40.0,
+                          keep_ms: float = 300.0,
+                          max_silence_ms: float = 400.0) -> np.ndarray:
+    """Cut dead air from a generated chunk: trim both ends and shorten inner
+    silences longer than max_silence_ms down to keep_ms.
+
+    VoxCPM emits leading/trailing silence and over-long mid-sentence gaps; once
+    concatenated those become audible holes in the audiobook. Anything quieter
+    than silence_db counts as silence. Pure numpy (mirrored in the Kaggle
+    notebook's Cell 8, which cannot import this module)."""
+    data = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if data.size == 0:
+        return data
+    limit = float(10.0 ** (silence_db / 20.0))
+    voiced = np.abs(data) > limit
+    if not np.any(voiced):
+        return np.zeros(0, dtype=np.float32)
+    first = int(np.argmax(voiced))
+    last = int(data.size - 1 - np.argmax(voiced[::-1]))
+    data = data[first:last + 1]
+    min_sil = max(1, int(sample_rate * max_silence_ms / 1000.0))
+    keep = max(1, int(sample_rate * keep_ms / 1000.0))
+    is_sil = np.abs(data) <= limit
+    padded = np.empty(len(is_sil) + 2, dtype=bool)
+    padded[0] = False
+    padded[-1] = False
+    padded[1:-1] = is_sil
+    changes = np.diff(padded.astype(np.int8))
+    starts = np.nonzero(changes == 1)[0]
+    ends = np.nonzero(changes == -1)[0]
+    keep_mask = np.ones(data.shape[0], dtype=bool)
+    for start, end in zip(starts.tolist(), ends.tolist()):
+        if end - start >= min_sil:
+            keep_mask[start + keep:end] = False
+    return np.ascontiguousarray(data[keep_mask], dtype=np.float32)
+
+
 class VoxCPMEngine:
     def __init__(
         self,
         model_id: str = "openbmb/VoxCPM2",
         load_denoiser: bool = False,
         cfg_value: float = 2.0,
-        inference_timesteps: int = 10,
+        inference_timesteps: int = 20,
         seed: int = 42,
         voice: str | None = None,
         **options,
@@ -667,12 +755,17 @@ class VoxCPMEngine:
                 kwargs["prompt_wav_path"] = reference_wav_path
                 kwargs["prompt_text"] = prompt_text
         _seed_rng(self.seed)
-        return self._model.generate(
+        audio = self._model.generate(
             text=text,
             cfg_value=self.cfg_value,
             inference_timesteps=self.inference_timesteps,
+            # Vietnamese-quality flags the installed wheel accepts (see
+            # _voxcpm_extra_kwargs): upstream TN for speakable numbers/dates,
+            # badcase retry for chunks collapsing into silence/babble.
+            **_voxcpm_extra_kwargs(self._model),
             **kwargs,
         )
+        return clean_generated_audio(audio, self.sample_rate)
 
     def synthesize_patch(
         self,
@@ -696,19 +789,38 @@ class VoxCPMEngine:
 
 
 class OmniVoiceEngine:
+    """k2-fsa OmniVoice voice cloning, tuned for Vietnamese audiobooks.
+
+    Quality levers (verified against omnivoice 0.2.1): ``num_step`` diffusion
+    steps, ``guidance_scale`` prompt adherence, and ``language="vi"`` (reads
+    slightly better than language-agnostic mode). ``preprocess_prompt`` /
+    ``postprocess_output`` stay at their True defaults (reference cleanup +
+    long-silence removal); ``instruct`` is never sent (voice-design is zh/en
+    only and unstable for Vietnamese); ``normalize_text`` is skipped (needs
+    the [tn] extra, helps zh/en only — this app normalizes Vietnamese itself).
+    Output additionally goes through :func:`clean_generated_audio`.
+    """
+
     sample_rate = 24000
 
     def __init__(self, model_id: str = "k2-fsa/OmniVoice", device: str | None = None,
-                 seed: int = 42, voice: str | None = None, **options):
+                 seed: int = 42, voice: str | None = None,
+                 num_step: int = 32, guidance_scale: float = 2.0,
+                 language: str | None = "vi", **options):
         # Like VoxCPM: names the clip to clone (library filename or "preset:...").
         self.voice = voice
         self.model_id = model_id
         self.device = device
         self.seed = seed
+        self.num_step = num_step
+        self.guidance_scale = guidance_scale
+        self.language = language or None
         self._model = None
 
     def config_fingerprint(self) -> str:
-        base = f"omnivoice:{self.model_id}:device={self.device}:seed={self.seed}"
+        base = (f"omnivoice:{self.model_id}:device={self.device}:seed={self.seed}:"
+                f"steps={self.num_step}:guidance={self.guidance_scale}:"
+                f"lang={self.language or 'auto'}")
         return f"{base}:ref={self.voice}" if self.voice else base
 
     def _ensure_loaded(self) -> None:
@@ -728,9 +840,15 @@ class OmniVoiceEngine:
             kwargs["ref_audio"] = reference_wav_path
         if prompt_text:
             kwargs["ref_text"] = prompt_text
+        wanted = {
+            "num_step": self.num_step,
+            "guidance_scale": self.guidance_scale,
+            "language": self.language,
+        }
         _seed_rng(self.seed)
-        audio = self._model.generate(text=text, **kwargs)
-        return np.asarray(audio[0] if isinstance(audio, (list, tuple)) else audio, dtype=np.float32)
+        audio = self._model.generate(text=text, **_supported_kwargs(self._model, wanted), **kwargs)
+        audio = np.asarray(audio[0] if isinstance(audio, (list, tuple)) else audio, dtype=np.float32)
+        return clean_generated_audio(audio, self.sample_rate)
 
 
 class Confucius4Engine:

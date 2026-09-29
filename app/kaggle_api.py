@@ -320,11 +320,11 @@ def kernel_output(
     """Download the batch's result files into dest_dir (mirroring each entry's
     fileName as a relative path) and return the local paths written.
 
-    Hidden paths (any segment starting with ".", e.g. the notebook's
-    /kaggle/working/.cache with its GBs of HuggingFace/pip blobs) are skipped:
-    downloading them stalls the worker past the reaper window and nothing in the
-    import pipeline reads them -- it only needs result/*.wav (+ sidecars) and
-    the locally-built patch manifests."""
+    Only merged result WAVs and their timeline sidecars are downloaded. Kaggle
+    captures the whole /kaggle/working tree, including chunk WAVs, model caches
+    and notebook artifacts (and result.zip from older notebook versions);
+    pulling any of those can stall imports
+    for hours even though the merged results are ready."""
     username, slug = _kernel_slug(kernel_ref)
     dest_dir = Path(dest_dir)
     entries = []
@@ -350,7 +350,10 @@ def kernel_output(
     written = []
     for entry in entries:
         name = str(entry.get("fileName") or "")
-        if not name or any(part.startswith(".") for part in Path(name).parts):
+        parts = Path(name.replace("\\", "/")).parts
+        if (len(parts) != 2 or parts[0] != "result"
+                or not (parts[1].endswith(".wav") or parts[1].endswith(".timeline.json"))
+                or parts[1].startswith(".")):
             continue
         # Presigned download URLs need no Kaggle auth of their own.
         content = _call(request, entry["url"], method="GET", headers={})

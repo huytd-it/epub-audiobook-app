@@ -228,11 +228,23 @@ export type PodcastConfig = {
   upload_cover: boolean;
 };
 
+/** Provider sinh nội dung đọc từ .env — backend trả kèm cấu hình YouTube để UI
+ * biết có bấm được nút "Sinh nội dung & thẻ" không. */
+export type AiContentStatus = {
+  configured: boolean;
+  provider: string;
+  model: string;
+  /** "Gemini · gemini-2.5-flash" khi dùng được; lý do chưa dùng được khi chưa. */
+  label?: string;
+  detail?: string;
+};
+
 export type YouTubeSettings = {
   config: YouTubeConfig;
   connected: boolean;
   channel_name: string | null;
   playlists: { id: string; title: string }[];
+  ai_content?: AiContentStatus;
 };
 
 export type YouTubeMetadataPreview = {

@@ -481,7 +481,7 @@ def list_files(service, folder_id: str) -> list[dict]:
     while True:
         resp = service.files().list(
             q=f"'{folder_id}' in parents and trashed = false",
-            fields="nextPageToken, files(id, name, modifiedTime, size)",
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
             pageToken=page_token,
         ).execute()
         files.extend(resp.get("files", []))

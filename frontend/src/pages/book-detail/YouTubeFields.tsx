@@ -1,7 +1,10 @@
-import React from "react";
-import { Mic, ShieldCheck } from "lucide-react";
+import React, { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { AlertTriangle, Loader2, Mic, ShieldCheck, Sparkles } from "lucide-react";
+import { api } from "@/api";
+import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { DESCRIPTION_EXTRA_FIELDS, DescriptionExtra, PodcastConfig, YouTubeConfig } from "./types";
+import { AiContentStatus, DESCRIPTION_EXTRA_FIELDS, DescriptionExtra, PodcastConfig, YouTubeConfig, errorText } from "./types";
 import { CheckField, Field, fieldClass, selectClass } from "./parts";
 
 /** Giữ default cho cấu hình cũ chưa có khối podcast. */
@@ -191,6 +194,132 @@ export function PodcastFields({
         )}
         {action}
       </div>
+    </section>
+  );
+}
+
+type AiJobState = { status: string; percent: number; error_message: string | null };
+
+/** Nút sinh Mô tả + Genre tags bằng API AI khai trong .env.
+ *
+ * Bấm là xếp job vào hàng đợi (một lượt gọi LLM chờ hàng chục giây, không giữ
+ * request), rồi poll `/queue/jobs/{id}` cho tới khi job kết thúc. Xong sẽ nạp
+ * lại cấu hình đã lưu nên hai ô trên form hiện đúng kết quả vừa sinh — chỉnh
+ * tay trước khi bấm thì mất, nên phần ghi chú nhắc rõ điều đó. */
+export function AiContentGenerator({
+  bookId,
+  status,
+  onApplied,
+  onMessage,
+}: {
+  bookId: string;
+  status?: AiContentStatus;
+  /** Nạp lại cấu hình YouTube từ server sau khi job đã ghi xong. */
+  onApplied: () => Promise<void> | void;
+  onMessage: (message: string) => void;
+}) {
+  const [jobId, setJobId] = useState<number>();
+  const [detail, setDetail] = useState("");
+  const running = jobId !== undefined;
+
+  // Poll bám theo jobId: đặt id là bắt đầu, job về terminal thì dừng, đóng
+  // dialog giữa chừng thì timer bị huỷ theo cleanup.
+  useEffect(() => {
+    if (jobId === undefined) return;
+    let stopped = false;
+    let timer = 0;
+    const tick = async () => {
+      try {
+        const job = await api<AiJobState>(`/queue/jobs/${jobId}`);
+        if (stopped) return;
+        if (job.status === "done") {
+          setJobId(undefined);
+          setDetail("Đã ghi mô tả và thẻ vào cấu hình sách.");
+          await onApplied();
+          return;
+        }
+        if (job.status === "failed" || job.status === "cancelled") {
+          setJobId(undefined);
+          setDetail(job.error_message || (job.status === "cancelled" ? "Job đã bị hủy." : "Job sinh nội dung thất bại."));
+          return;
+        }
+        setDetail(
+          `Job #${jobId} · ${job.status === "running" ? "đang sinh nội dung" : "đang chờ worker"} (${job.percent}%)`
+        );
+        timer = window.setTimeout(tick, 2000);
+      } catch (err) {
+        if (stopped) return;
+        setJobId(undefined);
+        setDetail(errorText(err));
+      }
+    };
+    void tick();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [jobId, onApplied]);
+
+  const run = useCallback(async () => {
+    if (jobId !== undefined) return;
+    setDetail("");
+    try {
+      const queued = await api<{ job_id: number }>(`/books/${bookId}/youtube-metadata-generate`, {
+        method: "POST",
+      });
+      setJobId(queued.job_id);
+    } catch (err) {
+      setDetail(errorText(err));
+      onMessage(errorText(err));
+    }
+  }, [bookId, jobId, onMessage]);
+
+  return (
+    <section className="space-y-2 rounded-md border border-border p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <Sparkles className="h-4 w-4 text-primary" /> Sinh nội dung &amp; thẻ bằng AI
+          </div>
+          <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+            Job đọc tên sách và mục lục rồi ghi đè đúng hai ô <strong>Mô tả</strong> và{" "}
+            <strong>Genre tags</strong>; các ô khác giữ nguyên. Chạy nền nên form vẫn dùng được — mọi chỉnh sửa
+            chưa lưu sẽ bị thay khi job xong.
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={!status?.configured || running}
+          onClick={run}
+          title={status?.configured ? undefined : status?.detail || "Chưa cấu hình provider AI trong .env"}
+        >
+          {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+          {running ? "Đang sinh..." : "Sinh nội dung & thẻ"}
+        </Button>
+      </div>
+
+      {!status?.configured && (
+        <p className="flex items-start gap-1.5 rounded-md bg-amber-50 px-2.5 py-2 text-[11px] leading-4 text-amber-800">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {status?.detail || "Chưa cấu hình provider AI trong .env (AI_CONTENT_PROVIDER + API key)."}
+        </p>
+      )}
+
+      {status?.configured && !running && !detail && (
+        <p className="text-[11px] text-muted-foreground">
+          Provider: {status.label || `${status.provider} · ${status.model}`}
+        </p>
+      )}
+
+      {detail && <p className="text-[11px] text-muted-foreground">{detail}</p>}
+
+      {running && (
+        <Link to="/queue" className="inline-block text-[11px] text-primary underline">
+          Theo dõi ở hàng đợi →
+        </Link>
+      )}
     </section>
   );
 }

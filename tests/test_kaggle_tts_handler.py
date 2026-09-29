@@ -200,18 +200,28 @@ def test_kernel_metadata_requests_a_concrete_gpu_type(monkeypatch):
     assert metadata["machine_shape"] == "NvidiaTeslaT4"
 
 
-def test_handle_requires_a_connected_drive_account(tmp_path, monkeypatch):
-    """No Drive account -> fatal fast: the Drive-only transport has nowhere to
-    put the batch and nowhere to read Drive/result from."""
+def test_handle_without_drive_runs_offline_via_kernel_output(tmp_path, monkeypatch):
+    """No Drive account -> offline: kernel runs from its packaged input and results
+    return via kernel_output (no fatal). Replaces the old Drive-required gate."""
     monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
     monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
     conn = _conn(tmp_path)
     ka.create_account(conn, "acc1", "user1", "key1")
     book_id, patch_id = _seed_book_and_patch(conn)
+    # Offline stubs: no Drive account seeded; kernel COMPLETEs and kernel_output
+    # materializes the result like a real offline kernel would.
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda *a, **k: "user1/slug")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.COMPLETE)
+    # Offline: no Drive folder published, so Drive polls are skipped; kernel_output
+    # materializes the result like a real offline kernel would.
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "kernel_output",
+        lambda account, kernel_ref, dest_dir: ([_write_result_for(dest_dir, patch_id)], [dest_dir])[1],
+    )
 
     ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
-    with pytest.raises(JobFatalError, match="Google Drive"):
-        kaggle_tts.handle(ctx)
+    assert kaggle_tts.handle(ctx) == {"imported": 1}
+    assert repository.get_patch(conn, patch_id).status == "done"
 
 
 def test_handle_uploads_package_to_drive_once_and_reuses_it_for_retries(tmp_path, monkeypatch):
@@ -295,6 +305,9 @@ def test_handle_does_not_push_again_when_complete_kernel_has_no_result(tmp_path,
     monkeypatch.setattr(
         kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.COMPLETE,
     )
+    # Drive/result empty -> fall back to kernel_output, which is also empty here,
+    # so the job must fail fast instead of retrying (saves Kaggle quota).
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output", lambda *a, **k: [])
 
     ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
     with pytest.raises(JobFatalError, match="không tự chạy lại"):
@@ -397,6 +410,9 @@ def test_handle_rotates_to_a_second_account_when_the_first_runs_out_of_quota(tmp
             _write_result_for(dest, patch_b)
         return [str(dest / "result")]
     monkeypatch.setattr(_gd, "download_result_directory", fake_download)
+    # Partial Drive import leaves patch_b missing after cycle 1: kernel_output
+    # finds nothing new, so the job loops to a continuation push (rotation).
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output", lambda *a, **k: [])
 
     ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_a, patch_b], "model_id": "zerotts"})
     result = kaggle_tts.handle(ctx)
@@ -719,3 +735,148 @@ def test_handle_passes_stable_batch_id_and_drive_creds_to_package(tmp_path, monk
     assert seen["batch_ids"] and all(b == seen["batch_ids"][0] for b in seen["batch_ids"])
     assert all(c is not None for c in seen["creds"])
     assert seen["folder"] == kaggle_tts._kernel_slug(book_id, [patch_id])
+
+
+def test_per_patch_downloads_finished_patches_from_drive_while_kernel_runs(tmp_path, monkeypatch):
+    """per_patch + Drive: patch kernel đã mirror lên Drive (Cell 8 drive_persist)
+    được tải dần + chain video ngay trong lúc kernel còn RUNNING, không đợi kernel
+    xong cả batch. Patch còn lại về qua kernel_output như cũ, mỗi patch đúng một
+    lần automation (không chain trùng)."""
+    import app.google_drive as google_drive
+
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_a = _seed_book_and_patch(conn)
+    patch_b = _add_patch(conn, book_id, 1)
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "create_dataset", lambda account, *a, **k: f"{account.username}/data")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda account, *a, **k: f"{account.username}/slug")
+    statuses = [KernelStatus.RUNNING, KernelStatus.RUNNING, KernelStatus.COMPLETE]
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "kernel_status",
+        lambda *a, **k: statuses.pop(0) if len(statuses) > 1 else KernelStatus.COMPLETE,
+    )
+
+    def fake_output(account, kernel_ref, dest_dir):
+        # Kernel chỉ trả patch_b qua output; patch_a phải về bằng đường Drive dần.
+        _write_result_for(dest_dir, patch_b)
+        return []
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output", fake_output)
+
+    creds = {"client_id": "cid", "client_secret": "cs", "refresh_token": "rt"}
+    monkeypatch.setattr(kaggle_tts, "_drive_creds_for_kernel", lambda c: creds)
+    monkeypatch.setattr(kaggle_tts, "_drive_sync_account_for_kernel", lambda c: ({"id": 7}, creds))
+    monkeypatch.setattr(kaggle_tts, "_find_drive_sync_folder_id", lambda service, batch_id: "folder123")
+    # Upload is gated on drive_account_id: fake it to the same folder the Drive
+    # poll below looks up, so no real Drive service is touched.
+    monkeypatch.setattr(
+        kaggle_tts.drive_export, "publish_package_to_drive_api",
+        lambda c, account_id, package_dir, folder_name: {"id": "folder123", "link": "https://drive/x"},
+    )
+
+    from app import drive_export as _de
+    wav_a = _de.result_wav_name(repository.get_patch(conn, patch_a))
+    monkeypatch.setattr(google_drive, "get_drive_service", lambda conn, aid: object())
+    # RUNNING-loop legacy poll uses download_result_directory: nothing there yet
+    # (patch_a arrives via the per-file list_files path below).
+    monkeypatch.setattr(google_drive, "download_result_directory", lambda service, folder_id, dest_root: [])
+    monkeypatch.setattr(
+        google_drive, "list_files",
+        lambda service, folder_id: ([{"id": "result999", "name": "result",
+                                     "mimeType": "application/vnd.google-apps.folder"}]
+                                    if folder_id == "folder123" else
+                                    [{"id": "f1", "name": wav_a}]),
+    )
+
+    def fake_download(service, file_id, dest_path):
+        assert file_id == "f1"
+        sf.write(dest_path, np.zeros(1000, dtype=np.float32), 16000)
+    monkeypatch.setattr(google_drive, "download_file", fake_download)
+
+    events = _automation_spies(monkeypatch)
+    ctx = _ctx(conn, {
+        "book_id": book_id, "patch_ids": [patch_a, patch_b], "model_id": "zerotts",
+        "auto_create_video": True, "auto_upload_youtube": True,
+        "automation_mode": "per_patch",
+    })
+    assert kaggle_tts.handle(ctx) == {"imported": 2}
+    assert repository.get_patch(conn, patch_a).status == "done"
+    assert repository.get_patch(conn, patch_b).status == "done"
+    videos = [e for e in events if e[0] == "video"]
+    assert sorted(e[1] for e in videos) == sorted([patch_a, patch_b])
+    assert len(videos) == 2  # tải Drive + output kernel không chain trùng
+    assert not [e for e in events if e[0] == "legacy"]
+
+
+def test_per_patch_without_drive_still_imports_from_kernel_output(tmp_path, monkeypatch):
+    """per_patch nhưng Drive chưa kết nối: không tải dần, vẫn import đủ qua
+    kernel_output như cũ (không fatal oan)."""
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+    # Offline: no Drive seeded on purpose; kernel COMPLETEs and kernel_output
+    # materializes the result like a real offline kernel would.
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", lambda *a, **k: "user1/slug")
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", lambda *a, **k: KernelStatus.COMPLETE)
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "kernel_output",
+        lambda account, kernel_ref, dest_dir: (
+            _write_result_for(dest_dir, patch_id), [dest_dir / "result"])[1],
+    )
+    events = _automation_spies(monkeypatch)
+    monkeypatch.setattr(kaggle_tts, "_drive_creds_for_kernel", lambda c: None)
+
+    ctx = _ctx(conn, {
+        "book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts",
+        "auto_create_video": True, "automation_mode": "per_patch",
+    })
+    assert kaggle_tts.handle(ctx) == {"imported": 1}
+    assert ("video", patch_id, {"auto_create_video": True}) in events
+
+
+def test_after_all_imports_from_both_duplicate_drive_result_folders(tmp_path, monkeypatch):
+    """Regression for job #6315: Drive can contain two sibling result folders;
+    WAVs in the second folder must not be invisible, and after_all must wait
+    until both audio files are installed before queuing either video."""
+    import app.google_drive as google_drive
+
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, a = _seed_book_and_patch(conn)
+    b = _add_patch(conn, book_id, 1)
+    _success_stubs(monkeypatch, tmp_path, lambda dest: None)
+    creds = {"client_id": "cid", "client_secret": "cs", "refresh_token": "rt"}
+    monkeypatch.setattr(kaggle_tts, "_drive_creds_for_kernel", lambda c: creds)
+    monkeypatch.setattr(kaggle_tts, "_drive_sync_account_for_kernel", lambda c: ({"id": 7}, creds))
+    monkeypatch.setattr(kaggle_tts, "_find_drive_sync_folder_id", lambda svc, batch: "batch")
+    monkeypatch.setattr(google_drive, "get_drive_service", lambda conn, aid: object())
+    names = {"old": kaggle_tts.drive_export.result_wav_name(repository.get_patch(conn, a)),
+             "new": kaggle_tts.drive_export.result_wav_name(repository.get_patch(conn, b))}
+
+    def list_files(svc, folder):
+        if folder == "batch":
+            return [{"id": fid, "name": "result", "mimeType": "application/vnd.google-apps.folder"}
+                    for fid in ("old", "new")]
+        return [{"id": folder, "name": names[folder]}]
+
+    monkeypatch.setattr(google_drive, "list_files", list_files)
+    monkeypatch.setattr(google_drive, "download_file",
+                        lambda svc, fid, dest: sf.write(dest, np.zeros(1000, dtype=np.float32), 16000))
+    events = _automation_spies(monkeypatch)
+    real_mark = repository.mark_patch_done
+    monkeypatch.setattr(repository, "mark_patch_done",
+                        lambda c, pid, path: events.append(("mark", pid)) or real_mark(c, pid, path))
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output",
+                        lambda *args: pytest.fail("Drive has both results: no Kaggle output download"))
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [a, b], "model_id": "zerotts",
+                      "auto_create_video": True, "automation_mode": "after_all"})
+    assert kaggle_tts.handle(ctx) == {"imported": 2}
+    assert [e[1] for e in events if e[0] == "mark"] == [a, b]
+    assert [e[1] for e in events if e[0] == "video"] == [a, b]
+    assert events.index(("mark", b)) < next(i for i, e in enumerate(events) if e[0] == "video")

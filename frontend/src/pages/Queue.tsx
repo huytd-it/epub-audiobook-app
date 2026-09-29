@@ -21,6 +21,7 @@ const WORKER_TYPES = [
   ["light_tts", "TTS nhẹ"], ["kaggle_tts", "TTS Kaggle"],
   ["video", "Video sách"], ["patch_video", "Video phân đoạn"],
   ["standalone_video", "Video độc lập"], ["youtube_upload", "YouTube upload"],
+  ["youtube_metadata_gen", "Sinh nội dung YouTube"],
   ["background_gen", "Tạo ảnh nền"], ["gameplay_clip", "Gameplay clip"],
 ] as const;
 type WorkerType = typeof WORKER_TYPES[number][0];
@@ -39,6 +40,8 @@ function jobTypeLabel(jobType: string) {
   if (jobType === "kaggle_tts") return "TTS Kaggle";
   if (jobType === "light_tts") return "TTS nhẹ";
   if (jobType.includes("tts")) return "TTS";
+  // Loại này chứa "youtube" nên phải xử lý trước fallback bên dưới.
+  if (jobType === "youtube_metadata_gen") return "Sinh nội dung YouTube";
   if (jobType.includes("youtube")) return "YouTube";
   if (jobType.includes("video")) return "Video";
   return jobType;

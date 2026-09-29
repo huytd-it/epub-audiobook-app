@@ -16,6 +16,8 @@ from app.tts_engine import (
     VieNeuFastEngine,
     VoxCPMEngine,
     ZeroTTSEngine,
+    _voxcpm_extra_kwargs,
+    clean_generated_audio,
     create_tts_engine,
     list_tts_models,
     normalize_tt_payload,
@@ -30,6 +32,7 @@ from app.tts_engine import (
 class FakeModel:
     def __init__(self):
         self.calls = []
+        self.tts_model = types.SimpleNamespace(sample_rate=48000)
 
     def generate(self, **kwargs):
         self.calls.append(kwargs)
@@ -82,7 +85,10 @@ def test_synthesize_chunk_passes_generation_defaults(monkeypatch):
         {
             "text": "hello",
             "cfg_value": 2.0,
-            "inference_timesteps": 10,
+            "inference_timesteps": 20,
+            "normalize": True,
+            "retry_badcase": True,
+            "retry_badcase_max_times": 3,
         }
     ]
 
@@ -118,7 +124,10 @@ def test_synthesize_chunk_passes_ultimate_cloning_prompt_arguments(monkeypatch):
     assert model.calls[0] == {
         "text": "hello",
         "cfg_value": 2.0,
-        "inference_timesteps": 10,
+        "inference_timesteps": 20,
+        "normalize": True,
+        "retry_badcase": True,
+        "retry_badcase_max_times": 3,
         "reference_wav_path": "voice.wav",
         "prompt_wav_path": "voice.wav",
         "prompt_text": "hello",
@@ -235,7 +244,58 @@ def test_omnivoice_normalizes_list_output_and_clone_arguments(monkeypatch):
     result = engine.synthesize_chunk("xin chào", "voice.wav", "giọng mẫu")
 
     assert result.dtype == np.float32
-    assert model.calls == [{"text": "xin chào", "ref_audio": "voice.wav", "ref_text": "giọng mẫu"}]
+    assert model.calls == [{
+        "text": "xin chào", "ref_audio": "voice.wav", "ref_text": "giọng mẫu",
+        "num_step": 32, "guidance_scale": 2.0, "language": "vi",
+    }]
+
+
+def test_omnivoice_omits_tuning_flags_on_old_wheels(monkeypatch):
+    """An older omnivoice without language=/num_step kwargs must still synthesize
+    instead of dying with TypeError mid-batch."""
+    monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
+
+    class OldOmni:
+        tts_model = None  # unused: sample_rate is a class attr here
+
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, text, ref_audio=None, ref_text=None):
+            self.calls.append({"text": text, "ref_audio": ref_audio, "ref_text": ref_text})
+            return [np.array([0.5])]
+
+    engine = OmniVoiceEngine()
+    engine._model = OldOmni()
+    assert engine.synthesize_chunk("xin chào", "voice.wav", "giọng mẫu").tolist() == [0.5]
+    assert engine._model.calls == [
+        {"text": "xin chào", "ref_audio": "voice.wav", "ref_text": "giọng mẫu"}
+    ]
+
+
+def test_omnivoice_output_is_silence_cleaned(monkeypatch):
+    monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
+    speech = np.full(2400, 0.5, dtype=np.float32)
+    model = FakeModel()
+    model.generate = lambda **kwargs: (model.calls.append(kwargs)
+                                       or [np.concatenate([np.zeros(4800), speech, np.zeros(4800)])])
+    engine = OmniVoiceEngine()
+    engine._model = model
+
+    assert engine.synthesize_chunk("xin chào").tolist() == speech.tolist()
+
+
+def test_omnivoice_options_schema_survives_normalization():
+    from app.tts_engine import normalize_tts_options
+
+    assert normalize_tts_options("omnivoice", {}) == {
+        "num_step": 32, "guidance_scale": 2.0, "language": "vi",
+    }
+    opts = normalize_tts_options("omnivoice", {"num_step": 16, "language": "en"})
+    assert opts == {"num_step": 16, "guidance_scale": 2.0, "language": "en"}
+    # Out-of-range values clamp to the schema instead of reaching the model.
+    assert normalize_tts_options("omnivoice", {"num_step": 500})["num_step"] == 64
+    assert normalize_tts_options("omnivoice", {"language": "xx"})["language"] == "vi"
 
 
 def test_vieneu_fast_speaks_a_preset_and_ignores_any_reference_clip():
@@ -365,7 +425,10 @@ def test_cloning_engines_take_their_reference_from_a_preset_voice(tmp_path, monk
     omni = OmniVoiceEngine(voice="preset:zerotts:maichi")
     omni._model = FakeModel()
     omni.synthesize_chunk("xin chào", "book.wav", "cũ")
-    assert omni._model.calls[0] == {"text": "xin chào", "ref_audio": clip, "ref_text": transcript}
+    assert omni._model.calls[0] == {
+        "text": "xin chào", "ref_audio": clip, "ref_text": transcript,
+        "num_step": 32, "guidance_scale": 2.0, "language": "vi",
+    }
 
 
 def _seed_library_clip(tmp_path, monkeypatch, name: str) -> Path:
@@ -427,7 +490,12 @@ def test_the_picked_voice_keys_the_chunk_cache():
     """Chunks recorded against another reference must not be resumed into this run; books
     that never picked a voice keep the fingerprint their chunks were written with."""
     assert VoxCPMEngine().config_fingerprint().endswith("seed=42")
-    assert OmniVoiceEngine().config_fingerprint().endswith("seed=42")
+    assert OmniVoiceEngine().config_fingerprint().endswith("steps=32:guidance=2.0:lang=vi")
+    assert "lang=vi" in OmniVoiceEngine().config_fingerprint()
+    assert (OmniVoiceEngine(num_step=16).config_fingerprint()
+            != OmniVoiceEngine(num_step=32).config_fingerprint())
+    assert (OmniVoiceEngine(language="en").config_fingerprint()
+            != OmniVoiceEngine(language="vi").config_fingerprint())
     for engine in (VoxCPMEngine, OmniVoiceEngine):
         plain = engine().config_fingerprint()
         assert engine(voice="giong-nam.wav").config_fingerprint() not in (
@@ -463,3 +531,73 @@ def test_preset_reference_options_are_offered_as_voice_ids(monkeypatch):
         "language": "vi",
     }]
     assert parse_preset_voice(options[0]["value"]) == ("vieneu-fast", "Adam")
+
+
+def test_voxcpm_extras_follow_what_the_installed_wheel_accepts():
+    class OldWheel:
+        tts_model = types.SimpleNamespace(sample_rate=48000)
+
+        def generate(self, text, cfg_value, inference_timesteps):
+            return np.array([1.0])
+
+    assert _voxcpm_extra_kwargs(OldWheel()) == {}
+
+    class NewWheel:
+        tts_model = types.SimpleNamespace(sample_rate=48000)
+
+        def generate(self, text, cfg_value, inference_timesteps,
+                     normalize, retry_badcase, retry_badcase_max_times):
+            return np.array([1.0])
+
+    assert _voxcpm_extra_kwargs(NewWheel()) == {
+        "normalize": True,
+        "retry_badcase": True,
+        "retry_badcase_max_times": 3,
+    }
+    # **kwargs catch-all (like FakeModel above) means "accepts everything".
+    assert _voxcpm_extra_kwargs(FakeModel()) == _voxcpm_extra_kwargs(NewWheel())
+
+
+def test_voxcpm_synthesize_chunk_omits_extras_on_old_wheels(monkeypatch):
+    """An older voxcpm without normalize/retry_badcase must still synthesize
+    instead of dying with TypeError mid-batch."""
+    monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
+
+    class OldWheel:
+        tts_model = types.SimpleNamespace(sample_rate=48000)
+
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, text, cfg_value, inference_timesteps):
+            self.calls.append({"text": text, "cfg_value": cfg_value,
+                               "inference_timesteps": inference_timesteps})
+            return np.array([1.0])
+
+    engine = VoxCPMEngine()
+    engine._model = OldWheel()
+    assert engine.synthesize_chunk("xin chào").tolist() == [1.0]
+    assert engine._model.calls == [
+        {"text": "xin chào", "cfg_value": 2.0, "inference_timesteps": 20}
+    ]
+
+
+def test_clean_generated_audio_trims_ends_and_shortens_long_pauses():
+    sr = 48000
+    speech = np.full(4800, 0.5, dtype=np.float32)          # 100 ms voiced
+    long_sil = np.zeros(sr, dtype=np.float32)              # 1000 ms hole
+    short_sil = np.zeros(4800, dtype=np.float32)           # 100 ms, kept whole
+    audio = np.concatenate([
+        np.zeros(9600, dtype=np.float32), speech, long_sil, speech, short_sil,
+        speech, np.zeros(4800, dtype=np.float32),
+    ])
+    cleaned = clean_generated_audio(audio, sr)
+    # ends trimmed, long hole shortened to keep_ms=300ms, short pause untouched
+    expected = 4800 + 14400 + 4800 + 4800 + 4800
+    assert cleaned.shape == (expected,)
+    assert cleaned.dtype == np.float32
+
+
+def test_clean_generated_audio_empty_and_all_silence():
+    assert clean_generated_audio(np.array([], dtype=np.float32), 48000).shape == (0,)
+    assert clean_generated_audio(np.zeros(1000, dtype=np.float32), 48000).shape == (0,)

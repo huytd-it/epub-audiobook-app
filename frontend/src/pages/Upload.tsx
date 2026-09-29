@@ -31,7 +31,7 @@ export function Upload() {
   const [playlists, setPlaylists] = useState<PlaylistOption[]>([]);
   const [playlistsLoading, setPlaylistsLoading] = useState(false);
   const [playlistConnected, setPlaylistConnected] = useState(true);
-  const [playlistChoice, setPlaylistChoice] = useState<string>("__auto__");
+  const [playlistChoice, setPlaylistChoice] = useState<string>("__new__");
   const [playlistCountry, setPlaylistCountry] = useState("VN");
   const [customPlaylistTitle, setCustomPlaylistTitle] = useState("");
   const [customPlaylistDesc, setCustomPlaylistDesc] = useState("");
@@ -101,18 +101,6 @@ export function Upload() {
     };
   }, [selectedFile]);
 
-  // Tự động detect khi cả title và playlists đã có
-  useEffect(() => {
-    if (!parsedTitle || !playlists.length) return;
-    const norm = parsedTitle.trim().toLowerCase();
-    const matched = playlists.find((pl) => pl.title.trim().toLowerCase() === norm);
-    if (matched) {
-      setPlaylistChoice(matched.id);
-    } else {
-      setPlaylistChoice("__auto__");
-    }
-  }, [parsedTitle, playlists]);
-
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!selectedFile) return;
@@ -121,12 +109,10 @@ export function Upload() {
 
     const form = new FormData();
     form.append("epub_file", selectedFile);
-    // chuyển playlistChoice thành playlist_mode/playlist_id cho backend
-    let mode: string = "auto";
+    // bỏ auto-detect: chỉ còn tạo mới hoặc dùng playlist có sẵn
+    let mode: string = "new";
     let pid = "";
-    if (playlistChoice === "__auto__") {
-      mode = "auto";
-    } else if (playlistChoice === "__new__") {
+    if (playlistChoice === "__new__") {
       mode = "new";
     } else {
       mode = "existing";
@@ -300,9 +286,6 @@ export function Upload() {
                         onChange={(e) => setPlaylistChoice(e.target.value)}
                         disabled={playlistsLoading}
                       >
-                        <option value="__auto__">
-                          Tự động — detect theo tên sách {parsedTitle ? `“${parsedTitle}”` : ""} hoặc tạo mới
-                        </option>
                         <option value="__new__">Tạo mới playlist: {parsedTitle || "theo tên sách"}</option>
                         {playlists.map((pl) => (
                           <option key={pl.id} value={pl.id}>
@@ -311,7 +294,7 @@ export function Upload() {
                         ))}
                       </select>
                       <span className="mt-1 block text-[11px] text-muted-foreground">
-                        Tự động sẽ tìm playlist trùng tên sách (không phân biệt hoa/thường); nếu không có sẽ tạo mới lấy tên book_title.
+                        Chọn tạo mới hoặc dùng playlist có sẵn.
                       </span>
                     </label>
 
@@ -337,7 +320,7 @@ export function Upload() {
                     </label>
                   </div>
 
-                  {(playlistChoice === "__auto__" || playlistChoice === "__new__") && (
+                  {playlistChoice === "__new__" && (
                     <div className="space-y-3 rounded-md border border-border bg-background p-3">
                       <div>
                         <label className="block text-xs font-medium mb-1.5">Tên playlist sẽ tạo</label>
@@ -366,7 +349,7 @@ export function Upload() {
                     </div>
                   )}
 
-                  {playlistChoice !== "__auto__" && playlistChoice !== "__new__" && (
+                  {playlistChoice !== "__new__" && (
                     <div className="rounded-md bg-emerald-50 border border-emerald-200 px-3 py-2 text-xs text-emerald-800">
                       Sẽ dùng playlist có sẵn: <span className="font-semibold">{playlists.find((p) => p.id === playlistChoice)?.title || playlistChoice}</span>
                     </div>

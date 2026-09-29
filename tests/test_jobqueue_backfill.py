@@ -173,6 +173,7 @@ def test_build_queue_registers_all_four_handlers(tmp_path):
     assert {p["job_type"] for p in queue.pool_status()} == {
         "audiobook_tts", "audiobook_tts_api", "video", "patch_video", "standalone_video",
         "youtube_upload", "light_tts", "background_gen", "gameplay_clip", "kaggle_tts",
+        "youtube_metadata_gen",
     }
 
 

@@ -721,12 +721,15 @@ def generate_segment(
 
 def _probe_frame_rate(path: str) -> float:
     """Container-declared framerate (r_frame_rate) of a file's video stream."""
-    result = subprocess.run(
-        [settings.get_ffprobe_path(), "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=r_frame_rate",
-         "-of", "default=noprint_wrappers=1:nokey=1", path],
-        capture_output=True, text=True, check=True,
-    )
+    try:
+        result = subprocess.run(
+            [settings.get_ffprobe_path(), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
     # An unreadable rate means "unknown", never a hard failure: the guard below
     # must not be able to break a concat that ffmpeg itself would accept.
     try:
@@ -739,12 +742,15 @@ def _probe_frame_rate(path: str) -> float:
 
 
 def _probe_video_geometry(path: str) -> tuple[int, int] | None:
-    result = subprocess.run(
-        [settings.get_ffprobe_path(), "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height",
-         "-of", "csv=p=0:s=x", path],
-        capture_output=True, text=True, check=True,
-    )
+    try:
+        result = subprocess.run(
+            [settings.get_ffprobe_path(), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "csv=p=0:s=x", path],
+            capture_output=True, text=True, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
     try:
         width, height = (int(value) for value in result.stdout.strip().split("x", 1))
     except (AttributeError, TypeError, ValueError):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import shutil
 import time
@@ -246,6 +247,176 @@ def _verify_dataset_not_empty(
         )
 
 
+def _drive_sync_account_for_kernel(conn) -> tuple[dict | None, dict | None]:
+    """(account, creds) for the kernel's Drive sync + progressive per_patch import.
+
+    Same selection as _drive_creds_for_kernel (first connected account that can
+    mint a GDRIVE_CREDS payload), but also returns the account row so the handler
+    can open a Drive API service (get_drive_service needs the account id).
+    Best-effort: returns (None, None) when Drive is not connected. Never raises.
+    """
+    try:
+        from app import google_drive
+    except ImportError:
+        return None, None
+    try:
+        accounts = google_drive.list_accounts(conn)
+    except Exception as exc:
+        logger.warning("Drive account lookup for Kaggle sync failed: %s", exc)
+        return None, None
+    for account in accounts:
+        try:
+            creds = google_drive.kaggle_credentials(conn, account["id"])
+        except Exception as exc:
+            logger.warning(
+                "Drive creds lookup for Kaggle sync failed (account %s): %s",
+                account.get("id"), exc,
+            )
+            continue
+        if creds:
+            return account, creds
+    return None, None
+
+
+def _find_drive_sync_folder_id(service, batch_id: str) -> str | None:
+    """Locate the kernel's Drive sync folder by batch_id (same scan the notebook
+    does in Cell 4's kaggle_native branch): the folder under
+    'EPUB Audiobook Exports' whose batch_manifest.json carries this batch_id."""
+    import io
+
+    from googleapiclient.http import MediaIoBaseDownload
+
+    roots = service.files().list(
+        q="name = 'EPUB Audiobook Exports' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+        fields="files(id)", pageSize=10,
+    ).execute().get("files", [])
+    if not roots:
+        return None
+    for root in roots:
+        page_token = None
+        while True:
+            resp = service.files().list(
+                q=f"'{root['id']}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                fields="nextPageToken, files(id, name)",
+                pageToken=page_token, pageSize=100,
+            ).execute()
+            for folder in resp.get("files", []):
+                mf = service.files().list(
+                    q=f"'{folder['id']}' in parents and name = 'batch_manifest.json' and trashed = false",
+                    fields="files(id)", pageSize=5,
+                ).execute().get("files", [])
+                if not mf:
+                    continue
+                buf = io.BytesIO()
+                req = service.files().get_media(fileId=mf[0]["id"])
+                dl = MediaIoBaseDownload(buf, req)
+                done = False
+                while not done:
+                    _, done = dl.next_chunk()
+                try:
+                    manifest = json.loads(buf.getvalue().decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if manifest.get("batch_id") == batch_id:
+                    return folder["id"]
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+    return None
+
+
+def _poll_drive_for_completed_patches(
+    ctx: JobContext, conn, *, book_id: int, patches: list,
+    drive_state: dict, batch_id: str, package_dir: Path,
+    request_policy: dict, automation_mode: str, automation_active: bool,
+    imported_this_job: list[int], done_holder: list[int], total: int,
+) -> int:
+    """Best-effort Drive result import. During RUNNING this supports per_patch;
+    after kernel completion it recovers both modes when Kaggle output is missing.
+
+    Never raises: a Drive failure leaves kernel_output as fallback.
+    """
+    from app import google_drive
+
+    if drive_state.get("account_id") is None:
+        return 0
+    try:
+        service = drive_state.get("service")
+        if service is None:
+            service = google_drive.get_drive_service(conn, drive_state["account_id"])
+            drive_state["service"] = service
+        folder_id = drive_state.get("folder_id")
+        if not folder_id:
+            folder_id = _find_drive_sync_folder_id(service, batch_id)
+            if not folder_id:
+                return 0
+            drive_state["folder_id"] = folder_id
+            ctx.log(f"Drive: thấy thư mục sync cho batch {batch_id}")
+        # Drive permits duplicate sibling names. A previous kernel version may
+        # have written into the *other* result folder; find_subfolder() picks
+        # only the first, silently hiding valid merged WAVs.
+        result_folders = [f["id"] for f in google_drive.list_files(service, folder_id)
+                          if f.get("name") == "result"
+                          and f.get("mimeType") == "application/vnd.google-apps.folder"]
+        if not result_folders:
+            return 0
+        remote = {}
+        for result_folder_id in result_folders:
+            for f in google_drive.list_files(service, result_folder_id):
+                remote[f.get("name")] = f.get("id")
+        newly = 0
+        staging = package_dir / "_drive_progress"
+        for patch in patches:
+            current = repository.get_patch(conn, patch.id)
+            if current is None or current.status == "done" or patch.id in imported_this_job:
+                continue
+            wav_name = drive_export.result_wav_name(patch)
+            file_id = remote.get(wav_name)
+            if not file_id:
+                continue
+            staging.mkdir(parents=True, exist_ok=True)
+            tmp_wav = staging / wav_name
+            try:
+                google_drive.download_file(service, file_id, str(tmp_wav))
+                timeline_name = Path(wav_name).with_suffix(".timeline.json").name
+                timeline_id = remote.get(timeline_name)
+                if timeline_id:
+                    try:
+                        google_drive.download_file(service, timeline_id, str(tmp_wav.with_suffix(".timeline.json")))
+                    except Exception:
+                        logger.warning("Drive timeline download skipped for patch %s", patch.id, exc_info=True)
+                audio_path = repository.get_patch_audio_path(book_id, patch.patch_index)
+                audio_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    patch_import.install_imported_wav(tmp_wav, audio_path)
+                except Exception:
+                    logger.warning(
+                        "Drive result WAV invalid for patch %s; will retry next poll",
+                        patch.id, exc_info=True,
+                    )
+                    continue
+                repository.mark_patch_done(conn, patch.id, str(audio_path))
+                if automation_active and automation_mode == AUTOMATION_PER_PATCH:
+                    _automate_patch(ctx, patch.id, request_policy)
+                elif not automation_active:
+                    on_patch_audio_ready(conn, patch.id)
+                imported_this_job.append(patch.id)
+                done_holder[0] += 1
+                newly += 1
+                ctx.progress(done_holder[0], total)
+                ctx.log(f"Đã tải patch {patch.id} từ Drive ({done_holder[0]}/{total})")
+            finally:
+                try:
+                    tmp_wav.unlink(missing_ok=True)
+                    tmp_wav.with_suffix(".timeline.json").unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return newly
+    except Exception as exc:
+        logger.warning("Drive progressive poll failed (best-effort, will retry): %s", exc, exc_info=True)
+        return 0
+
+
 def _drive_creds_for_kernel(conn) -> dict | None:
     """Best-effort Drive credentials for the kernel's optional output sync (see
     Cell 4's Drive API branch): the first connected account that can mint a
@@ -449,18 +620,43 @@ def handle(ctx: JobContext) -> dict | None:
     # of re-synthesizing from scratch (like the manual Drive notebook).
     slug = _kernel_slug(book_id, patch_ids)
     stable_batch_id = _stable_batch_id(slug, model_id, voice_id, max_chars, with_effects)
-    drive_account_info = _drive_account_for_kernel(conn)
-    if drive_account_info:
-        drive_account, drive_creds = drive_account_info
-        ctx.log(
-            f"Drive sync bật cho kernel này (batch {stable_batch_id}): "
-            "input và chunk/output dùng Google Drive API, retry sẽ resume phần đã xong"
-        )
+    drive_creds = _drive_creds_for_kernel(conn)
+    # Drive imports need the account id (get_drive_service), not just the
+    # GDRIVE_CREDS payload baked into the notebook. Use the same account.
+    drive_account_id: int | None = None
+    progressive_enabled = automation_active and automation_mode == AUTOMATION_PER_PATCH
+    if drive_creds:
+        try:
+            _acct, _creds = _drive_sync_account_for_kernel(conn)
+            if _acct and _creds == drive_creds:
+                drive_account_id = _acct["id"]
+        except Exception:
+            drive_account_id = None
+        if progressive_enabled:
+            if drive_account_id is not None:
+                ctx.log(
+                    f"Drive sync bật cho kernel này (batch {stable_batch_id}): "
+                    "chunk/output tự mirror lên Drive, retry sẽ resume phần đã xong; "
+                    "per_patch sẽ tải dần từng patch từ Drive trong lúc kernel còn chạy"
+                )
+            else:
+                ctx.log(
+                    f"Drive sync bật cho kernel này (batch {stable_batch_id}): "
+                    "chunk/output tự mirror lên Drive, retry sẽ resume phần đã xong"
+                )
+        else:
+            ctx.log(
+                f"Drive sync bật cho kernel này (batch {stable_batch_id}): "
+                "chunk/output tự mirror lên Drive, retry sẽ resume phần đã xong"
+            )
     else:
-        raise JobFatalError(
-            "Kaggle API cần Google Drive API để truyền batch và nhận thư mục result; "
-            "hãy kết nối ít nhất một tài khoản Google Drive trước khi chạy."
-        )
+        ctx.log("Drive chưa kết nối - kernel chạy offline, retry sẽ làm lại từ đầu")
+        if progressive_enabled:
+            ctx.log(
+                "per_patch yêu cầu tải dần từ Drive nhưng Drive chưa kết nối - "
+                "sẽ đợi kernel xong rồi import qua kernel output như cũ",
+                level=logging.WARNING,
+            )
     ctx.progress(0, total, phase="preparing")
     try:
         # Self-heal cooldowns written by older releases from an inaccurate local
@@ -525,15 +721,17 @@ def handle(ctx: JobContext) -> dict | None:
 
             account_ref = kaggle_api.KaggleAccount(username=account["username"], api_key=account["api_key"])
 
-            # The notebook reads its input and persists outputs through Drive API. The
-            # package is uploaded once for this job; retries reuse the same Drive folder.
-            if drive_batch_folder_id is None:
+            # The notebook reads its input and persists outputs through Drive API when
+            # connected. The package is uploaded once for this job; retries reuse the
+            # same Drive folder. Offline (no Drive) the kernel runs from its packaged
+            # input and results return via kernel_output().
+            if drive_batch_folder_id is None and drive_account_id is not None:
                 ctx.progress(done, total, phase="uploading")
                 ctx.log(
-                    f"Uploading batch data to Google Drive account {drive_account['account_email']}"
+                    f"Uploading batch data to Google Drive account {drive_account_id}"
                 )
                 drive_batch_folder = drive_export.publish_package_to_drive_api(
-                    conn, drive_account["id"], package_dir, slug,
+                    conn, drive_account_id, package_dir, slug,
                 )
                 drive_batch_folder_id = drive_batch_folder["id"]
 
@@ -553,6 +751,12 @@ def handle(ctx: JobContext) -> dict | None:
                 ctx.log(f"Kernel {kernel_ref} status={status.value}")
                 polls = 0
                 last_status = status
+                # Progressive per_patch state: reused across polls of this kernel run
+                # (service + sync folder id cached after the first lookup). done_holder
+                # mirrors `done` so Drive imports update the progress counter inline.
+                drive_state: dict = {"account_id": drive_account_id, "service": None, "folder_id": None}
+                done_holder: list[int] = [done]
+                cycle_holder: list[int] = [0]
                 while status in (KernelStatus.QUEUED, KernelStatus.RUNNING):
                     if ctx.should_cancel():
                         kaggle_api.cancel_kernel(account_ref, kernel_ref)
@@ -561,15 +765,16 @@ def handle(ctx: JobContext) -> dict | None:
                         return None
                     time.sleep(settings.kaggle_poll_interval_seconds)
                     ctx.heartbeat()
-                    _poll_drive_results(
-                        ctx, conn, book_id, patch_ids, patches, package_dir,
-                        drive_account["id"], drive_batch_folder_id,
-                        request_policy, automation_mode, automation_active,
-                        imported_this_job, kernel_ref,
-                    )
+                    if drive_account_id is not None and drive_batch_folder_id is not None:
+                        _poll_drive_results(
+                            ctx, conn, book_id, patch_ids, patches, package_dir,
+                            drive_account_id, drive_batch_folder_id,
+                            request_policy, automation_mode, automation_active,
+                            imported_this_job, kernel_ref,
+                        )
                     # Đẩy tiến độ xuống DB mỗi vòng poll để bảng Queue thấy phase/heartbeat
                     # thay đổi thay vì đứng yên suốt hàng giờ.
-                    ctx.progress(done, total, phase="running")
+                    ctx.progress(done_holder[0], total, phase="running")
                     status = kaggle_api.kernel_status(account_ref, kernel_ref)
                     polls += 1
                     if status is not last_status:
@@ -577,9 +782,36 @@ def handle(ctx: JobContext) -> dict | None:
                         last_status = status
                     else:
                         ctx.log(f"Kernel {kernel_ref} vẫn {status.value} (lượt kiểm tra {polls})")
+                    # per_patch + Drive: kernel mirror từng result WAV lên Drive ngay khi
+                    # patch đó merge xong (Cell 8 drive_persist) -- tải dần tại đây để
+                    # chain video/YouTube luôn, không đợi kernel xong cả batch.
+                    if (
+                        progressive_enabled and drive_account_id is not None
+                        and status == KernelStatus.RUNNING and package_dir is not None
+                    ):
+                        _poll_drive_for_completed_patches(
+                            ctx, conn, book_id=book_id, patches=patches,
+                            drive_state=drive_state, batch_id=stable_batch_id,
+                            package_dir=package_dir, request_policy=request_policy,
+                            automation_mode=automation_mode, automation_active=automation_active,
+                            imported_this_job=imported_this_job, done_holder=done_holder,
+                            total=total,
+                        )
+                        # Progressive imports in this cycle = done growth since the
+                        # cycle started; added to imported_in_cycle after the run so
+                        # a fully-Drive-imported batch never trips the "no valid WAV"
+                        # fatal below.
+                        cycle_holder[0] = done_holder[0] - done
+                        ctx.progress(done_holder[0], total, phase="running")
 
                 kaggle_accounts.record_usage_finish(conn, usage_id, int(time.monotonic() - started_at))
                 ctx.log(f"Kernel {kernel_ref} finished with status={status.value}")
+                # Progressive per_patch imports during RUNNING already grew done_holder;
+                # sync back so the post-kernel import + progress below stay consistent.
+                done = done_holder[0]
+                imported_in_cycle += cycle_holder[0]
+                if cycle_holder[0]:
+                    ctx.log(f"per_patch: đã tải dần {cycle_holder[0]} patch từ Drive trong lúc kernel chạy")
 
                 if status == KernelStatus.CANCELLED:
                     raise JobFatalError(f"Kernel {kernel_ref} đã bị hủy trên Kaggle.")
@@ -606,12 +838,86 @@ def handle(ctx: JobContext) -> dict | None:
                     f"PyTorch trong image hiện tại chỉ chạy trên sm_70+."
                 )
 
-            imported_in_cycle += _poll_drive_results(
-                ctx, conn, book_id, patch_ids, patches, package_dir,
-                drive_account["id"], drive_batch_folder_id,
-                request_policy, automation_mode, automation_active,
-                imported_this_job, kernel_ref,
-            )
+            # Try Drive before fetching Kaggle output: Cell 8 uploads each merged
+            # result there as soon as it finishes. In after_all mode, do NOT
+            # automate until every patch is imported (the existing tail below
+            # handles that). If Drive has all results, skip Kaggle output entirely
+            # (result.zip and chunk WAVs may be many GB).
+            with ctx.keep_alive():
+                if drive_account_id is not None and _missing_patch_ids(conn, book_id, patch_ids):
+                    # Legacy Drive/result path (download_result_directory): the
+                    # pre-existing tests fake exactly this transport.
+                    if drive_batch_folder_id is not None:
+                        try:
+                            imported_in_cycle += _poll_drive_results(
+                                ctx, conn, book_id, patch_ids, patches, package_dir,
+                                drive_account_id, drive_batch_folder_id,
+                                request_policy, automation_mode, automation_active,
+                                imported_this_job, kernel_ref,
+                            )
+                        except Exception as exc:
+                            logger.warning("Drive/result poll failed (best-effort): %s", exc, exc_info=True)
+                    done = total - len(_missing_patch_ids(conn, book_id, patch_ids))
+                    done_holder = [done]
+                    # New per-file Drive path (list_files): retries resume from
+                    # Drive/result without re-downloading the whole directory.
+                    imported_in_cycle += _poll_drive_for_completed_patches(
+                        ctx, conn, book_id=book_id, patches=patches,
+                        drive_state={"account_id": drive_account_id, "service": None, "folder_id": None},
+                        batch_id=stable_batch_id, package_dir=package_dir,
+                        request_policy=request_policy, automation_mode=automation_mode,
+                        automation_active=automation_active, imported_this_job=imported_this_job,
+                        done_holder=done_holder, total=total,
+                    )
+                    done = done_holder[0]
+                if _missing_patch_ids(conn, book_id, patch_ids):
+                    downloaded = kaggle_api.kernel_output(account_ref, kernel_ref, package_dir)
+                    ctx.log(
+                        f"Downloaded {len(downloaded)} output file(s): "
+                        f"{[path.relative_to(package_dir).as_posix() for path in downloaded]}"
+                    )
+                else:
+                    ctx.log("Đã tải đủ patch từ Drive; bỏ qua Kaggle output")
+
+                ctx.progress(done, total, phase="importing")
+            for patch in patches:
+                # Patch đã tải dần từ Drive trong lúc kernel chạy (per_patch): bỏ qua
+                # ở đây để không cài đè + không chain video/upload trùng lần nữa.
+                if patch.id in imported_this_job:
+                    fresh = repository.get_patch(conn, patch.id)
+                    if fresh is not None and fresh.status == "done":
+                        continue
+                patch_folder = package_dir / "patches" / f"patch_{patch.patch_index:03d}"
+                result = patch_import.resolve_batch_result(patch_folder, patch.id)
+                if result is None or not result.is_file():
+                    continue
+                # Layout chuẩn: audio/{book_id}_{episode}.wav (episode = patch_index+1,
+                # đệm 3 số), cùng chỗ với audiobook_tts/light_tts ghi qua
+                # repository.get_patch_audio_path — không dùng legacy patches/{patch_id}.wav.
+                audio_path = repository.get_patch_audio_path(book_id, patch.patch_index)
+                audio_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    patch_import.install_imported_wav(result, audio_path)
+                except Exception:
+                    logger.warning(
+                        "Kaggle result WAV invalid for patch %s; will retry next cycle",
+                        patch.id, exc_info=True,
+                    )
+                    continue
+                repository.mark_patch_done(conn, patch.id, str(audio_path))
+                if automation_active and automation_mode == AUTOMATION_PER_PATCH:
+                    # Chuỗi ngay từng patch: audio xong -> video/upload luôn, patch
+                    # sau hỏng cũng không mất phần đã xong.
+                    _automate_patch(ctx, patch.id, request_policy)
+                elif not automation_active:
+                    on_patch_audio_ready(conn, patch.id)
+                # after_all + active: bỏ qua hook cũ ở đây, _automate_after_all lo
+                # một lượt khi cả batch xong (tránh render trùng với hook cũ).
+                imported_this_job.append(patch.id)
+                imported_in_cycle += 1
+                done += 1
+                ctx.progress(done, total, phase="importing")
+                ctx.log(f"Imported patch {patch.id} from kernel {kernel_ref} ({done}/{total})")
 
             shutil.rmtree(package_dir, ignore_errors=True)
             package_dir = None

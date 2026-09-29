@@ -35,7 +35,7 @@ import {
 } from "./types";
 import { CheckField, Field, TabBar, TtsOptionsFields, checkboxClass, fieldClass, selectClass } from "./parts";
 import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
-import { YouTubeConfigFields } from "./YouTubeFields";
+import { AiContentGenerator, YouTubeConfigFields } from "./YouTubeFields";
 import { useTtsOptions } from "./useBookDetail";
 
 type PreviewChunk = { index: number; text: string; pause_ms: number };
@@ -834,6 +834,17 @@ export function ConfigDialog({
     }
   };
 
+  /** Nạp lại cấu hình YouTube từ server — job sinh nội dung vừa ghi description
+   * và genre_tags, form phải hiện đúng kết quả đó. useCallback để vòng poll của
+   * nút AI không khởi động lại mỗi lần render. */
+  const reloadYoutubeSettings = useCallback(async () => {
+    try {
+      setYtSettings(await api<YouTubeSettings>(`/books/${bookId}/youtube-settings`));
+    } catch (error) {
+      onMessage(errorText(error));
+    }
+  }, [bookId, onMessage]);
+
   /** Đẩy thẳng thiết lập podcast + ảnh bìa lên playlist, không phải chờ tập kế tiếp.
    * Lưu cấu hình trước để YouTube nhận đúng trạng thái vừa chỉnh trên form. */
   const applyPodcast = async () => {
@@ -1592,6 +1603,13 @@ export function ConfigDialog({
                     </span>
                   </div>
                 }
+              />
+
+              <AiContentGenerator
+                bookId={bookId}
+                status={ytSettings.ai_content}
+                onApplied={reloadYoutubeSettings}
+                onMessage={onMessage}
               />
 
               <div className="rounded-md border border-border">

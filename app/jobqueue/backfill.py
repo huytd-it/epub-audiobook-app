@@ -9,7 +9,7 @@ from typing import Callable
 
 from app.config import settings
 from app.jobqueue import store
-from app.jobqueue.handlers import background_gen, gameplay_clip, kaggle_tts, light_tts, patch_video, standalone_video, video, audiobook_tts, youtube_upload
+from app.jobqueue.handlers import background_gen, gameplay_clip, kaggle_tts, light_tts, patch_video, standalone_video, video, audiobook_tts, youtube_metadata, youtube_upload
 from app.jobqueue.runner import JobQueue, parse_concurrency
 
 logger = logging.getLogger(__name__)
@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 JOB_TYPES = (
     "audiobook_tts", "audiobook_tts_api", "video", "patch_video", "standalone_video",
     "youtube_upload", "light_tts", "background_gen", "gameplay_clip", "kaggle_tts",
+    "youtube_metadata_gen",
 )
 QUEUE_CONCURRENCY_STATE_KEY = "queue.concurrency"
 
@@ -29,6 +30,9 @@ def configured_concurrency(conn: sqlite3.Connection) -> dict[str, int]:
     )
     concurrency.setdefault("patch_video", max(1, int(settings.patch_video_concurrency)))
     concurrency.setdefault("gameplay_clip", max(1, int(settings.gameplay_clip_concurrency)))
+    # Gọi LLM là I/O-bound, chạy song được vài job mà không tốn GPU: vài sách có
+    # thể bấm sinh lại liên tiếp mà không phải xếp hàng dài.
+    concurrency.setdefault("youtube_metadata_gen", 2)
     # One kaggle_tts job per account at a time (each holds one account for its whole
     # push/poll/import cycle) - default to the number of accounts that are not
     # disabled, so two jobs never contend for fewer accounts than are configured.
@@ -79,6 +83,7 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     queue.register("background_gen", background_gen.handle)
     queue.register("gameplay_clip", gameplay_clip.handle)
     queue.register("kaggle_tts", kaggle_tts.handle, cancellable=True)
+    queue.register("youtube_metadata_gen", youtube_metadata.handle)
     return queue
 
 

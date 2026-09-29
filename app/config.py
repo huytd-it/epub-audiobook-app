@@ -47,6 +47,22 @@ class Settings(BaseSettings):
     # YOUTUBE_DECLARE_ALTERED_CONTENT=false trong .env nếu muốn tự tick tay.
     youtube_declare_altered_content: bool = True
 
+    # Sinh mô tả + thẻ YouTube bằng AI (nút "Sinh nội dung & thẻ" ở tab YouTube của
+    # Cấu hình sản xuất). Provider cố ý nằm trong .env chứ không phải UI: chọn
+    # ai_content_provider rồi đặt key của provider đó, xem app/ai_content.py cho
+    # danh sách provider và tên biến môi trường tương ứng.
+    #   gemini -> GEMINI_API_KEY, openai -> OPENAI_API_KEY,
+    #   custom  -> AI_CONTENT_API_KEY (bắt buộc kèm AI_CONTENT_BASE_URL).
+    # Để trống thì suy ra: có base_url riêng => custom, không thì gemini.
+    ai_content_provider: str = ""
+    # Để trống => lấy model mặc định của provider (xem PROVIDERS trong app/ai_content.py).
+    ai_content_model: str = ""
+    # Chỉ dùng cho provider=custom (OpenAI-compatible: OpenRouter, Groq, Ollama, vLLM...).
+    ai_content_base_url: str = ""
+    # Để trống => đọc biến môi trường chuẩn của provider.
+    ai_content_api_key: str = ""
+    ai_content_timeout_seconds: float = 90.0
+
     # Hugging Face token for Colab/Kaggle notebooks (baked into the exported package so the
     # notebook can download VoxCPM2 without hitting unauthenticated rate limits). Leave empty
     # to rely on secrets/prompt in the notebook instead. Get a token at:
@@ -114,7 +130,7 @@ class Settings(BaseSettings):
     ai_timeout_seconds: float = 120.0
     # Queue job chạy nền
     # Loại nào không liệt kê ở đây nhận queue_default_concurrency.
-    queue_concurrency: str = "audiobook_tts=1,audiobook_tts_api=4,video=2,youtube_upload=1,patch_video=1,gameplay_clip=1"
+    queue_concurrency: str = "audiobook_tts=1,audiobook_tts_api=4,video=2,youtube_upload=1,patch_video=1,gameplay_clip=1,youtube_metadata_gen=2"
     queue_default_concurrency: int = 10
     queue_log_retention_days: int = 7
     # Job 'running' im lặng quá lâu bị coi là chết và trả về 'pending'.

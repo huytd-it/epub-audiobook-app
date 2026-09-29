@@ -105,7 +105,14 @@ def test_batch_cell_8_is_deterministic_and_streams_atomic_merge():
     assert "torch.manual_seed(42)" in src
     assert "seed=42" not in src
     assert "cfg_value=2.0" in src
-    assert "inference_timesteps=10" in src
+    assert "VI_TIMESTEPS" in src
+    assert 'TTS_OPTIONS.get("inference_timesteps")' in src
+    # Vietnamese quality flags (dropped on older voxcpm wheels via TypeError fallback)
+    assert "normalize=True" in src
+    assert "retry_badcase=True" in src
+    # every branch writes silence-cleaned audio, never raw model output
+    assert "clean_generated_audio" in src
+    assert src.count("clean_generated_audio(audio, SAMPLE_RATE)") >= 3
     assert "_CHUNK_PAUSE_MS = 300" in src
     assert "sf.SoundFile" in src
     assert "PCM_16" in src
@@ -147,6 +154,25 @@ def test_batch_cell_8_preserves_legacy_fallback_and_skip_warning():
     assert "delete result and rerun" in src.lower()
     assert "chunk_metadata missing" in src.lower()
     assert "finally" in src
+
+
+def test_kaggle_drive_persist_rechecks_parent_before_creating_result_folder():
+    src = _code_cells(TEMPLATES[0])[3]
+    persist = src[src.index("            def drive_persist(local_path, rel_dir):"):]
+    assert "_kn_list_children(_parent)" in persist
+    assert persist.index("_kn_list_children(_parent)") < persist.index(
+        'body={"name": _part, "mimeType": _KN_MIME, "parents": [_parent]}'
+    )
+
+
+def test_kaggle_notebook_exposes_merged_results_without_creating_result_zip():
+    cells = _code_cells(TEMPLATES[0])
+    assert len(cells) == 9  # Cell 8 synthesis + Cell 9 Drive/result note, no archive cell
+    assert 'RESULT_DIR = os.path.join(WORK_ROOT, "result")' in cells[-2]
+    assert 'persist(result_path, "result")' in cells[-2]
+    assert "Cell 9" in cells[-1] and "Google Drive/result" in cells[-1]
+    assert "result.zip" not in TEMPLATES[0].read_text(encoding="utf-8")
+    assert "make_archive" not in TEMPLATES[0].read_text(encoding="utf-8")
 
 
 def _cell8_helpers():
@@ -688,6 +714,15 @@ def test_generation_cells_dispatch_every_model(template):
     assert "model.generate(" in gen  # voxcpm2 / omnivoice
     assert "model.infer(" in gen     # vieneu-fast
     assert "model.synthesize(" in gen  # zerotts
+    # OmniVoice quality tuning: pinned diffusion steps/guidance + Vietnamese
+    # language hint, with a TypeError fallback for older wheels.
+    assert "OMNI_NUM_STEP" in gen
+    assert "OMNI_GUIDANCE" in gen
+    assert "OMNI_LANG" in gen
+    assert "num_step=OMNI_NUM_STEP" in gen
+    assert "language=OMNI_LANG" in gen
+    assert 'TTS_OPTIONS.get("num_step")' in gen
+    assert 'TTS_OPTIONS.get("language")' in gen
     # v3 Turbo ignores the style argument, so it must not be passed any more.
     assert "style=TTS_OPTIONS" not in gen
     # infer() resolves ref_audio before voice, so a clip would override the preset
@@ -731,3 +766,38 @@ def test_kaggle_drive_branch_finds_batch_by_id_on_drive():
     assert "BATCH_ID" in src
     assert "batch_id" in src.lower()
     assert 'glob.glob("/kaggle/input/*' not in src
+
+
+def test_hf_token_cell_never_blocks_headless_kaggle_kernels():
+    """Cell 2's getpass() prompt hangs an automated Kaggle kernel (no stdin) when
+    no HF token is configured. It must only prompt when interactive."""
+    src = _code_cells(TEMPLATES[0])[1]
+    assert "getpass" in src
+    assert "isatty" in src
+    assert "EOFError" in src
+
+
+def test_model_install_failure_stops_loudly():
+    """Cell 7 must fail at install time (check_call) rather than pages later at
+    import with a confusing ModuleNotFoundError."""
+    src = _code_cells(TEMPLATES[0])[6]
+    assert "subprocess.check_call" in src
+    assert "os.system" not in src
+
+
+def test_cell8_clean_generated_audio_trims_and_compresses():
+    import numpy as np
+
+    helpers = _cell8_helpers()
+    assert "clean_generated_audio" in helpers
+    clean = helpers["clean_generated_audio"]
+    sr = 48000
+    speech = np.full(4800, 0.5, dtype=np.float32)
+    audio = np.concatenate([
+        np.zeros(9600, dtype=np.float32), speech,
+        np.zeros(sr, dtype=np.float32), speech,
+        np.zeros(4800, dtype=np.float32),
+    ])
+    cleaned = clean(audio, sr)
+    assert cleaned.shape == (4800 + 14400 + 4800,)
+    assert clean(np.zeros(100, dtype=np.float32), sr).shape == (0,)

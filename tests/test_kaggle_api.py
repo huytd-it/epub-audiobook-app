@@ -225,7 +225,7 @@ def test_kernel_status_raises_on_http_error():
         kernel_status(ACCOUNT, "user1/x", request=fake)
 
 
-def test_kernel_output_downloads_every_file_into_dest_dir(tmp_path):
+def test_kernel_output_downloads_only_merged_results_into_dest_dir(tmp_path):
     fake = FakeRequest([
         {"status": 200, "body": json.dumps({"files": [
             {"fileName": "result/1_001.wav", "url": "https://signed/result/1_001.wav"},
@@ -266,6 +266,20 @@ def test_kernel_output_skips_hidden_cache_blobs():
         paths = kernel_output(ACCOUNT, "user1/x", Path(tmp), request=fake)
     assert [p.name for p in paths] == ["18_003.wav"]
     assert len(fake.calls) == 2  # listing + the one real download, no blob fetch
+
+
+def test_kernel_output_skips_chunks_and_result_archive(tmp_path):
+    fake = FakeRequest([
+        {"status": 200, "body": json.dumps({"files": [
+            {"fileName": "patches/patch_008/output/chunk_000.wav", "url": "https://signed/chunk"},
+            {"fileName": "result.zip", "url": "https://signed/zip"},
+            {"fileName": "result/18_009.wav", "url": "https://signed/result"},
+        ]})},
+        {"status": 200, "body": b"WAVDATA"},
+    ])
+    paths = kernel_output(ACCOUNT, "user1/x", tmp_path, request=fake)
+    assert [p.relative_to(tmp_path).as_posix() for p in paths] == ["result/18_009.wav"]
+    assert [call[0] for call in fake.calls[1:]] == ["https://signed/result"]
 
 
 def test_kernel_output_follows_pages_past_hidden_cache_files(tmp_path):
