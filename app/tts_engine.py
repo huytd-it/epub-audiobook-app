@@ -313,7 +313,8 @@ def _vieneu_voices() -> list[dict]:
 # one preview.wav per voice plus voices/index.json, so the sample list can be
 # fetched without the ~900 MB weights; VieNeu presets ship inside the wheel.
 ZEROTTS_HF_REPO = "zeroweight-ai/ZeroTTS"
-ZEROTTS_HF_REVISION = "7fdb2342d1242fd84b738223281242e4f149825c"
+# ONNX cross_kv export matched to zerotts 0.1.5 (text_encoder has four outputs).
+ZEROTTS_HF_REVISION = "c2bfbd67dc648cac455077333f7cf5c18a2e3bb4"
 VIENEU_HF_REPO = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
 
 
@@ -360,9 +361,15 @@ def fetch_zerotts_voice_index(*, timeout: float = 30.0) -> list[dict]:
 # Where each fixed-cast engine's voice list comes from. Also the set of engines a preset
 # reference voice can be borrowed from (see preset_reference_clip below).
 _VOICE_SOURCES = {
-    "zerotts": lambda: _zerotts_voices(zerotts_model_dir()),
+    "zerotts": lambda: _zerotts_voices(zerotts_model_dir()) + _zerotts_custom_voices(),
     "vieneu-fast": _vieneu_voices,
 }
+
+
+def _zerotts_custom_voices() -> list[dict]:
+    from app.zerotts_voices import list_voices
+
+    return list_voices()
 
 # A preset voice can also stand in as the *reference clip* for the cloning models: rendering
 # one line with VieNeu/ZeroTTS gives VoxCPM/OmniVoice a clip whose transcript is known
@@ -1097,7 +1104,7 @@ def _zerotts_decode_streaming(codec, codes: np.ndarray) -> np.ndarray:
 class ZeroTTSEngine:
     """ZeroTTS (local, ONNX, CPU-only -- no torch, no GPU).
 
-    Speaks one of the eight voices published with the weights. The repo ships only the
+    Speaks bundled voices or imported ZeroWeight voice packs. The repo ships only the
     decode half of the MOSS codec, so there is no encoder to turn a reference clip into
     voice latents: ``reference_wav_path`` is accepted and ignored, exactly like the cloud
     engines. Voice latents are read straight out of ``voice.npz`` rather than through
@@ -1122,18 +1129,27 @@ class ZeroTTSEngine:
         return f"zerotts:{self.voice}"
 
     def _load_voice_emb(self, n_voice_queries: int) -> np.ndarray:
-        npz = self.model_dir / "voices" / str(self.voice) / "voice.npz"
+        from app.zerotts_voices import voice_path
+
+        npz = voice_path(str(self.voice))
+        if npz is None:
+            if (not self.voice or self.voice in (".", "..")
+                    or Path(str(self.voice)).name != self.voice or "\\" in self.voice or ":" in self.voice):
+                raise ValueError("Voice id ZeroTTS không hợp lệ")
+            npz = self.model_dir / "voices" / str(self.voice) / "voice.npz"
         if not npz.exists():
             available = sorted(p.parent.name for p in (self.model_dir / "voices").glob("*/voice.npz"))
             raise ValueError(
                 f"ZeroTTS không có giọng {self.voice!r} (có: {', '.join(available) or 'không có'})"
             )
-        data = np.load(npz)
-        emb = np.asarray(data["voice_emb"], dtype=np.float32)
+        with np.load(npz, allow_pickle=False) as data:
+            emb = np.asarray(data["voice_emb"], dtype=np.float32)
         if emb.ndim == 2:
             emb = emb[None, :, :]
         # Latents built for other weights have the right dtype and rank, so they would feed
         # the graph cleanly and produce confident nonsense. Refuse them instead.
+        if emb.ndim != 3 or emb.shape[0] != 1 or not np.isfinite(emb).all():
+            raise ValueError("Voice pack ZeroTTS có latents không hợp lệ")
         if emb.shape[1] != n_voice_queries:
             raise ValueError(
                 f"giọng {self.voice!r} có n_voice_queries={emb.shape[1]} nhưng model dùng "
@@ -1151,10 +1167,20 @@ class ZeroTTSEngine:
             )
         from zerotts import ZeroTTS  # heavy import, deferred until first real use
 
-        self._model = ZeroTTS.from_pretrained(
-            str(self.model_dir), intra_op_num_threads=self.threads
-        )
-        self._voice_emb = self._load_voice_emb(self._model.n_voice_queries)
+        try:
+            model = ZeroTTS.from_pretrained(
+                str(self.model_dir), intra_op_num_threads=self.threads
+            )
+        except ValueError as exc:
+            if "not enough values to unpack (expected 4, got 3)" in str(exc):
+                raise RuntimeError(
+                    "Weights ZeroTTS cũ không tương thích với thư viện hiện tại. "
+                    "Vào Model & provider TTS → ZeroTTS → Cập nhật model, "
+                    "sau đó khởi động lại ứng dụng."
+                ) from exc
+            raise
+        self._voice_emb = self._load_voice_emb(model.n_voice_queries)
+        self._model = model
 
     _MAX_GENERATION_ATTEMPTS = 3
 

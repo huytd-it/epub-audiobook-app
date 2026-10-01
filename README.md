@@ -462,3 +462,8 @@ Dự án tuân thủ **chuẩn hoá file** sau:
 *Nếu README hữu ích, hãy ⭐ repo và mở diagram HTML để khám phá kiến trúc tương tác!*
 
 </div>
+# Dùng giọng clone với ZeroTTS
+
+Tại **Model & provider TTS → Giọng của bạn · ZeroTTS**, nhập gói `.zip` tải từ thư viện giọng tại [ZeroWeight](https://platform.zeroweight.ai/audio). Cần tải model ZeroTTS trước khi nhập. Giọng được lưu trong `data_root/zerotts_custom_voices`, xuất hiện trong danh sách giọng ZeroTTS và có thể dùng ở Playground hoặc khi tạo audiobook. Nhập lại cùng giọng không tạo bản sao và không ghi đè giọng có sẵn.
+
+ZeroTTS công khai chưa cung cấp voice encoder để clone trực tiếp từ WAV trên máy; bước tạo giọng diễn ra trên nền tảng ZeroWeight. Xem [tài liệu gói giọng](https://github.com/zeroweight-ai/ZeroTTS/blob/main/docs/VOICES.md).

@@ -28,10 +28,11 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import settings  # noqa: E402
+from app.tts_engine import ZEROTTS_HF_REPO, ZEROTTS_HF_REVISION  # noqa: E402
 
-REPO = "zeroweight-ai/ZeroTTS"
+REPO = ZEROTTS_HF_REPO
 # Pinned so a repo update never half-replaces a local copy. Bump deliberately.
-REVISION = "7fdb2342d1242fd84b738223281242e4f149825c"
+REVISION = ZEROTTS_HF_REVISION
 BASE = f"https://huggingface.co/{REPO}/resolve/{REVISION}"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -119,7 +120,8 @@ def download(path: str, size: int, headers: dict, workers: int) -> None:
                     raise
                 time.sleep(1.5)
 
-    partdir = out.with_name(out.name + ".parts")
+    # Parts from another revision must never be assembled into the new graph.
+    partdir = out.with_name(out.name + f".{REVISION}.parts")
     partdir.mkdir(parents=True, exist_ok=True)
     ranges = [(i, s, min(s + CHUNK - 1, size - 1))
               for i, s in enumerate(range(0, size, CHUNK))]

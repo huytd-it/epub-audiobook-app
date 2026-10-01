@@ -4,12 +4,27 @@ import io
 import time
 
 import soundfile as sf
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse
 
 from app import tts_model_manager
 
 router = APIRouter(prefix="/tts-models", tags=["tts-models"])
+
+
+@router.post("/zerotts/voices/import")
+def import_zerotts_voice(file: UploadFile = File(...)):
+    from app.tts_engine import zerotts_model_dir
+    from app.zerotts_voices import MAX_PACK_BYTES, import_voice_pack
+
+    try:
+        if not (file.filename or "").lower().endswith(".zip"):
+            raise ValueError("Chọn gói giọng .zip tải từ ZeroWeight.")
+        return {"voice": import_voice_pack(file.file.read(MAX_PACK_BYTES + 1), zerotts_model_dir())}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    finally:
+        file.file.close()
 
 
 @router.get("/providers")

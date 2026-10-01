@@ -37,7 +37,7 @@ vieneu-fast = [
     "vieneu>=3.8.3",
 ]
 zerotts = [
-    "zerotts>=0.1.5",
+    "zerotts==0.1.5", # Matched to the pinned ONNX revision in app.tts_engine.
 ]
 confucius4 = [
     # Install the upstream clone's requirements from its own checkout; it is
@@ -51,7 +51,7 @@ all-tts = [
     "voxcpm",
     "omnivoice",
     "vieneu>=3.8.3",
-    "zerotts>=0.1.5",
+    "zerotts==0.1.5",
     "f5-tts",
     "cached-path",
 ]

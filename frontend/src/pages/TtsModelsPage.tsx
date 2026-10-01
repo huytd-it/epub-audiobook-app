@@ -66,6 +66,8 @@ export function TtsModelsPage() {
   const [sampleText, setSampleText] = useState(SAMPLE_TEXT);
   const [playing, setPlaying] = useState(false);
   const [playError, setPlayError] = useState("");
+  const [importingVoice, setImportingVoice] = useState(false);
+  const [voiceImportMessage, setVoiceImportMessage] = useState("");
   const [playResult, setPlayResult] = useState<PlaygroundResult>();
   const [customProviders, setCustomProviders] = useState<CustomProvider[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -245,6 +247,22 @@ export function TtsModelsPage() {
     } finally { setPlaying(false); }
   };
 
+  const importZeroVoice = async (file: File) => {
+    setImportingVoice(true); setVoiceImportMessage("");
+    try {
+      if (file.size > 20 * 1024 * 1024) throw new Error("Gói giọng tối đa 20 MB.");
+      const body = new FormData();
+      body.append("file", file);
+      const result = await api<{ voice: { id: string; label: string } }>("/tts-models/zerotts/voices/import", { method: "POST", body });
+      await load();
+      setPlayModelId("zerotts"); setPlayVoice(result.voice.id);
+      setPlayResult(undefined); setPlayError("");
+      setVoiceImportMessage(`Đã nhập giọng ${result.voice.label}. Giọng đã sẵn sàng để nghe thử và tạo audiobook bằng ZeroTTS.`);
+    } catch (error) {
+      setVoiceImportMessage(error instanceof Error ? error.message : "Không thể nhập gói giọng.");
+    } finally { setImportingVoice(false); }
+  };
+
   const useSampleForPlayground = (modelId: string, voiceId: string) => {
     choosePlayModel(modelId);
     setPlayVoice(voiceId);
@@ -384,6 +402,19 @@ export function TtsModelsPage() {
 
 
     {message && <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{message}</div>}
+    <section className="space-y-3 rounded-xl border bg-card p-5" aria-label="Nhập giọng clone ZeroTTS">
+      <h2 className="text-lg font-semibold">Giọng của bạn · ZeroTTS</h2>
+      <p className="text-sm text-muted-foreground">Clone giọng tại <a className="underline" href="https://platform.zeroweight.ai/audio" target="_blank" rel="noreferrer">ZeroWeight</a>, tải gói .zip trong thư viện giọng, rồi nhập vào đây để đọc offline. Cần tải model ZeroTTS trước. ZeroTTS hiện chưa hỗ trợ clone trực tiếp từ WAV trên máy.</p>
+      <label className="block space-y-2 text-sm font-medium">
+        <span>{importingVoice ? "Đang nhập giọng…" : "Nhập gói giọng .zip (tối đa 20 MB)"}</span>
+        <input type="file" accept=".zip,application/zip" disabled={importingVoice} className="block w-full text-sm" onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (file) void importZeroVoice(file);
+        }} />
+      </label>
+      {voiceImportMessage && <p role="status" className="text-sm">{voiceImportMessage}</p>}
+    </section>
     <section id="tts-playground" className="grid gap-5 scroll-mt-4 rounded-xl border bg-card p-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(300px,.75fr)]">
       <div className="space-y-4">
         <div className="flex items-center gap-2"><Volume2 className="h-5 w-5 text-primary" /><h2 className="text-lg font-semibold">Playground giọng đọc</h2></div>
