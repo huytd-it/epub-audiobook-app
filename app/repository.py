@@ -2349,7 +2349,7 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
 
     # Collect paths before we overwrite the columns.
     audio_rows = conn.execute(
-        "SELECT audio_path FROM patch WHERE audio_path IS NOT NULL"
+        "SELECT book_id, audio_path FROM patch WHERE audio_path IS NOT NULL"
     ).fetchall()
     video_rows = conn.execute(
         "SELECT output_path FROM book_job WHERE output_path IS NOT NULL"
@@ -2381,6 +2381,14 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
             Path(path).unlink(missing_ok=True)
         except OSError:
             pass
+
+    # Copy every affected book's wav+sidecars into books/{id}/backup_audio/ BEFORE
+    # deleting them. This runs on every boot when RESET_ALL_JOBS_ON_STARTUP is on, and
+    # TTS output is expensive — without this, restarting the app silently destroys hours
+    # of synthesis with no way to get it back. Same pre-wipe backup the other reset
+    # paths (reset_patch, rebuild_patches, retry_all_failed_...) already do.
+    for book_id in sorted({row["book_id"] for row in audio_rows}):
+        backup_all_book_audio(book_id)
 
     for path in patch_audio_paths:
         try:

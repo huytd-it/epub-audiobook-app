@@ -100,6 +100,36 @@ def test_reset_all_jobs_skips_processing_rows():
     assert row["status"] == "processing"
 
 
+def test_reset_all_jobs_backs_up_audio_before_deleting(tmp_path, monkeypatch):
+    """reset_all_jobs runs on every boot when RESET_ALL_JOBS_ON_STARTUP is on. TTS
+    output is expensive, so the wavs must land in backup_audio/ before they go."""
+    settings_mod = __import__("app.config", fromlist=["settings"])
+    monkeypatch.setattr(settings_mod.settings, "data_root", str(tmp_path))
+
+    audio_dir = tmp_path / "books" / "1" / "audio"
+    audio_dir.mkdir(parents=True)
+    wav = audio_dir / "1_001.wav"
+    wav.write_bytes(b"RIFFfake")
+    timeline = audio_dir / "1_001.timeline.json"
+    timeline.write_text("[]", encoding="utf-8")
+
+    conn = _make_conn()
+    _insert_book(conn, book_id=1)
+    _insert_patch(conn, book_id=1, status="done", audio_path=str(wav))
+
+    repository.reset_all_jobs(conn)
+
+    # Gone from the live location...
+    assert not wav.exists()
+    assert not timeline.exists()
+    # ...but recoverable from backup_audio/.
+    backups = sorted((tmp_path / "books" / "1" / "backup_audio").glob("*"))
+    assert any(b.suffix == ".wav" and b.read_bytes() == b"RIFFfake" for b in backups)
+    # backup_all_book_audio stamps the sidecar before its last suffix, so look for the
+    # content rather than the exact ".timeline.json" ending.
+    assert any(b.read_text(encoding="utf-8") == "[]" for b in backups if b.suffix == ".json")
+
+
 def test_reset_all_jobs_is_noop_on_empty_db():
     conn = _make_conn()
     summary = repository.reset_all_jobs(conn)
