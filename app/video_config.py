@@ -203,6 +203,38 @@ def save_book_video_config(conn, book_id: int, config: dict) -> dict:
     return video
 
 
+# Short Video Studio: render 1 khổ mỗi lần, mặc định dọc 1080x1920.
+SHORT_RESOLUTIONS = {"1080x1920", "1080x1080", "1920x1080"}
+SHORT_DEFAULTS = {
+    "resolution": "1080x1920",
+    "fps": 30,
+    "subtitle_enabled": True,
+    "subtitle_font_size": 54,  # chữ to hơn cho khung dọc
+    "subtitle_position": "bottom",
+    "subtitle_color": "#ffffff",
+    "fit_mode": "auto",  # auto->blur cho portrait, giữ pattern video_gen
+}
+
+
+def validate_short_config(config: dict | None) -> dict:
+    """Validate render config của short: đúng 1 khổ thuộc SHORT_RESOLUTIONS."""
+    cfg = _json_object(config)
+    resolution = str(cfg.get("resolution") or SHORT_DEFAULTS["resolution"])
+    if resolution not in SHORT_RESOLUTIONS:
+        raise ValueError("invalid short resolution (chọn 1 trong 1080x1920/1080x1080/1920x1080)")
+    fps = cfg.get("fps", SHORT_DEFAULTS["fps"])
+    if fps not in VALID_FPS:
+        raise ValueError("invalid fps")
+    out = {**SHORT_DEFAULTS, **cfg, "resolution": resolution, "fps": fps}
+    if out["subtitle_position"] not in _SUBTITLE_POSITIONS:
+        raise ValueError("invalid subtitle position")
+    if not isinstance(out["subtitle_font_size"], int) or not 20 <= out["subtitle_font_size"] <= 96:
+        raise ValueError("subtitle font size must be 20-96")
+    if out["fit_mode"] not in _FIT_MODES:
+        raise ValueError("invalid fit mode")
+    return out
+
+
 def validate_media_path(path: str, allowed_dir: str | Path) -> str:
     candidate = Path(path).resolve()
     root = Path(allowed_dir).resolve()
