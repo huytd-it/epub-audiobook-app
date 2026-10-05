@@ -102,7 +102,7 @@ def _render(ctx, book_job_id: int, book_id: int) -> str:
             use_nvenc=settings.use_nvenc,
             music_path=music_path,
             music_volume=book.music_volume,
-            music_gaps=video_config,
+            music_mix=video_config,
             codec=video_config["codec"],
             quality=video_config["quality"],
             audio_bitrate=video_config["audio_bitrate"],

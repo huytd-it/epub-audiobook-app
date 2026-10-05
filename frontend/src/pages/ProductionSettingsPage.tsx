@@ -22,6 +22,7 @@ import {
   presetVoiceOptions,
 } from "@/pages/book-detail/types";
 import { CheckField, Field, TabBar, TtsOptionsFields, checkboxClass, fieldClass, selectClass } from "@/pages/book-detail/parts";
+import { MusicPlacementFields } from "@/pages/book-detail/MusicMixFields";
 import { YouTubeConfigFields } from "@/pages/book-detail/YouTubeFields";
 import { MediaBrowser, MediaEntry } from "@/components/media-browser/MediaBrowser";
 
@@ -589,7 +590,7 @@ export function ProductionSettingsPage() {
               </Field>
               <Field
                 label="Khoảng lặng giữa chương (ms)"
-                hint="Chèn trước mỗi chương trong cùng một patch; cũng là chỗ nhạc nền được chèn vào"
+                hint="Chèn trước mỗi chương trong cùng một patch; nhạc nền cuối chương fade ra tại đây"
               >
                 <input
                   className={fieldClass}
@@ -905,42 +906,8 @@ export function ProductionSettingsPage() {
                 </Field>
               </div>
 
-              <div className="space-y-3 rounded-md border border-border p-3">
-                <CheckField
-                  checked={video.music_gap_only}
-                  onChange={(value) => setVideo({ music_gap_only: value })}
-                  label="Nhạc nền chỉ chèn vào khoảng lặng"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Bản nhạc của sách chỉ phát ở những quãng im lặng đủ dài (nghỉ giữa chương,
-                  giữa chunk) thay vì lặp nền dưới giọng đọc. Tắt để quay lại kiểu mix cũ.
-                </p>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <Field label="Khoảng lặng tối thiểu (ms)" hint="Ngắn hơn mức này thì bỏ qua">
-                    <input
-                      className={fieldClass}
-                      type="number"
-                      min="200"
-                      max="60000"
-                      step="100"
-                      disabled={!video.music_gap_only}
-                      value={video.music_gap_min_ms}
-                      onChange={(event) => setVideo({ music_gap_min_ms: Number(event.target.value) || 0 })}
-                    />
-                  </Field>
-                  <Field label="Fade nhạc (ms)" hint="Vào/ra ở hai đầu mỗi đoạn nhạc">
-                    <input
-                      className={fieldClass}
-                      type="number"
-                      min="0"
-                      max="5000"
-                      step="50"
-                      disabled={!video.music_gap_only}
-                      value={video.music_gap_fade_ms}
-                      onChange={(event) => setVideo({ music_gap_fade_ms: Number(event.target.value) || 0 })}
-                    />
-                  </Field>
-                </div>
+              <div className="rounded-md border border-border p-3">
+                <MusicPlacementFields value={video} onChange={setVideo} />
               </div>
 
               <div className="flex flex-wrap gap-4 rounded-md bg-muted/30 p-3">

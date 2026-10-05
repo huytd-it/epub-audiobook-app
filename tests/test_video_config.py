@@ -23,29 +23,34 @@ def test_video_config_defaults_match_video_creator():
     assert config["waveform_background_opacity"] == 0.55
 
 
-def test_music_gap_defaults_are_on_at_1500ms():
+def test_music_defaults_are_15s_chapter_end_with_fade():
     config = validate_video_config({})
-    assert config["music_gap_only"] is True
-    assert config["music_gap_min_ms"] == 1500
-    assert config["music_gap_fade_ms"] == 400
+    assert config["music_chapter_end_seconds"] == 15
+    assert config["music_random_start"] is False
+    assert config["music_fade_enabled"] is True
 
 
-def test_music_gap_settings_round_trip():
-    config = validate_video_config({"music_gap_only": False, "music_gap_min_ms": 2500.0,
-                                    "music_gap_fade_ms": 0})
-    assert config["music_gap_only"] is False
-    assert config["music_gap_min_ms"] == 2500
-    assert config["music_gap_fade_ms"] == 0
+def test_music_settings_round_trip():
+    config = validate_video_config({"music_chapter_end_seconds": 30.0, "music_random_start": True,
+                                    "music_fade_enabled": False})
+    assert config["music_chapter_end_seconds"] == 30
+    assert config["music_random_start"] is True
+    assert config["music_fade_enabled"] is False
+
+
+def test_legacy_gap_keys_are_dropped():
+    config = validate_video_config({"music_gap_only": False, "music_gap_min_ms": 2500, "music_gap_fade_ms": 0})
+    assert not {"music_gap_only", "music_gap_min_ms", "music_gap_fade_ms"} & config.keys()
 
 
 @pytest.mark.parametrize("field,value", [
-    ("music_gap_only", "yes"),
-    ("music_gap_min_ms", 10),
-    ("music_gap_min_ms", 999999),
-    ("music_gap_fade_ms", -1),
-    ("music_gap_fade_ms", True),
+    ("music_chapter_end_seconds", 0),
+    ("music_chapter_end_seconds", 301),
+    ("music_chapter_end_seconds", True),
+    ("music_random_start", "yes"),
+    ("music_fade_enabled", 1),
 ])
-def test_video_config_rejects_bad_music_gap_values(field, value):
+def test_video_config_rejects_bad_music_values(field, value):
     with pytest.raises(ValueError):
         validate_video_config({field: value})
 

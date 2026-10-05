@@ -447,11 +447,11 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
         "audio_bitrate": video_config["audio_bitrate"],
         "music_path": music_path,
         "music_volume": book.music_volume,
-        # Frozen with the rest of the render config: changing the gap settings
+        # Frozen with the rest of the render config: changing the music settings
         # later must not silently alter a patch already queued for render.
-        "music_gap_only": video_config.get("music_gap_only", True),
-        "music_gap_min_ms": video_config.get("music_gap_min_ms", 1500),
-        "music_gap_fade_ms": video_config.get("music_gap_fade_ms", 400),
+        "music_chapter_end_seconds": video_config.get("music_chapter_end_seconds", 15),
+        "music_random_start": video_config.get("music_random_start", False),
+        "music_fade_enabled": video_config.get("music_fade_enabled", True),
         "intro_audio": intro,
         "outro_audio": outro,
     }

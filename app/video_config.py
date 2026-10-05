@@ -18,12 +18,12 @@ VIDEO_DEFAULTS = {
         "preset": "calm",
     },
     "image_duration_seconds": 15,
-    # Background music placement. "gap only" is the default: the track fills the
-    # silences in the narration (chapter breaks, chunk pauses) instead of looping
-    # under the voice for the whole patch. See app/music_bed.py.
-    "music_gap_only": True,
-    "music_gap_min_ms": 1500,
-    "music_gap_fade_ms": 400,
+    # Background music placement: the track plays under the last N seconds of
+    # every chapter instead of looping under the voice for the whole patch.
+    # See app/music_bed.py.
+    "music_chapter_end_seconds": 15,
+    "music_random_start": False,
+    "music_fade_enabled": True,
     "intro_voice": "",
     "outro_voice": "",
     "codec": "libx264",
@@ -57,6 +57,7 @@ VIDEO_DEFAULTS = {
     "narrator_credit_enabled": False,
 }
 
+_LEGACY_MUSIC_KEYS = ("music_gap_only", "music_gap_min_ms", "music_gap_fade_ms")
 _RESOLUTIONS = {"1920x1080", "1280x720", "854x480", "1080x1920", "1080x1080"}
 VALID_FPS = {24, 30, 60}
 _CODECS = {"libx264", "h264_nvenc"}
@@ -127,13 +128,16 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("invalid fit mode")
     if result["audio_bitrate"] not in _BITRATES:
         raise ValueError("invalid audio bitrate")
-    if not isinstance(result["music_gap_only"], bool):
-        raise ValueError("music_gap_only must be boolean")
-    for field, low, high in (("music_gap_min_ms", 200, 60000), ("music_gap_fade_ms", 0, 5000)):
-        value = result[field]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
-            raise ValueError(f"{field} must be {low}-{high} ms")
-        result[field] = int(value)
+    # The silence-gap mode was replaced by chapter-end placement; drop its keys
+    # so stored configs stop carrying them.
+    for legacy in _LEGACY_MUSIC_KEYS:
+        result.pop(legacy, None)
+    seconds = result["music_chapter_end_seconds"]
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 1 <= seconds <= 300:
+        raise ValueError("music_chapter_end_seconds must be 1-300 seconds")
+    result["music_chapter_end_seconds"] = int(seconds)
+    if not isinstance(result["music_random_start"], bool) or not isinstance(result["music_fade_enabled"], bool):
+        raise ValueError("music flags must be boolean")
     if not isinstance(result["quality"], int) or not 18 <= result["quality"] <= 28:
         raise ValueError("quality must be 18-28")
     if not isinstance(result["concurrency"], int) or result["concurrency"] not in {1, 2, 3, 4, 6, 8}:

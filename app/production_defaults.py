@@ -43,7 +43,7 @@ DEFAULT_AUDIO_CONFIG = {
     "tts_options": {},
     # Silence stitched between chunks when a patch is merged. The chapter value
     # is the beat between two chapters inside one patch - long enough to read as
-    # a break, and the slot gap music is placed in (app/music_bed.py).
+    # a break, and where the chapter-end music fades out (app/music_bed.py).
     "chunk_pause_ms": audio_merge.DEFAULT_CHUNK_PAUSE_MS,
     "chapter_pause_ms": audio_merge.DEFAULT_CHAPTER_PAUSE_MS,
 }

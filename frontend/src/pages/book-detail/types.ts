@@ -149,12 +149,12 @@ export type VideoConfig = {
   background_mode: "sequential" | "random";
   gameplay: GameplaySelectionConfig;
   image_duration_seconds: number;
-  /** Nhạc nền chỉ chèn vào khoảng lặng của giọng đọc thay vì lặp suốt patch. */
-  music_gap_only: boolean;
-  /** Khoảng lặng tối thiểu (ms) mới được chèn nhạc. */
-  music_gap_min_ms: number;
-  /** Fade in/out (ms) ở hai đầu mỗi đoạn nhạc chèn vào. */
-  music_gap_fade_ms: number;
+  /** Nhạc nền phủ dưới N giây cuối mỗi chương (1–300, mặc định 15). */
+  music_chapter_end_seconds: number;
+  /** Mỗi chương phát từ một vị trí ngẫu nhiên trong bài thay vì từ đầu. */
+  music_random_start: boolean;
+  /** Fade vào/ra ở hai đầu mỗi đoạn nhạc. */
+  music_fade_enabled: boolean;
   resolution: string;
   fps: number;
   image_animation: string;
@@ -655,6 +655,14 @@ export type AudioSettings = {
 export type BackgroundItem = { name: string; path: string; is_video: boolean; is_default?: boolean };
 export type AudioSettingsResponse = AudioSettings;
 export type MusicSettings = { music_id: number | null; music_volume: number };
+export type MusicTrack = { id: number; name: string; duration_sec: number | null };
+/** GET /books/{id}/music — cấu hình mix của sách kèm danh sách bản nhạc để chọn. */
+export type MusicMixState = MusicSettings & { tracks: MusicTrack[] };
+/** Phần cấu hình nhạc nền nằm trong VideoConfig (vị trí chèn cuối chương). */
+export type MusicPlacementSettings = Pick<
+  VideoConfig,
+  "music_chapter_end_seconds" | "music_random_start" | "music_fade_enabled"
+>;
 
 export function errorText(error: unknown) {
   return error instanceof Error ? error.message : "Đã xảy ra lỗi không xác định.";

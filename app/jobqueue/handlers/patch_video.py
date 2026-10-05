@@ -177,13 +177,13 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     outro = render_config.get("outro_audio")
     music_path = render_config.get("music_path")
     music_volume = render_config.get("music_volume", 0.15)
-    # Snapshots frozen before gap music shipped carry none of these keys; the
-    # defaults below are the ones video_config hands out, so an old snapshot
-    # renders the same way a fresh one would.
-    music_gaps = {
-        "music_gap_only": render_config.get("music_gap_only", True),
-        "music_gap_min_ms": render_config.get("music_gap_min_ms", 1500),
-        "music_gap_fade_ms": render_config.get("music_gap_fade_ms", 400),
+    # Snapshots frozen before chapter-end music shipped carry none of these
+    # keys; music_bed falls back to the defaults video_config hands out, so an
+    # old snapshot renders the same way a fresh one would.
+    music_mix = {
+        key: render_config[key]
+        for key in ("music_chapter_end_seconds", "music_random_start", "music_fade_enabled")
+        if key in render_config
     }
     seq_config = snapshot.get("sequence_config") or {}
     waveform_config = seq_config
@@ -247,7 +247,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                 video_gen.generate_segment(
                     visual, audio, target, image_type="none", use_nvenc=False,
                     music_path=music_path, music_volume=music_volume,
-                    music_gaps=music_gaps, **common,
+                    music_mix=music_mix, **common,
                     waveform_config=effects,
                     progress_bar=bool(seq_config.get("progress_bar_enabled")),
                     branding_overlay_path=branding_overlay_path,
@@ -262,7 +262,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                 mode=seq_config.get("background_mode", "sequential"),
                 seed=f"{book.id}-{patch.id}",
                 start_index=patch.patch_index,
-                music_path=music_path, music_volume=music_volume, music_gaps=music_gaps,
+                music_path=music_path, music_volume=music_volume, music_mix=music_mix,
                 crossfade=bool(seq_config.get("crossfade_enabled")),
                 crossfade_seconds=float(seq_config.get("crossfade_seconds", 1)),
                 ken_burns=bool(seq_config.get("ken_burns_enabled")),
@@ -275,7 +275,7 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
                 image, audio, target,
                 image_type=snapshot.get("image_type") or "none",
                 use_nvenc=settings.use_nvenc, music_path=music_path,
-                music_volume=music_volume, music_gaps=music_gaps, **common,
+                music_volume=music_volume, music_mix=music_mix, **common,
                 waveform_config=waveform_config,
                 branding_overlay_path=branding_overlay_path,
             )
@@ -468,7 +468,7 @@ def handle(ctx) -> dict:
                         image_duration=float(config.get("image_duration_seconds", 15)),
                         mode=config.get("background_mode", "sequential"), seed=f"{book.id}-{patch.id}",
                         start_index=patch.patch_index, music_path=music_path,
-                        music_volume=book.music_volume, music_gaps=config,
+                        music_volume=book.music_volume, music_mix=config,
                         crossfade=bool(config.get("crossfade_enabled")),
                         crossfade_seconds=float(config.get("crossfade_seconds", 1)),
                         ken_burns=bool(config.get("ken_burns_enabled")),
@@ -480,7 +480,7 @@ def handle(ctx) -> dict:
                     video_gen.generate_segment(
                         image, _audio, target, image_type=image_type,
                         use_nvenc=settings.use_nvenc, music_path=music_path,
-                        music_volume=book.music_volume, music_gaps=config, **common,
+                        music_volume=book.music_volume, music_mix=config, **common,
                         waveform_config=config,
                         branding_overlay_path=branding_overlay_path,
                     )
