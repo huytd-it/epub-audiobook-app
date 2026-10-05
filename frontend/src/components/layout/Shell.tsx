@@ -64,6 +64,7 @@ const navSections: NavSection[] = [
     title: "OPERATIONS",
     items: [
       { to: "/youtube", label: "YouTube", icon: Video },
+      { to: "/shorts", label: "Short Video Studio", icon: Video },
       { to: "/drive", label: "Google Drive", icon: HardDrive },
       { to: "/database-io", label: "Dữ liệu", icon: Database },
       { to: "/logs", label: "Nhật ký", icon: FileText },

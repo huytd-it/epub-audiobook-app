@@ -13,6 +13,7 @@ import { MusicPage } from "@/pages/MusicPage";
 import { PhotosPage } from "@/pages/PhotosPage";
 import { VoicesPage } from "@/pages/VoicesPage";
 import { YouTubePage } from "@/pages/YouTubePage";
+import { ShortsStudio } from "@/pages/ShortsStudio";
 import { DrivePage } from "@/pages/DrivePage";
 import { DatabaseIoPage } from "@/pages/DatabaseIoPage";
 import { LogsPage } from "@/pages/LogsPage";
@@ -43,6 +44,7 @@ function App() {
         <Route path="/media" element={<MediaPage />} />
         <Route path="/media-browser" element={<MediaBrowserPage />} />
         <Route path="/youtube" element={<YouTubePage />} />
+        <Route path="/shorts" element={<ShortsStudio />} />
         <Route path="/drive" element={<DrivePage />} />
         <Route path="/database-io" element={<DatabaseIoPage />} />
         <Route path="/logs" element={<LogsPage />} />

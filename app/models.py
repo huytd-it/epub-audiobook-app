@@ -164,3 +164,37 @@ class TextReplaceRule:
     replace: str
     is_regex: bool
     position: int
+
+
+@dataclass
+class Short:
+    id: int
+    book_id: int
+    script_text: str = ""
+    script_source: str = "manual"  # ai | manual
+    duration_target: int = 75  # 60-90s
+    voice_id: str | None = None  # NULL = kế thừa book.tts_voice_id
+    music_id: int | None = None
+    resolution: str = "1080x1920"  # 1 khổ mỗi lần render
+    render_config_json: str = "{}"
+    video_path: str | None = None
+    caption: str = ""  # caption chung 3 kênh
+    story_link: str = ""  # URL tĩnh dán tay
+    status: str = "draft"  # draft | rendering | ready | publishing | published | failed
+    # ffmpeg = pipeline hiện có; remotion = chỉ Remotion lo lớp đồ hoạ dọc
+    # (audio/timeline vẫn do ffmpeg/TTS lo).
+    renderer: str = "ffmpeg"
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class ShortUpload:
+    id: int
+    short_id: int
+    platform: str  # fb | tiktok | youtube
+    platform_video_id: str | None = None
+    status: str = "pending"  # pending | processing | done | failed
+    error_message: str | None = None
+    scheduled_at: str | None = None
+    created_at: str = ""

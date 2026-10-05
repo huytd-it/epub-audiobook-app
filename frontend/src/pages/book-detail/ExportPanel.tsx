@@ -1,9 +1,8 @@
 import React, { useMemo, useState } from "react";
-import { ChevronDown, Clipboard, Download, Gauge, HardDrive, KeyRound, Save } from "lucide-react";
-import { api, DriveAccount, DriveTarget, KaggleAccount, Patch, post, postJson } from "@/api";
+import { Download, Gauge, HardDrive, Save } from "lucide-react";
+import { DriveAccount, DriveTarget, KaggleAccount, Patch, post, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
 import { Combobox } from "@/components/ui/combobox";
 import { cn } from "@/lib/utils";
 import { AudioSettings, TtsModel, VoiceOption, downloadForm, errorText } from "./types";
@@ -46,8 +45,6 @@ export function ExportPanel({
   const [accountId, setAccountId] = useState("");
   const [exporting, setExporting] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [credentials, setCredentials] = useState("");
-  const [credentialsOpen, setCredentialsOpen] = useState(false);
   // Tự động hoá sau TTS Kaggle — giống dialog "Tạo âm thanh": dựng video +
   // upload YouTube. Mặc định after_all (an toàn): cả batch xong mới chuỗi.
   const [kaggleAutoVideo, setKaggleAutoVideo] = useState(true);
@@ -166,28 +163,6 @@ export function ExportPanel({
       },
       `Đã đưa ${targetIds.length} patch vào hàng đợi Kaggle${chain}${modeNote}. Theo dõi tiến độ ở trang Queue.`
     );
-  };
-
-  const loadCredentials = async () => {
-    if (!accountId) {
-      onMessage("Chọn Google Drive account trước khi lấy credentials.");
-      return;
-    }
-    try {
-      const payload = await api<unknown>(`/drive/kaggle-credentials?account_id=${accountId}`);
-      setCredentials(JSON.stringify(payload, null, 2));
-    } catch (error) {
-      onMessage(errorText(error));
-    }
-  };
-
-  const copyCredentials = async () => {
-    try {
-      await navigator.clipboard.writeText(credentials);
-      onMessage("Đã copy GDRIVE_CREDS.");
-    } catch {
-      onMessage("Trình duyệt chặn clipboard, hãy copy thủ công.");
-    }
   };
 
   return (
@@ -365,43 +340,6 @@ export function ExportPanel({
               </p>
             )}
           </div>
-        </div>
-
-        <div className="border-t border-border pt-3">
-          <button
-            className="flex w-full items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground"
-            onClick={() => setCredentialsOpen((open) => !open)}
-            aria-expanded={credentialsOpen}
-          >
-            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", credentialsOpen && "rotate-180")} />
-            <KeyRound className="h-3.5 w-3.5" />
-            Kaggle credentials (GDRIVE_CREDS)
-          </button>
-
-          {credentialsOpen && (
-            <div className="mt-3 space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" variant="outline" onClick={loadCredentials}>
-                  Lấy credentials
-                </Button>
-                <Button size="sm" variant="ghost" onClick={copyCredentials} disabled={!credentials}>
-                  <Clipboard className="h-3.5 w-3.5" /> Copy
-                </Button>
-                {!accountId && (
-                  <span className="text-[11px] text-muted-foreground">Chọn Drive account ở khối bên trên.</span>
-                )}
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                Export qua API đã nhúng sẵn credentials của account đã chọn vào notebook (biến{" "}
-                <code>GDRIVE_CREDS</code> ở Cell 4), nên không cần tạo Kaggle secret nữa. Chỉ lấy JSON ở
-                đây khi muốn dùng secret thay vì để credentials nằm trong file .ipynb — notebook có
-                credentials phải giữ ở chế độ private.
-              </p>
-              {credentials && (
-                <Textarea className="min-h-24 bg-muted/30 font-mono text-[11px]" value={credentials} readOnly />
-              )}
-            </div>
-          )}
         </div>
       </CardContent>
     </Card>
