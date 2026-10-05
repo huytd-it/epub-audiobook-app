@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from app import db, repository
 from app.config import settings
 from app.routes import (ai, books, database_io, downloads, drive, effects, gameplay, kaggle, local_bridge, logs, media_browser, music,
-    patches, photos, production_settings, queue, text_studio, tts_models, ui_api, validation, video, video_api, voices, youtube)
+    patches, photos, production_settings, queue, shorts, text_studio, tts_models, ui_api, validation, video, video_api, voices, youtube)
 import asyncio
 
 from app.jobqueue import joblog, store
@@ -156,6 +156,7 @@ app.include_router(production_settings.router)
 app.include_router(tts_models.router)
 app.include_router(gameplay.router)
 app.include_router(media_browser.router)
+app.include_router(shorts.router)
 
 
 SPA_DIR = Path("app/spa_dist")
@@ -180,7 +181,7 @@ def _spa_index():
 
 _SPA_PATHS = (
     re.compile(r"^/books(?:/upload|/\d+|/\d+/chapters/preview-ui|/\d+/patches/build|/\d+/patches/\d+/chunks|/\d+/text-studio)?$"),
-    re.compile(r"^/(?:queue|media|music|photos|voices|effects|youtube|drive|database-io|logs|production-defaults|gameplay|media-browser)$"),
+    re.compile(r"^/(?:queue|media|music|photos|voices|effects|youtube|drive|database-io|logs|production-defaults|gameplay|media-browser|shorts)$"),
 )
 
 

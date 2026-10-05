@@ -55,6 +55,7 @@
 | 🔗 | **Audio Merge** | Ghép patch thành audiobook hoàn chỉnh (`app/audio_merge.py`) |
 | 🎬 | **Video Generation** | Tạo video với background riêng cho từng patch/chapter — multi-source + webcam PiP (`app/video_gen.py`, `app/video_compositor.py`) |
 | 📤 | **YouTube Upload** | Auto-upload, thumbnail, playlist (`app/youtube.py`, `app/upload_worker.py`) |
+| 🎞️ | **Short Video Studio** | 1 short = 1 truyện · script AI 60-90s/sửa tay · render dọc 1080x1920 (1 khổ/lần) · caption chung + story_link text · auto-upload FB Reels + TikTok + YouTube Shorts (`/shorts`, `app/routes/shorts.py`, `app/facebook.py`, `app/tiktok.py`) |
 | 🤖 | **Automated Patch Pipeline** | Overlay thumbnail → video (loop background + PiP) → upload YouTube, retry idempotent từng stage |
 | ⚙️ | **Automation Settings** | FFmpeg presets, webcam, playlist defaults — validated Pydantic, default toàn cục + override JSON per-book |
 | 🌗 | **Modern UI** | Dark mode, drag & drop, preview ảnh — React SPA duy nhất (`frontend/src`) |
@@ -245,8 +246,30 @@ cp .env.example .env   # rồi chỉnh DATA_ROOT, YOUTUBE_*, v.v.
 | `ENABLE_WORKER` | `true` | ⚙️ Bật/tắt background worker |
 | `USE_NVENC` | `false` | 🎮 Encode video bằng NVENC |
 | `YOUTUBE_*` | — | 🔐 OAuth client & default privacy/tags |
+| `FACEBOOK_PAGE_ID` / `FACEBOOK_PAGE_ACCESS_TOKEN` | — | 📘 Page upload/Reels (Graph API, cần duyệt app). Có thể dán token ở `/shorts` thay vì `.env` |
+| `TIKTOK_CLIENT_KEY` / `TIKTOK_ACCESS_TOKEN` | — | 🎵 Content Posting API FILE_UPLOAD (cần duyệt app). Có thể dán token ở `/shorts` |
 
 > Xem đầy đủ trong [`.env.example`](.env.example) — mọi field đều có default trong `app/config.py:1`, nên `.env` trống vẫn chạy được.
+
+---
+
+## 🎞️ Short Video Studio (MVP)
+
+Studio chọn sách → sinh script AI/sửa tay (60-90s, hé lộ tình tiết) → render dọc → caption chung + story_link → auto-upload 3 kênh.
+
+- **Route:** `/shorts` (frontend `ShortsStudio.tsx`) · API `app/routes/shorts.py:1` · DB `shorts` + `short_uploads` (`app/db.py`).
+- **1 short = 1 truyện** (`short.book_id`); render **1 khổ mỗi lần**, mặc định `1080x1920/30fps` + sub bật (`app/video_config.py` `SHORT_DEFAULTS`).
+- **Caption chung** cho cả 3 kênh + `story_link` là URL tĩnh dán tay. Lưu ý: TikTok/Reels thường **không cho link clickable** — phase 1 giữ text link, fallback bio/comment do user tự làm.
+- **Upload:** YouTube Shorts tái dùng `app/youtube.py` (dọc ≤3min tự thành Shorts); Facebook mới `app/facebook.py` (Page token, Graph API); TikTok mới `app/tiktok.py` (Content Posting API FILE_UPLOAD).
+- **Job:** `short_render` (pool render, concurrency 1) + `short_upload` ×3 (concurrency 3). Theo dõi per-platform + retry ở UI.
+- **Renderer:** `shorts.renderer` chọn `ffmpeg` (mặc định, pipeline có sẵn) hoặc `remotion`.
+  - `ffmpeg`: `video_gen.generate_standalone_video` — cover + giọng đọc + sub.
+  - `remotion`: **phương án lai** — TTS/cover/nhạc vẫn do Python lo; chỉ lớp đồ hoạ dọc do Remotion dựng (`remotion/src/ShortIntro.tsx`: hook 3s, sub highlight từ, thanh tiến). Python gọi `npx remotion render` (`app/short_remotion.py`) rồi validate bằng `video_integrity` nên lỗi renderer không lọt xuống upload.
+  - Media được stage vào `data/shorts/<id>/remotion-assets/` và truyền qua `--public-dir` vì Chrome của Remotion chặn `file://` (`staticFile()`).
+  - Yêu cầu lần đầu: `cd remotion && npm install` (Remotion tự tải Chrome Headless Shell ~113MB khi render lần đầu). Mở xem trước: `npm run studio`.
+  - License: Remotion là source-available, **Free License cho cá nhân** (≤3 người, thương mại cũng được) — xem [license FAQ](https://www.remotion.dev/docs/license/license-faq).
+- **Out-of-scope MVP:** feed/like trong app, multi-user, analytics cross-platform sâu, caption riêng từng kênh, lịch hẹn riêng (mặc định đăng ngay/private-draft).
+- **Rủi ro chính:** FB/TikTok cần duyệt app + OAuth (tốn thời gian hơn code); giới hạn duration/size/ratio TikTok và Reels API; cue Remotion chia tỉ lệ theo ký tự chứ không phải forced-alignment, nên highlight lệch nhẹ với giọng đọc — dùng TTS nhanh/nhịp đều thì không thấy.
 
 ---
 

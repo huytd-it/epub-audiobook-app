@@ -591,6 +591,62 @@ CREATE TABLE IF NOT EXISTS kaggle_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_kaggle_usage_account ON kaggle_usage(account_id, started_at DESC);
 
+-- Short Video Studio (single-user): 1 short gắn 1 truyện.
+CREATE TABLE IF NOT EXISTS shorts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id         INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+    script_text     TEXT NOT NULL DEFAULT '',
+    script_source   TEXT NOT NULL DEFAULT 'manual',
+    duration_target INTEGER NOT NULL DEFAULT 75,
+    voice_id        TEXT,
+    music_id        INTEGER REFERENCES music(id) ON DELETE SET NULL,
+    resolution      TEXT NOT NULL DEFAULT '1080x1920',
+    render_config_json TEXT NOT NULL DEFAULT '{}',
+    video_path      TEXT,
+    caption         TEXT NOT NULL DEFAULT '',
+    story_link      TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'draft',
+    renderer        TEXT NOT NULL DEFAULT 'ffmpeg',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shorts_book ON shorts(book_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shorts_status ON shorts(status);
+
+CREATE TABLE IF NOT EXISTS short_uploads (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    short_id        INTEGER NOT NULL REFERENCES shorts(id) ON DELETE CASCADE,
+    platform        TEXT NOT NULL,
+    platform_video_id TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    error_message   TEXT,
+    scheduled_at    TEXT,
+    created_at      TEXT NOT NULL,
+    UNIQUE(short_id, platform)
+);
+CREATE INDEX IF NOT EXISTS idx_short_uploads_short ON short_uploads(short_id);
+CREATE INDEX IF NOT EXISTS idx_short_uploads_status ON short_uploads(platform, status);
+
+-- Credentials cho auto-upload Facebook Page + TikTok (mirror youtube_credentials).
+CREATE TABLE IF NOT EXISTS facebook_credentials (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_id         TEXT NOT NULL DEFAULT '',
+    page_name       TEXT,
+    page_access_token TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tiktok_credentials (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    open_id         TEXT NOT NULL DEFAULT '',
+    display_name    TEXT,
+    access_token    TEXT NOT NULL,
+    refresh_token   TEXT NOT NULL DEFAULT '',
+    token_expiry    TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
 """
 
 
@@ -1114,3 +1170,82 @@ def _migrate(conn: sqlite3.Connection) -> None:
                    VALUES (?, ?, ?, ?, ?)""",
                 ("Default OAuth Client", settings.google_drive_client_id, settings.google_drive_client_secret, now, now),
             )
+    # Short Video Studio tables for DBs created before the feature existed.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS shorts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+            script_text TEXT NOT NULL DEFAULT '',
+            script_source TEXT NOT NULL DEFAULT 'manual',
+            duration_target INTEGER NOT NULL DEFAULT 75,
+            voice_id TEXT,
+            music_id INTEGER REFERENCES music(id) ON DELETE SET NULL,
+            resolution TEXT NOT NULL DEFAULT '1080x1920',
+            render_config_json TEXT NOT NULL DEFAULT '{}',
+            video_path TEXT,
+            caption TEXT NOT NULL DEFAULT '',
+            story_link TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'draft',
+            renderer TEXT NOT NULL DEFAULT 'ffmpeg',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_shorts_book ON shorts(book_id, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_shorts_status ON shorts(status)")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS short_uploads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            short_id INTEGER NOT NULL REFERENCES shorts(id) ON DELETE CASCADE,
+            platform TEXT NOT NULL,
+            platform_video_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error_message TEXT,
+            scheduled_at TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(short_id, platform)
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_short_uploads_short ON short_uploads(short_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_short_uploads_status ON short_uploads(platform, status)")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS facebook_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            page_id TEXT NOT NULL DEFAULT '',
+            page_name TEXT,
+            page_access_token TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS tiktok_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            open_id TEXT NOT NULL DEFAULT '',
+            display_name TEXT,
+            access_token TEXT NOT NULL,
+            refresh_token TEXT NOT NULL DEFAULT '',
+            token_expiry TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    # Backfill columns if an older shorts table exists without newer fields.
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(shorts)")}
+        for _col, _ddl in {
+            "duration_target": "INTEGER NOT NULL DEFAULT 75",
+            "voice_id": "TEXT",
+            "music_id": "INTEGER REFERENCES music(id) ON DELETE SET NULL",
+            "resolution": "TEXT NOT NULL DEFAULT '1080x1920'",
+            "render_config_json": "TEXT NOT NULL DEFAULT '{}'",
+            "video_path": "TEXT",
+            "caption": "TEXT NOT NULL DEFAULT ''",
+            "story_link": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT 'draft'",
+            "renderer": "TEXT NOT NULL DEFAULT 'ffmpeg'",
+        }.items():
+            if _col not in cols:
+                conn.execute(f"ALTER TABLE shorts ADD COLUMN {_col} {_ddl}")
+    except Exception:
+        pass

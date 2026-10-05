@@ -203,6 +203,47 @@ register_task("youtube_content", "Nội dung YouTube (cấp sách)", _build_yout
 register_task("thumbnail_prompt", "Prompt ảnh bìa", _build_thumbnail_prompt)
 
 
+def _build_short_script(ctx: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    """Kịch bản short 60-90s hé lộ tình tiết + caption chung 3 kênh."""
+    brief = context_to_brief(ctx)
+    system = (
+        "Bạn là biên tập viên short video sách nói (TikTok/Reels/Shorts). "
+        "Luôn viết bằng Tiếng Việt. Trả về JSON object duy nhất, không markdown."
+    )
+    user = (
+        "Dựa trên sách sau, viết kịch bản video dọc 60-90s (~150-220 từ đọc) "
+        "HÉ LỘ tình tiết hấp dẫn nhưng không spoil kết cục, giọng kể lôi cuốn:\n"
+        f"{brief}\n\n"
+        "Yêu cầu JSON (đúng các key này):\n"
+        "- script: lời thoại đọc TTS, 150-220 từ, mở bằng hook 3s gây tò mò.\n"
+        "- caption: 1-3 câu đăng chung cho Facebook/TikTok/YouTube Shorts (≤300 ký tự).\n"
+        "- hashtags: chuỗi hashtags phân tách dấu phẩy, 5-8 cái.\n"
+        "- story_hook: 1 câu hook ngắn cho thumbnail/tiêu đề."
+    )
+    return {"system": system, "user": user, "max_tokens": 1200, "response_format": "json"}
+
+
+def parse_short_script(text: str) -> dict[str, Any]:
+    """JSON của model -> {script, caption, hashtags, story_hook} đã làm sạch."""
+    payload = _extract_json(text)
+    if payload is None:
+        raise GenerationError(f"Model không trả về JSON hợp lệ: {(text or '')[:200]}")
+    script = str(payload.get("script") or "").strip()
+    caption = str(payload.get("caption") or "").strip()[:500]
+    hashtags = _normalize_tags(payload.get("hashtags", payload.get("tags")))
+    hook = str(payload.get("story_hook") or payload.get("hook") or "").strip()[:200]
+    if not script:
+        raise GenerationError("Model không sinh ra kịch bản (script).")
+    words = len(script.split())
+    if words < 40 or words > 400:
+        raise GenerationError(f"Kịch bản dài bất thường ({words} từ, kỳ vọng 150-220).")
+    return {"script": script, "caption": caption,
+            "hashtags": ", ".join(hashtags), "story_hook": hook}
+
+
+register_task("short_script", "Kịch bản short 60-90s", _build_short_script)
+
+
 # ---------------------------------------------------------------------------
 # High-level runners
 # ---------------------------------------------------------------------------
