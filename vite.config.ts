@@ -102,6 +102,8 @@ export default defineConfig({
         // Tải file (audio/video/zip) và tài liệu API không được trả về index.html.
         navigateFallbackDenylist: [
           /\/(audio|video|download|export|export-batch)(\/|$)/,
+          // OAuth (YouTube/Drive) phải đi thẳng tới FastAPI để redirect sang Google và nhận callback.
+          /^\/(youtube|drive)\/(connect|callback)$/,
           /^\/docs$/,
           /^\/redoc$/,
           /^\/openapi\.json$/,
