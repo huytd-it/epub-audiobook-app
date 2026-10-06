@@ -1,32 +1,25 @@
-"""Background music that only fills the silent gaps in the narration.
+"""Background music placed under the last seconds of every chapter.
 
 The old mix looped one track under the whole narration at a fixed volume. That
-works for a trailer but fights the voice for an hour-long chapter, so the
-default is now a *bed*: the music is placed only where the narration is
-actually silent - the pause between chapters, the breath between chunks - and
-nowhere else.
+fights the voice for an hour-long chapter, so music now plays only as a short
+*bed* under the closing ``chapter_end_seconds`` of each chapter and fades out on
+the chapter boundary - a cue that the chapter is wrapping up, not a soundtrack.
 
-The bed is rendered once per segment, ahead of the video mux, into a plain WAV
-that is exactly as long as the last gap it fills. Everything downstream keeps
-treating it as "the music file": the same ``music_volume`` slider, the same
-amix, no special casing in the render paths beyond not looping it.
+Chapter boundaries come from the patch audio's ``.timeline.json`` sidecar (the
+same one YouTube chapter markers use). Audio without a valid sidecar - a Text
+Studio edit, a standalone upload - is treated as one chapter, so the music lands
+under its last seconds.
 
-Two ffmpeg passes do the work:
-
-1. ``silencedetect`` on the narration reports every silence at least
-   ``min_gap_ms`` long (:func:`detect_silence_gaps`).
-2. One ``filter_complex`` opens the music once per gap, trims it to the gap
-   length, fades both edges and delays it to the gap's start; ``amix`` sums the
-   pieces (:func:`build_gap_bed`).
-
-Because each gap gets the music *from its own start*, a chapter break plays the
-opening bars rather than whatever the loop happened to be on - which is what
-makes it read as a deliberate sting instead of a bed that keeps ducking.
+The bed is rendered once per narration file, ahead of the video mux, into a
+plain WAV no longer than the narration. Everything downstream keeps treating it
+as "the music file": the same ``music_volume`` slider, the same amix, no special
+casing in the render paths beyond not looping it. The music sits *under* the
+voice, so the video, its subtitles and its chapter timestamps keep their length.
 """
 from __future__ import annotations
 
 import logging
-import re
+import random
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +28,6 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_DETECT_TIMEOUT = 900
 _RENDER_TIMEOUT = 900
 
 # Bed format. Matched to video_gen.AUDIO_SAMPLE_RATE/AUDIO_CHANNELS so the mux
@@ -44,25 +36,18 @@ BED_SAMPLE_RATE = 48000
 BED_CHANNELS = 2
 
 # Defaults, mirrored by video_config.VIDEO_DEFAULTS (the settings UI) - a caller
-# that passes no config at all still gets a sane bed.
-DEFAULT_MIN_GAP_MS = 1500
-DEFAULT_FADE_MS = 400
-DEFAULT_THRESHOLD_DB = -40.0
-# Keep the music off the edges of the gap: silencedetect reports the exact
-# moment the level crosses the threshold, and a word's tail sits just under it.
-DEFAULT_EDGE_PAD_MS = 120
-# Slack allowed when detecting, so a gap exactly as long as the threshold (the
-# default chapter pause is exactly the default threshold) is not missed by a
-# millisecond of rounding. See build_detect_command.
-DETECT_TOLERANCE_MS = 50
-# Below this a placed piece is a click, not a sting - such a gap is skipped.
-MIN_PIECE_MS = 250
-# One ffmpeg input per gap; a runaway detection (a mis-set threshold on a quiet
-# recording) must not build a 5000-input filtergraph.
+# that passes an empty config still gets a sane bed.
+DEFAULT_CHAPTER_END_SECONDS = 15
+MIN_CHAPTER_END_SECONDS = 1
+MAX_CHAPTER_END_SECONDS = 300
+# Fade length at each edge of a piece when fading is on; halved for a piece
+# too short to hold two full fades.
+FADE_SECONDS = 2.0
+# Below this a placed piece is a click, not a cue - such a chapter is skipped.
+MIN_PIECE_SECONDS = 0.25
+# One ffmpeg input per chapter; a runaway timeline must not build a
+# 5000-input filtergraph.
 MAX_PIECES = 240
-
-_SILENCE_START_RE = re.compile(r"silence_start:\s*(-?[\d.]+)")
-_SILENCE_END_RE = re.compile(r"silence_end:\s*(-?[\d.]+)")
 
 
 class MusicBedError(RuntimeError):
@@ -70,17 +55,27 @@ class MusicBedError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class GapOptions:
-    """Validated gap-music settings for one render."""
+class BedOptions:
+    """Validated chapter-end music settings for one render."""
 
-    enabled: bool = False
-    min_gap_ms: int = DEFAULT_MIN_GAP_MS
-    fade_ms: int = DEFAULT_FADE_MS
-    threshold_db: float = DEFAULT_THRESHOLD_DB
-    edge_pad_ms: int = DEFAULT_EDGE_PAD_MS
+    chapter_end_seconds: int = DEFAULT_CHAPTER_END_SECONDS
+    random_start: bool = False
+    fade: bool = True
+
+
+@dataclass(frozen=True)
+class Piece:
+    """One music placement: ``length`` seconds of the track, read from
+    ``offset`` into it, laid at ``start`` seconds into the narration."""
+
+    start: float
+    length: float
+    offset: float = 0.0
 
 
 def _int(raw, fallback: int, low: int, high: int) -> int:
+    if isinstance(raw, bool):
+        return fallback
     try:
         value = int(round(float(raw)))
     except (TypeError, ValueError):
@@ -88,71 +83,31 @@ def _int(raw, fallback: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
-def parse_options(config: dict | None) -> GapOptions:
-    """Turn a render-config dict (or ``None``) into ``GapOptions``.
-
-    Accepts the snapshot shape used by the render config - ``music_gap_only`` /
-    ``music_gap_min_ms`` / ``music_gap_fade_ms`` - as well as the short keys
-    (``enabled`` / ``min_gap_ms`` / ``fade_ms``), so a caller can hand in either
-    the whole video config or a purpose-built dict.
-    """
-    config = config or {}
-    if not isinstance(config, dict):
-        return GapOptions()
-    enabled = config.get("music_gap_only", config.get("enabled", False))
-    return GapOptions(
-        enabled=bool(enabled),
-        min_gap_ms=_int(config.get("music_gap_min_ms", config.get("min_gap_ms")), DEFAULT_MIN_GAP_MS, 200, 60000),
-        fade_ms=_int(config.get("music_gap_fade_ms", config.get("fade_ms")), DEFAULT_FADE_MS, 0, 5000),
-        threshold_db=float(config.get("music_gap_threshold_db", config.get("threshold_db")) or DEFAULT_THRESHOLD_DB),
-        edge_pad_ms=_int(config.get("music_gap_edge_pad_ms", config.get("edge_pad_ms")), DEFAULT_EDGE_PAD_MS, 0, 2000),
-    )
-
-
 def is_enabled(config: dict | None) -> bool:
-    return parse_options(config).enabled
+    """Chapter-end placement applies whenever a render passes a music config.
 
-
-def parse_silence_log(stderr: str, total_duration: float | None = None) -> list[tuple[float, float]]:
-    """Pull ``[start, end)`` pairs out of ffmpeg's silencedetect output.
-
-    A silence that runs to the end of the file has no ``silence_end`` line, so
-    it is closed at ``total_duration`` when that is known and dropped otherwise
-    (an unbounded gap would make the bed longer than the narration).
+    ``None`` is the standalone Video Creator, which has no book settings and
+    keeps looping its music under the whole narration.
     """
-    gaps: list[tuple[float, float]] = []
-    pending: float | None = None
-    for line in (stderr or "").splitlines():
-        start = _SILENCE_START_RE.search(line)
-        if start:
-            pending = max(0.0, float(start.group(1)))
-            continue
-        end = _SILENCE_END_RE.search(line)
-        if end and pending is not None:
-            gaps.append((pending, max(pending, float(end.group(1)))))
-            pending = None
-    if pending is not None and total_duration and total_duration > pending:
-        gaps.append((pending, float(total_duration)))
-    return gaps
+    return isinstance(config, dict)
 
 
-def build_detect_command(audio_path: str | Path, options: GapOptions) -> list[str]:
-    """ffmpeg argv for the silencedetect pass (exposed for tests).
+def parse_options(config: dict | None) -> BedOptions:
+    """Turn a render-config dict into ``BedOptions``.
 
-    Detection asks for a hair less than the configured gap. The interesting case
-    is a threshold set to exactly the chapter pause (both default to 1500ms):
-    the silence between two chapters is then *exactly* the length being asked
-    for, and a millisecond of rounding either way would make every chapter break
-    fall through. ``plan_pieces`` still filters, and its own minimum is looser
-    still, so the tolerance widens the window rather than shifting it.
+    Reads the keys of the video config (``music_chapter_end_seconds`` /
+    ``music_random_start`` / ``music_fade_enabled``), so a caller can hand in
+    the whole video config or the render-config snapshot. Snapshots frozen
+    before this mode shipped carry none of them and get the defaults.
     """
-    seconds = max(0.05, (options.min_gap_ms - DETECT_TOLERANCE_MS) / 1000)
-    return [
-        settings.get_ffmpeg_path(), "-hide_banner", "-nostdin", "-vn",
-        "-i", str(audio_path),
-        "-af", f"silencedetect=noise={options.threshold_db:g}dB:d={seconds:g}",
-        "-f", "null", "-",
-    ]
+    if not isinstance(config, dict):
+        return BedOptions()
+    return BedOptions(
+        chapter_end_seconds=_int(config.get("music_chapter_end_seconds"), DEFAULT_CHAPTER_END_SECONDS,
+                                 MIN_CHAPTER_END_SECONDS, MAX_CHAPTER_END_SECONDS),
+        random_start=bool(config.get("music_random_start", False)),
+        fade=bool(config.get("music_fade_enabled", True)),
+    )
 
 
 def probe_duration(path: str | Path) -> float | None:
@@ -168,80 +123,71 @@ def probe_duration(path: str | Path) -> float | None:
         return None
 
 
-def detect_silence_gaps(audio_path: str | Path, options: GapOptions) -> list[tuple[float, float]]:
-    """Every silence in ``audio_path`` at least ``min_gap_ms`` long.
+def chapter_spans(audio_path: str | Path, total_duration: float) -> list[tuple[float, float]]:
+    """``(start, end)`` seconds of every chapter in the narration.
 
-    Returns ``[]`` when ffmpeg is unavailable or fails: no bed is better than a
-    failed render, and the caller falls back to leaving the music out.
+    A chapter runs from its first spoken frame to the next chapter's first
+    spoken frame, so its end includes the chapter pause - the music fades out
+    as the next chapter starts speaking. Falls back to one chapter covering the
+    whole file when the timeline sidecar is missing or does not match the WAV.
     """
-    try:
-        result = subprocess.run(
-            build_detect_command(audio_path, options),
-            capture_output=True, text=True, timeout=_DETECT_TIMEOUT,
-        )
-    except (OSError, subprocess.SubprocessError):
-        logger.warning("silencedetect failed for %s", audio_path, exc_info=True)
-        return []
-    if result.returncode != 0:
-        logger.warning("silencedetect returned %s for %s: %s",
-                       result.returncode, audio_path, (result.stderr or "")[-400:])
-        return []
-    return parse_silence_log(result.stderr, probe_duration(audio_path))
+    from app.youtube_metadata import load_timeline
+
+    timeline = load_timeline(audio_path)
+    starts = [float(chapter["start_seconds"]) for chapter in (timeline or {}).get("chapters", [])]
+    if not starts:
+        return [(0.0, total_duration)]
+    ends = starts[1:] + [total_duration]
+    return [(start, end) for start, end in zip(starts, ends) if end > start]
 
 
 def plan_pieces(
-    gaps: list[tuple[float, float]], options: GapOptions, *, music_duration: float | None = None
-) -> list[tuple[float, float]]:
-    """Turn detected silences into ``(start_seconds, length_seconds)`` pieces.
+    chapters: list[tuple[float, float]], options: BedOptions, *,
+    music_duration: float | None = None, seed: str = "",
+) -> list[Piece]:
+    """One piece under the closing ``chapter_end_seconds`` of each chapter.
 
-    Each gap is inset by ``edge_pad_ms`` at both ends so the music never clips
-    the tail of a word, then dropped if what remains is too short to hear as
-    anything but a click. A piece is never longer than the music itself - the
-    track plays once from its start and stops, it does not loop inside one gap.
+    A chapter shorter than the window gets music for its whole length. With
+    ``random_start`` each piece reads from a random point in the track instead
+    of its opening bars; the RNG is seeded per chapter so a retried render
+    lays the same music in the same places.
     """
-    # Milliseconds throughout: the threshold comparison sits exactly on values
-    # like 1500 - 2*400, where float subtraction lands a hair below and would
-    # drop a gap that does qualify.
-    pieces: list[tuple[float, float]] = []
-    # Same tolerance the detection pass allows (see build_detect_command), so a
-    # gap that only just qualified there is not thrown away here.
-    minimum_ms = max(
-        MIN_PIECE_MS,
-        options.min_gap_ms - DETECT_TOLERANCE_MS - 2 * options.edge_pad_ms,
-    )
-    for start, end in gaps:
-        start_ms = round(start * 1000) + options.edge_pad_ms
-        length_ms = round(end * 1000) - options.edge_pad_ms - start_ms
-        if length_ms < minimum_ms:
+    pieces: list[Piece] = []
+    for index, (start, end) in enumerate(chapters):
+        piece_start = max(start, end - options.chapter_end_seconds)
+        length = end - piece_start
+        if length < MIN_PIECE_SECONDS:
             continue
-        if music_duration and music_duration > 0:
-            length_ms = min(length_ms, round(music_duration * 1000))
-        pieces.append((start_ms / 1000, length_ms / 1000))
+        offset = 0.0
+        if options.random_start and music_duration and music_duration > length:
+            offset = random.Random(f"{seed}:{index}").uniform(0.0, music_duration - length)
+        pieces.append(Piece(start=round(piece_start, 3), length=round(length, 3), offset=round(offset, 3)))
         if len(pieces) >= MAX_PIECES:
-            logger.warning("gap music: capping at %s pieces", MAX_PIECES)
+            logger.warning("chapter music: capping at %s pieces", MAX_PIECES)
             break
     return pieces
 
 
-def build_filter_graph(pieces: list[tuple[float, float]], options: GapOptions) -> str:
-    """The filter_complex graph placing one music copy per gap.
+def build_filter_graph(pieces: list[Piece], options: BedOptions) -> str:
+    """The filter_complex graph placing one music copy per chapter end.
 
     Input ``i`` is the music file opened for piece ``i`` (see
-    :func:`build_bed_command`); it is trimmed to the gap, faded at both edges
-    and delayed to the gap's start. ``amix`` with ``normalize=0`` sums them
-    without touching levels - the pieces never overlap, so summing is exact.
+    :func:`build_bed_command`); it is trimmed to the piece, optionally faded at
+    both edges and delayed to the piece's start. ``amix`` with ``normalize=0``
+    sums them without touching levels - the pieces never overlap, so summing
+    is exact.
     """
     if not pieces:
-        raise ValueError("no gap pieces to render")
+        raise ValueError("no music pieces to render")
     chains: list[str] = []
-    for index, (start, length) in enumerate(pieces):
-        fade = min(options.fade_ms / 1000, length / 2)
+    for index, piece in enumerate(pieces):
         label = f"[b{index}]" if len(pieces) > 1 else "[bed]"
-        steps = [f"atrim=0:{length:.3f}", "asetpts=N/SR/TB"]
+        steps = [f"atrim={piece.offset:.3f}:{piece.offset + piece.length:.3f}", "asetpts=N/SR/TB"]
+        fade = min(FADE_SECONDS, piece.length / 2) if options.fade else 0.0
         if fade > 0:
             steps.append(f"afade=t=in:st=0:d={fade:.3f}")
-            steps.append(f"afade=t=out:st={max(0.0, length - fade):.3f}:d={fade:.3f}")
-        delay_ms = int(round(start * 1000))
+            steps.append(f"afade=t=out:st={max(0.0, piece.length - fade):.3f}:d={fade:.3f}")
+        delay_ms = int(round(piece.start * 1000))
         if delay_ms > 0:
             steps.append(f"adelay={delay_ms}:all=1")
         chains.append(f"[{index}:a]" + ",".join(steps) + label)
@@ -251,15 +197,14 @@ def build_filter_graph(pieces: list[tuple[float, float]], options: GapOptions) -
     return ";".join(chains)
 
 
-def build_bed_command(music_path: str | Path, out_path: str | Path, pieces: list[tuple[float, float]],
+def build_bed_command(music_path: str | Path, out_path: str | Path, pieces: list[Piece],
                       script_path: str | Path) -> list[str]:
     """ffmpeg argv rendering the bed (exposed for tests).
 
     The music is opened once per piece instead of split from a single input:
-    each piece then owns its own decoder and starts at 00:00, and no branch has
-    to buffer while another one drains. ``-stream_loop -1`` covers a gap longer
-    than the track - ``plan_pieces`` caps the length when the duration is known,
-    but the loop makes a wrong probe harmless.
+    each piece then owns its own decoder, and no branch has to buffer while
+    another one drains. ``-stream_loop -1`` lets a piece longer than the track
+    (a 15s window over a 10s sting) keep playing instead of cutting to silence.
     """
     cmd = [settings.get_ffmpeg_path(), "-y", "-hide_banner", "-nostdin"]
     for _ in pieces:
@@ -273,31 +218,34 @@ def build_bed_command(music_path: str | Path, out_path: str | Path, pieces: list
     return cmd
 
 
-def build_gap_bed(
+def build_chapter_bed(
     audio_path: str | Path, music_path: str | Path, out_path: str | Path, config: dict | None
 ) -> str | None:
-    """Render the gap-only music bed for one narration file.
+    """Render the chapter-end music bed for one narration file.
 
-    Returns the bed path, or ``None`` when the narration has no gap worth
-    filling (the caller then renders with no music at all, which is the point of
-    the mode). Never raises for a detection miss; only a broken ffmpeg render
-    raises ``MusicBedError``.
+    Returns the bed path, or ``None`` when there is nothing to place (an empty
+    or unreadable narration - the caller then renders without music). Only a
+    broken ffmpeg render raises ``MusicBedError``.
     """
-    options = parse_options(config)
-    if not options.enabled:
+    if not is_enabled(config):
         return None
-    gaps = detect_silence_gaps(audio_path, options)
-    pieces = plan_pieces(gaps, options, music_duration=probe_duration(music_path))
+    options = parse_options(config)
+    total = probe_duration(audio_path)
+    if not total or total <= 0:
+        logger.info("chapter music: cannot read duration of %s, rendering without music", audio_path)
+        return None
+    pieces = plan_pieces(
+        chapter_spans(audio_path, total), options,
+        music_duration=probe_duration(music_path), seed=str(audio_path),
+    )
     if not pieces:
-        logger.info("gap music: no silence >= %sms in %s, rendering without music",
-                    options.min_gap_ms, audio_path)
         return None
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # The graph grows with the gap count and Windows caps a command line at
-    # 32767 characters, so it goes to a script file (same reason
-    # video_gen's xfade graph does).
+    # The graph grows with the chapter count and Windows caps a command line at
+    # 32767 characters, so it goes to a script file (same reason video_gen's
+    # xfade graph does).
     script_path = out_path.with_suffix(".graph.txt")
     script_path.write_text(build_filter_graph(pieces, options), encoding="utf-8")
     try:
@@ -306,7 +254,7 @@ def build_gap_bed(
             capture_output=True, text=True, timeout=_RENDER_TIMEOUT,
         )
     except subprocess.TimeoutExpired as exc:
-        raise MusicBedError("render nhạc nền theo khoảng lặng quá thời gian cho phép") from exc
+        raise MusicBedError("render nhạc nền cuối chương quá thời gian cho phép") from exc
     except OSError as exc:
         raise MusicBedError(f"không chạy được ffmpeg cho nhạc nền: {exc}") from exc
     finally:
@@ -316,5 +264,5 @@ def build_gap_bed(
             f"ffmpeg thất bại khi dựng nhạc nền (mã {result.returncode}): "
             f"{(result.stderr or '').strip()[-400:]}"
         )
-    logger.info("gap music: %s đoạn nhạc chèn vào khoảng lặng của %s", len(pieces), audio_path)
+    logger.info("chapter music: %s đoạn nhạc cuối chương cho %s", len(pieces), audio_path)
     return str(out_path)

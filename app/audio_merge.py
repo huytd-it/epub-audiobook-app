@@ -17,8 +17,8 @@ _BLOCK_FRAMES = 65536
 
 # Pause inserted between two chunks of the same chapter, and between the last
 # chunk of one chapter and the first of the next. The chapter pause is the
-# audible "end of chapter" beat - and, with gap music on, the slot the
-# background track is placed in (see app/music_bed.py).
+# audible "end of chapter" beat - and where the chapter-end music cue fades
+# out (see app/music_bed.py).
 DEFAULT_CHUNK_PAUSE_MS = 300
 DEFAULT_CHAPTER_PAUSE_MS = 1500
 

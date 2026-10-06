@@ -22,7 +22,7 @@ import {
   AudioSettings,
   BackgroundItem,
   ConfigTab,
-  MusicSettings,
+  MusicMixState,
   NormalizationSettings,
   TitleNormalizePreview,
   TtsModel,
@@ -34,6 +34,7 @@ import {
   errorText,
 } from "./types";
 import { CheckField, Field, TabBar, TtsOptionsFields, checkboxClass, fieldClass, selectClass } from "./parts";
+import { MusicMixFields } from "./MusicMixFields";
 import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
 import { AiContentGenerator, YouTubeConfigFields } from "./YouTubeFields";
 import { useTtsOptions } from "./useBookDetail";
@@ -688,7 +689,7 @@ export function ConfigDialog({
   const [videoConfig, setVideoConfig] = useState<VideoConfig>();
   const [backgrounds, setBackgrounds] = useState<BackgroundItem[]>([]);
   const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
-  const [music, setMusic] = useState<MusicSettings & { tracks: { id: number; name: string; duration_sec: number | null }[] }>();
+  const [music, setMusic] = useState<MusicMixState>();
   const [ytSettings, setYtSettings] = useState<YouTubeSettings>();
   const [ytPreview, setYtPreview] = useState<YouTubeMetadataPreview>();
   const [ytPreviewLoading, setYtPreviewLoading] = useState(false);
@@ -705,9 +706,7 @@ export function ConfigDialog({
       Promise.all([
         api<VideoConfig>(`/books/${bookId}/video-config`),
         api<{ backgrounds: BackgroundItem[] }>("/video/backgrounds"),
-        api<MusicSettings & { tracks: { id: number; name: string; duration_sec: number | null }[] }>(
-          `/books/${bookId}/music`
-        ),
+        api<MusicMixState>(`/books/${bookId}/music`),
         api<{ voices: VoiceItem[] }>("/api/ui/media"),
       ])
         .then(([config, media, musicSettings, voiceMedia]) => {
@@ -962,7 +961,7 @@ export function ConfigDialog({
               </Field>
               <Field
                 label="Khoảng lặng giữa chương (ms)"
-                hint="Chèn trước mỗi chương trong cùng một patch; cũng là chỗ nhạc nền được chèn vào"
+                hint="Chèn trước mỗi chương trong cùng một patch; nhạc nền cuối chương fade ra tại đây"
               >
                 <input
                   className={fieldClass}
@@ -1333,72 +1332,12 @@ export function ConfigDialog({
               </div>
 
               {music && (
-                <div className="grid grid-cols-1 gap-4 rounded-md border border-border p-3 sm:grid-cols-2">
-                  <Field label="Mix nhạc nền">
-                    <select
-                      className={selectClass}
-                      value={music.music_id ?? ""}
-                      onChange={(event) =>
-                        setMusic({ ...music, music_id: event.target.value ? Number(event.target.value) : null })
-                      }
-                    >
-                      <option value="">Không dùng nhạc</option>
-                      {music.tracks.map((track) => (
-                        <option key={track.id} value={track.id}>{track.name}</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label={`Âm lượng nhạc: ${music.music_volume}%`}>
-                    <input
-                      className="w-full accent-primary"
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={music.music_volume}
-                      disabled={music.music_id == null}
-                      onChange={(event) => setMusic({ ...music, music_volume: Number(event.target.value) })}
-                    />
-                  </Field>
-                  <div className="sm:col-span-2">
-                    <CheckField
-                      checked={videoConfig.music_gap_only}
-                      onChange={(value) => setVideoConfig({ ...videoConfig, music_gap_only: value })}
-                      label="Chỉ chèn nhạc vào khoảng lặng"
-                    />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Nhạc chỉ phát ở những quãng im lặng đủ dài (nghỉ giữa chương, giữa chunk),
-                      không lặp nền dưới giọng đọc suốt patch.
-                    </p>
-                  </div>
-                  <Field label="Khoảng lặng tối thiểu (ms)" hint="Ngắn hơn mức này thì bỏ qua">
-                    <input
-                      className={fieldClass}
-                      type="number"
-                      min="200"
-                      max="60000"
-                      step="100"
-                      disabled={!videoConfig.music_gap_only}
-                      value={videoConfig.music_gap_min_ms}
-                      onChange={(event) =>
-                        setVideoConfig({ ...videoConfig, music_gap_min_ms: Number(event.target.value) || 0 })
-                      }
-                    />
-                  </Field>
-                  <Field label="Fade nhạc (ms)" hint="Vào/ra ở hai đầu mỗi đoạn nhạc">
-                    <input
-                      className={fieldClass}
-                      type="number"
-                      min="0"
-                      max="5000"
-                      step="50"
-                      disabled={!videoConfig.music_gap_only}
-                      value={videoConfig.music_gap_fade_ms}
-                      onChange={(event) =>
-                        setVideoConfig({ ...videoConfig, music_gap_fade_ms: Number(event.target.value) || 0 })
-                      }
-                    />
-                  </Field>
-                </div>
+                <MusicMixFields
+                  music={music}
+                  onMusicChange={setMusic}
+                  placement={videoConfig}
+                  onPlacementChange={(patch) => setVideoConfig({ ...videoConfig, ...patch })}
+                />
               )}
 
               <div className="flex flex-wrap gap-4 rounded-md bg-muted/30 p-3">

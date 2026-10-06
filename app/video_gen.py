@@ -475,21 +475,22 @@ def _waveform_chains(config: dict, width: int, height: int, audio_input: int,
     return chains, "[vout]", "[narration]"
 
 
-def _prepare_gap_music(
-    audio_path: str, music_path: str | None, out_path: str, music_gaps: dict | None
+def _prepare_music_bed(
+    audio_path: str, music_path: str | None, out_path: str, music_mix: dict | None
 ) -> tuple[str | None, bool]:
     """Resolve the music input for one mux: ``(path, loop)``.
 
-    With gap mode off this is the caller's own file, stream-looped under the
-    whole narration as it always was. With it on, the music becomes a bed that
-    only fills the silences (see app/music_bed.py) - already the right length,
-    so it must not be looped - and ``None`` when the narration has no silence
-    long enough to fill, which means "render this segment without music".
+    Without a music config (the standalone Video Creator) this is the caller's
+    own file, stream-looped under the whole narration as it always was. With
+    one, the music becomes a bed under the last seconds of every chapter (see
+    app/music_bed.py) - already the right length, so it must not be looped -
+    and ``None`` when there is nothing to place, which means "render this
+    segment without music".
     """
-    if not music_path or not music_bed.is_enabled(music_gaps):
+    if not music_path or not music_bed.is_enabled(music_mix):
         return music_path, True
     bed_path = str(Path(out_path).with_name(f".{Path(out_path).stem}.musicbed.wav"))
-    return music_bed.build_gap_bed(audio_path, music_path, bed_path, music_gaps), False
+    return music_bed.build_chapter_bed(audio_path, music_path, bed_path, music_mix), False
 
 
 def _branding_overlay_filter(branding_overlay_path: str | None) -> str:
@@ -515,7 +516,7 @@ def generate_segment(
     use_nvenc: bool = False,
     music_path: str | None = None,
     music_volume: float = 0.15,
-    music_gaps: dict | None = None,
+    music_mix: dict | None = None,
     codec: str = "libx264",
     quality: int | None = None,
     marquee_path: str | None = None,
@@ -536,9 +537,9 @@ def generate_segment(
     fit_mode: 'contain' (letterbox), 'cover' (crop to fill), 'blur' (blurred
         backdrop + centred image). See _build_fit_filter.
     music_path: optional background music file (looped, mixed at music_volume ratio)
-    music_gaps: optional gap-music config (see app/music_bed.py). When enabled the
-        music is not looped under the narration: it is rendered into a bed that
-        only fills the silences longer than the configured threshold.
+    music_mix: optional chapter-end music config (see app/music_bed.py). When
+        given the music is not looped under the narration: it is rendered into
+        a bed under the last seconds of every chapter.
 
     on_progress: optional callback(event: str, fields: dict) for progress logging.
     Events: segment.start, segment.ffmpeg_start, segment.ffmpeg_done, segment.done,
@@ -547,7 +548,7 @@ def generate_segment(
     _ensure_out_dir(out_path)
     if music_path is not None and not Path(music_path).exists():
         raise FileNotFoundError(f"music file not found: {music_path}")
-    music_path, loop_music = _prepare_gap_music(audio_path, music_path, out_path, music_gaps)
+    music_path, loop_music = _prepare_music_bed(audio_path, music_path, out_path, music_mix)
 
     video_codec = "h264_nvenc" if use_nvenc or codec == "h264_nvenc" else "libx264"
     width, height = resolution
@@ -992,7 +993,7 @@ def generate_background_sequence(
     resolution: tuple[int, int], fps: int, image_duration: float,
     fit_mode: str = "contain",
     mode: str = "sequential", seed: str = "", music_path: str | None = None,
-    music_volume: float = 0.15, music_gaps: dict | None = None,
+    music_volume: float = 0.15, music_mix: dict | None = None,
     codec: str = "libx264", quality: int = 20,
     audio_bitrate: str = "320k", on_progress: ProgressCallback | None = None,
     start_index: int = 0,
@@ -1006,7 +1007,7 @@ def generate_background_sequence(
     duration = _probe_duration(audio_path)
     # Built before the (expensive) background pieces so a broken music input
     # fails fast; deleted again once the final mux has consumed it.
-    music_path, loop_music = _prepare_gap_music(audio_path, music_path, out_path, music_gaps)
+    music_path, loop_music = _prepare_music_bed(audio_path, music_path, out_path, music_mix)
     valid = [p for p in backgrounds if Path(p).is_file()]
     plan = plan_background_segments(valid, duration, image_duration, mode, seed=seed, start_index=start_index)
     if not plan:
@@ -1182,7 +1183,7 @@ def generate_full_video(
     use_nvenc: bool = False,
     music_path: str | None = None,
     music_volume: float = 0.15,
-    music_gaps: dict | None = None,
+    music_mix: dict | None = None,
     codec: str = "libx264",
     quality: int = 20,
     audio_bitrate: str = "320k",
@@ -1196,7 +1197,7 @@ def generate_full_video(
     """Generate a full video by creating segments per patch and concatenating.
 
     music_path: optional background music file looped at music_volume ratio.
-    music_gaps: optional gap-music config, applied per segment (see music_bed).
+    music_mix: optional chapter-end music config, applied per segment (see music_bed).
     font_path: passed to image_overlay.ensure_patch_overlay() for text rendering.
 
     on_progress: optional callback(event, fields) for progress logging.
@@ -1246,7 +1247,7 @@ def generate_full_video(
                     image_duration=float((video_config or {}).get("image_duration_seconds", 15)),
                     mode=(video_config or {}).get("background_mode", "sequential"),
                     seed=f"{getattr(book, 'id', '')}-{patch.id}", music_path=music_path,
-                    music_volume=music_volume, music_gaps=music_gaps, codec=codec, quality=quality,
+                    music_volume=music_volume, music_mix=music_mix, codec=codec, quality=quality,
                     audio_bitrate=audio_bitrate, on_progress=_seg_progress,
                     start_index=patch.patch_index,
                     crossfade=bool((video_config or {}).get("crossfade_enabled")),
@@ -1292,7 +1293,7 @@ def generate_full_video(
                 use_nvenc=use_nvenc,
                 music_path=music_path,
                 music_volume=music_volume,
-                music_gaps=music_gaps,
+                music_mix=music_mix,
                 codec=codec,
                 quality=quality,
                 audio_bitrate=audio_bitrate,
@@ -1347,7 +1348,7 @@ def generate_standalone_video(
     crf: int = 20,
     music_path: str | None = None,
     music_volume: float = 0.15,
-    music_gaps: dict | None = None,
+    music_mix: dict | None = None,
     intro_audio: str | None = None,
     outro_audio: str | None = None,
     on_progress: ProgressCallback | None = None,
@@ -1361,7 +1362,7 @@ def generate_standalone_video(
         generate_segment(
             image_path, audio_path, out_path, image_type=image_type, resolution=res,
             fps=fps, fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
-            music_path=music_path, music_volume=music_volume, music_gaps=music_gaps,
+            music_path=music_path, music_volume=music_volume, music_mix=music_mix,
             on_progress=on_progress,
             branding_overlay_path=branding_overlay_path,
         )
@@ -1380,7 +1381,7 @@ def generate_standalone_video(
         generate_segment(
             image_path, audio_path, main_path, image_type=image_type, resolution=res,
             fps=fps, fit_mode=fit_mode, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
-            music_path=music_path, music_volume=music_volume, music_gaps=music_gaps,
+            music_path=music_path, music_volume=music_volume, music_mix=music_mix,
             on_progress=on_progress,
             branding_overlay_path=branding_overlay_path,
         )
