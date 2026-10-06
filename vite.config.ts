@@ -103,7 +103,9 @@ export default defineConfig({
         navigateFallbackDenylist: [
           /\/(audio|video|download|export|export-batch)(\/|$)/,
           // OAuth (YouTube/Drive) phải đi thẳng tới FastAPI để redirect sang Google và nhận callback.
-          /^\/(youtube|drive)\/(connect|callback)$/,
+          // Workbox test denylist trên `pathname + search`, và callback của Google luôn kèm
+          // ?code=&state=&scope= nên không được neo `$` cuối path.
+          /^\/(youtube|drive)\/(connect|callback)([?#]|$)/,
           /^\/docs$/,
           /^\/redoc$/,
           /^\/openapi\.json$/,
