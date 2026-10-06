@@ -376,15 +376,27 @@ async def update_youtube_settings(request: Request, book_id: int):
     if flags.get("auto_upload_youtube"):
         flags["auto_create_video"] = True
     data["auto_upload"] = bool(flags.get("auto_upload_youtube", data.get("auto_upload")))
+    # Kênh YouTube của sách (social_account.id); null = dùng kênh mặc định. Cột riêng
+    # trên book chứ không nằm trong JSON cấu hình, nên tách ra trước khi lưu JSON.
+    set_account = "youtube_account_id" in data
+    account_id = data.pop("youtube_account_id", None)
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(404, "book not found")
+        if set_account:
+            from app import social_accounts
+            if account_id is not None and social_accounts.resolve(conn, "youtube", account_id) is None:
+                raise HTTPException(400, "Kênh YouTube đã chọn không còn kết nối")
+            conn.execute("UPDATE book SET youtube_account_id=? WHERE id=?", (account_id, book_id))
+            conn.commit()
         try:
             normalized = {**get_effective_youtube_config(conn, book), **data}
             if normalized.get("auto_upload"):
                 playlist = normalized["playlist"]
-                if not youtube.is_configured() or youtube.get_creds_from_db(conn) is None:
+                with youtube.use_book_account(conn, book_id):
+                    connected = youtube.get_creds_from_db(conn) is not None
+                if not youtube.is_configured() or not connected:
                     raise ValueError("YouTube must be connected before enabling auto upload")
                 if playlist["mode"] == "none":
                     raise ValueError("auto upload requires a playlist")
@@ -401,9 +413,14 @@ async def update_youtube_settings(request: Request, book_id: int):
             raise HTTPException(400, str(exc)) from exc
         result = get_effective_youtube_config(conn, repository.get_book(conn, book_id))
         book = repository.get_book(conn, book_id)
+        with youtube.use_book_account(conn, book_id):
+            book_account_id = youtube.active_account_id()
     if result.get("auto_upload") and result["playlist"]["mode"] == "existing":
         try:
-            if not any(p.get("id") == result["playlist"]["playlist_id"] for p in _list_youtube_playlists()):
+            # Playlist phải thuộc đúng kênh của sách, không phải kênh mặc định.
+            with youtube.use_account(book_account_id):
+                playlists = _list_youtube_playlists()
+            if not any(p.get("id") == result["playlist"]["playlist_id"] for p in playlists):
                 raise HTTPException(400, "playlist was not found")
         except HTTPException:
             raise
@@ -412,6 +429,7 @@ async def update_youtube_settings(request: Request, book_id: int):
     if book is not None:
         result["auto_create_video"] = bool(book.auto_create_video)
         result["auto_upload_youtube"] = bool(book.auto_upload_youtube)
+        result["youtube_account_id"] = book.youtube_account_id
     if flags:
         # Cấu hình giờ hợp lệ => chạy reconcile cho các patch đang chờ config.
         def _reconcile():
@@ -432,15 +450,23 @@ def youtube_settings(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(404, "book not found")
-        creds = youtube.get_creds_from_db(conn)
+        from app import social_accounts
+        with youtube.use_book_account(conn, book_id):
+            creds = youtube.get_creds_from_db(conn)
+            account_id = youtube.active_account_id()
         result = {"config": get_effective_youtube_config(conn, book), "connected": bool(creds), "channel_name": creds.get("channel_name") if creds else None,
                   "auto_create_video": bool(book.auto_create_video),
                   "auto_upload_youtube": bool(book.auto_upload_youtube),
+                  # Kênh sách đăng lên (null = kênh mặc định) + danh sách để chọn.
+                  "youtube_account_id": book.youtube_account_id,
+                  "accounts": [social_accounts.public(a)
+                               for a in social_accounts.list_accounts(conn, "youtube")],
                   # Provider AI đọc từ .env: UI cần biết để bật/khoá nút sinh
                   # nội dung mà không phải bắt thử rồi mới nhận lỗi.
                   "ai_content": ai_content.provider_status()}
     try:
-        result["playlists"] = _list_youtube_playlists() if result["connected"] else []
+        with youtube.use_account(account_id):
+            result["playlists"] = _list_youtube_playlists() if result["connected"] else []
     except Exception:
         result["playlists"] = []
     return result
@@ -816,7 +842,8 @@ def rename_book(request: Request, book_id: int, title: str = Form(...)):
                                 new_pl_title = tpl.format(book_title=new_title)
                             except Exception:
                                 new_pl_title = new_title
-                            youtube.update_playlist_title(api_conn, pid, new_pl_title)
+                            with youtube.use_book_account(api_conn, book_id):
+                                youtube.update_playlist_title(api_conn, pid, new_pl_title)
                         except Exception:
                             logger.warning("update playlist title failed for %s book %s", pid, book_id, exc_info=True)
             finally:
@@ -1080,7 +1107,9 @@ def apply_podcast_settings(request: Request, book_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(404, "book not found")
-        if youtube.get_creds_from_db(conn) is None:
+        with youtube.use_book_account(conn, book_id):
+            connected = youtube.get_creds_from_db(conn) is not None
+        if not connected:
             raise HTTPException(400, "Chưa kết nối YouTube")
         config = get_effective_youtube_config(conn, book)
         playlist_id = _resolve_book_playlist_id(conn, book_id, config)
@@ -1100,10 +1129,11 @@ def apply_podcast_settings(request: Request, book_id: int):
 
     api_conn = app_db.connect(settings.db_path)
     try:
-        result = youtube.sync_playlist_podcast(
-            api_conn, book_id, playlist_id,
-            enabled=bool(podcast.get("enabled")), cover_path=cover_path, force=True,
-        )
+        with youtube.use_book_account(api_conn, book_id):
+            result = youtube.sync_playlist_podcast(
+                api_conn, book_id, playlist_id,
+                enabled=bool(podcast.get("enabled")), cover_path=cover_path, force=True,
+            )
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:

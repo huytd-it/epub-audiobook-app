@@ -8,8 +8,9 @@ import re
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
@@ -29,7 +30,23 @@ except ModuleNotFoundError:
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# Trang kết quả OAuth của SPA (Socials hub); /youtube cũ chỉ còn là redirect phía client.
+_SOCIALS_PAGE = "/socials/youtube"
+
+
+async def _bind_account(request: Request) -> None:
+    """Chọn tài khoản YouTube cho request: header X-Social-Account, hoặc ?account_id=
+    cho các link mở thẳng (tải file export, /youtube/connect). Không gửi = mặc định.
+
+    Phải là dependency async: nó chạy trong task của request nên contextvar đặt ở đây
+    được chép sang threadpool chạy route sync. Dependency sync chạy ở thread riêng và
+    giá trị nó đặt sẽ không tới được route.
+    """
+    raw = request.headers.get("x-social-account") or request.query_params.get("account_id") or ""
+    youtube.set_active_account(int(raw) if raw.isdigit() else None)
+
+
+router = APIRouter(dependencies=[Depends(_bind_account)])
 
 
 def _enqueue(request: Request, video_path: str, title: str, description: str, tags: str, privacy_status: str,
@@ -269,16 +286,16 @@ def youtube_connect(request: Request):
 @router.get("/youtube/callback")
 def youtube_callback(request: Request, code: str = "", error: str = ""):
     if error:
-        return RedirectResponse(url=f"/youtube?error={error}")
+        return RedirectResponse(url=f"{_SOCIALS_PAGE}?error={quote(error)}")
     if not code:
-        return RedirectResponse(url="/youtube?error=no_code")
+        return RedirectResponse(url=f"{_SOCIALS_PAGE}?error=no_code")
 
     redirect_uri = str(request.base_url) + "youtube/callback"
     try:
         result = youtube.exchange_code(code, redirect_uri)
     except Exception as exc:
         logger.exception("YouTube OAuth callback failed")
-        return RedirectResponse(url=f"/youtube?error={str(exc)}")
+        return RedirectResponse(url=f"{_SOCIALS_PAGE}?error={quote(str(exc))}")
 
     try:
         with locked_conn(request) as conn:
@@ -292,8 +309,8 @@ def youtube_callback(request: Request, code: str = "", error: str = ""):
             )
     except Exception as exc:
         logger.exception("Failed to save YouTube credentials")
-        return RedirectResponse(url=f"/youtube?error={str(exc)}")
-    return RedirectResponse(url="/youtube?connected=1")
+        return RedirectResponse(url=f"{_SOCIALS_PAGE}?error={quote(str(exc))}")
+    return RedirectResponse(url=f"{_SOCIALS_PAGE}?connected=1")
 
 
 @router.post("/youtube/disconnect")
@@ -1227,8 +1244,10 @@ def get_daily_upload_status(request: Request):
 
     with locked_conn(request) as conn:
         row = conn.execute(
-            "SELECT COUNT(*) as cnt FROM youtube_uploads WHERE status='done' AND uploaded_at >= ? AND uploaded_at < ?",
-            (today_start.isoformat(), today_end.isoformat()),
+            "SELECT COUNT(*) as cnt FROM youtube_uploads WHERE status='done' AND uploaded_at >= ? AND uploaded_at < ?"
+            " AND (? IS NULL OR account_id = ? OR account_id IS NULL)",
+            (today_start.isoformat(), today_end.isoformat(),
+             youtube.active_account_id(), youtube.active_account_id()),
         ).fetchone()
         uploaded_today = row["cnt"] if row else 0
 

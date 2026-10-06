@@ -19,6 +19,8 @@ const API_PREFIXES = [
   "/text-studio",
   "/drive",
   "/youtube",
+  "/socials",
+  "/shorts",
   "/logs",
   "/effects",
   "/database-io",
@@ -43,7 +45,9 @@ const SPA_ROUTES = [
   /^\/books$/,
   /^\/books\/upload$/,
   /^\/books\/\d+(\/.*)?$/,
-  /^\/(upload|queue|video|music|photos|voices|media|gameplay|tools|youtube|drive|database-io|logs|effects|production-defaults)$/,
+  /^\/(upload|queue|video|music|photos|voices|media|gameplay|tools|youtube|drive|database-io|logs|effects|production-defaults|shorts|network)$/,
+  // Socials hub: /socials và /socials/<mạng>; API của nó nằm dưới /socials/api/.
+  /^\/socials(\/(youtube|facebook|tiktok))?$/,
 ];
 
 const isSpaNavigation = (req: { url?: string; method?: string; headers: Record<string, any> }) => {
@@ -113,7 +117,7 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern:
-              /^https?:.*\/(api|books|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|local-bridge|tts-models)\//,
+              /^https?:.*\/(api|books|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|local-bridge|tts-models|shorts|socials\/api)\//,
             handler: "NetworkOnly",
           },
         ],

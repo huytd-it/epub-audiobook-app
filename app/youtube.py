@@ -1,6 +1,7 @@
 """YouTube Data API v3 integration: OAuth2 flow, video upload, token management."""
 from __future__ import annotations
 
+import functools
 import http.client
 import json
 import logging
@@ -13,6 +14,8 @@ import ssl
 import time
 import uuid
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -43,7 +46,7 @@ except ModuleNotFoundError:
     HttpError = ()
 
 from app.config import settings
-from app import db
+from app import db, egress, social_accounts
 
 logger = logging.getLogger(__name__)
 
@@ -277,14 +280,97 @@ def is_configured() -> bool:
     return bool(settings.youtube_client_id and settings.youtube_client_secret)
 
 
-def get_creds_from_db(conn: sqlite3.Connection) -> dict | None:
-    """Return the stored YouTube credentials row, or None."""
-    row = conn.execute(
-        "SELECT * FROM youtube_credentials ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    if row is None:
+# Tài khoản YouTube đang hoạt động của luồng hiện tại. Hơn 60 hàm trong module này
+# nhận mỗi `conn` rồi tự lấy service; thay vì thêm tham số account_id vào từng hàm,
+# nơi gọi bọc cả cụm trong `use_account(id)`. None = tài khoản mặc định, nên mọi luồng
+# tự động có từ trước (auto-upload, playlist theo sách) chạy tiếp không cần sửa.
+_ACTIVE_ACCOUNT: ContextVar[int | None] = ContextVar("youtube_active_account", default=None)
+
+
+@contextmanager
+def use_account(account_id: int | None):
+    """Chạy khối lệnh với một tài khoản YouTube cụ thể (None = mặc định)."""
+    token = _ACTIVE_ACCOUNT.set(int(account_id) if account_id is not None else None)
+    try:
+        yield
+    finally:
+        _ACTIVE_ACCOUNT.reset(token)
+
+
+def active_account_id() -> int | None:
+    return _ACTIVE_ACCOUNT.get()
+
+
+def set_active_account(account_id: int | None) -> None:
+    """Pin the account for the rest of the current context, with no reset.
+
+    For per-request binding (routes/youtube.py), where the context dies with the
+    request; anywhere else use `use_account`, which restores the previous value.
+    """
+    _ACTIVE_ACCOUNT.set(int(account_id) if account_id is not None else None)
+
+
+@contextmanager
+def use_book_account(conn: sqlite3.Connection, book_id: int):
+    """`use_account` for the channel a book publishes to.
+
+    A book with no channel picked, or one whose channel was since disconnected,
+    leaves the current account (normally the default) in place.
+    """
+    row = conn.execute("SELECT youtube_account_id FROM book WHERE id=?", (book_id,)).fetchone()
+    account_id = row["youtube_account_id"] if row is not None else None
+    if account_id is None or social_accounts.get_account(conn, account_id) is None:
+        yield
+        return
+    with use_account(account_id):
+        yield
+
+
+def _with_upload_account(func):
+    """Run an upload-scoped function as the account its youtube_uploads row is pinned to.
+
+    Rows from before multi-account (account_id NULL) keep whatever account is already
+    active, i.e. the default.
+    """
+    @functools.wraps(func)
+    def wrapper(conn, upload_id, *args, **kwargs):
+        try:
+            row = conn.execute("SELECT account_id FROM youtube_uploads WHERE id=?",
+                               (upload_id,)).fetchone()
+            account_id = row["account_id"] if row is not None else None
+        except (sqlite3.Error, TypeError, IndexError, KeyError):
+            account_id = None
+        if account_id is None:
+            return func(conn, upload_id, *args, **kwargs)
+        with use_account(account_id):
+            return func(conn, upload_id, *args, **kwargs)
+    return wrapper
+
+
+def get_creds_from_db(conn: sqlite3.Connection, account_id: int | None = None) -> dict | None:
+    """Return the YouTube credentials of the active (or default) account, or None.
+
+    Keys are the ones the single-account table used (channel_id, channel_name, tokens)
+    plus ``id``: the social_account id, None for a row still living only in the legacy
+    youtube_credentials table.
+    """
+    if account_id is None:
+        account_id = _ACTIVE_ACCOUNT.get()
+    account = social_accounts.resolve(conn, "youtube", account_id)
+    if account is None:
         return None
-    return dict(row)
+    return {
+        "id": account["id"],
+        "access_token": account["access_token"],
+        "refresh_token": account["refresh_token"],
+        "token_expiry": account["token_expiry"],
+        "channel_id": account["external_id"] or None,
+        "channel_name": account["display_name"],
+        "label": account["label"],
+        "is_default": bool(account["is_default"]),
+        "created_at": account["created_at"],
+        "updated_at": account["updated_at"],
+    }
 
 
 def save_credentials(
@@ -294,33 +380,27 @@ def save_credentials(
     token_expiry: str,
     channel_id: str | None = None,
     channel_name: str | None = None,
-) -> None:
-    """Upsert YouTube credentials (single-row table)."""
-    existing = conn.execute("SELECT id FROM youtube_credentials LIMIT 1").fetchone()
-    now = _now_iso()
-    if existing:
-        conn.execute(
-            """UPDATE youtube_credentials
-               SET access_token=?, refresh_token=?, token_expiry=?,
-                   channel_id=?, channel_name=?, updated_at=?
-               WHERE id=?""",
-            (access_token, refresh_token, token_expiry,
-             channel_id, channel_name, now, existing["id"]),
-        )
+) -> int:
+    """Upsert a YouTube account, keyed by channel id. Returns the social_account id.
+
+    Reconnecting a channel that is already stored refreshes its tokens in place;
+    a different channel becomes an additional account.
+    """
+    return social_accounts.upsert(
+        conn, "youtube", external_id=channel_id, display_name=channel_name,
+        access_token=access_token, refresh_token=refresh_token, token_expiry=token_expiry,
+    )
+
+
+def delete_credentials(conn: sqlite3.Connection, account_id: int | None = None) -> None:
+    """Disconnect one account: the given one, else the active/default one."""
+    creds = get_creds_from_db(conn, account_id)
+    if creds is None:
+        return
+    if creds["id"] is None:
+        social_accounts.delete_all(conn, "youtube")
     else:
-        conn.execute(
-            """INSERT INTO youtube_credentials
-               (access_token, refresh_token, token_expiry, channel_id, channel_name, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (access_token, refresh_token, token_expiry,
-             channel_id, channel_name, now, now),
-        )
-    conn.commit()
-
-
-def delete_credentials(conn: sqlite3.Connection) -> None:
-    conn.execute("DELETE FROM youtube_credentials")
-    conn.commit()
+        social_accounts.delete(conn, creds["id"])
 
 
 def _build_credentials(row: dict) -> Credentials:
@@ -335,36 +415,60 @@ def _build_credentials(row: dict) -> Credentials:
     )
 
 
+def _auth_request(conn: sqlite3.Connection | None, account_id: int | None):
+    """google-auth transport for token calls, through the account's proxy when set."""
+    http = egress.session(conn, "youtube", account_id)
+    return Request(session=http) if http.proxies else Request()
+
+
 def _refresh_if_needed(conn: sqlite3.Connection, creds_row: dict) -> Credentials:
     """Build Credentials, refresh if expired, and persist new tokens."""
     _require_google_imports()
     creds = _build_credentials(creds_row)
     if creds.expired or not creds.valid:
         try:
-            creds.refresh(Request())
+            creds.refresh(_auth_request(conn, creds_row.get("id")))
         except Exception:
             logger.exception("YouTube token refresh failed")
             raise
         expiry_str = creds.expiry.isoformat() if creds.expiry else creds_row["token_expiry"]
-        save_credentials(
-            conn,
-            access_token=creds.token or "",
-            refresh_token=creds.refresh_token or creds_row["refresh_token"],
-            token_expiry=expiry_str,
-            channel_id=creds_row.get("channel_id"),
-            channel_name=creds_row.get("channel_name"),
-        )
+        if creds_row.get("id") is not None:
+            social_accounts.update_tokens(
+                conn, creds_row["id"],
+                access_token=creds.token or "",
+                refresh_token=creds.refresh_token or creds_row["refresh_token"],
+                token_expiry=expiry_str,
+            )
+        else:
+            save_credentials(
+                conn,
+                access_token=creds.token or "",
+                refresh_token=creds.refresh_token or creds_row["refresh_token"],
+                token_expiry=expiry_str,
+                channel_id=creds_row.get("channel_id"),
+                channel_name=creds_row.get("channel_name"),
+            )
     return creds
 
 
+def _build_service(creds, conn: sqlite3.Connection | None, account_id: int | None):
+    """YouTube API client, routed through the account's outbound proxy when one is set."""
+    http = egress.httplib2_http(conn, "youtube", account_id)
+    if http is None:
+        return build(_API_SERVICE_NAME, _API_VERSION, credentials=creds)
+    import google_auth_httplib2
+    return build(_API_SERVICE_NAME, _API_VERSION,
+                 http=google_auth_httplib2.AuthorizedHttp(creds, http=http))
+
+
 def get_youtube_service(conn: sqlite3.Connection):
-    """Return an authorized YouTube API service object."""
+    """Return an authorized YouTube API service object for the active account."""
     _require_google_imports()
     creds_row = get_creds_from_db(conn)
     if creds_row is None:
         raise ValueError("YouTube not connected. Please connect first.")
     creds = _refresh_if_needed(conn, creds_row)
-    return build(_API_SERVICE_NAME, _API_VERSION, credentials=creds)
+    return _build_service(creds, conn, creds_row.get("id"))
 
 
 def get_authorization_url(redirect_uri: str) -> str:
@@ -415,11 +519,17 @@ def exchange_code(code: str, redirect_uri: str) -> dict:
         autogenerate_code_verifier=False,
     )
     flow.redirect_uri = redirect_uri
+    # The channel is not known until after the exchange, so there is no account to pin
+    # a proxy to yet: this goes out through whatever the youtube scope's policy picks.
+    proxies = egress.session(None, "youtube").proxies
+    if proxies:
+        flow.oauth2session.proxies.update(proxies)
+        flow.oauth2session.trust_env = False
     flow.fetch_token(code=code)
     creds = flow.credentials
 
     # Get channel info
-    youtube = build(_API_SERVICE_NAME, _API_VERSION, credentials=creds)
+    youtube = _build_service(creds, None, None)
     ch_resp = _execute(youtube.channels().list(part="snippet", mine=True))
     channel_id = ""
     channel_name = ""
@@ -448,6 +558,7 @@ class UploadInProgress(RuntimeError):
     transferring will resolve to 'done' or 'failed' on its own."""
 
 
+@_with_upload_account
 def process_upload(
     conn: sqlite3.Connection,
     upload_id: int,
@@ -700,6 +811,27 @@ def validate_upload_file(conn: sqlite3.Connection, upload_id: int):
     return result
 
 
+def _book_account_id(conn: sqlite3.Connection, render_source_type: str,
+                     render_source_id: int | None) -> int | None:
+    """The YouTube account picked for the book this render belongs to, if any.
+
+    render_source_id is a book_job id for 'book' renders and a patch id for 'patch'
+    renders; standalone/external videos belong to no book.
+    """
+    table = {"book": "book_job", "patch": "patch"}.get(render_source_type)
+    if table is None or render_source_id is None:
+        return None
+    row = conn.execute(
+        f"SELECT b.youtube_account_id AS account_id FROM {table} s "
+        "JOIN book b ON b.id = s.book_id WHERE s.id=?",
+        (render_source_id,),
+    ).fetchone()
+    if row is None or row["account_id"] is None:
+        return None
+    # A book still pointing at an account that was disconnected falls back to the default.
+    return row["account_id"] if social_accounts.get_account(conn, row["account_id"]) else None
+
+
 def enqueue_upload(
     conn: sqlite3.Connection,
     video_path: str,
@@ -715,8 +847,13 @@ def enqueue_upload(
     not_for_kids: bool = True,
     ai_labels_enabled: bool = False,
     altered_content: bool | None = None,
+    account_id: int | None = None,
 ) -> int:
     """Create a pending youtube_uploads record. Returns upload_id.
+
+    The upload is pinned to one account at enqueue time - `account_id`, else the
+    active account (use_account), else the channel chosen for the book, else the
+    default - so changing the default later never reroutes a queued video.
 
     The actual upload is done by the caller (worker or route).
     `altered_content` is the per-upload disclosure for YouTube's
@@ -732,17 +869,24 @@ def enqueue_upload(
     metadata_snapshot = json.dumps({"automation": {"youtube": {
         "playlist_mode": "existing", "playlist_id": playlist_id,
     }}}) if playlist_id else None
+    if account_id is None:
+        account_id = _ACTIVE_ACCOUNT.get()
+    if account_id is None:
+        account_id = _book_account_id(conn, render_source_type, render_source_id)
+    if account_id is None:
+        default = social_accounts.get_default(conn, "youtube")
+        account_id = default["id"] if default else None
     now = _now_iso()
     cursor = conn.execute(
         """INSERT INTO youtube_uploads
            (video_id, video_path, title, description, tags, privacy_status, status,
             metadata_snapshot, render_source_type, render_source_id, not_for_kids,
-            ai_labels_enabled, altered_content, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)""",
+            ai_labels_enabled, altered_content, account_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)""",
         (video_id, video_path, title, description, json.dumps(tags or []), privacy_status,
          metadata_snapshot, render_source_type, render_source_id,
          1 if not_for_kids else 0, 1 if ai_labels_enabled else 0,
-         1 if altered_content else 0, now),
+         1 if altered_content else 0, account_id, now),
     )
     conn.commit()
     return cursor.lastrowid
@@ -858,6 +1002,11 @@ def list_uploads(
     if date_to:
         where.append("created_at <= ?")
         params.append(date_to)
+    active_account = _ACTIVE_ACCOUNT.get()
+    if active_account is not None:
+        # Rows from before multi-account carry no account and show under every channel.
+        where.append("(account_id = ? OR account_id IS NULL)")
+        params.append(active_account)
 
     sql = "SELECT * FROM youtube_uploads"
     if where:
@@ -2323,22 +2472,36 @@ def sync_channel_videos(conn: sqlite3.Connection, channel_id: str) -> dict:
             now,
         ))
 
-    conn.execute("DELETE FROM youtube_channel_videos")
+    # The cache holds every connected account's videos side by side; a sync only
+    # replaces the rows of the account it ran for.
+    account_id = _cache_account_id(conn)
+    conn.execute("DELETE FROM youtube_channel_videos WHERE account_id IS ?", (account_id,))
     conn.executemany(
-        "INSERT INTO youtube_channel_videos "
+        "INSERT OR REPLACE INTO youtube_channel_videos "
         "(video_id, title, description, tags, privacy_status, category_id, thumbnail, "
-        " duration_sec, view_count, published_at, playlist_ids, synced_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        rows,
+        " duration_sec, view_count, published_at, playlist_ids, synced_at, account_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(*row, account_id) for row in rows],
     )
     conn.commit()
     return {"synced": len(rows), "playlists_scanned": 0, "synced_at": now}
 
 
+def _cache_account_id(conn: sqlite3.Connection) -> int | None:
+    """social_account id the channel-videos cache is scoped to for this call.
+
+    None for a channel still stored only in the legacy single-account table; its rows
+    carry a NULL account_id, which the `account_id IS ?` filters match.
+    """
+    creds = get_creds_from_db(conn)
+    return creds.get("id") if creds else None
+
+
 def channel_videos_sync_status(conn: sqlite3.Connection) -> dict:
     """Last sync time and cached row count, for the "Đồng bộ lần cuối" banner."""
     row = conn.execute(
-        "SELECT COUNT(*) AS cnt, MAX(synced_at) AS synced_at FROM youtube_channel_videos"
+        "SELECT COUNT(*) AS cnt, MAX(synced_at) AS synced_at FROM youtube_channel_videos "
+        "WHERE account_id IS ?", (_cache_account_id(conn),)
     ).fetchone()
     return {"count": row["cnt"] if row else 0, "synced_at": row["synced_at"] if row else None}
 
@@ -2372,8 +2535,8 @@ def list_cached_channel_videos(
     sort_col = _CHANNEL_VIDEO_SORT_COLUMNS.get(sort, "published_at")
     sort_dir = "ASC" if order == "asc" else "DESC"
 
-    where: list[str] = []
-    params: list = []
+    where: list[str] = ["account_id IS ?"]
+    params: list = [_cache_account_id(conn)]
     if search:
         where.append("(title LIKE ? OR description LIKE ?)")
         like = f"%{search}%"
@@ -2737,6 +2900,7 @@ def apply_book_podcast(conn: sqlite3.Connection, book_id: int | None, playlist_i
         return None
 
 
+@_with_upload_account
 def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
     """Set thumbnail and add to playlist for a completed upload.
 

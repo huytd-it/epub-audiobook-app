@@ -833,6 +833,28 @@ export function ConfigDialog({
     }
   };
 
+  /** Đổi kênh YouTube của sách. Playlist là của riêng từng kênh nên playlist đang chọn
+   * không còn hợp lệ: bỏ chọn và tắt auto-upload (backend từ chối auto-upload thiếu
+   * playlist), rồi nạp lại để lấy danh sách playlist của kênh mới. */
+  const changeYoutubeAccount = async (accountId: number | null) => {
+    if (!ytSettings) return;
+    setSaving(true);
+    try {
+      await postJson(`/books/${bookId}/youtube-settings`, {
+        ...ytSettings.config,
+        auto_upload: false,
+        playlist: { ...ytSettings.config.playlist, mode: "none", playlist_id: "" },
+        youtube_account_id: accountId,
+      });
+      setYtSettings(await api<YouTubeSettings>(`/books/${bookId}/youtube-settings`));
+      onMessage("Đã đổi kênh YouTube của sách. Chọn lại playlist rồi bật lại tự động upload nếu cần.");
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   /** Nạp lại cấu hình YouTube từ server — job sinh nội dung vừa ghi description
    * và genre_tags, form phải hiện đúng kết quả đó. useCallback để vòng poll của
    * nút AI không khởi động lại mỗi lần render. */
@@ -1516,10 +1538,34 @@ export function ConfigDialog({
               ) : (
                 <div className="flex items-center gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
                   <AlertTriangle className="h-3.5 w-3.5" /> Chưa kết nối YouTube.
-                  <Link to="/youtube" className="underline">
+                  <Link to="/socials/youtube" className="underline">
                     Kết nối →
                   </Link>
                 </div>
+              )}
+
+              {(ytSettings.accounts?.length ?? 0) > 1 && (
+                <label className="flex flex-col gap-1 text-xs font-medium text-foreground">
+                  Kênh YouTube của sách
+                  <select
+                    className="h-9 rounded-md border border-input bg-background px-2 text-xs"
+                    disabled={saving}
+                    value={ytSettings.youtube_account_id ?? ""}
+                    onChange={(event) => changeYoutubeAccount(event.target.value ? Number(event.target.value) : null)}
+                  >
+                    <option value="">Kênh mặc định</option>
+                    {ytSettings.accounts!.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.label}
+                        {account.is_default ? " (mặc định)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="font-normal text-muted-foreground">
+                    Playlist thuộc về từng kênh: đổi kênh sẽ bỏ chọn playlist và tắt tự động upload cho tới khi
+                    bạn chọn lại.
+                  </span>
+                </label>
               )}
 
               <YouTubeConfigFields

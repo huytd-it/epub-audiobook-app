@@ -12,10 +12,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import db, repository
+from app import db, egress, repository
 from app.config import settings
 from app.routes import (ai, books, database_io, downloads, drive, effects, gameplay, kaggle, local_bridge, logs, media_browser, music,
-    patches, photos, production_settings, queue, shorts, text_studio, tts_models, ui_api, validation, video, video_api, voices, youtube)
+    patches, photos, production_settings, queue, shorts, socials, text_studio, tts_models, ui_api, validation, video, video_api, voices, youtube)
 import asyncio
 
 from app.jobqueue import joblog, store
@@ -38,6 +38,8 @@ logging.getLogger("watchfiles").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     conn = db.connect(settings.db_path)
     db.init_schema(conn)
+    # Từ đây request ra ngoài (AI, mạng xã hội) mới đọc được policy relay/proxy.
+    egress.configure(settings.db_path)
     from app.gameplay_repository import recover_reserved_clips, seed_catalog
     seed_catalog(conn)
     recovered_gameplay = recover_reserved_clips(conn)
@@ -157,6 +159,7 @@ app.include_router(tts_models.router)
 app.include_router(gameplay.router)
 app.include_router(media_browser.router)
 app.include_router(shorts.router)
+app.include_router(socials.router)
 
 
 SPA_DIR = Path("app/spa_dist")
@@ -181,7 +184,8 @@ def _spa_index():
 
 _SPA_PATHS = (
     re.compile(r"^/books(?:/upload|/\d+|/\d+/chapters/preview-ui|/\d+/patches/build|/\d+/patches/\d+/chunks|/\d+/text-studio)?$"),
-    re.compile(r"^/(?:queue|media|music|photos|voices|effects|youtube|drive|database-io|logs|production-defaults|gameplay|media-browser|shorts)$"),
+    re.compile(r"^/(?:queue|media|music|photos|voices|effects|youtube|drive|database-io|logs|production-defaults|gameplay|media-browser|shorts|network)$"),
+    re.compile(r"^/socials(?:/(?:youtube|facebook|tiktok))?$"),
 )
 
 

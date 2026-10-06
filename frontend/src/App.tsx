@@ -1,5 +1,5 @@
 import React from "react";
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { Shell } from "@/components/layout/Shell";
 import { Dashboard } from "@/pages/Dashboard";
 import { Books } from "@/pages/Books";
@@ -12,7 +12,8 @@ import { MediaBrowserPage } from "@/pages/MediaBrowserPage";
 import { MusicPage } from "@/pages/MusicPage";
 import { PhotosPage } from "@/pages/PhotosPage";
 import { VoicesPage } from "@/pages/VoicesPage";
-import { YouTubePage } from "@/pages/YouTubePage";
+import { SocialsPage } from "@/pages/socials/SocialsPage";
+import { NetworkPage } from "@/pages/NetworkPage";
 import { ShortsStudio } from "@/pages/ShortsStudio";
 import { DrivePage } from "@/pages/DrivePage";
 import { DatabaseIoPage } from "@/pages/DatabaseIoPage";
@@ -43,7 +44,10 @@ function App() {
         <Route path="/voices" element={<VoicesPage />} />
         <Route path="/media" element={<MediaPage />} />
         <Route path="/media-browser" element={<MediaBrowserPage />} />
-        <Route path="/youtube" element={<YouTubePage />} />
+        <Route path="/socials/*" element={<SocialsPage />} />
+        <Route path="/network" element={<NetworkPage />} />
+        {/* Đường dẫn cũ của trang YouTube (bookmark, link trong tài liệu). */}
+        <Route path="/youtube" element={<Navigate to="/socials/youtube" replace />} />
         <Route path="/shorts" element={<ShortsStudio />} />
         <Route path="/drive" element={<DrivePage />} />
         <Route path="/database-io" element={<DatabaseIoPage />} />

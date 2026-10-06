@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from app import egress
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OPENAI_BASE = "https://api.openai.com/v1"
@@ -150,6 +152,16 @@ def list_providers() -> list[dict[str, Any]]:
 # HTTP helpers (stdlib only — no new dependencies)
 # ---------------------------------------------------------------------------
 
+def _egress_mode() -> str:
+    """Mode của scope ``ai``: direct | proxy | relay (xem app/egress.py).
+
+    Đi thẳng thì giữ nguyên đường urllib bên dưới; chỉ khi có điểm thoát mới chuyển
+    sang egress.request để được xoay vòng và đổi điểm thoát khi hỏng.
+    """
+    with egress._conn(None) as conn:
+        return "direct" if conn is None else egress.get_policy(conn)["ai"]["mode"]
+
+
 def _request_json(url: str, *, api_key: str, payload: dict[str, Any], timeout: float,
                   key_header: str = "Authorization") -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
@@ -158,6 +170,11 @@ def _request_json(url: str, *, api_key: str, payload: dict[str, Any], timeout: f
         headers["Authorization"] = f"Bearer {api_key}"
     else:
         headers[key_header] = api_key
+    if _egress_mode() != "direct":
+        resp = egress.request("ai", "POST", url, data=data, headers=headers, timeout=timeout)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"AI API lỗi HTTP {resp.status_code}: {(resp.text or '')[:500]}")
+        return json.loads(resp.text or "{}")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -247,6 +264,12 @@ class OpenAICompatibleProvider(AIProvider):
             raise RuntimeError("AI không trả về URL/b64 ảnh")
         req = urllib.request.Request(str(url), method="GET")
         try:
+            if _egress_mode() == "proxy":
+                # Chỉ proxy mới tải hộ ảnh: URL ảnh nằm trên CDN ngoài allowlist của
+                # relay, nên ở mode relay bước tải về đi thẳng như cũ.
+                resp = egress.request("ai", "GET", str(url), timeout=timeout)
+                resp.raise_for_status()
+                return resp.content
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
         except Exception as exc:

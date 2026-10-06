@@ -146,6 +146,24 @@ def set_upload_status(conn: sqlite3.Connection, short_id: int, platform: str,
     return _upload_from_row(row) if row else None
 
 
+def set_upload_account(conn: sqlite3.Connection, short_id: int, platform: str,
+                       account_id: int | None) -> None:
+    """Chọn tài khoản (social_account.id) sẽ đăng short này lên một kênh; None = mặc định."""
+    if platform not in UPLOAD_PLATFORMS:
+        raise ValueError("platform must be fb|tiktok|youtube")
+    conn.execute("UPDATE short_uploads SET account_id=? WHERE short_id=? AND platform=?",
+                 (account_id, short_id, platform))
+    conn.commit()
+
+
+def get_upload(conn: sqlite3.Connection, short_id: int, platform: str) -> ShortUpload | None:
+    row = conn.execute(
+        "SELECT * FROM short_uploads WHERE short_id=? AND platform=?",
+        (short_id, platform),
+    ).fetchone()
+    return _upload_from_row(row) if row else None
+
+
 def reset_upload(conn: sqlite3.Connection, short_id: int, platform: str) -> ShortUpload | None:
     return set_upload_status(conn, short_id, platform, "pending", error_message=None)
 

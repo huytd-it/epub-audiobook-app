@@ -35,6 +35,7 @@ import {
   postJson,
   patchJson,
   del,
+  setYouTubeAccount,
   YouTubeUploadItem,
   YouTubeUploadFilters,
   PlaylistItem,
@@ -54,8 +55,9 @@ import {
   invalidatePlaylists,
   invalidatePlaylistItems,
   invalidateAllPlaylistItems,
+  clearYouTubeCache,
 } from "@/lib/youtubeCache";
-import { Header, LoadingState, EmptyState } from "@/components/common/Header";
+import { LoadingState, EmptyState } from "@/components/common/Header";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -95,7 +97,24 @@ const IMPORT_STATUS_CLASSES: Record<string, string> = {
   error: "text-destructive",
 };
 
-export function YouTubePage() {
+/**
+ * Không gian làm việc YouTube của một tài khoản trong Socials hub. SocialsPage mount
+ * lại component này (key = accountId) mỗi khi đổi tài khoản, nên toàn bộ state bên
+ * dưới luôn thuộc về đúng một kênh.
+ */
+export function YouTubeWorkspace({ accountId }: { accountId: number }) {
+  // Phải là effect ĐẦU TIÊN: effect chạy theo thứ tự khai báo, nên mọi lượt fetch ở
+  // các effect phía dưới đều đã mang header của đúng tài khoản. Gỡ khi unmount để các
+  // trang khác (chi tiết sách...) quay về tài khoản mặc định.
+  useEffect(() => {
+    setYouTubeAccount(accountId);
+    clearYouTubeCache();
+    return () => {
+      setYouTubeAccount(null);
+      clearYouTubeCache();
+    };
+  }, [accountId]);
+
   const [activeTab, setActiveTab] = useState<"uploads" | "playlists" | "upload_form" | "channel_videos">("uploads");
   const [uploads, setUploads] = useState<YouTubeUploadItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -694,7 +713,7 @@ export function YouTubePage() {
     const params = new URLSearchParams({ format: ioFormat });
     // Nothing selected means "the whole queue".
     if (selectedIds.length > 0) params.set("ids", selectedIds.join(","));
-    window.location.href = `/youtube/uploads/export?${params}`;
+    window.location.href = `/youtube/uploads/export?${params}&account_id=${accountId}`;
   };
 
   const runImport = async (dryRun: boolean) => {
@@ -1164,25 +1183,8 @@ export function YouTubePage() {
 
   return (
     <div className="space-y-6">
-      <Header
-        title="YouTube Studio & Tải tự động"
-        subtitle="Đẩy video audiobook thành phẩm lên kênh YouTube, quản lý tiến trình và đồng bộ danh sách phát (Playlists)."
-        action={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => window.open("/youtube/connect", "_blank")}>
-              <ExternalLink className="h-4 w-4" />
-              Kết nối Tài khoản YouTube
-            </Button>
-            <Button variant="secondary" size="sm" onClick={handleFetchKaggleCreds}>
-              <Key className="h-4 w-4" />
-              Kaggle Secret
-            </Button>
-          </div>
-        }
-      />
-
       {/* Control Room Navigation Tabs */}
-      <div className="flex items-center gap-2 border-b border-border pb-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border pb-2">
         <Button
           variant={activeTab === "uploads" ? "default" : "ghost"}
           size="sm"
@@ -1214,6 +1216,10 @@ export function YouTubePage() {
         >
           <ListVideo className="h-4 w-4" />
           Video kênh ({channelSyncStatus.count})
+        </Button>
+        <Button variant="secondary" size="sm" className="ml-auto" onClick={handleFetchKaggleCreds}>
+          <Key className="h-4 w-4" />
+          Kaggle Secret
         </Button>
       </div>
 

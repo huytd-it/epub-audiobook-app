@@ -245,6 +245,9 @@ export type YouTubeSettings = {
   channel_name: string | null;
   playlists: { id: string; title: string }[];
   ai_content?: AiContentStatus;
+  /** Kênh sách đăng lên (social_account id); null = kênh mặc định. */
+  youtube_account_id?: number | null;
+  accounts?: { id: number; label: string; is_default: boolean }[];
 };
 
 export type YouTubeMetadataPreview = {

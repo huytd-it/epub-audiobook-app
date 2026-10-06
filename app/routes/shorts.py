@@ -180,8 +180,18 @@ def save_caption(request: Request, short_id: int, body: CaptionBody):
         return _short_payload(short)
 
 
+# Khoá kênh của short_uploads -> platform của social_account.
+_ACCOUNT_PLATFORM = {"fb": "facebook", "tiktok": "tiktok", "youtube": "youtube"}
+
+
+class PublishBody(BaseModel):
+    # {"fb": 3, "youtube": 7}: tài khoản đăng cho từng kênh. Kênh không nêu (hoặc null)
+    # giữ lựa chọn đã lưu, mặc định là tài khoản mặc định của mạng đó.
+    accounts: dict[str, int | None] = {}
+
+
 @router.post("/{short_id}/publish")
-def publish_short(request: Request, short_id: int):
+def publish_short(request: Request, short_id: int, body: PublishBody | None = None):
     """Enqueue upload cả 3 kênh fb|tiktok|youtube (đăng ngay/private-draft)."""
     with locked_conn(request) as conn:
         short = shorts_repository.get_short(conn, short_id)
@@ -190,6 +200,16 @@ def publish_short(request: Request, short_id: int):
         if not short.video_path:
             return JSONResponse({"detail": "short chưa render xong"}, status_code=400)
         shorts_repository.ensure_uploads(conn, short_id)
+        from app import social_accounts
+        for channel, account_id in (body.accounts if body else {}).items():
+            if channel not in _ACCOUNT_PLATFORM:
+                return JSONResponse({"detail": "kênh phải là fb|tiktok|youtube"}, status_code=400)
+            if account_id is not None and social_accounts.resolve(
+                    conn, _ACCOUNT_PLATFORM[channel], account_id) is None:
+                return JSONResponse(
+                    {"detail": f"tài khoản {account_id} không thuộc kênh {channel}"},
+                    status_code=400)
+            shorts_repository.set_upload_account(conn, short_id, channel, account_id)
         shorts_repository.update_short(conn, short_id, status="publishing")
         queued: list[dict] = []
         for platform in ("fb", "tiktok", "youtube"):
@@ -237,11 +257,17 @@ def retry_upload(request: Request, short_id: int, platform: str):
 @router.get("/integrations/status")
 def integrations_status(request: Request):
     with locked_conn(request) as conn:
-        from app import facebook, tiktok, youtube
+        from app import facebook, social_accounts, tiktok, youtube
+        accounts = {platform: [social_accounts.public(account)
+                               for account in social_accounts.list_accounts(conn, platform)]
+                    for platform in social_accounts.PLATFORMS}
         return {
-            "facebook": {"connected": facebook.get_credentials(conn) is not None},
-            "tiktok": {"connected": tiktok.get_credentials(conn) is not None},
-            "youtube": {"connected": youtube.get_creds_from_db(conn) is not None},
+            "facebook": {"connected": facebook.get_credentials(conn) is not None,
+                         "accounts": accounts["facebook"]},
+            "tiktok": {"connected": tiktok.get_credentials(conn) is not None,
+                       "accounts": accounts["tiktok"]},
+            "youtube": {"connected": youtube.get_creds_from_db(conn) is not None,
+                        "accounts": accounts["youtube"]},
         }
 
 

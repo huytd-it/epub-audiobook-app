@@ -90,6 +90,8 @@ def _table_order() -> list[str]:
         "google_drive_credentials",
         "youtube_uploads",
         "youtube_credentials",
+        "social_account",
+        "egress_endpoint",
         "drive_oauth_client",
         "drive_sync_target",
         "app_state",

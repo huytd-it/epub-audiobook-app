@@ -23,6 +23,8 @@ import {
   Mic,
   PanelLeftClose,
   PanelLeftOpen,
+  Share2,
+  Network,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -63,7 +65,8 @@ const navSections: NavSection[] = [
   {
     title: "OPERATIONS",
     items: [
-      { to: "/youtube", label: "YouTube", icon: Video },
+      { to: "/socials", label: "Socials", icon: Share2 },
+      { to: "/network", label: "Mạng & Proxy", icon: Network },
       { to: "/shorts", label: "Short Video Studio", icon: Video },
       { to: "/drive", label: "Google Drive", icon: HardDrive },
       { to: "/database-io", label: "Dữ liệu", icon: Database },

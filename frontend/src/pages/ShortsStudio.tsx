@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Clapperboard, Plus, RefreshCw, Send, Sparkles } from "lucide-react";
-import { api, postJson } from "@/api";
+import { api, postJson, SocialAccount, SocialsOverview } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -23,6 +23,9 @@ const RESOLUTIONS = ["1080x1920", "1080x1080", "1920x1080"];
 /** ffmpeg = pipeline có sẵn; remotion = chỉ lớp đồ hoạ dọc (cần npm install trong remotion/). */
 const RENDERERS = ["ffmpeg", "remotion"];
 const PLATFORM_LABEL: Record<string, string> = { fb: "Facebook", tiktok: "TikTok", youtube: "YouTube Shorts" };
+/** Khoá kênh của short -> mạng trong Socials hub (nơi quản lý tài khoản). */
+const CHANNEL_PLATFORM = { fb: "facebook", tiktok: "tiktok", youtube: "youtube" } as const;
+type Channel = keyof typeof CHANNEL_PLATFORM;
 
 export function ShortsStudio() {
   const [shorts, setShorts] = useState<Short[]>([]);
@@ -32,6 +35,21 @@ export function ShortsStudio() {
   const [resolution, setResolution] = useState("1080x1920");
   const [renderer, setRenderer] = useState("ffmpeg");
   const [busy, setBusy] = useState(false);
+  // Tài khoản đăng cho từng kênh; để trống = tài khoản mặc định của mạng đó.
+  const [accounts, setAccounts] = useState<Record<Channel, SocialAccount[]>>({ fb: [], tiktok: [], youtube: [] });
+  const [publishAccounts, setPublishAccounts] = useState<Partial<Record<Channel, number>>>({});
+
+  useEffect(() => {
+    api<SocialsOverview>("/socials/api/overview")
+      .then((overview) =>
+        setAccounts({
+          fb: overview.facebook.accounts,
+          tiktok: overview.tiktok.accounts,
+          youtube: overview.youtube.accounts,
+        })
+      )
+      .catch((e) => console.error(e));
+  }, []);
 
   const load = () => {
     setLoading(true);
@@ -98,7 +116,14 @@ export function ShortsStudio() {
     if (!selected.video_path) return alert("Short chưa render xong");
     setBusy(true);
     try {
-      await postJson(`/shorts/${selected.id}/publish`, {});
+      // Gửi cả ba kênh, null = mặc định: kênh không nêu sẽ giữ tài khoản của lần đăng trước.
+      await postJson(`/shorts/${selected.id}/publish`, {
+        accounts: {
+          fb: publishAccounts.fb ?? null,
+          tiktok: publishAccounts.tiktok ?? null,
+          youtube: publishAccounts.youtube ?? null,
+        },
+      });
       await openDetail(selected.id);
     } catch (e: any) { alert(e.message); } finally { setBusy(false); }
   };
@@ -189,6 +214,28 @@ export function ShortsStudio() {
                       </span>
                     </div>
                   ))}
+                  {(Object.keys(CHANNEL_PLATFORM) as Channel[])
+                    .filter((channel) => accounts[channel].length > 1)
+                    .map((channel) => (
+                      <label key={channel} className="flex items-center justify-between gap-2 text-xs">
+                        <span>Tài khoản {PLATFORM_LABEL[channel]}</span>
+                        <select
+                          className="border rounded px-2 py-1.5 text-sm bg-background"
+                          value={publishAccounts[channel] ?? ""}
+                          onChange={(e) => {
+                            const next = { ...publishAccounts };
+                            if (e.target.value) next[channel] = Number(e.target.value);
+                            else delete next[channel];
+                            setPublishAccounts(next);
+                          }}
+                        >
+                          <option value="">Mặc định</option>
+                          {accounts[channel].map((account) => (
+                            <option key={account.id} value={account.id}>{account.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
                   <Button size="sm" onClick={publish} disabled={busy}><Send className="h-4 w-4" /> Đăng 3 kênh ngay</Button>
                   <p className="text-[11px] text-muted-foreground">Mặc định đăng ngay/private-draft. YouTube Shorts tự nhận video dọc ≤3 phút.</p>
                 </div>

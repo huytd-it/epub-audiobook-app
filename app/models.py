@@ -56,6 +56,8 @@ class Book:
     automation_config: str | None = None
     auto_create_video: int = 1
     auto_upload_youtube: int = 1
+    # social_account.id of the YouTube channel this book publishes to; None = default.
+    youtube_account_id: int | None = None
     tts_model: str | None = None
     tts_max_chars: int | None = None
     tts_with_effects: int = 0
@@ -198,3 +200,5 @@ class ShortUpload:
     error_message: str | None = None
     scheduled_at: str | None = None
     created_at: str = ""
+    # social_account.id to publish with; None = the platform's default account.
+    account_id: int | None = None

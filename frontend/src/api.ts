@@ -374,8 +374,68 @@ export type VideoItem = {
   batch_id?: string;
 };
 
+/** Một tài khoản mạng xã hội đã kết nối (GET /socials/api/overview). Không bao giờ kèm token. */
+export type SocialPlatform = "youtube" | "facebook" | "tiktok";
+export type SocialAccount = {
+  id: number;
+  platform: SocialPlatform;
+  label: string;
+  external_id: string;
+  display_name: string | null;
+  /** Outbound proxy ghim cho tài khoản; null = theo policy của mạng. */
+  egress_endpoint_id: number | null;
+  is_default: boolean;
+  status: string;
+  last_error: string | null;
+  has_refresh_token: boolean;
+  token_expiry: string;
+  created_at: string;
+  updated_at: string;
+};
+export type SocialsOverview = Record<SocialPlatform, { configured: boolean; accounts: SocialAccount[] }>;
+
+/** Điểm thoát mạng: outbound proxy hoặc Vercel relay. URL đã che mật khẩu, secret không trả về. */
+export type EgressEndpoint = {
+  id: number;
+  kind: "proxy" | "relay";
+  label: string;
+  url: string;
+  has_secret: boolean;
+  region: string;
+  enabled: boolean;
+  fail_count: number;
+  cooldown_until: string | null;
+  last_used_at: string | null;
+  last_error: string | null;
+};
+export type EgressRule = { mode: "direct" | "proxy" | "relay"; strategy: "round_robin" | "sticky"; endpoint_ids: number[] };
+export type EgressState = {
+  endpoints: EgressEndpoint[];
+  policy: Record<string, EgressRule>;
+  scopes: string[];
+  /** Scope được phép dùng relay (mạng xã hội thì không: upload vượt giới hạn body). */
+  relay_scopes: string[];
+};
+
+/**
+ * Tài khoản YouTube mà mọi request /youtube/* đang nhắm tới (header X-Social-Account).
+ * Chỉ không gian làm việc YouTube trong Socials hub đặt giá trị này và gỡ khi rời đi;
+ * null = backend dùng tài khoản mặc định, là hành vi của mọi trang khác.
+ */
+let youtubeAccountId: number | null = null;
+export function setYouTubeAccount(accountId: number | null): void {
+  youtubeAccountId = accountId;
+}
+
+function withAccount(url: string, init?: RequestInit): RequestInit | undefined {
+  if (youtubeAccountId == null || !url.startsWith("/youtube/")) return init;
+  const headers = new Headers(init?.headers);
+  headers.set("X-Social-Account", String(youtubeAccountId));
+  return { ...init, headers };
+}
+
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const response = await fetch(url, withAccount(url, init));
   if (!response.ok) {
     let message = `Lỗi ${response.status}`;
     try {

@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 import requests
 
+from app import egress
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -451,8 +452,8 @@ def _raise_for_status(response: requests.Response) -> None:
 
 
 def _gemini_text(prompt: str, config: ProviderConfig, timeout: float) -> str:
-    response = requests.post(
-        f"{config.base_url}/models/{config.model}:generateContent",
+    response = egress.request(
+        "ai", "POST", f"{config.base_url}/models/{config.model}:generateContent",
         headers={"x-goog-api-key": config.api_key, "Content-Type": "application/json"},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
@@ -523,8 +524,8 @@ def _openai_text(prompt: str, config: ProviderConfig, timeout: float, *, json_mo
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
-    response = requests.post(
-        f"{config.base_url}/chat/completions",
+    response = egress.request(
+        "ai", "POST", f"{config.base_url}/chat/completions",
         headers={"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"},
         json=payload,
         timeout=timeout,

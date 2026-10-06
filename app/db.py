@@ -647,6 +647,49 @@ CREATE TABLE IF NOT EXISTS tiktok_credentials (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+-- Socials hub: một bảng tài khoản dùng chung cho mọi mạng (youtube|facebook|tiktok).
+-- Ba bảng *_credentials ở trên được giữ lại làm bản gốc của dữ liệu cũ; _migrate chép
+-- sang đây một lần rồi mọi mã mới chỉ đọc/ghi social_account.
+CREATE TABLE IF NOT EXISTS social_account (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform        TEXT NOT NULL,
+    label           TEXT NOT NULL DEFAULT '',
+    -- channel_id (YouTube) / page_id (Facebook) / open_id (TikTok).
+    external_id     TEXT NOT NULL DEFAULT '',
+    display_name    TEXT,
+    access_token    TEXT NOT NULL DEFAULT '',
+    refresh_token   TEXT NOT NULL DEFAULT '',
+    token_expiry    TEXT NOT NULL DEFAULT '',
+    extra_json      TEXT NOT NULL DEFAULT '{}',
+    -- egress_endpoint.id ghim cho tài khoản này; NULL = theo policy của mạng. Không
+    -- phải FK: xoá một proxy không được kéo theo tài khoản.
+    egress_endpoint_id INTEGER,
+    is_default      INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'connected',
+    last_error      TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE (platform, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_social_account_platform ON social_account(platform, is_default DESC, id);
+
+-- Điểm thoát mạng: outbound proxy (http/socks) hoặc Vercel relay (xem relay/).
+CREATE TABLE IF NOT EXISTS egress_endpoint (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT NOT NULL,
+    label           TEXT NOT NULL DEFAULT '',
+    url             TEXT NOT NULL,
+    secret          TEXT NOT NULL DEFAULT '',
+    region          TEXT NOT NULL DEFAULT '',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    fail_count      INTEGER NOT NULL DEFAULT 0,
+    cooldown_until  TEXT,
+    last_used_at    TEXT,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
 """
 
 
@@ -1249,3 +1292,57 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE shorts ADD COLUMN {_col} {_ddl}")
     except Exception:
         pass
+    _migrate_social_accounts(conn)
+
+
+def _migrate_social_accounts(conn: sqlite3.Connection) -> None:
+    """Chép credentials một-tài-khoản cũ sang social_account và gắn account_id.
+
+    Chạy mỗi lần khởi động nên phải idempotent: một mạng đã có dòng trong
+    social_account thì không chép lại. Ngắt tài khoản cuối cùng cũng xoá luôn bảng
+    cũ (xem app/social_accounts.py) nên dòng cũ không sống lại ở lần khởi động sau.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    for table, column in (("youtube_uploads", "account_id"),
+                          ("youtube_channel_videos", "account_id"),
+                          ("short_uploads", "account_id"),
+                          ("book", "youtube_account_id")):
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} INTEGER")
+
+    def _copy(platform: str, external_id: str, display_name, access_token: str,
+              refresh_token: str = "", token_expiry: str = "") -> None:
+        if conn.execute("SELECT 1 FROM social_account WHERE platform=? LIMIT 1",
+                        (platform,)).fetchone():
+            return
+        conn.execute(
+            """INSERT OR IGNORE INTO social_account
+               (platform, label, external_id, display_name, access_token, refresh_token,
+                token_expiry, is_default, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+            (platform, display_name or "", external_id or "", display_name, access_token,
+             refresh_token or "", token_expiry or "", now, now),
+        )
+
+    row = conn.execute("SELECT * FROM youtube_credentials ORDER BY id DESC LIMIT 1").fetchone()
+    if row is not None:
+        _copy("youtube", row["channel_id"], row["channel_name"], row["access_token"],
+              row["refresh_token"], row["token_expiry"])
+    row = conn.execute("SELECT * FROM facebook_credentials ORDER BY id DESC LIMIT 1").fetchone()
+    if row is not None:
+        _copy("facebook", row["page_id"], row["page_name"], row["page_access_token"])
+    row = conn.execute("SELECT * FROM tiktok_credentials ORDER BY id DESC LIMIT 1").fetchone()
+    if row is not None:
+        _copy("tiktok", row["open_id"], row["display_name"], row["access_token"],
+              row["refresh_token"], row["token_expiry"])
+
+    youtube_default = conn.execute(
+        "SELECT id FROM social_account WHERE platform='youtube' ORDER BY is_default DESC, id LIMIT 1"
+    ).fetchone()
+    if youtube_default is not None:
+        conn.execute("UPDATE youtube_uploads SET account_id=? WHERE account_id IS NULL",
+                     (youtube_default["id"],))
+        conn.execute("UPDATE youtube_channel_videos SET account_id=? WHERE account_id IS NULL",
+                     (youtube_default["id"],))

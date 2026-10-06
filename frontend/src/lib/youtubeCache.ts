@@ -23,6 +23,22 @@ let playlistsInFlight: Promise<PlaylistItem[]> | null = null;
 const itemsEntries = new Map<string, CacheEntry<PlaylistItemDetail[]>>();
 const itemsInFlight = new Map<string, Promise<PlaylistItemDetail[]>>();
 
+/**
+ * Bumped by clearYouTubeCache(). The cache holds one account's listings at a time;
+ * a response that was requested before the switch must not land in the new
+ * account's cache, so every fetch remembers the epoch it started in.
+ */
+let epoch = 0;
+
+/** Drop everything, including in-flight requests (the active YouTube account changed). */
+export function clearYouTubeCache(): void {
+  epoch += 1;
+  playlistsEntry = null;
+  playlistsInFlight = null;
+  itemsEntries.clear();
+  itemsInFlight.clear();
+}
+
 const fresh = (entry: CacheEntry<unknown> | null | undefined, ttl: number) =>
   entry != null && Date.now() - entry.fetched_at < ttl;
 
@@ -33,14 +49,17 @@ export async function loadPlaylistsCached(force = false): Promise<PlaylistItem[]
   }
   // One request per burst even when several callers race the same cold cache.
   if (!playlistsInFlight) {
-    playlistsInFlight = api<{ items: PlaylistItem[] }>("/youtube/api/playlists")
+    const startedIn = epoch;
+    const request = api<{ items: PlaylistItem[] }>("/youtube/api/playlists")
       .then((res) => {
-        playlistsEntry = { value: res.items || [], fetched_at: Date.now() };
-        return playlistsEntry.value;
+        const items = res.items || [];
+        if (startedIn === epoch) playlistsEntry = { value: items, fetched_at: Date.now() };
+        return items;
       })
       .finally(() => {
-        playlistsInFlight = null;
+        if (playlistsInFlight === request) playlistsInFlight = null;
       });
+    playlistsInFlight = request;
   }
   return playlistsInFlight;
 }
@@ -65,17 +84,21 @@ export async function loadPlaylistItemsCached(
   }
   let inFlight = itemsInFlight.get(playlistId);
   if (!inFlight) {
-    inFlight = api<{ items: PlaylistItemDetail[] }>(
+    const startedIn = epoch;
+    const request = api<{ items: PlaylistItemDetail[] }>(
       `/youtube/api/playlists/${playlistId}/items?fetch_all=true`
     )
       .then((res) => {
         const items = res.items || [];
-        itemsEntries.set(playlistId, { value: items, fetched_at: Date.now() });
+        if (startedIn === epoch) {
+          itemsEntries.set(playlistId, { value: items, fetched_at: Date.now() });
+        }
         return items;
       })
       .finally(() => {
-        itemsInFlight.delete(playlistId);
+        if (itemsInFlight.get(playlistId) === request) itemsInFlight.delete(playlistId);
       });
+    inFlight = request;
     itemsInFlight.set(playlistId, inFlight);
   }
   return inFlight;

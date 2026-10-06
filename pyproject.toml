@@ -24,6 +24,9 @@ dependencies = [
     "pillow>=10.0.0",
     "imageio-ffmpeg>=0.5.1",
     "requests>=2.31",
+    # Outbound proxy (app/egress.py): httplib2 (googleapiclient) chỉ đi qua proxy khi có
+    # PySocks, và requests cần nó cho proxy socks5://.
+    "pysocks>=1.7",
 ]
 
 [project.optional-dependencies]

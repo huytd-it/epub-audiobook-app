@@ -28,17 +28,26 @@ def handle(ctx) -> dict:
     if not short.video_path:
         raise JobFatalError("short chưa render xong (thiếu video_path)")
 
+    # Tài khoản đăng: payload của job thắng, rồi tới lựa chọn lưu trên short_uploads;
+    # None = tài khoản mặc định của mạng đó.
+    account_id = ctx.job.payload.get("account_id")
+    if account_id is None:
+        upload_row = shorts_repository.get_upload(ctx.conn, short.id, platform)
+        account_id = upload_row.account_id if upload_row else None
+
     ctx.progress(0, 1, phase=f"uploading:{platform}")
     shorts_repository.set_upload_status(ctx.conn, short.id, platform, "processing")
     try:
         if platform == "fb":
             from app import facebook
             platform_video_id = facebook.publish_short_video(
-                ctx.conn, short.video_path, short.caption, short.story_link)
+                ctx.conn, short.video_path, short.caption, short.story_link,
+                account_id=account_id)
         elif platform == "tiktok":
             from app import tiktok
             platform_video_id = tiktok.publish_short_video(
-                ctx.conn, short.video_path, short.caption, short.story_link)
+                ctx.conn, short.video_path, short.caption, short.story_link,
+                account_id=account_id)
         else:
             from app import youtube
             # Dọc <=3min tự thành Shorts; privacy mặc định draft/private.
@@ -49,6 +58,7 @@ def handle(ctx) -> dict:
                 tags=["shorts", "sach noi"],
                 privacy_status="private",
                 render_source_type="external", render_source_id=short.id,
+                account_id=account_id,
             )
             result = youtube.process_upload(ctx.conn, upload_id)
             if result.get("status") != "done":

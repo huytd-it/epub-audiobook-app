@@ -1,0 +1,7 @@
+{
+  "name": "epub-audiobook-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vercel Edge relay cho các provider bị giới hạn theo vùng (xem README.md).",
+  "engines": { "node": ">=20" }
+}
