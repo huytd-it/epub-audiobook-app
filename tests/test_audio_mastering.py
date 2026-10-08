@@ -12,7 +12,7 @@ from app import audio_mastering
 
 def test_shared_audiobook_loudness_target_and_resampler():
     chain = audio_mastering.loudnorm_filter(sample_rate=48_000)
-    assert "loudnorm=I=-18:TP=-1.5:LRA=11" in chain
+    assert "loudnorm=I=-16:TP=-1.5:LRA=11" in chain
     assert "aresample=48000:resampler=soxr:precision=28" in chain
 
 
@@ -80,3 +80,43 @@ def test_real_two_pass_mastering_reaches_target_and_preserves_wav_format(tmp_pat
     assert info.frames == rate * seconds
     assert abs(output.input_i - audio_mastering.TARGET_LUFS) <= 0.2
     assert output.input_tp <= audio_mastering.TARGET_TRUE_PEAK_DBFS + 0.1
+
+
+def _voiced_rms_db(audio: np.ndarray) -> float:
+    data = np.asarray(audio, dtype=np.float64).reshape(-1)
+    floor = 10.0 ** (audio_mastering.CHUNK_VOICE_FLOOR_DBFS / 20.0)
+    voiced = data[np.abs(data) > floor]
+    return 20.0 * float(np.log10(np.sqrt(np.mean(voiced ** 2))))
+
+
+def test_level_chunk_loudness_evens_out_quiet_and_loud_chunks():
+    rate = 48_000
+    time = np.arange(rate * 2, dtype=np.float64) / rate
+    tone = np.sin(2 * np.pi * 220 * time).astype(np.float32)
+    quiet = audio_mastering.level_chunk_loudness(0.05 * tone)
+    loud = audio_mastering.level_chunk_loudness(0.5 * tone)
+
+    assert abs(_voiced_rms_db(quiet) - audio_mastering.TARGET_CHUNK_RMS_DBFS) < 1.0
+    assert abs(_voiced_rms_db(loud) - audio_mastering.TARGET_CHUNK_RMS_DBFS) < 1.0
+    # 20 dB apart going in (0.05 vs 0.5 amplitude), nearly identical coming out.
+    assert abs(_voiced_rms_db(quiet) - _voiced_rms_db(loud)) < 1.0
+
+
+def test_level_chunk_loudness_leaves_silence_and_empties_alone():
+    assert audio_mastering.level_chunk_loudness(np.zeros(1000, dtype=np.float32)).tolist() == [0.0] * 1000
+    assert audio_mastering.level_chunk_loudness(np.zeros(0, dtype=np.float32)).size == 0
+    faint = (1e-6 * np.ones(1000, dtype=np.float32))
+    assert audio_mastering.level_chunk_loudness(faint) is faint or np.array_equal(
+        audio_mastering.level_chunk_loudness(faint), faint)
+
+
+def test_level_chunk_loudness_never_clips_and_is_idempotent():
+    rng = np.random.default_rng(7)
+    spiky = np.zeros(48_000, dtype=np.float32)
+    spiky[::480] = 0.9  # high crest factor: loud peak, quiet body
+    spiky += (0.01 * rng.standard_normal(spiky.shape)).astype(np.float32)
+
+    once = audio_mastering.level_chunk_loudness(spiky)
+    assert float(np.abs(once).max()) <= audio_mastering.CHUNK_PEAK_CEILING + 1e-6
+    twice = audio_mastering.level_chunk_loudness(once)
+    assert np.allclose(once, twice, atol=1e-5)

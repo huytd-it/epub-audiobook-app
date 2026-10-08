@@ -109,6 +109,37 @@ def test_segment_with_music_normalizes_audio(still, tmp_path):
 
 
 @requires_ffmpeg
+@pytest.mark.parametrize("channels", [1, 2])
+@pytest.mark.parametrize("render_path", ["segment", "music", "waveform", "sequence", "sequence_music"])
+def test_encoded_video_reaches_youtube_loudness(still, tmp_path, channels, render_path):
+    """Measure decoded AAC, not just the filter argv or the source WAV.
+
+    Covers both renderers, mono/stereo negotiation and the complex mix graph;
+    the former shared -18/-16 LUFS target passed the format-only tests above.
+    """
+    from app.audio_mastering import measure_loudness
+
+    narration = _tone(tmp_path / "speech.wav", rate=24000, channels=channels, seconds=8)
+    music = (_tone(tmp_path / "music.wav", rate=44100, channels=2, seconds=10)
+             if "music" in render_path else None)
+    out = tmp_path / "youtube.mp4"
+    kwargs = {"resolution": (160, 120), "fps": 30, "music_path": music}
+    if render_path.startswith("sequence"):
+        video_gen.generate_background_sequence([still], narration, str(out), image_duration=4, **kwargs)
+    else:
+        if render_path == "waveform":
+            kwargs["waveform_config"] = {"waveform_enabled": True, "waveform_style": "cline"}
+        video_gen.generate_segment(still, narration, str(out), **kwargs)
+
+    measured = measure_loudness(out)
+    assert abs(measured.input_i - (-14.0)) <= 0.5
+    # Small codec overshoots are expected; preserve at least 1 dB of headroom
+    # after decoding AAC, not merely at the PCM stage before the encoder.
+    assert measured.input_tp <= -1.0
+    assert _audio_format(str(out)) == ("aac", 48000, 2)
+
+
+@requires_ffmpeg
 def test_segment_with_waveform_preserves_audio(still, tmp_path):
     narration = _tone(tmp_path / "wave.wav", rate=24000, channels=1, seconds=2)
     out = tmp_path / "waveform.mp4"
