@@ -233,6 +233,8 @@ export function BookDetail() {
   const [batchTargets, setBatchTargets] = useState<number[]>([]);
   const [batchSkipped, setBatchSkipped] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [resetVoiceTargets, setResetVoiceTargets] = useState<number[]>([]);
+  const [resettingVoices, setResettingVoices] = useState(false);
   const [sourceOpen, setSourceOpen] = useState(false);
   const [sourceFile, setSourceFile] = useState<File>();
   const [sourceBusy, setSourceBusy] = useState<"delete" | "upload">();
@@ -273,7 +275,7 @@ export function BookDetail() {
   // Dừng polling khi đang mở dialog hoặc đang chạy thao tác: tránh ghi đè state giữa chừng.
   const paused =
     previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || batchOpen || sourceOpen ||
-    reimportOpen || busyCount > 0;
+    reimportOpen || resetVoiceTargets.length > 0 || busyCount > 0;
   const { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh } = useBookDetail(
     bookId,
     paused
@@ -400,6 +402,29 @@ export function BookDetail() {
 
   const patches = useMemo(() => data?.patches || [], [data]);
   const patchIds = useMemo(() => patches.map((patch) => patch.id), [patches]);
+  const selectedVoiceOverrides = useMemo(
+    () => patches.filter((patch) => selectedIds.includes(patch.id) && (patch.tts_model || patch.tts_voice_id)),
+    [patches, selectedIds]
+  );
+
+  const resetPatchVoices = useCallback(async () => {
+    if (!resetVoiceTargets.length || resettingVoices) return;
+    setResettingVoices(true);
+    setBusy(true);
+    try {
+      const result = await postJson<{ reset: number }>(`/books/${bookId}/patches/reset-voices`, {
+        patch_ids: resetVoiceTargets,
+      });
+      showToast(`Đã reset giọng riêng của ${result.reset} patch về theo sách.`);
+      setResetVoiceTargets([]);
+      await refresh();
+    } catch (err) {
+      showToast(errorText(err));
+    } finally {
+      setResettingVoices(false);
+      setBusy(false);
+    }
+  }, [bookId, refresh, resetVoiceTargets, resettingVoices, setBusy]);
 
   // Chỉ loại bỏ patch đã biến mất — giữ nguyên lựa chọn qua các nhịp làm mới.
   useEffect(() => {
@@ -1030,6 +1055,15 @@ export function BookDetail() {
               <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => runBatch("youtube")}>
                 <Video className="h-3.5 w-3.5" /> YouTube
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={Boolean(running) || resettingVoices || !selectedVoiceOverrides.length}
+                title="Xóa giọng riêng của các patch đã chọn để kế thừa cấu hình sách"
+                onClick={() => setResetVoiceTargets(selectedVoiceOverrides.map((patch) => patch.id))}
+              >
+                <RotateCcw className="h-3.5 w-3.5" /> Reset giọng
+              </Button>
               <Button size="sm" variant="outline" disabled={Boolean(running)} onClick={() => setDeleteOpen(true)}>
                 <Trash2 className="h-3.5 w-3.5" /> Xóa
               </Button>
@@ -1046,6 +1080,30 @@ export function BookDetail() {
         onMessage={showToast}
         onDeleted={refresh}
       />
+      <Dialog
+        open={resetVoiceTargets.length > 0}
+        onOpenChange={(open) => {
+          if (!open && !resettingVoices) setResetVoiceTargets([]);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reset giọng riêng của {resetVoiceTargets.length} patch?</DialogTitle>
+            <DialogDescription>
+              Các patch này sẽ kế thừa model và giọng đọc từ cấu hình sách trong lần tạo audio tiếp theo.
+              Audio/video đã tạo sẽ không bị xóa hoặc thay đổi.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" disabled={resettingVoices} onClick={() => setResetVoiceTargets([])}>
+              Hủy
+            </Button>
+            <Button disabled={resettingVoices} onClick={resetPatchVoices}>
+              <RotateCcw className="h-3.5 w-3.5" /> {resettingVoices ? "Đang reset..." : "Reset về theo sách"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <PatchPreviewDialog
 
         bookId={bookId}
