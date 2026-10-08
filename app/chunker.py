@@ -4,6 +4,14 @@ from __future__ import annotations
 import re
 
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?…])\s+")
+# Xuống dòng đơn cũng là ranh giới câu: EPUB join các khối bằng "\n" đơn
+# (epub_parser dùng separator="\n"), nên khối stat nhiều dòng kết thúc bằng
+# "]" sẽ dính thành một câu dài không dấu kết câu nếu chỉ tách ở ".!?…".
+_SINGLE_NEWLINE_BOUNDARY_RE = re.compile(r"(?<=[.!?…])\s+|\s*\n\s*")
+
+# Dấu câu đọc lên đã có nhịp nghỉ — dòng kết thúc bằng chúng thì không cần
+# thêm phẩy trước xuống dòng.
+_LINE_END_PAUSE_CHARS = frozenset(".!?…,:;")
 
 # Dấu chấm bên trong các mẫu dưới đây KHÔNG phải ranh giới câu. Nếu tách ở đó,
 # "Ông làm việc tại TP.HCM." vỡ thành hai chunk và TTS đọc "tê pê" rồi ngắt hơi
@@ -57,11 +65,30 @@ def _split_paragraph_into_sentences(paragraph: str) -> list[str]:
     masked = mask_protected_spans(paragraph)
     sentences: list[str] = []
     last = 0
-    for m in _SENTENCE_BOUNDARY_RE.finditer(masked):
+    for m in _SINGLE_NEWLINE_BOUNDARY_RE.finditer(masked):
         sentences.append(paragraph[last:m.start()])
         last = m.end()
     sentences.append(paragraph[last:])
     return [s.strip() for s in sentences if s.strip()]
+
+
+def _add_pause_comma_before_linebreaks(text: str) -> str:
+    """Thêm dấu phẩy vào cuối dòng chưa có nhịp nghỉ trước xuống dòng đơn.
+
+    Khối stat kiểu "[Kỹ năng:\\n- Thể Oán Linh (...)\\n- ...]" không có dấu
+    kết câu nên TTS đọc liền một hơi không nghỉ. Phẩy cho nhịp nghỉ ngắn
+    (phù hợp liệt kê) và chạy lại idempotent — dòng đã kết thúc bằng dấu
+    câu thì giữ nguyên. Ngắt đoạn ("\\n\\n", dòng trống) không đụng tới.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    for i in range(len(lines) - 1):
+        if not lines[i].strip() or not lines[i + 1].strip():
+            continue  # ngắt đoạn hoặc dòng trống: giữ nguyên
+        stripped = lines[i].rstrip()
+        if stripped and stripped[-1] not in _LINE_END_PAUSE_CHARS:
+            lines[i] = f"{stripped},"
+    return "\n".join(lines)
 
 
 def _hard_split(piece: str, max_chars: int) -> list[str]:
@@ -92,7 +119,12 @@ def _hard_split(piece: str, max_chars: int) -> list[str]:
 
 def split_into_tts_chunks(text: str, max_chars: int = 400) -> list[str]:
     """Greedily pack paragraphs/sentences into chunks no longer than max_chars,
-    never splitting mid-sentence."""
+    never splitting mid-sentence.
+
+    Xuống dòng đơn cũng là điểm tách (khối stat nhiều dòng "[...]" không có
+    dấu kết câu) và dòng chưa có nhịp nghỉ được thêm phẩy để TTS ngắt hơi.
+    """
+    text = _add_pause_comma_before_linebreaks(text)
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
 
     pieces: list[str] = []

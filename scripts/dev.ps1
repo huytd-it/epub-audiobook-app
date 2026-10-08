@@ -49,7 +49,7 @@ try {
     # No --reload by default: an auto-restart mid-run kills worker threads, leaves
     # jobs half-claimed and GPU accounts busy (observed live with kaggle_tts).
     # Opt back in for fast backend iteration with: $env:EPUB_APP_RELOAD = "1"
-    $backendArgs = @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000")
+    $backendArgs = @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--loop", "app.server:loop_factory")
     if ($env:EPUB_APP_RELOAD -eq "1") {
         Write-Host "  EPUB_APP_RELOAD=1: enabling --reload (do NOT run long jobs in this mode)..." -ForegroundColor DarkYellow
         $backendArgs += @("--reload", "--reload-dir", "app")
@@ -64,7 +64,7 @@ try {
     $waited = 0
     while ($waited -lt $maxWait) {
         try {
-            $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/live" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
             if ($response.StatusCode -eq 200) {
                 Write-Host "  Backend is ready!" -ForegroundColor Green
                 break
@@ -75,7 +75,7 @@ try {
         }
     }
     if ($waited -ge $maxWait) {
-        Write-Host "  Backend did not respond after ${maxWait}s, continuing anyway..." -ForegroundColor DarkYellow
+        throw "Backend did not respond after ${maxWait}s. Check backend startup logs."
     }
 
     # ── 2. Tauri Dev ──────────────────────────────────────────────────────────

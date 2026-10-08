@@ -84,20 +84,18 @@ export function Queue() {
       params.set("order", "queue");
     }
     return Promise.all([
-      api<{ jobs: Job[] }>(`/queue/jobs?${params}`),
-      api<WorkerHealth>("/health"),
-    ])
-      .then(([queue, health]) => {
+      api<{ jobs: Job[] }>(`/queue/jobs?${params}`).then((queue) => {
         setJobs(queue.jobs);
+      }).catch((err) => {
+        setQueueError(err instanceof Error ? err.message : "Không đọc được dữ liệu hàng đợi");
+      }),
+      api<WorkerHealth>("/health").then((health) => {
         setWorkerHealth(health);
         setWorkerHealthError("");
-      })
-      .catch((err) => {
-        console.error(err);
-        const detail = err instanceof Error ? err.message : "Không đọc được dữ liệu hàng đợi";
-        setQueueError(detail);
-        setWorkerHealthError(detail);
-      })
+      }).catch((err) => {
+        setWorkerHealthError(err instanceof Error ? err.message : "Không đọc được trạng thái worker");
+      }),
+    ])
       .finally(() => setLoading(false));
   };
 

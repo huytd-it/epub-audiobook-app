@@ -51,13 +51,13 @@ fn backend_is_ready() -> bool {
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-    if stream.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
+    if stream.write_all(b"GET /api/live HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
         return false;
     }
     let mut response = String::new();
     stream.read_to_string(&mut response).is_ok()
         && response.starts_with("HTTP/1.1 200")
-        && response.contains("\"worker_state\"")
+        && response.contains("\"service\":\"epub-audiobook\"")
 }
 
 fn start_backend() -> Result<Option<BackendProcess>, String> {
@@ -73,7 +73,7 @@ fn start_backend() -> Result<Option<BackendProcess>, String> {
 
     let mut command = Command::new(python);
     command
-        .args(["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"])
+        .args(["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--loop", "app.server:loop_factory"])
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -83,11 +83,15 @@ fn start_backend() -> Result<Option<BackendProcess>, String> {
     let child = command
         .spawn()
         .map_err(|error| format!("Không thể khởi động backend: {error}"))?;
+    let mut backend = BackendProcess(child);
 
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         if backend_is_ready() {
-            return Ok(Some(BackendProcess(child)));
+            return Ok(Some(backend));
+        }
+        if let Some(status) = backend.0.try_wait().map_err(|error| error.to_string())? {
+            return Err(format!("Backend đã thoát khi khởi động ({status}). Kiểm tra log backend."));
         }
         thread::sleep(Duration::from_millis(250));
     }
