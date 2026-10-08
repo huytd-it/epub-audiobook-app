@@ -1,6 +1,6 @@
 [package]
 name = "epub-audiobook-studio"
-version = "1.0.0"
+version = "2.0.1"
 description = "Xuong Sach Noi desktop shell"
 authors = ["EPUB Audiobook Studio"]
 edition = "2021"
