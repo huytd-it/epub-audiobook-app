@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,11 +39,14 @@ def test_health_returns_200_when_worker_is_alive(client):
     assert "current_patch_id" in payload
 
 
-def test_health_returns_503_when_heartbeat_is_stale(client):
-    worker: PatchWorker = client.app.state.worker
+def test_health_returns_503_when_heartbeat_is_stale(client, monkeypatch):
     # Backdate the heartbeat to more than 3 * poll_interval ago.
     stale = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
-    worker.last_heartbeat_at = stale
+    # A running dispatcher can overwrite a backdated heartbeat before GET arrives.
+    monkeypatch.setattr(client.app.state, "worker", SimpleNamespace(
+        last_heartbeat_at=stale, state="idle", current_patch_id=None,
+        current_chunk_index=0, current_chunk_count=0,
+    ))
     resp = client.get("/health")
     assert resp.status_code == 503
     payload = resp.json()

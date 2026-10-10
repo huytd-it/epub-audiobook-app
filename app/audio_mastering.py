@@ -2,8 +2,8 @@
 
 Patch WAVs are mastered only after every TTS chunk (and optional sound effect)
 has been assembled. That preserves the relative dynamics between chunks while
-giving every deliverable the same perceived level. Video uses the same target
-for its final narration/music mix.
+giving audiobook WAVs a consistent perceived level. Video uses a louder target
+for its final stereo narration/music mix.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from os import replace as atomic_replace
 from pathlib import Path
 
 import soundfile as sf
+import numpy as np
 
 from app.config import settings
 
@@ -25,7 +26,9 @@ from app.config import settings
 # Comfortable spoken-word loudness with true-peak headroom for AAC/YouTube.
 # LRA=11 is a ceiling, not added compression: steady TTS narration keeps its
 # naturally smaller loudness range.
-TARGET_LUFS = -18.0
+TARGET_LUFS = -16.0
+# YouTube-oriented video mix; keep the audiobook WAV comfortable at -16 LUFS.
+VIDEO_TARGET_LUFS = -14.0
 TARGET_TRUE_PEAK_DBFS = -1.5
 TARGET_LRA = 11.0
 VIDEO_SAMPLE_RATE = 48_000
@@ -43,6 +46,7 @@ class LoudnessMeasurement:
 def loudnorm_filter(
     measurement: LoudnessMeasurement | None = None,
     *,
+    target_lufs: float = TARGET_LUFS,
     sample_rate: int | None = None,
     dither: bool = False,
     print_format: str | None = None,
@@ -54,7 +58,7 @@ def loudnorm_filter(
     one-pass form because narration and music do not exist as a mixed file yet.
     """
     chain = (
-        f"loudnorm=I={TARGET_LUFS:g}:TP={TARGET_TRUE_PEAK_DBFS:g}:"
+        f"loudnorm=I={target_lufs:g}:TP={TARGET_TRUE_PEAK_DBFS:g}:"
         f"LRA={TARGET_LRA:g}"
     )
     if measurement is not None:
@@ -126,6 +130,53 @@ def _pcm_codec(subtype: str) -> str:
         "FLOAT": "pcm_f32le",
         "DOUBLE": "pcm_f64le",
     }.get(subtype, "pcm_s24le")
+
+
+# Per-chunk leveling target: every TTS chunk leaves synthesis at the same speech
+# RMS so concatenated narration sounds even. The final integrated master
+# (normalize_wav_in_place, TARGET_LUFS) then only sets the absolute level.
+# ZeroTTS in particular wanders several dB between chunks (measured ~8 dB RMS
+# spread on one patch), and a whole-file master preserves those gaps because it
+# applies a single global gain.
+TARGET_CHUNK_RMS_DBFS = -20.0
+# Never turn the knob further than this: a near-silent/broken chunk must not
+# be amplified into audible hiss, nor a hot one squashed into pumping.
+MAX_CHUNK_GAIN_DB = 12.0
+# Chunks quieter than this are left untouched (silence, gaps, failures).
+MIN_CHUNK_RMS_DBFS = -45.0
+# Speech detector floor: RMS is measured over samples above this so leading /
+# trailing pauses don't drag the speech level down unevenly between chunks.
+CHUNK_VOICE_FLOOR_DBFS = -40.0
+# Hard ceiling after gain, mirroring the true-peak headroom of the master.
+CHUNK_PEAK_CEILING = 0.98
+
+
+def level_chunk_loudness(audio: np.ndarray) -> np.ndarray:
+    """Match one TTS chunk to TARGET_CHUNK_RMS_DBFS. Pure numpy, idempotent.
+
+    Returns a new float32 mono array (or the input untouched when it is empty
+    or near-silent). A peak guard caps the result at CHUNK_PEAK_CEILING so a
+    high-crest chunk can never clip — it just lands slightly quieter.
+    """
+    data = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if data.size == 0:
+        return data
+    overall = float(np.sqrt(np.mean(data ** 2)))
+    if overall <= 0.0 or 20.0 * math.log10(overall) < MIN_CHUNK_RMS_DBFS:
+        return data
+    floor = 10.0 ** (CHUNK_VOICE_FLOOR_DBFS / 20.0)
+    voiced = data[np.abs(data) > floor]
+    reference = voiced if voiced.size else data
+    rms = float(np.sqrt(np.mean(reference ** 2)))
+    if rms <= 0.0:
+        return data
+    gain_db = TARGET_CHUNK_RMS_DBFS - 20.0 * math.log10(rms)
+    gain_db = max(-MAX_CHUNK_GAIN_DB, min(MAX_CHUNK_GAIN_DB, gain_db))
+    out = data * (10.0 ** (gain_db / 20.0))
+    peak = float(np.abs(out).max(initial=0.0))
+    if peak > CHUNK_PEAK_CEILING:
+        out = out * (CHUNK_PEAK_CEILING / peak)
+    return np.ascontiguousarray(out, dtype=np.float32)
 
 
 def normalize_wav_in_place(path: str | Path) -> LoudnessMeasurement | None:

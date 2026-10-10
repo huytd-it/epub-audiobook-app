@@ -51,8 +51,9 @@ class Settings(BaseSettings):
     # Cấu hình sản xuất). Provider cố ý nằm trong .env chứ không phải UI: chọn
     # ai_content_provider rồi đặt key của provider đó, xem app/ai_content.py cho
     # danh sách provider và tên biến môi trường tương ứng.
-    #   gemini -> GEMINI_API_KEY, openai -> OPENAI_API_KEY,
-    #   custom  -> AI_CONTENT_API_KEY (bắt buộc kèm AI_CONTENT_BASE_URL).
+    #   gemini -> GEMINI_API_KEY (bắt buộc), openai -> OPENAI_API_KEY (bắt buộc),
+    #   custom  -> AI_CONTENT_API_KEY (không bắt buộc, chỉ cần AI_CONTENT_BASE_URL;
+    #              server local như Ollama thường không cần key).
     # Để trống thì suy ra: có base_url riêng => custom, không thì gemini.
     ai_content_provider: str = ""
     # Để trống => lấy model mặc định của provider (xem PROVIDERS trong app/ai_content.py).

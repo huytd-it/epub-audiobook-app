@@ -8,7 +8,8 @@ from app import repository
 
 
 @pytest.fixture
-def conn():
+def conn(tmp_path, monkeypatch):
+    monkeypatch.setattr(repository.settings, "data_root", tmp_path)
     c = sqlite3.connect(":memory:")
     c.row_factory = sqlite3.Row
     app_db.init_schema(c)
@@ -42,6 +43,26 @@ def test_basic_chunking(conn):
     assert patches[0].chapter_end == 9
     assert patches[1].chapter_start == 10
     assert patches[1].chapter_end == 19
+
+
+def test_auto_build_cleans_existing_chunk_directories(conn):
+    book_id = _seed(conn, 4, 2)
+    patches = repository.auto_build_patches(conn, book_id, start_chapter=0)
+    audio_path = repository.get_patch_audio_path(book_id, patches[0].patch_index)
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path.write_bytes(b"existing merged audio")
+    for patch in patches:
+        chunk_dir = repository.get_patch_chunk_dir(book_id, patch.patch_index)
+        chunk_dir.mkdir(parents=True)
+        (chunk_dir / "chunk_000.wav").write_bytes(b"existing chunk audio")
+
+    rebuilt = repository.auto_build_patches(conn, book_id, start_chapter=0)
+
+    assert [(p.chapter_start, p.chapter_end) for p in rebuilt] == [(0, 1), (2, 3)]
+    assert list(audio_path.parent.iterdir()) == []
+    backups = list((audio_path.parent.parent / "backup_audio").glob("*.wav"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"existing merged audio"
 
 
 def test_default_end_uses_max(conn):

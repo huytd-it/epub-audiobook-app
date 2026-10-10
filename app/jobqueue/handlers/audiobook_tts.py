@@ -14,7 +14,7 @@ from pathlib import Path
 import soundfile as sf
 
 from app import audio_merge, repository, subtitle_gen
-from app.audio_mastering import normalize_wav_in_place
+from app.audio_mastering import level_chunk_loudness, normalize_wav_in_place
 from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
@@ -174,6 +174,7 @@ def synthesize_patch(
                 raise asyncio.CancelledError()
             ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
             arr = engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+            arr = level_chunk_loudness(arr)
             ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / engine.sample_rate:.1f}s audio")
             wavs.append(arr)
             ctx.progress(index + 1, total)
@@ -222,6 +223,7 @@ def synthesize_patch(
                 raise asyncio.CancelledError()
             ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
             arr = engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+            arr = level_chunk_loudness(arr)
             ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / engine.sample_rate:.1f}s audio")
             sf.write(chunk_path, arr, engine.sample_rate)
             repository.update_patch_chunk_progress(ctx.conn, patch.id, index + 1)

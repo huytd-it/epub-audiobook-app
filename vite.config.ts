@@ -15,6 +15,7 @@ const API_PREFIXES = [
   "/photos",
   "/voices",
   "/media",
+  "/media-browser",
   "/gameplay",
   "/text-studio",
   "/drive",
@@ -45,7 +46,7 @@ const SPA_ROUTES = [
   /^\/books$/,
   /^\/books\/upload$/,
   /^\/books\/\d+(\/.*)?$/,
-  /^\/(upload|queue|video|music|photos|voices|media|gameplay|tools|youtube|drive|database-io|logs|effects|production-defaults|shorts|network)$/,
+  /^\/(upload|queue|video|music|photos|voices|media|media-browser|gameplay|tools|youtube|drive|database-io|logs|effects|production-defaults|shorts|network|tts-models)$/,
   // Socials hub: /socials và /socials/<mạng>; API của nó nằm dưới /socials/api/.
   /^\/socials(\/(youtube|facebook|tiktok))?$/,
 ];
@@ -81,7 +82,7 @@ export default defineConfig({
     },
   },
   build: { outDir: "../app/spa_dist", emptyOutDir: true },
-  server: { port: 5173, proxy },
+  server: { port: 5173, strictPort: true, proxy },
   plugins: [
     react(),
     VitePWA({
@@ -103,6 +104,8 @@ export default defineConfig({
       workbox: {
         cleanupOutdatedCaches: true,
         navigateFallback: "/index.html",
+        // Chỉ cache điều hướng SPA; API/OAuth/file phải luôn tới backend.
+        navigateFallbackAllowlist: SPA_ROUTES,
         // Tải file (audio/video/zip) và tài liệu API không được trả về index.html.
         navigateFallbackDenylist: [
           /\/(audio|video|download|export|export-batch)(\/|$)/,

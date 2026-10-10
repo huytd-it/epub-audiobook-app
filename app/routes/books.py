@@ -53,7 +53,7 @@ def _list_youtube_playlists():
 
 
 @router.post("/books/parse-epub")
-async def parse_epub_preview(request: Request, epub_file: UploadFile = File(...), preview_chars: int = Query(default=1200, ge=100, le=5000)):
+def parse_epub_preview(request: Request, epub_file: UploadFile = File(...), preview_chars: int = Query(default=1200, ge=100, le=5000)):
     """Parse an EPUB and return chapter list as JSON without creating a book."""
     uploads_dir = Path(settings.data_root) / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,7 @@ async def parse_epub_preview(request: Request, epub_file: UploadFile = File(...)
 
 
 @router.post("/books/upload")
-async def upload_book(
+def upload_book(
     request: Request,
     epub_file: UploadFile = File(...),
     playlist_mode: str = Form(default="new"),
@@ -245,7 +245,6 @@ async def upload_book(
                                 api_conn.commit()
                                 try:
                                     with locked_conn(request) as _c3:
-                                        from app.youtube_metadata import get_book_youtube_config, save_book_youtube_config
                                         cfg3 = get_book_youtube_config(_c3, book.id)
                                         cfg3["playlist"] = {"mode": "existing", "playlist_id": new_id, "title_template": "{book_title}", "description_template": ""}
                                         save_book_youtube_config(_c3, book.id, cfg3)
@@ -264,7 +263,6 @@ async def upload_book(
                         api_conn.commit()
                         try:
                             with locked_conn(request) as _c4:
-                                from app.youtube_metadata import get_book_youtube_config, save_book_youtube_config
                                 cfg4 = get_book_youtube_config(_c4, book.id)
                                 cfg4["playlist"] = {"mode": "existing", "playlist_id": pid, "title_template": "{book_title}", "description_template": ""}
                                 save_book_youtube_config(_c4, book.id, cfg4)

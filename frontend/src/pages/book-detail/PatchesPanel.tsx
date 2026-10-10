@@ -6,7 +6,6 @@ import {
   FileSearch,
   Film,
   Layers,
-  Mic,
   RotateCcw,
   ScanText,
   Search,
@@ -493,32 +492,6 @@ export function PatchesPanel({
     });
   }, []);
 
-  const [resettingVoices, setResettingVoices] = useState(false);
-  const resetPatchVoices = useCallback(async () => {
-    if (!selectedIds.length) {
-      onMessage("Chọn ít nhất một patch để reset giọng về theo sách.");
-      return;
-    }
-    setResettingVoices(true);
-    onBusyChange(true);
-    try {
-      const result = await postJson<{ reset: number }>(`/books/${bookId}/patches/reset-voices`, {
-        patch_ids: selectedIds,
-      });
-      onMessage(
-        result.reset
-          ? `Đã reset ${result.reset} patch về giọng của sách.`
-          : "Các patch đã chọn vốn dùng giọng sách — không có gì để reset."
-      );
-      await onRefresh();
-    } catch (error) {
-      onMessage(errorText(error));
-    } finally {
-      setResettingVoices(false);
-      onBusyChange(false);
-    }
-  }, [bookId, selectedIds, onBusyChange, onMessage, onRefresh]);
-
   const voiceCtx = useMemo(
     () => ({
       ttsModels,
@@ -791,15 +764,6 @@ export function PatchesPanel({
               </Button>
               <Button size="sm" variant="outline" onClick={checkChunks} disabled={checkingChunks}>
                 <FileSearch className={cn("h-3.5 w-3.5", checkingChunks && "animate-pulse")} /> Soát chunk
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={resetPatchVoices}
-                disabled={resettingVoices || !selectedIds.length}
-                title="Xoá giọng riêng của các patch đã chọn — về kế thừa giọng chung của sách"
-              >
-                <Mic className={cn("h-3.5 w-3.5", resettingVoices && "animate-pulse")} /> Reset giọng
               </Button>
               <Link to="/queue" className="text-xs text-primary hover:underline">
                 Hàng đợi →

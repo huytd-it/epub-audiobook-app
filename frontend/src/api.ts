@@ -435,7 +435,15 @@ function withAccount(url: string, init?: RequestInit): RequestInit | undefined {
 }
 
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, withAccount(url, init));
+  let response: Response;
+  try {
+    response = await fetch(url, withAccount(url, init));
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("Không kết nối được backend. Kiểm tra backend còn chạy rồi thử lại.");
+    }
+    throw error;
+  }
   if (!response.ok) {
     let message = `Lỗi ${response.status}`;
     try {
@@ -445,6 +453,9 @@ export async function api<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(message);
   }
   const type = response.headers.get("content-type") || "";
+  if ((!init?.method || init.method.toUpperCase() === "GET") && type.includes("text/html")) {
+    throw new Error("API trả về trang HTML thay vì dữ liệu. Hãy tải lại giao diện và kiểm tra đường dẫn backend.");
+  }
   return (type.includes("json") ? await response.json() : await response.text()) as T;
 }
 

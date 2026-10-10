@@ -321,7 +321,7 @@ ffprobe -version
 
 ```bash
 # Backend
-./.venv/Scripts/python.exe -m uvicorn app.main:app --reload
+./.venv/Scripts/python.exe -m uvicorn app.main:app --loop app.server:loop_factory --reload
 # → http://localhost:8000
 ```
 
@@ -332,7 +332,7 @@ Giao diện chính là **React SPA** do FastAPI phục vụ sau khi build:
 ```bash
 npm install
 npm run build
-./.venv/Scripts/python.exe -m uvicorn app.main:app --reload
+./.venv/Scripts/python.exe -m uvicorn app.main:app --loop app.server:loop_factory --reload
 ```
 
 Dev: chạy backend ở `8000` rồi `npm run dev` ở terminal khác. PWA cài trực tiếp từ trình duyệt; API & media luôn dùng network để tránh cache dữ liệu vận hành.

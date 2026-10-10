@@ -417,7 +417,9 @@ def resolve_provider() -> ProviderConfig:
         supported = ", ".join(sorted(PROVIDERS))
         raise ProviderNotConfigured(f"AI_CONTENT_PROVIDER không hợp lệ: {provider} (chọn: {supported})")
     api_key = (settings.ai_content_api_key or os.getenv(spec["key_env"], "")).strip()
-    if not api_key:
+    # provider=custom thường trỏ vào server local (Ollama, LM Studio, vLLM...)
+    # không cần key — chỉ gemini/openai (hosted) mới bắt buộc.
+    if not api_key and provider in ("gemini", "openai"):
         raise ProviderNotConfigured(f"Chưa có API key cho provider {provider} — đặt {spec['key_env']} trong .env")
     base_url = (settings.ai_content_base_url or spec["base_url"]).strip().rstrip("/")
     if not base_url:
@@ -452,9 +454,12 @@ def _raise_for_status(response: requests.Response) -> None:
 
 
 def _gemini_text(prompt: str, config: ProviderConfig, timeout: float) -> str:
+    headers = {"Content-Type": "application/json"}
+    if config.api_key:
+        headers["x-goog-api-key"] = config.api_key
     response = egress.request(
         "ai", "POST", f"{config.base_url}/models/{config.model}:generateContent",
-        headers={"x-goog-api-key": config.api_key, "Content-Type": "application/json"},
+        headers=headers,
         json={
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.7, "responseMimeType": "application/json"},
@@ -524,9 +529,12 @@ def _openai_text(prompt: str, config: ProviderConfig, timeout: float, *, json_mo
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    headers = {"Content-Type": "application/json"}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
     response = egress.request(
         "ai", "POST", f"{config.base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"},
+        headers=headers,
         json=payload,
         timeout=timeout,
     )

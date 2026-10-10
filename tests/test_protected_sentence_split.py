@@ -53,3 +53,17 @@ def test_chunking_keeps_abbreviation_intact_when_paragraph_is_long():
     chunks = split_into_tts_chunks(paragraph, max_chars=80)
     assert all(len(c) <= 80 for c in chunks)
     assert not any(c.endswith("TP.") for c in chunks)
+
+
+@pytest.mark.parametrize("max_chars", [40, 400])
+@pytest.mark.parametrize("separator", [" ", "\n"])
+def test_bracket_items_after_intro_are_standalone(max_chars, separator):
+    text = f"Menu.{separator}[Bắt đầu] [Tiếp tục] [Thoát]. Xong."
+    assert split_into_tts_chunks(text, max_chars=max_chars) == [
+        "Menu.", "[Bắt đầu].", "[Tiếp tục].", "[Thoát].", "Xong.",
+    ]
+
+
+def test_short_prose_with_inline_brackets_stays_packed():
+    text = "Anh chọn [Bắt đầu] để chơi. Trò chơi mở ra."
+    assert split_into_tts_chunks(text) == [text]

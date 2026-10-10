@@ -134,6 +134,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EPUB Audiobook App", lifespan=lifespan)
+
+
+@app.get("/api/live", include_in_schema=False)
+async def live():
+    """HTTP readiness, independent of worker heartbeats and database locks."""
+    return {"status": "ok", "service": "epub-audiobook"}
+
+
 app.include_router(ai.router)
 app.include_router(books.router)
 app.include_router(patches.router)
@@ -164,8 +172,7 @@ app.include_router(socials.router)
 
 SPA_DIR = Path("app/spa_dist")
 PUBLIC_DIR = Path("frontend/public")
-if SPA_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=SPA_DIR / "assets"), name="spa-assets")
+app.mount("/assets", StaticFiles(directory=SPA_DIR / "assets", check_dir=False), name="spa-assets")
 
 
 @app.get("/gameplay/{filename}", include_in_schema=False)
@@ -179,7 +186,7 @@ def _spa_index():
     index = SPA_DIR / "index.html"
     if not index.exists():
         return HTMLResponse("Frontend chưa được build. Chạy npm install && npm run build.", status_code=503)
-    return HTMLResponse(index.read_text(encoding="utf-8"))
+    return HTMLResponse(index.read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
 
 
 _SPA_PATHS = (
@@ -191,11 +198,13 @@ _SPA_PATHS = (
 
 @app.middleware("http")
 async def spa_pages(request: Request, call_next):
+    # These are UI-only URLs, also used as redirect targets by form mutations.
+    # fetch follows those redirects with Accept: */*, not a document header.
     if request.method == "GET" and any(pattern.fullmatch(request.url.path) for pattern in _SPA_PATHS):
         return _spa_index()
     response = await call_next(request)
-    if request.method == "GET" and response.status_code == 404 and "text/html" in request.headers.get("accept", ""):
-        return _spa_index()
+    if request.url.path in {"/sw.js", "/registerSW.js", "/manifest.webmanifest"}:
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 

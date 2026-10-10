@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from app import music_bed
-from app.audio_mastering import VIDEO_SAMPLE_RATE, loudnorm_filter
+from app.audio_mastering import VIDEO_SAMPLE_RATE, VIDEO_TARGET_LUFS, loudnorm_filter
 from app.config import settings
 from app.models import Book, Patch
 from app.subtitle_gen import ass_bgr
@@ -36,7 +36,12 @@ AUDIO_CHANNELS = 2
 # Normalize the final narration mix, not each TTS chunk.  A single output-stage
 # pass keeps patch-to-patch loudness consistent, raises naturally quiet voices,
 # and leaves true-peak headroom for AAC encoding.
-AUDIO_LOUDNESS_FILTER = loudnorm_filter(sample_rate=AUDIO_SAMPLE_RATE)
+# Normalize in the *output* channel layout. Converting mono only after loudnorm
+# attenuates each stereo channel by 3 dB, wasting true-peak headroom; measuring
+# the final layout first also keeps mono, stereo and music-mix paths consistent.
+AUDIO_LOUDNESS_FILTER = "aformat=channel_layouts=stereo," + loudnorm_filter(
+    target_lufs=VIDEO_TARGET_LUFS, sample_rate=AUDIO_SAMPLE_RATE,
+)
 
 # Still-image sources (JPEG/PNG) decode as full-range YUV, and '-pix_fmt yuv420p'
 # keeps that range: x264 tags the stream full-range and ffprobe reports the
@@ -1104,7 +1109,8 @@ def generate_background_sequence(
             video_map = "[vbranded]"
         if music_path:
             inputs += (["-stream_loop", "-1"] if loop_music else []) + ["-i", music_path]
-            chains.extend(["[2:a]volume=" + str(music_volume) + "[music]", f"{audio_map}[music]amix=inputs=2:duration=first:normalize=0[aout]"])
+            narration_in = audio_map if audio_map.startswith("[") else f"[{audio_map}]"
+            chains.extend(["[2:a]volume=" + str(music_volume) + "[music]", f"{narration_in}[music]amix=inputs=2:duration=first:normalize=0[aout]"])
             audio_map = "[aout]"
         audio_in = audio_map if audio_map.startswith("[") else f"[{audio_map}]"
         chains.append(f"{audio_in}{AUDIO_LOUDNESS_FILTER}[anorm]")

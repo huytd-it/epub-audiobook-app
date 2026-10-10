@@ -39,7 +39,7 @@ Các biến tuỳ chọn khác (`YOUTUBE_DEFAULT_TAGS`, `YOUTUBE_DEFAULT_PRIVACY
 
 ## 3. Kết nối
 
-1. Chạy backend: `./.venv/Scripts/python.exe -m uvicorn app.main:app --reload` → `http://localhost:8000`.
+1. Chạy backend: `./.venv/Scripts/python.exe -m uvicorn app.main:app --loop app.server:loop_factory --reload` → `http://localhost:8000`.
 2. Mở **Socials → YouTube** (`/socials/youtube`), bấm **Kết nối kênh YouTube**. Một tab mới mở
    `/youtube/connect`.
 3. Chọn tài khoản Google sở hữu kênh, chọn kênh (nếu có nhiều kênh) và đồng ý các quyền.
