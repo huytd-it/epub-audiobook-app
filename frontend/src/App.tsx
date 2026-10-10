@@ -6,6 +6,7 @@ import { Books } from "@/pages/Books";
 import { Upload } from "@/pages/Upload";
 import { BookDetail } from "@/pages/BookDetail";
 import { Queue } from "@/pages/Queue";
+import { KagglePackagesPage } from "@/pages/KagglePackagesPage";
 import { Video } from "@/pages/Video";
 import { MediaPage } from "@/pages/MediaPage";
 import { MediaBrowserPage } from "@/pages/MediaBrowserPage";
@@ -38,6 +39,7 @@ function App() {
         <Route path="/upload" element={<Upload />} />
         <Route path="/books/:id/*" element={<BookDetail />} />
         <Route path="/queue" element={<Queue />} />
+        <Route path="/kaggle" element={<KagglePackagesPage />} />
         <Route path="/video" element={<Video />} />
         <Route path="/music" element={<MusicPage />} />
         <Route path="/photos" element={<PhotosPage />} />

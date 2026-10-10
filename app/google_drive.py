@@ -533,10 +533,11 @@ def list_result_files(service, batch_folder_id: str) -> list[dict]:
     Returns [{id, name, modifiedTime, size}] sorted by name; [] when no result
     folder exists yet.
     """
-    result_folder_id = find_subfolder(service, batch_folder_id, "result")
-    if not result_folder_id:
-        return []
-    return sorted(list_files(service, result_folder_id), key=lambda f: f.get("name") or "")
+    files = []
+    for folder in list_files(service, batch_folder_id):
+        if folder.get("name") == "result" and folder.get("mimeType") == "application/vnd.google-apps.folder":
+            files.extend(list_files(service, folder["id"]))
+    return sorted(files, key=lambda f: f.get("name") or "")
 
 
 def download_selected_results(

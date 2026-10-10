@@ -717,6 +717,8 @@ def connect(db_path: str) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+    from app.kaggle_packages import SCHEMA as kaggle_packages_schema
+    conn.executescript(kaggle_packages_schema)
     _migrate(conn)
     from app.gameplay_repository import seed_catalog
     seed_catalog(conn)

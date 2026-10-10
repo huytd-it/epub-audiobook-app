@@ -599,6 +599,9 @@ def _poll_drive_results(
 
 
 def handle(ctx: JobContext) -> dict | None:
+    if ctx.job.payload.get("package_id"):
+        from app.jobqueue.handlers.kaggle_package import handle as handle_package
+        return handle_package(ctx)
     payload = ctx.job.payload
     book_id = int(payload["book_id"])
     patch_ids = [int(p) for p in payload["patch_ids"]]

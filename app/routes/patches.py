@@ -856,11 +856,20 @@ def export_batch_to_kaggle(
                 payload["auto_create_video"] = True
         if "auto_create_video" in payload or "auto_upload_youtube" in payload:
             payload["automation_mode"] = automation_mode
+        from types import SimpleNamespace
+        from app import kaggle_packages
+        package = kaggle_packages.register(
+            conn, SimpleNamespace(id=None, payload=payload, created_at=kaggle_packages.now()),
+        )
+        if package is not None:
+            payload["package_id"] = package["id"]
         job_id = store.enqueue(
             conn, "kaggle_tts", payload=payload,
             book_id=book_id,
             dedupe_key=dedupe_key,
         )
+        if job_id is not None and package is not None:
+            kaggle_packages.update(conn, package["id"], last_job_id=job_id)
         _save_export_audio_settings(
             conn, book_id, model_id=model_id, voice_id=voice_id,
             max_chars=max_chars, with_effects=with_effects,

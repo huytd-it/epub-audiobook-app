@@ -55,9 +55,8 @@ def publish_package_to_drive_api(
 ) -> dict:
     """Upload a batch package through the Drive API and return its folder metadata.
 
-    Reuses an existing batch folder with the same name when present so a job retry
-    (same stable slug) resumes the previous run's Drive/result files instead of
-    starting from a fresh empty folder. New files overwrite by name on upload.
+    Existing folders are read-only inputs to a continuation. Never re-upload their
+    input tree: Drive permits duplicate sibling folder and file names.
     """
     from app import google_drive
 
@@ -65,11 +64,49 @@ def publish_package_to_drive_api(
     root_id = google_drive.get_or_create_root_folder(service)
     existing_id = google_drive.find_subfolder(service, root_id, folder_name)
     if existing_id:
-        batch_folder = {"id": existing_id, "link": f"https://drive.google.com/drive/folders/{existing_id}"}
+        return {"id": existing_id, "link": f"https://drive.google.com/drive/folders/{existing_id}"}
     else:
         batch_folder = google_drive.create_folder(service, folder_name, parent_id=root_id)
     google_drive.upload_directory(service, batch_folder["id"], str(package_dir))
     return batch_folder
+
+
+def build_kaggle_continuation_notebook(
+    package_dir: Path, *, batch_id: str, folder_id: str, credentials: dict,
+) -> None:
+    """Render only local notebook code, pinned to the original Drive folder ID.
+
+    The remote manifests remain authoritative, even when local text/voice settings
+    have changed since export. No local voice or regenerated input is needed.
+    """
+    raw = _BATCH_NOTEBOOK_TEMPLATE.read_text(encoding="utf-8")
+    creds = json.dumps(json.dumps(credentials, separators=(",", ":")))[1:-1]
+    raw = raw.replace("__GDRIVE_CREDS__", json.dumps(creds)[1:-1])
+    raw = raw.replace("__BATCH_ID__", batch_id).replace("__DEFAULT_FOLDER_NAME__", batch_id)
+    raw = raw.replace("__HF_TOKEN__", settings.hf_token or "")
+    notebook = json.loads(raw)
+    cell1 = "".join(notebook["cells"][1]["source"])
+    cell1 = cell1.replace('MODE = "drive"', 'MODE = "kaggle_drive"')
+    cell1 = cell1.replace("IS_KAGGLE = False", "IS_KAGGLE = True")
+    notebook["cells"][1]["source"] = cell1.splitlines(keepends=True)
+    cell4 = "".join(notebook["cells"][4]["source"])
+    start = cell4.index('    # Locate the batch folder:')
+    end = cell4.index('    # Listing is separate from downloading.', start)
+    cell4 = cell4[:start] + f"    _batch_folder_id = {folder_id!r}\n\n" + cell4[end:]
+    marker = '        _bootstrap_manifest = json.load(fh)\n'
+    if marker not in cell4:
+        raise ValueError("Notebook template is missing its Drive manifest guard")
+    cell4 = cell4.replace(marker, marker +
+        f"    assert _bootstrap_manifest.get('batch_id') == {batch_id!r}, 'Drive batch identity mismatch'\n")
+    notebook["cells"][4]["source"] = cell4.splitlines(keepends=True)
+    notebook["cells"][9]["source"] = [
+        '# Results remain in the original Drive/result folder.\n',
+        'print("Kaggle CLI: results saved to Drive/result.")\n',
+    ]
+    package_dir.mkdir(parents=True, exist_ok=True)
+    (package_dir / "colab_kaggle_batch_tts_template.ipynb").write_text(
+        json.dumps(notebook, ensure_ascii=False, indent=1), encoding="utf-8",
+    )
 
 
 def _sanitize_name(name: str) -> str:

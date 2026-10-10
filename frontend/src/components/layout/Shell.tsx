@@ -54,6 +54,7 @@ const navSections: NavSection[] = [
     title: "PRODUCTION",
     items: [
       { to: "/queue", label: "Hàng đợi sản xuất", icon: ListOrdered },
+      { to: "/kaggle", label: "Gói Kaggle CLI", icon: Box },
       { to: "/media-browser", label: "Duyệt Media", icon: FolderSearch },
       { to: "/music", label: "Âm nhạc & Nhạc nền", icon: Music },
       { to: "/photos", label: "Hình ảnh & Background", icon: Image },
