@@ -1419,10 +1419,10 @@ def rebuild_patches(
         audio_dir = Path(settings.data_root) / "books" / str(book_id) / "audio"
         if audio_dir.exists():
             for f in audio_dir.glob("*"):
-                f.unlink(missing_ok=True)
-            # Remove empty dirs.
-            for chunk_dir in audio_dir.glob("*_chunks"):
-                cleanup_chunk_dir(str(chunk_dir))
+                if f.is_dir() and not f.is_symlink():
+                    cleanup_chunk_dir(str(f))
+                else:
+                    f.unlink(missing_ok=True)
         
         patterns = list_patches(conn, book_id)
         for p in patterns:
