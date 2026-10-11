@@ -107,6 +107,54 @@ def test_prompt_trims_long_chapter_lists():
     assert "Chương 100" not in prompt
 
 
+def test_prompt_grounds_sections_in_book_facts_and_excerpts():
+    prompt = ai_content.build_prompt(
+        "Đại Vệ Chí Dị",
+        ["Mở đầu"],
+        book_info={"author": "Kim Dung", "subjects": "kiếm hiệp", "description": "Giang hồ dậy sóng."},
+        excerpts=[("Mở đầu", "Đêm ấy trời mưa rất to.")],
+    )
+    for needle in ("Kim Dung", "kiếm hiệp", "Giang hồ dậy sóng.", "Đêm ấy trời mưa rất to."):
+        assert needle in prompt
+    for key in ('"hook"', '"overview"', '"highlights"', '"strengths"', '"audience"'):
+        assert key in prompt
+
+
+def test_pick_excerpts_skips_excluded_chapters_and_the_ending():
+    from types import SimpleNamespace
+
+    chapters = [
+        SimpleNamespace(title=f"Chương {i}", text=f"nội   dung\n{i} " + "x" * 5000, is_excluded=i == 0)
+        for i in range(10)
+    ]
+    excerpts = ai_content.pick_excerpts(chapters)
+    assert [title for title, _ in excerpts] == ["Chương 1", "Chương 4", "Chương 7"]
+    assert all(len(text) == ai_content.EXCERPT_CHARS for _, text in excerpts)
+    assert excerpts[0][1].startswith("nội dung 1 ")
+    assert ai_content.pick_excerpts([]) == []
+
+
+def test_parse_composes_description_from_sections():
+    payload = {
+        "hook": "Một vụ án {lạ} giữa kinh thành.",
+        "overview": "Câu chuyện theo chân <viên> bộ khoái trẻ.",
+        "highlights": ["- Đêm mưa ở miếu hoang", "2. Lá thư không người gửi"],
+        "strengths": "Nhịp truyện nhanh\nNhân vật có chiều sâu",
+        "audience": "Người thích trinh thám cổ trang.",
+        "tags": ["trinh thám"],
+    }
+    description = ai_content.parse_metadata(json.dumps(payload))["description"]
+    assert description == (
+        "Một vụ án (lạ) giữa kinh thành.\n\n"
+        "GIỚI THIỆU\nCâu chuyện theo chân viên bộ khoái trẻ.\n\n"
+        "PHÂN ĐOẠN ĐÁNG NGHE\n• Đêm mưa ở miếu hoang\n• Lá thư không người gửi\n\n"
+        "ĐIỂM NỔI BẬT\n• Nhịp truyện nhanh\n• Nhân vật có chiều sâu\n\n"
+        "PHÙ HỢP VỚI\nNgười thích trinh thám cổ trang."
+    )
+    # Mô tả còn đi qua str.format() lúc dựng video.
+    assert description.format() == description
+
+
 def test_parse_accepts_fenced_json_and_normalizes_tags():
     payload = json.dumps(
         {"description": "  Một cuốn sách nói hay  ", "tags": ["#sách nói", "Audiobook", "sách nói", "Tiểu thuyết"]}

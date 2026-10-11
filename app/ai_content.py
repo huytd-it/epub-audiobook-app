@@ -560,16 +560,50 @@ def complete(prompt: str, *, config: ProviderConfig | None = None) -> str:
 
 _SYSTEM_HINT = "Bạn là biên tập viên kênh sách nói tiếng Việt trên YouTube."
 
+# Trích đoạn lấy ở đầu, 1/3 và 2/3 sách: đủ để model nói được "phân đoạn hay"
+# có thật mà không đụng tới đoạn kết (tránh spoil).
+EXCERPT_COUNT = 3
+EXCERPT_CHARS = 1200
+SYNOPSIS_CHARS = 1200
 
-def build_prompt(book_title: str, chapter_titles: list[str], config: dict | None = None) -> str:
+
+def pick_excerpts(chapters, *, count: int = EXCERPT_COUNT, chars: int = EXCERPT_CHARS) -> list[tuple[str, str]]:
+    """(tên chương, trích đoạn) rải đều phần đầu và giữa sách, bỏ chương bị loại."""
+    usable = [
+        chapter for chapter in chapters
+        if not getattr(chapter, "is_excluded", False) and (chapter.text or "").strip()
+    ]
+    if not usable or count <= 0:
+        return []
+    positions = sorted({(len(usable) * step) // count for step in range(count)})
+    excerpts: list[tuple[str, str]] = []
+    for position in positions:
+        chapter = usable[position]
+        text = re.sub(r"\s+", " ", chapter.text).strip()[:chars]
+        excerpts.append(((chapter.title or "").strip(), text))
+    return excerpts
+
+
+def build_prompt(
+    book_title: str,
+    chapter_titles: list[str],
+    config: dict | None = None,
+    *,
+    book_info: dict | None = None,
+    excerpts: list[tuple[str, str]] | None = None,
+) -> str:
     """Prompt sinh metadata cho MỘT sách, không phụ thuộc tên patch/tập.
 
     Mô tả của mỗi video được ghép lại: phần do app tự dựng (tiêu đề, danh sách
     chương, link playlist, timeline) nằm ngoài `description`, còn `description`
     chính là phần "về cuốn sách" mà model viết ra. Vì vậy prompt không nhắc tập
     số, chương hiện tại hay template.
+
+    Model trả về từng phần riêng (hook, tổng quan, phân đoạn hay, ưu điểm, đối
+    tượng nghe); `parse_metadata` mới ghép thành mô tả để bố cục luôn đồng nhất.
     """
     config = config or {}
+    book_info = book_info or {}
     titles = [title.strip() for title in chapter_titles if title and title.strip()]
     if len(titles) > MAX_PROMPT_CHAPTERS:
         head = titles[: MAX_PROMPT_CHAPTERS // 2]
@@ -577,9 +611,15 @@ def build_prompt(book_title: str, chapter_titles: list[str], config: dict | None
         titles = [*head, "…", *tail]
     existing = str(config.get("genre_tags") or "").strip()
     extra = config.get("description_extra") if isinstance(config.get("description_extra"), dict) else {}
+    subjects = book_info.get("subjects")
+    if isinstance(subjects, (list, tuple)):
+        subjects = ", ".join(str(item).strip() for item in subjects if str(item).strip())
     known = "\n".join(
         f"- {label}: {value}"
         for label, value in (
+            ("tác giả", str(book_info.get("author") or "").strip()),
+            ("thể loại gốc của sách", str(subjects or "").strip()),
+            ("tóm tắt gốc", str(book_info.get("description") or "").strip()[:SYNOPSIS_CHARS]),
             ("tên truyện trong khối bản quyền", extra.get("story_title")),
             ("nguồn truyện", extra.get("story_source_name")),
         )
@@ -590,6 +630,16 @@ def build_prompt(book_title: str, chapter_titles: list[str], config: dict | None
     chapter_block = "Tên chương (đầu và cuối):\n" + "\n".join(f"- {title}" for title in titles) if titles else ""
     known_block = f"Thông tin đã biết (đừng bịa thêm, nếu có thì ưu tiên số liệu này):\n{known}" if known else ""
     genre_block = f"Thể loại đang dùng cho sách (có thể giữ lại hoặc bổ sung, không cần trùng hết): {existing}" if existing else ""
+    excerpt_block = ""
+    if excerpts:
+        excerpt_block = "Trích đoạn thật từ sách (đầu và giữa sách, dùng làm căn cứ):\n" + "\n\n".join(
+            f"[{title or 'Trích đoạn'}]\n{text}" for title, text in excerpts if text
+        )
+    grounding = (
+        "chỉ lấy từ trích đoạn, tóm tắt gốc và tên chương ở trên"
+        if excerpts or book_info.get("description")
+        else "chỉ suy ra từ tên sách và tên chương ở trên, viết ở mức khái quát"
+    )
     return f"""{_SYSTEM_HINT}
 
 Viết metadata YouTube cho cuốn sách nói dưới đây, bằng tiếng Việt.
@@ -599,12 +649,25 @@ Số chương: {len(chapter_titles)}
 {chapter_block}
 {known_block}
 {genre_block}
+{excerpt_block}
 
 Trả về DUY NHẤT một JSON object, không markdown, không giải thích ngoài JSON:
 {{
-  "description": "3-6 câu giới thiệu cuốn sách: nội dung chính, giọng đọc sách nói, vì sao đáng nghe. Không nhắc tập số/chương hiện tại, không chèn link, không chèn hashtag, không viết tiêu đề video. Dưới {DESCRIPTION_LIMIT} ký tự.",
+  "hook": "1-2 câu mở đầu gây tò mò, có tên sách và thể loại (đây là phần hiện ra trước nút 'Xem thêm').",
+  "overview": "Giới thiệu tổng quan 3-5 câu: bối cảnh, nhân vật chính, xung đột hoặc chủ đề trung tâm.",
+  "highlights": ["3-5 phân đoạn/tình tiết hay, mỗi mục 1 câu cụ thể", ...],
+  "strengths": ["3-4 ưu điểm của cuốn sách, mỗi mục 1 câu (văn phong, nhân vật, nhịp truyện, thế giới, thông điệp...)", ...],
+  "audience": "1 câu: cuốn sách hợp với người nghe nào.",
   "tags": ["tên sách", "sách nói", "audiobook", "thể loại", ...]
 }}
+
+Quy tắc nội dung:
+- Căn cứ: {grounding}. Không bịa tên nhân vật, địa danh, sự kiện, giải thưởng hay số liệu không có trong dữ liệu.
+- highlights phải là tình tiết có thật trong dữ liệu; gợi mở để người nghe tò mò, không tiết lộ kết cục hay nút thắt lớn.
+- strengths nêu điểm mạnh cụ thể của riêng cuốn này, tránh khen chung chung kiểu "hay, hấp dẫn, đáng nghe".
+- Văn phong tự nhiên, không giật tít, không viết hoa toàn bộ, không emoji.
+- Không nhắc tập số/chương hiện tại, không chèn link, không chèn hashtag, không viết tiêu đề video, không dùng ngoặc nhọn hay dấu lớn hơn/nhỏ hơn.
+- Tổng độ dài các phần dưới {DESCRIPTION_LIMIT} ký tự (khoảng 1200-1800 ký tự là vừa).
 
 tags: tối đa {MAX_TAGS} thẻ, viết thường (viết thường và số), mỗi thẻ một cụm từ ngắn, không lặp lại, không dùng ký tự đặc biệt. Ưu tiên thể loại và từ khóa tìm kiếm mà người nghe tiếng Việt hay dùng."""
 
@@ -654,12 +717,62 @@ def _normalize_tags(value: Any) -> list[str]:
     return tags[:MAX_TAGS]
 
 
+_BULLET_RE = re.compile(r"^\s*(?:[-•*–—]+|\d+[.)])\s*")
+
+
+def _section_lines(value: Any) -> list[str]:
+    """Một phần dạng danh sách của model (list hoặc chuỗi nhiều dòng) -> các dòng sạch."""
+    if isinstance(value, str):
+        parts: list[Any] = value.splitlines()
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        parts = []
+    lines = [_BULLET_RE.sub("", re.sub(r"\s+", " ", str(part or ""))).strip() for part in parts]
+    return [line for line in lines if line]
+
+
+def _section_text(value: Any) -> str:
+    return " ".join(_section_lines(value))
+
+
+def _clean_description(text: str) -> str:
+    """Mô tả còn đi qua str.format() khi dựng video và YouTube cấm < >, nên bỏ
+    hẳn các ký tự đó thay vì để một dấu ngoặc lạc làm hỏng cả lượt upload."""
+    text = text.replace("{", "(").replace("}", ")")
+    text = re.sub(r"[<>]", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def compose_description(payload: dict[str, Any]) -> str:
+    """Ghép các phần model trả về thành mô tả có bố cục cố định."""
+    hook = _section_text(payload.get("hook"))
+    overview = _section_text(payload.get("overview"))
+    highlights = _section_lines(payload.get("highlights"))
+    strengths = _section_lines(payload.get("strengths"))
+    audience = _section_text(payload.get("audience"))
+    blocks: list[str] = []
+    if hook:
+        blocks.append(hook)
+    if overview:
+        blocks.append(f"GIỚI THIỆU\n{overview}")
+    if highlights:
+        blocks.append("PHÂN ĐOẠN ĐÁNG NGHE\n" + "\n".join(f"• {line}" for line in highlights))
+    if strengths:
+        blocks.append("ĐIỂM NỔI BẬT\n" + "\n".join(f"• {line}" for line in strengths))
+    if audience:
+        blocks.append(f"PHÙ HỢP VỚI\n{audience}")
+    return "\n\n".join(blocks)
+
+
 def parse_metadata(text: str) -> dict[str, Any]:
     """JSON của model -> {"description", "genre_tags"} sạch, dùng được để lưu."""
     payload = _extract_json(text)
     if payload is None:
         raise GenerationError(f"Model không trả về JSON hợp lệ: {(text or '')[:200]}")
-    description = str(payload.get("description") or payload.get("mo_ta") or "").strip()
+    # Model cũ/yếu đôi khi vẫn trả một chuỗi `description` liền thay vì từng phần.
+    description = compose_description(payload) or str(payload.get("description") or payload.get("mo_ta") or "")
+    description = _clean_description(description)
     tags = _normalize_tags(payload.get("tags", payload.get("genre_tags")))
     if not description and not tags:
         raise GenerationError("Model không sinh ra mô tả lẫn thẻ nào.")
@@ -688,7 +801,13 @@ def generate_book_metadata(conn, book_id: int, *, config_provider=None) -> dict[
     chapters = repository.list_chapters(conn, book_id)
     config = get_effective_youtube_config(conn, book)
     provider = config_provider or resolve_provider()
-    prompt = build_prompt(book.title, [chapter.title for chapter in chapters], config)
+    prompt = build_prompt(
+        book.title,
+        [chapter.title for chapter in chapters],
+        config,
+        book_info={"author": book.author, "subjects": book.subjects, "description": book.description},
+        excerpts=pick_excerpts(chapters),
+    )
     raw = complete(prompt, config=provider)
     result = parse_metadata(raw)
     return {
