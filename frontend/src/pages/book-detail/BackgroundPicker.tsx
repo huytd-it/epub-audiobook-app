@@ -117,7 +117,7 @@ function BackgroundLibraryDialog({
   const [folder, setFolder] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
-  const [data, setData] = useState<LibraryPage>();
+  const [data, setData] = useState<LibraryPage & { folder: string }>();
   const [error, setError] = useState("");
 
   // Debounce nhẹ để gõ tìm kiếm không gửi request theo từng ký tự.
@@ -133,7 +133,7 @@ function BackgroundLibraryDialog({
       api<LibraryPage>(`/photos/list?${params}`)
         .then((result) => {
           if (cancelled) return;
-          setData(result);
+          setData({ ...result, folder });
           setError("");
         })
         .catch((err) => !cancelled && setError(err instanceof Error ? err.message : String(err)));
@@ -150,7 +150,9 @@ function BackgroundLibraryDialog({
     { open: "", name: ROOT_FOLDER, count: data?.root_count ?? 0 },
     ...(data?.folders || []).map((item) => ({ open: item.name, name: item.name, count: item.count })),
   ];
-  const items = data?.items || [];
+  // Trang vừa tải thuộc thư mục nào thì chỉ hiện cho thư mục đó: lúc đổi thư mục,
+  // file của thư mục cũ không được ghép với URL của thư mục mới.
+  const items = data?.folder === folder ? data.items : [];
   const pageCount = Math.max(1, Math.ceil((data?.total ?? 0) / PAGE_SIZE));
   const wholeFolder = selectedFolders.includes(folder || ROOT_FOLDER);
   const pageSelected = items.length > 0 && items.every((item) => selectedPaths.has(item.path));
@@ -270,7 +272,7 @@ function BackgroundLibraryDialog({
             <div className="min-h-0 flex-1 overflow-auto">
               {error ? (
                 <div className="text-xs text-red-700">{error}</div>
-              ) : !data ? (
+              ) : data?.folder !== folder ? (
                 <div className="text-xs text-muted-foreground">Đang tải thư viện...</div>
               ) : !items.length ? (
                 <div className="text-xs text-muted-foreground">

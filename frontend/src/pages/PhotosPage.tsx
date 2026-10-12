@@ -68,7 +68,10 @@ export function PhotosPage() {
     };
   }, [folder, search, page, reloadKey]);
 
+  // Xóa file đang hiện ngay khi đổi thư mục: file của thư mục cũ không được
+  // ghép với URL của thư mục mới trong lúc chờ trang mới tải về.
   const openFolder = (name: string) => {
+    if (name !== folder) setItems([]);
     setFolder(name);
     setPage(0);
   };
