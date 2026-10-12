@@ -84,11 +84,11 @@ def test_folder_routes_create_upload_move_delete(client, tmp_path):
     assert not root_file.exists()
     assert client.get("/photos/file/root.png", params={"folder": "Rain"}).status_code == 200
 
-    listing = client.get("/video/backgrounds").json()
-    assert [(f["name"], [x["name"] for x in f["files"]]) for f in listing["folders"]] == [
-        ("Rain", ["in.png", "root.png"])]
-    media = client.get("/api/ui/media").json()
-    assert [f["name"] for f in media["photo_folders"]] == ["Rain"]
+    page = client.get("/photos/list", params={"folder": "Rain", "q": "ROOT", "limit": 1}).json()
+    assert [(item["name"], item["path"]) for item in page["items"]] == [
+        ("root.png", str((tmp_path / "backgrounds" / "Rain" / "root.png").resolve()))]
+    assert (page["total"], page["root_count"], page["folders"]) == (1, 0, [{"name": "Rain", "count": 2}])
+    assert client.get("/photos/list", params={"folder": "Rain", "offset": 1, "limit": 1}).json()["items"][0]["name"] == "root.png"
 
     assert client.post("/photos/folders/delete", data={"name": "Rain"}).status_code == 200
     assert not (tmp_path / "backgrounds" / "Rain").exists()
@@ -116,6 +116,31 @@ def test_deleting_folder_drops_it_from_book_configs(client, tmp_path):
 
 def test_video_backgrounds_play_their_full_length():
     plan = video_gen.plan_background_segments(
-        ["clip.mp4", "a.jpg"], 100, 15, clip_durations={"clip.mp4": 40.0})
+        ["clip.mp4", "a.jpg"], 100, 15, clip_duration={"clip.mp4": 40.0}.get)
 
     assert plan == [("clip.mp4", 40.0), ("a.jpg", 15), ("clip.mp4", 40.0), ("a.jpg", 5)]
+
+
+def test_only_clips_that_are_used_get_probed(monkeypatch):
+    probed = []
+    monkeypatch.setattr(video_gen, "_probe_duration", lambda path: probed.append(path) or 30.0)
+    clips = [f"clip{i}.mp4" for i in range(1000)]
+
+    plan = video_gen.plan_background_segments(
+        clips, 70, 15, clip_duration=video_gen._video_background_duration_probe())
+
+    assert [length for _, length in plan] == [30.0, 30.0, 10.0]
+    assert probed == clips[:3]
+
+
+def test_root_folder_selects_the_library_root(client, tmp_path):
+    root = tmp_path / "backgrounds"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "top.jpg").write_bytes(b"x")
+    _folder(tmp_path, "rain", "a.jpg")
+
+    assert media_library.expand_backgrounds({"background_folders": [media_library.ROOT_FOLDER]}) == [
+        str(root / "top.jpg")]
+    assert client.post("/photos/folders/create", data={"name": "__root__"}).status_code == 400
+    assert client.post("/photos/folders/delete", data={"name": "__root__"}).status_code == 404
+    assert (root / "top.jpg").exists()

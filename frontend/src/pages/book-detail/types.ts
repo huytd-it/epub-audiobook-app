@@ -146,7 +146,7 @@ export type GameplaySelectionConfig = {
 export type VideoConfig = {
   background_type: "media" | "gameplay";
   backgrounds: string[];
-  /** Tên sub folder trong thư viện background; dùng toàn bộ ảnh/video bên trong. */
+  /** Tên sub folder trong thư viện background ("__root__" = gốc thư viện); dùng toàn bộ ảnh/video bên trong. */
   background_folders: string[];
   background_mode: "sequential" | "random";
   gameplay: GameplaySelectionConfig;
@@ -658,7 +658,7 @@ export type AudioSettings = {
 };
 
 export type BackgroundItem = { name: string; path: string; is_video: boolean; is_default?: boolean };
-export type BackgroundFolder = { name: string; files: BackgroundItem[] };
+export type BackgroundFolder = { name: string; count: number };
 export type AudioSettingsResponse = AudioSettings;
 export type MusicSettings = { music_id: number | null; music_volume: number };
 export type MusicTrack = { id: number; name: string; duration_sec: number | null };

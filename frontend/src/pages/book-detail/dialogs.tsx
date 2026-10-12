@@ -20,8 +20,6 @@ import {
 } from "@/components/ui/dialog";
 import {
   AudioSettings,
-  BackgroundFolder,
-  BackgroundItem,
   ConfigTab,
   MusicMixState,
   NormalizationSettings,
@@ -689,8 +687,6 @@ export function ConfigDialog({
   onSaved: () => Promise<void>;
 }) {
   const [videoConfig, setVideoConfig] = useState<VideoConfig>();
-  const [backgrounds, setBackgrounds] = useState<BackgroundItem[]>([]);
-  const [backgroundFolders, setBackgroundFolders] = useState<BackgroundFolder[]>([]);
   const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
   const [music, setMusic] = useState<MusicMixState>();
   const [ytSettings, setYtSettings] = useState<YouTubeSettings>();
@@ -708,14 +704,11 @@ export function ConfigDialog({
     if (tab === "video" && !videoConfig) {
       Promise.all([
         api<VideoConfig>(`/books/${bookId}/video-config`),
-        api<{ backgrounds: BackgroundItem[]; folders?: BackgroundFolder[] }>("/video/backgrounds"),
         api<MusicMixState>(`/books/${bookId}/music`),
         api<{ voices: VoiceItem[] }>("/api/ui/media"),
       ])
-        .then(([config, media, musicSettings, voiceMedia]) => {
+        .then(([config, musicSettings, voiceMedia]) => {
           setVideoConfig(config);
-          setBackgrounds(media.backgrounds || []);
-          setBackgroundFolders(media.folders || []);
           setMusic(musicSettings);
           setIntroOutroVoices(voiceMedia.voices || []);
         })
@@ -1230,8 +1223,6 @@ export function ConfigDialog({
 
               {videoConfig.background_type === "media" && (
                 <BackgroundPicker
-                  items={backgrounds}
-                  folders={backgroundFolders}
                   value={videoConfig}
                   onChange={(patch) => setVideoConfig({ ...videoConfig, ...patch })}
                 />

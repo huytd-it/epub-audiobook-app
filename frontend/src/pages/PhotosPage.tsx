@@ -7,11 +7,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
-type PhotoFolder = { name: string; photos: PhotoItem[] };
+type PhotoFolder = { name: string; count: number };
+type PhotoPage = { items: PhotoItem[]; total: number; root_count: number; folders: PhotoFolder[] };
+
+/** Thư viện có thể tới hàng nghìn file nên tải theo trang từ server. */
+const PAGE_SIZE = 48;
 
 export function PhotosPage() {
-  const [rootItems, setRootItems] = useState<PhotoItem[]>([]);
+  const [items, setItems] = useState<PhotoItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [rootCount, setRootCount] = useState(0);
   const [folders, setFolders] = useState<PhotoFolder[]>([]);
+  const [page, setPage] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
   // "" là thư mục gốc của thư viện; còn lại là tên sub folder đang mở.
   const [folder, setFolder] = useState("");
   const [loading, setLoading] = useState(true);
@@ -25,23 +33,48 @@ export function PhotosPage() {
   const [movingItem, setMovingItem] = useState<PhotoItem | null>(null);
   const [moveTarget, setMoveTarget] = useState("");
 
-  const loadData = () => {
+  const loadData = () => setReloadKey((key) => key + 1);
+
+  // Debounce nhẹ để gõ tìm kiếm không gửi request theo từng ký tự.
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    api<{ photos: PhotoItem[]; photo_folders?: PhotoFolder[] }>("/api/ui/media")
-      .then((res) => {
-        setRootItems(res.photos || []);
-        setFolders(res.photo_folders || []);
-      })
-      .catch((err) => console.error("Lỗi tải hình ảnh:", err))
-      .finally(() => setLoading(false));
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams({
+        folder,
+        q: search,
+        offset: String(page * PAGE_SIZE),
+        limit: String(PAGE_SIZE),
+      });
+      api<PhotoPage>(`/photos/list?${params}`)
+        .then((res) => {
+          if (cancelled) return;
+          // Xóa/chuyển hết file của trang cuối thì lùi về trang còn dữ liệu.
+          if (!res.items.length && res.total > 0 && page > 0) {
+            setPage(Math.max(0, Math.ceil(res.total / PAGE_SIZE) - 1));
+            return;
+          }
+          setItems(res.items || []);
+          setTotal(res.total);
+          setRootCount(res.root_count);
+          setFolders(res.folders || []);
+        })
+        .catch((err) => console.error("Lỗi tải hình ảnh:", err))
+        .finally(() => !cancelled && setLoading(false));
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [folder, search, page, reloadKey]);
+
+  const openFolder = (name: string) => {
+    setFolder(name);
+    setPage(0);
   };
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
   const currentFolder = folders.find((item) => item.name === folder);
-  const items = folder ? currentFolder?.photos || [] : rootItems;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const fileUrl = (name: string) =>
     `/photos/file/${encodeURIComponent(name)}${folder ? `?folder=${encodeURIComponent(folder)}` : ""}`;
 
@@ -108,7 +141,7 @@ export function PhotosPage() {
       const created = await postForm<{ name: string }>("/photos/folders/create", form);
       setCreatingFolder(false);
       setFolderName("");
-      setFolder(created.name);
+      openFolder(created.name);
       loadData();
     } catch (err: any) {
       alert(`Tạo thư mục thất bại: ${err.message}`);
@@ -119,7 +152,7 @@ export function PhotosPage() {
     if (!currentFolder) return;
     if (
       !confirm(
-        `Xóa thư mục "${currentFolder.name}" cùng ${currentFolder.photos.length} file bên trong? Các sách đang chọn thư mục này sẽ bỏ chọn.`
+        `Xóa thư mục "${currentFolder.name}" cùng ${currentFolder.count} file bên trong? Các sách đang chọn thư mục này sẽ bỏ chọn.`
       )
     )
       return;
@@ -127,7 +160,7 @@ export function PhotosPage() {
     form.append("name", currentFolder.name);
     try {
       await postForm("/photos/folders/delete", form);
-      setFolder("");
+      openFolder("");
       loadData();
     } catch (err: any) {
       alert(`Xóa thư mục thất bại: ${err.message}`);
@@ -154,7 +187,6 @@ export function PhotosPage() {
     }
   };
 
-  const filteredItems = items.filter((i) => i.name.toLowerCase().includes(search.toLowerCase()));
   const moveTargets = ["", ...folders.map((item) => item.name)].filter((name) => name !== folder);
 
   return (
@@ -189,13 +221,13 @@ export function PhotosPage() {
       />
 
       <div className="flex flex-wrap items-center gap-2">
-        {[{ name: "", label: "Thư mục gốc", count: rootItems.length }, ...folders.map((item) => ({ name: item.name, label: item.name, count: item.photos.length }))].map(
+        {[{ name: "", label: "Thư mục gốc", count: rootCount }, ...folders.map((item) => ({ name: item.name, label: item.name, count: item.count }))].map(
           (item) => (
             <Button
               key={item.name}
               variant={folder === item.name ? "default" : "outline"}
               size="sm"
-              onClick={() => setFolder(item.name)}
+              onClick={() => openFolder(item.name)}
             >
               <Folder className="h-3.5 w-3.5" />
               {item.label}
@@ -220,25 +252,52 @@ export function PhotosPage() {
         <Input
           placeholder="Tìm kiếm tư liệu theo tên..."
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(0);
+          }}
           className="max-w-md"
         />
-        <span className="text-xs font-mono text-muted-foreground">Tổng số: {filteredItems.length} tư liệu</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-mono text-muted-foreground">Tổng số: {total} tư liệu</span>
+          {pageCount > 1 && (
+            <>
+              <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(page - 1)}>
+                Trước
+              </Button>
+              <span className="text-xs font-mono text-muted-foreground">
+                {page + 1}/{pageCount}
+              </span>
+              <Button variant="outline" size="sm" disabled={page + 1 >= pageCount} onClick={() => setPage(page + 1)}>
+                Sau
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {loading ? (
         <LoadingState text="Đang mở kho hình ảnh..." />
-      ) : filteredItems.length === 0 ? (
+      ) : items.length === 0 ? (
         <EmptyState text={folder ? "Thư mục này chưa có hình ảnh hoặc video." : "Chưa có hình ảnh hoặc video background nào."} />
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {filteredItems.map((item) => {
+          {items.map((item) => {
             const isVideo = item.is_video;
             return (
               <Card key={item.name} className="border-border overflow-hidden flex flex-col group hover:border-primary/40 transition-colors">
                 <div className="aspect-video bg-zinc-950 relative overflow-hidden flex items-center justify-center border-b border-border">
                   {isVideo ? (
-                    <video src={fileUrl(item.name)} className="w-full h-full object-cover" muted loop autoPlay />
+                    // Chỉ phát khi rê chuột: cả trang video tự phát cùng lúc sẽ làm treo trình duyệt.
+                    <video
+                      src={fileUrl(item.name)}
+                      className="w-full h-full object-cover"
+                      muted
+                      loop
+                      preload="metadata"
+                      onMouseEnter={(event) => void event.currentTarget.play().catch(() => undefined)}
+                      onMouseLeave={(event) => event.currentTarget.pause()}
+                    />
                   ) : (
                     <img src={fileUrl(item.name)} alt={item.name} className="w-full h-full object-cover" loading="lazy" />
                   )}

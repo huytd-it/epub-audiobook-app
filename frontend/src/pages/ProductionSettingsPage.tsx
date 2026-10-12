@@ -8,8 +8,6 @@ import { VoicePreviewButton } from "@/components/common/VoicePreviewButton";
 import { WaveformPreview } from "@/components/common/WaveformPreview";
 import { Combobox } from "@/components/ui/combobox";
 import {
-  BackgroundFolder,
-  BackgroundItem,
   BrandingConfig,
   NormalizationSettings,
   OnlineVoice,
@@ -397,8 +395,6 @@ export function ProductionSettingsPage() {
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState<ProductionGroup>();
-  const [backgrounds, setBackgrounds] = useState<BackgroundItem[]>([]);
-  const [backgroundFolders, setBackgroundFolders] = useState<BackgroundFolder[]>([]);
   const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
   const [playlists, setPlaylists] = useState<{ id: string; title: string }[]>([]);
   const [logoBrowserOpen, setLogoBrowserOpen] = useState(false);
@@ -413,12 +409,6 @@ export function ProductionSettingsPage() {
         setUpdatedAt(value.updated_at);
       })
       .catch((error) => setMessage(errorText(error)));
-    api<{ backgrounds: BackgroundItem[]; folders?: BackgroundFolder[] }>("/video/backgrounds")
-      .then((res) => {
-        setBackgrounds(res.backgrounds || []);
-        setBackgroundFolders(res.folders || []);
-      })
-      .catch(() => {});
     api<{ voices: VoiceItem[] }>("/api/ui/media")
       .then((res) => setIntroOutroVoices(res.voices || []))
       .catch(() => {});
@@ -731,7 +721,7 @@ export function ProductionSettingsPage() {
               )}
 
               {video.background_type === "media" && (
-                <BackgroundPicker items={backgrounds} folders={backgroundFolders} value={video} onChange={setVideo} />
+                <BackgroundPicker value={video} onChange={setVideo} />
               )}
 
               <div className="grid grid-cols-1 gap-4 rounded-md border border-border p-3 sm:grid-cols-2">

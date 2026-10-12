@@ -69,6 +69,31 @@ def _clean_new_name(new_name: str, suffix: str) -> str:
 
 
 
+@router.get("/photos/list")
+def list_photos(
+    folder: str = Query(default=""),
+    q: str = Query(default=""),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=48, ge=1, le=200),
+):
+    """One page of a folder's files (the library root when folder is empty),
+    plus the folder list with counts for the manager's folder bar."""
+    root = _backgrounds_dir()
+    needle = q.strip().lower()
+    files = sorted(
+        (p for p in _folder_dir(folder).iterdir() if p.is_file() and needle in p.name.lower()),
+        key=lambda p: p.name.lower())
+    return {
+        "items": [{"name": p.name, "path": str(p.resolve()), "size": p.stat().st_size,
+                   "is_video": p.suffix.lower() in ALLOWED_VIDEO_EXTENSIONS}
+                  for p in files[offset:offset + limit]],
+        "total": len(files),
+        "root_count": sum(1 for p in root.iterdir() if p.is_file()),
+        "folders": [{"name": name, "count": len(media_library.folder_files(name))}
+                    for name in media_library.list_folders()],
+    }
+
+
 @router.get("/photos/file/{name}")
 def serve_photo(name: str, folder: str = Query(default="")):
     p = _safe_photo_path(name, folder)

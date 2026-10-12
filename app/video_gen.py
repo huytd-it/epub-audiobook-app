@@ -1016,7 +1016,7 @@ def generate_background_sequence(
     valid = [p for p in backgrounds if Path(p).is_file()]
     plan = plan_background_segments(
         valid, duration, image_duration, mode, seed=seed, start_index=start_index,
-        clip_durations=_video_background_durations(valid))
+        clip_duration=_video_background_duration_probe())
     if not plan:
         raise ValueError("No valid backgrounds for sequence")
     width, height = resolution
@@ -1164,26 +1164,34 @@ def resolve_configured_patch_image(patch, config: dict | None, fallback: str) ->
     return fallback if fallback and Path(fallback).exists() else None
 
 
-def _video_background_durations(backgrounds: list[str]) -> dict[str, float]:
-    """Real length of every video background, so a clip plays through instead
-    of being cut at the still-image duration. Unreadable clips are left out and
-    fall back to that duration."""
-    durations: dict[str, float] = {}
-    for path in backgrounds:
-        if not is_video_background(path) or path in durations:
-            continue
-        try:
-            durations[path] = _probe_duration(path)
-        except (OSError, ValueError, subprocess.SubprocessError):
-            logger.warning("could not probe background video duration: %s", path)
-    return durations
+def _video_background_duration_probe() -> Callable[[str], float | None]:
+    """Lookup for the real length of a video background, so a clip plays
+    through instead of being cut at the still-image duration.
+
+    Probes lazily and caches: a folder may hold thousands of clips while one
+    render only reaches the first few. None (stills, unreadable clips) means
+    "use the still-image duration"."""
+    cache: dict[str, float | None] = {}
+
+    def lookup(path: str) -> float | None:
+        if not is_video_background(path):
+            return None
+        if path not in cache:
+            try:
+                cache[path] = _probe_duration(path)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                logger.warning("could not probe background video duration: %s", path)
+                cache[path] = None
+        return cache[path]
+
+    return lookup
 
 
-def plan_background_segments(backgrounds: list[str], duration: float, image_duration: float, mode: str = "sequential", *, seed: str = "", start_index: int = 0, clip_durations: dict[str, float] | None = None) -> list[tuple[str, float]]:
+def plan_background_segments(backgrounds: list[str], duration: float, image_duration: float, mode: str = "sequential", *, seed: str = "", start_index: int = 0, clip_duration: Callable[[str], float | None] | None = None) -> list[tuple[str, float]]:
     """Return timed background segments whose total duration equals duration.
 
-    A background listed in clip_durations (a video) lasts its own length; every
-    other one lasts image_duration."""
+    A background clip_duration returns a length for (a video) lasts that long;
+    every other one lasts image_duration."""
     if duration <= 0 or image_duration <= 0 or not backgrounds:
         return []
     ordered = list(backgrounds)
@@ -1194,7 +1202,8 @@ def plan_background_segments(backgrounds: list[str], duration: float, image_dura
     index = start_index
     while remaining > 0:
         background = ordered[index % len(ordered)]
-        length = min(float((clip_durations or {}).get(background) or image_duration), remaining)
+        own = clip_duration(background) if clip_duration else None
+        length = min(float(own or image_duration), remaining)
         result.append((background, length))
         remaining -= length
         index += 1

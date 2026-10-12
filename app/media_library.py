@@ -22,7 +22,10 @@ from app.config import settings
 MEDIA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".webm", ".mov"}
 # Subdirectories of data/backgrounds owned by the app itself (material_cache,
 # background_gen) - never offered as, or usable as, a user folder.
-RESERVED_FOLDERS = {"cache", "patch_bg"}
+# In a video config's background_folders, this name stands for the files
+# directly in data/backgrounds (the library root) rather than a sub folder.
+ROOT_FOLDER = "__root__"
+RESERVED_FOLDERS = {"cache", "patch_bg", ROOT_FOLDER}
 
 
 def backgrounds_root() -> Path:
@@ -56,9 +59,10 @@ def list_folders() -> list[str]:
 
 
 def folder_files(name: str) -> list[Path]:
-    """Media files directly inside a user folder, in name order."""
-    path = folder_path(name)
-    if path is None:
+    """Media files directly inside a user folder (or the library root for
+    ROOT_FOLDER), in name order."""
+    path = backgrounds_root() if name == ROOT_FOLDER else folder_path(name)
+    if path is None or not path.is_dir():
         return []
     return sorted(
         (p for p in path.iterdir() if p.is_file() and p.suffix.lower() in MEDIA_EXTENSIONS),
