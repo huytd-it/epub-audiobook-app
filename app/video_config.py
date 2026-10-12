@@ -10,6 +10,8 @@ from app import repository
 VIDEO_DEFAULTS = {
     "background_type": "media",
     "backgrounds": [],
+    # Sub folders of the media library; every image/video inside is used.
+    "background_folders": [],
     "background_mode": "sequential",
     "gameplay": {
         "selection_mode": "single",
@@ -112,6 +114,12 @@ def validate_video_config(config: dict | None) -> dict:
     if not isinstance(result["backgrounds"], list) or not all(isinstance(p, str) and p.strip() for p in result["backgrounds"]):
         raise ValueError("backgrounds must be a list of paths")
     result["backgrounds"] = list(dict.fromkeys(p.strip() for p in result["backgrounds"]))
+    folders = result["background_folders"]
+    if not isinstance(folders, list) or not all(
+        isinstance(name, str) and name.strip() and name == Path(name).name for name in folders
+    ):
+        raise ValueError("background folders must be a list of folder names")
+    result["background_folders"] = list(dict.fromkeys(folders))
     if result["background_mode"] not in {"sequential", "random"}:
         raise ValueError("invalid background mode")
     if not isinstance(result["image_duration_seconds"], (int, float)) or not 1 <= result["image_duration_seconds"] <= 600:

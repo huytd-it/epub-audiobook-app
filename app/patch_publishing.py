@@ -8,7 +8,7 @@ import soundfile as sf
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app import image_overlay, repository, video_gen, youtube
+from app import image_overlay, media_library, repository, video_gen, youtube
 from app.config import settings
 from app.image_overlay import ensure_patch_overlay
 from app.jobqueue import store
@@ -215,7 +215,7 @@ def _resolve_sequence_inputs(book, patch, config: dict, branding: dict | None = 
         return False, [], None, None, "none"
     fallback = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
     raw_bg = video_gen.resolve_configured_patch_image(patch, config, fallback or "")
-    backgrounds = [p for p in config.get("backgrounds", []) if isinstance(p, str)]
+    backgrounds = media_library.expand_backgrounds(config)
     sequence = len(backgrounds) > 1 and not (patch.image_path and Path(patch.image_path).exists())
     image = raw_bg
     if not sequence and raw_bg and not video_gen.is_video_background(raw_bg):

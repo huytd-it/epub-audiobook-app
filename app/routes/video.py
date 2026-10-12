@@ -695,7 +695,14 @@ def list_backgrounds(request: Request):
             items.append({"name": f.name, "path": str(safe_path), "is_default": False,
                           "is_video": video_gen.is_video_background(safe_path)})
 
-    return JSONResponse({"backgrounds": items})
+    folders = [
+        {"name": name,
+         "files": [{"name": f.name, "path": str(f.resolve()), "is_default": False,
+                    "is_video": video_gen.is_video_background(f)}
+                   for f in media_library.folder_files(name)]}
+        for name in media_library.list_folders()
+    ]
+    return JSONResponse({"backgrounds": items, "folders": folders})
 
 
 def _safe_background_path(path: str) -> Path | None:

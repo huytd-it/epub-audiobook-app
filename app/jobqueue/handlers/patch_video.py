@@ -9,7 +9,7 @@ import tempfile
 
 import soundfile as sf
 
-from app import gameplay_renderer, image_overlay, repository, video_gen
+from app import gameplay_renderer, image_overlay, media_library, repository, video_gen
 from app.gameplay_repository import apply_replay_stats, consume_reserved, load_replay
 from app.config import settings
 from app.image_overlay import render_branding_overlay
@@ -420,7 +420,7 @@ def handle(ctx) -> dict:
             raw_bg = video_gen.resolve_configured_patch_image(patch, config, fallback or "")
             if not raw_bg:
                 raise JobFatalError("source_unavailable: background missing")
-            backgrounds = [p for p in config.get("backgrounds", []) if isinstance(p, str)]
+            backgrounds = media_library.expand_backgrounds(config)
             sequence = len(backgrounds) > 1 and not (patch.image_path and Path(patch.image_path).exists())
             ctx.progress(1, 6, phase="overlay")
             if sequence or video_gen.is_video_background(raw_bg):

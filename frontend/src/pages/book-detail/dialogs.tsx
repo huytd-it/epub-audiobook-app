@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   AudioSettings,
+  BackgroundFolder,
   BackgroundItem,
   ConfigTab,
   MusicMixState,
@@ -34,6 +35,7 @@ import {
   errorText,
 } from "./types";
 import { CheckField, Field, TabBar, TtsOptionsFields, checkboxClass, fieldClass, selectClass } from "./parts";
+import { BackgroundPicker } from "./BackgroundPicker";
 import { MusicMixFields } from "./MusicMixFields";
 import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
 import { AiContentGenerator, YouTubeConfigFields } from "./YouTubeFields";
@@ -688,6 +690,7 @@ export function ConfigDialog({
 }) {
   const [videoConfig, setVideoConfig] = useState<VideoConfig>();
   const [backgrounds, setBackgrounds] = useState<BackgroundItem[]>([]);
+  const [backgroundFolders, setBackgroundFolders] = useState<BackgroundFolder[]>([]);
   const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
   const [music, setMusic] = useState<MusicMixState>();
   const [ytSettings, setYtSettings] = useState<YouTubeSettings>();
@@ -705,13 +708,14 @@ export function ConfigDialog({
     if (tab === "video" && !videoConfig) {
       Promise.all([
         api<VideoConfig>(`/books/${bookId}/video-config`),
-        api<{ backgrounds: BackgroundItem[] }>("/video/backgrounds"),
+        api<{ backgrounds: BackgroundItem[]; folders?: BackgroundFolder[] }>("/video/backgrounds"),
         api<MusicMixState>(`/books/${bookId}/music`),
         api<{ voices: VoiceItem[] }>("/api/ui/media"),
       ])
         .then(([config, media, musicSettings, voiceMedia]) => {
           setVideoConfig(config);
           setBackgrounds(media.backgrounds || []);
+          setBackgroundFolders(media.folders || []);
           setMusic(musicSettings);
           setIntroOutroVoices(voiceMedia.voices || []);
         })
@@ -1211,120 +1215,27 @@ export function ConfigDialog({
                 </Field>
               </div>
 
-              <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
-                <Field label="Loại nền video">
-                  <select
-                    className={selectClass}
-                    value={videoConfig.background_type}
-                    onChange={(event) => setVideoConfig({ ...videoConfig, background_type: event.target.value as VideoConfig["background_type"] })}
-                  >
-                    <option value="media">Ảnh/video</option>
-                    <option value="gameplay">Catalog gameplay nhẹ nhàng</option>
-                  </select>
-                </Field>
-                {videoConfig.background_type === "gameplay" && (
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <Field label="Chế độ chọn game">
-                      <select className={selectClass} value={videoConfig.gameplay.selection_mode}
-                        onChange={(event) => setVideoConfig({ ...videoConfig, gameplay: { ...videoConfig.gameplay, selection_mode: event.target.value as "single" | "rotation" } })}>
-                        <option value="single">Một game</option>
-                        <option value="rotation">Xoay nhiều game</option>
-                      </select>
-                    </Field>
-                    {videoConfig.gameplay.selection_mode === "single" ? (
-                      <Field label="Game nền">
-                        <select className={selectClass} value={videoConfig.gameplay.game_id}
-                          onChange={(event) => setVideoConfig({ ...videoConfig, gameplay: { ...videoConfig.gameplay, game_id: event.target.value as typeof videoConfig.gameplay.game_id } })}>
-                          <option value="snake_arena">Rắn Săn Mồi · Retro</option>
-                          <option value="brick_stack">Xếp Gạch · Retro</option>
-                          <option value="tank_duel">Xe Tăng 90 · Retro</option>
-                          <option value="brick_breaker">Đập Gạch · Retro</option>
-                          <option value="star_defender">Bắn Ruồi · Retro</option>
-                          <option value="pixel_dash">Đua Xe · Retro</option>
-                          <option value="pacman_maze">Pac-Man · Retro</option>
-                          <option value="chicken_shooter">Phi Thuyền Bắn Gà · Retro</option>
-                          <option value="spaceship_voyager">Phi Thuyền · Retro</option>
-                          <option value="flappy_bird">Flappy Bird · Retro</option>
-                          <option value="gold_miner">Đào Vàng · Retro</option>
-                          <option value="aurora_veil">Aurora Veil · Procedural</option>
-                          <option value="plasma_tide">Plasma Tide · Procedural</option>
-                          <option value="ripple_pond">Ripple Pond · Procedural</option>
-                          <option value="lumen_bloom">Lumen Bloom · Procedural</option>
-                          <option value="silk_current">Silk Current · Procedural</option>
-                          <option value="starfall_warp">Starfall Warp · Procedural</option>
-                        </select>
-                      </Field>
-                    ) : (
-                      <div className="space-y-2">
-                        <div className="text-xs font-medium">Game trong vòng xoay</div>
-                        {([ ["snake_arena", "Rắn Săn Mồi · Retro"], ["brick_stack", "Xếp Gạch · Retro"], ["tank_duel", "Xe Tăng 90 · Retro"], ["brick_breaker", "Đập Gạch · Retro"], ["star_defender", "Bắn Ruồi · Retro"], ["pixel_dash", "Đua Xe · Retro"], ["pacman_maze", "Pac-Man · Retro"], ["chicken_shooter", "Phi Thuyền Bắn Gà · Retro"], ["spaceship_voyager", "Phi Thuyền · Retro"], ["flappy_bird", "Flappy Bird · Retro"], ["gold_miner", "Đào Vàng · Retro"], ["aurora_veil", "Aurora Veil · Procedural"], ["plasma_tide", "Plasma Tide · Procedural"], ["ripple_pond", "Ripple Pond · Procedural"], ["lumen_bloom", "Lumen Bloom · Procedural"], ["silk_current", "Silk Current · Procedural"], ["starfall_warp", "Starfall Warp · Procedural"] ] as const).map(([id, label]) => {
-                          const checked = videoConfig.gameplay.game_ids.includes(id);
-                          return <label key={id} className="flex items-center gap-2 text-xs">
-                            <input type="checkbox" className={checkboxClass} checked={checked}
-                              onChange={() => setVideoConfig({ ...videoConfig, gameplay: { ...videoConfig.gameplay,
-                                game_ids: checked ? videoConfig.gameplay.game_ids.filter((value) => value !== id) : [...videoConfig.gameplay.game_ids, id] } })} />
-                            {label}
-                          </label>;
-                        })}
-                      </div>
-                    )}
-                    <p className="text-xs text-muted-foreground sm:col-span-2">
-                      Khi xoay nhiều game, các clip được lặp theo thứ tự đã chọn trong cùng video và được cố định khi retry. Audiobook, phụ đề, tiến độ, thumbnail và pipeline YouTube không thay đổi.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {videoConfig.background_type === "media" && <div className="space-y-3 rounded-md border border-border p-3">
-                <div className="flex flex-wrap items-end gap-3">
-                  <Field label="Thứ tự background media">
-                    <select
-                      className={selectClass}
-                      value={videoConfig.background_mode}
-                      onChange={(event) => setVideoConfig({ ...videoConfig, background_mode: event.target.value as VideoConfig["background_mode"] })}
-                    >
-                      <option value="sequential">Theo thứ tự</option>
-                      <option value="random">Ngẫu nhiên</option>
-                    </select>
-                  </Field>
-                  <span className="pb-2 text-[11px] text-muted-foreground">
-                    Đã chọn {videoConfig.backgrounds.length} file ảnh/video
+              {/* Gameplay không còn chọn trực tiếp: clip gameplay được tạo sẵn vào thư viện background. */}
+              {videoConfig.background_type === "gameplay" && (
+                <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
+                  <span className="min-w-0 flex-1">
+                    Cấu hình này đang dùng nền gameplay dựng trực tiếp (kiểu cũ). Video gameplay giờ được tạo sẵn trong
+                    Thư viện background — chuyển sang ảnh/video thư viện để chọn file hoặc thư mục.
                   </span>
+                  <Button type="button" size="sm" variant="outline" onClick={() => setVideoConfig({ ...videoConfig, background_type: "media" })}>
+                    Dùng ảnh/video thư viện
+                  </Button>
                 </div>
-                {backgrounds.length ? (
-                  <div className="grid max-h-52 grid-cols-1 gap-2 overflow-auto sm:grid-cols-2">
-                    {backgrounds.map((item) => {
-                      const checked = videoConfig.backgrounds.includes(item.path);
-                      return (
-                        <label
-                          key={item.path}
-                          className="flex cursor-pointer items-center gap-2 rounded-md border border-border px-3 py-2 text-xs hover:bg-muted/40"
-                        >
-                          <input
-                            type="checkbox"
-                            className={checkboxClass}
-                            checked={checked}
-                            onChange={() =>
-                              setVideoConfig({
-                                ...videoConfig,
-                                backgrounds: checked
-                                  ? videoConfig.backgrounds.filter((path) => path !== item.path)
-                                  : [...videoConfig.backgrounds, item.path],
-                              })
-                            }
-                          />
-                          <span className="min-w-0 flex-1 truncate">{item.is_default ? "Mặc định" : item.name}</span>
-                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            {item.is_video ? "Video" : "Ảnh"}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="text-xs text-muted-foreground">Thư viện chưa có background media.</div>
-                )}
-              </div>}
+              )}
+
+              {videoConfig.background_type === "media" && (
+                <BackgroundPicker
+                  items={backgrounds}
+                  folders={backgroundFolders}
+                  value={videoConfig}
+                  onChange={(patch) => setVideoConfig({ ...videoConfig, ...patch })}
+                />
+              )}
 
               <div className="grid grid-cols-1 gap-4 rounded-md border border-border p-3 sm:grid-cols-2">
                 <Field label="Âm thanh intro" hint="Phát trước nội dung patch">

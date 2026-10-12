@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from app import music_bed
+from app import media_library, music_bed
 from app.audio_mastering import VIDEO_SAMPLE_RATE, VIDEO_TARGET_LUFS, loudnorm_filter
 from app.config import settings
 from app.models import Book, Patch
@@ -1014,7 +1014,9 @@ def generate_background_sequence(
     # fails fast; deleted again once the final mux has consumed it.
     music_path, loop_music = _prepare_music_bed(audio_path, music_path, out_path, music_mix)
     valid = [p for p in backgrounds if Path(p).is_file()]
-    plan = plan_background_segments(valid, duration, image_duration, mode, seed=seed, start_index=start_index)
+    plan = plan_background_segments(
+        valid, duration, image_duration, mode, seed=seed, start_index=start_index,
+        clip_durations=_video_background_durations(valid))
     if not plan:
         raise ValueError("No valid backgrounds for sequence")
     width, height = resolution
@@ -1153,7 +1155,7 @@ def resolve_configured_patch_image(patch, config: dict | None, fallback: str) ->
     if getattr(patch, "image_path", None) and Path(patch.image_path).exists():
         return patch.image_path
     config = config or {}
-    candidates = [p for p in config.get("backgrounds", []) if isinstance(p, str) and Path(p).exists()]
+    candidates = [p for p in media_library.expand_backgrounds(config) if Path(p).exists()]
     if candidates:
         if config.get("background_mode") == "random":
             rng = random.Random(f"{fallback}:{getattr(patch, 'id', 0)}")
@@ -1162,8 +1164,26 @@ def resolve_configured_patch_image(patch, config: dict | None, fallback: str) ->
     return fallback if fallback and Path(fallback).exists() else None
 
 
-def plan_background_segments(backgrounds: list[str], duration: float, image_duration: float, mode: str = "sequential", *, seed: str = "", start_index: int = 0) -> list[tuple[str, float]]:
-    """Return timed background segments whose total duration equals duration."""
+def _video_background_durations(backgrounds: list[str]) -> dict[str, float]:
+    """Real length of every video background, so a clip plays through instead
+    of being cut at the still-image duration. Unreadable clips are left out and
+    fall back to that duration."""
+    durations: dict[str, float] = {}
+    for path in backgrounds:
+        if not is_video_background(path) or path in durations:
+            continue
+        try:
+            durations[path] = _probe_duration(path)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            logger.warning("could not probe background video duration: %s", path)
+    return durations
+
+
+def plan_background_segments(backgrounds: list[str], duration: float, image_duration: float, mode: str = "sequential", *, seed: str = "", start_index: int = 0, clip_durations: dict[str, float] | None = None) -> list[tuple[str, float]]:
+    """Return timed background segments whose total duration equals duration.
+
+    A background listed in clip_durations (a video) lasts its own length; every
+    other one lasts image_duration."""
     if duration <= 0 or image_duration <= 0 or not backgrounds:
         return []
     ordered = list(backgrounds)
@@ -1173,8 +1193,9 @@ def plan_background_segments(backgrounds: list[str], duration: float, image_dura
     remaining = float(duration)
     index = start_index
     while remaining > 0:
-        length = min(float(image_duration), remaining)
-        result.append((ordered[index % len(ordered)], length))
+        background = ordered[index % len(ordered)]
+        length = min(float((clip_durations or {}).get(background) or image_duration), remaining)
+        result.append((background, length))
         remaining -= length
         index += 1
     return result
@@ -1239,7 +1260,7 @@ def generate_full_video(
                 _emit(on_progress, event, patch_index=_p.patch_index,
                           patch_id=_p.id, **{k: v for k, v in fields.items() if k != "path"})
 
-            shared = [p for p in (video_config or {}).get("backgrounds", []) if isinstance(p, str)]
+            shared = media_library.expand_backgrounds(video_config)
             raw_for_greeting = resolve_configured_patch_image(patch, video_config, resolve_patch_image(patch, book, default_image) or default_image)
             greeting_paths = []
             if raw_for_greeting and intro_audio:

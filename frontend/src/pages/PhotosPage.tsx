@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Image, Plus, Edit2, Trash2, Film, Eye, Save } from "lucide-react";
+import { Image, Plus, Edit2, Trash2, Film, Eye, Save, Folder, FolderInput, FolderPlus } from "lucide-react";
 import { api, postForm, PhotoItem } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -7,19 +7,31 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
+type PhotoFolder = { name: string; photos: PhotoItem[] };
+
 export function PhotosPage() {
-  const [items, setItems] = useState<PhotoItem[]>([]);
+  const [rootItems, setRootItems] = useState<PhotoItem[]>([]);
+  const [folders, setFolders] = useState<PhotoFolder[]>([]);
+  // "" là thư mục gốc của thư viện; còn lại là tên sub folder đang mở.
+  const [folder, setFolder] = useState("");
   const [loading, setLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
   const [search, setSearch] = useState("");
   const [previewingName, setPreviewingName] = useState<string | null>(null);
   const [renamingItem, setRenamingItem] = useState<PhotoItem | null>(null);
   const [newName, setNewName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [folderName, setFolderName] = useState("");
+  const [movingItem, setMovingItem] = useState<PhotoItem | null>(null);
+  const [moveTarget, setMoveTarget] = useState("");
 
   const loadData = () => {
     setLoading(true);
-    api<{ photos: PhotoItem[] }>("/api/ui/media")
-      .then((res) => setItems(res.photos || []))
+    api<{ photos: PhotoItem[]; photo_folders?: PhotoFolder[] }>("/api/ui/media")
+      .then((res) => {
+        setRootItems(res.photos || []);
+        setFolders(res.photo_folders || []);
+      })
       .catch((err) => console.error("Lỗi tải hình ảnh:", err))
       .finally(() => setLoading(false));
   };
@@ -28,11 +40,17 @@ export function PhotosPage() {
     loadData();
   }, []);
 
+  const currentFolder = folders.find((item) => item.name === folder);
+  const items = folder ? currentFolder?.photos || [] : rootItems;
+  const fileUrl = (name: string) =>
+    `/photos/file/${encodeURIComponent(name)}${folder ? `?folder=${encodeURIComponent(folder)}` : ""}`;
+
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     setIsUploading(true);
     const formData = new FormData();
     Array.from(e.target.files).forEach((file) => formData.append("files", file));
+    formData.append("folder", folder);
     try {
       await postForm("/photos/upload", formData);
       loadData();
@@ -48,6 +66,7 @@ export function PhotosPage() {
     if (!confirm(`Bạn có chắc muốn xóa tư liệu hình ảnh/video "${name}"?`)) return;
     const form = new FormData();
     form.append("name", name);
+    form.append("folder", folder);
     try {
       await postForm("/photos/delete", form);
       if (previewingName === name) setPreviewingName(null);
@@ -71,6 +90,7 @@ export function PhotosPage() {
     const form = new FormData();
     form.append("old_name", renamingItem.name);
     form.append("new_name", newName.trim());
+    form.append("folder", folder);
     try {
       await postForm("/photos/rename", form);
       setRenamingItem(null);
@@ -80,7 +100,62 @@ export function PhotosPage() {
     }
   };
 
+  const handleCreateFolder = async () => {
+    if (!folderName.trim()) return;
+    const form = new FormData();
+    form.append("name", folderName.trim());
+    try {
+      const created = await postForm<{ name: string }>("/photos/folders/create", form);
+      setCreatingFolder(false);
+      setFolderName("");
+      setFolder(created.name);
+      loadData();
+    } catch (err: any) {
+      alert(`Tạo thư mục thất bại: ${err.message}`);
+    }
+  };
+
+  const handleDeleteFolder = async () => {
+    if (!currentFolder) return;
+    if (
+      !confirm(
+        `Xóa thư mục "${currentFolder.name}" cùng ${currentFolder.photos.length} file bên trong? Các sách đang chọn thư mục này sẽ bỏ chọn.`
+      )
+    )
+      return;
+    const form = new FormData();
+    form.append("name", currentFolder.name);
+    try {
+      await postForm("/photos/folders/delete", form);
+      setFolder("");
+      loadData();
+    } catch (err: any) {
+      alert(`Xóa thư mục thất bại: ${err.message}`);
+    }
+  };
+
+  const openMove = (item: PhotoItem) => {
+    setMovingItem(item);
+    setMoveTarget(folder ? "" : folders[0]?.name || "");
+  };
+
+  const handleMove = async () => {
+    if (!movingItem) return;
+    const form = new FormData();
+    form.append("name", movingItem.name);
+    form.append("folder", folder);
+    form.append("target", moveTarget);
+    try {
+      await postForm("/photos/move", form);
+      setMovingItem(null);
+      loadData();
+    } catch (err: any) {
+      alert(`Chuyển thư mục thất bại: ${err.message}`);
+    }
+  };
+
   const filteredItems = items.filter((i) => i.name.toLowerCase().includes(search.toLowerCase()));
+  const moveTargets = ["", ...folders.map((item) => item.name)].filter((name) => name !== folder);
 
   return (
     <div className="space-y-6">
@@ -88,24 +163,58 @@ export function PhotosPage() {
         title="Thư viện hình ảnh & Video nền (Photos & Backgrounds)"
         subtitle="Quản lý kho ảnh minh họa và video lặp lại background dùng cho render video audiobook."
         action={
-          <label className="cursor-pointer">
-            <input
-              type="file"
-              multiple
-              accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
-              className="hidden"
-              onChange={handleUpload}
-              disabled={isUploading}
-            />
-            <Button variant="default" size="sm" asChild disabled={isUploading}>
-              <span>
-                <Plus className="h-4 w-4" />
-                {isUploading ? "Đang tải lên..." : "Tải ảnh/video lên"}
-              </span>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setCreatingFolder(true)}>
+              <FolderPlus className="h-4 w-4" />
+              Tạo thư mục
             </Button>
-          </label>
+            <label className="cursor-pointer">
+              <input
+                type="file"
+                multiple
+                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+                className="hidden"
+                onChange={handleUpload}
+                disabled={isUploading}
+              />
+              <Button variant="default" size="sm" asChild disabled={isUploading}>
+                <span>
+                  <Plus className="h-4 w-4" />
+                  {isUploading ? "Đang tải lên..." : folder ? `Tải lên "${folder}"` : "Tải ảnh/video lên"}
+                </span>
+              </Button>
+            </label>
+          </div>
         }
       />
+
+      <div className="flex flex-wrap items-center gap-2">
+        {[{ name: "", label: "Thư mục gốc", count: rootItems.length }, ...folders.map((item) => ({ name: item.name, label: item.name, count: item.photos.length }))].map(
+          (item) => (
+            <Button
+              key={item.name}
+              variant={folder === item.name ? "default" : "outline"}
+              size="sm"
+              onClick={() => setFolder(item.name)}
+            >
+              <Folder className="h-3.5 w-3.5" />
+              {item.label}
+              <span className="font-mono text-[10px] opacity-70">{item.count}</span>
+            </Button>
+          )
+        )}
+        {currentFolder && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto text-destructive hover:text-destructive"
+            onClick={handleDeleteFolder}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Xóa thư mục
+          </Button>
+        )}
+      </div>
 
       <div className="flex items-center justify-between gap-4">
         <Input
@@ -120,19 +229,18 @@ export function PhotosPage() {
       {loading ? (
         <LoadingState text="Đang mở kho hình ảnh..." />
       ) : filteredItems.length === 0 ? (
-        <EmptyState text="Chưa có hình ảnh hoặc video background nào." />
+        <EmptyState text={folder ? "Thư mục này chưa có hình ảnh hoặc video." : "Chưa có hình ảnh hoặc video background nào."} />
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {filteredItems.map((item) => {
-            const fileUrl = `/photos/file/${encodeURIComponent(item.name)}`;
             const isVideo = item.is_video;
             return (
               <Card key={item.name} className="border-border overflow-hidden flex flex-col group hover:border-primary/40 transition-colors">
                 <div className="aspect-video bg-zinc-950 relative overflow-hidden flex items-center justify-center border-b border-border">
                   {isVideo ? (
-                    <video src={fileUrl} className="w-full h-full object-cover" muted loop autoPlay />
+                    <video src={fileUrl(item.name)} className="w-full h-full object-cover" muted loop autoPlay />
                   ) : (
-                    <img src={fileUrl} alt={item.name} className="w-full h-full object-cover" loading="lazy" />
+                    <img src={fileUrl(item.name)} alt={item.name} className="w-full h-full object-cover" loading="lazy" />
                   )}
                   <div className="absolute top-2 right-2 flex items-center gap-1">
                     <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-black/70 text-white backdrop-blur-xs flex items-center gap-1">
@@ -158,6 +266,16 @@ export function PhotosPage() {
                       Xem
                     </Button>
                     <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title="Chuyển sang thư mục khác"
+                        disabled={!moveTargets.length}
+                        onClick={() => openMove(item)}
+                      >
+                        <FolderInput className="h-3.5 w-3.5" />
+                      </Button>
                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openRename(item)}>
                         <Edit2 className="h-3.5 w-3.5" />
                       </Button>
@@ -187,9 +305,9 @@ export function PhotosPage() {
             </DialogHeader>
             <div className="flex items-center justify-center p-2 bg-black rounded border border-border">
               {items.find((i) => i.name === previewingName)?.is_video ? (
-                <video src={`/photos/file/${encodeURIComponent(previewingName)}`} controls autoPlay className="max-h-[60vh] w-full" />
+                <video src={fileUrl(previewingName)} controls autoPlay className="max-h-[60vh] w-full" />
               ) : (
-                <img src={`/photos/file/${encodeURIComponent(previewingName)}`} alt={previewingName} className="max-h-[60vh] object-contain" />
+                <img src={fileUrl(previewingName)} alt={previewingName} className="max-h-[60vh] object-contain" />
               )}
             </div>
           </DialogContent>
@@ -214,6 +332,74 @@ export function PhotosPage() {
               <Button variant="default" onClick={handleSaveRename}>
                 <Save className="h-4 w-4" />
                 Lưu tên mới
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Create Folder Modal */}
+      {creatingFolder && (
+        <Dialog open={creatingFolder} onOpenChange={(open) => !open && setCreatingFolder(false)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Tạo thư mục con</DialogTitle>
+            </DialogHeader>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleCreateFolder();
+              }}
+            >
+              <div className="py-2">
+                <label className="text-xs font-semibold text-foreground mb-1 block">Tên thư mục</label>
+                <Input autoFocus value={folderName} onChange={(e) => setFolderName(e.target.value)} />
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  Chọn thư mục này trong Cấu hình Video để dùng toàn bộ ảnh/video bên trong làm background.
+                </p>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setCreatingFolder(false)}>
+                  Hủy
+                </Button>
+                <Button type="submit" variant="default" disabled={!folderName.trim()}>
+                  <FolderPlus className="h-4 w-4" />
+                  Tạo thư mục
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Move Modal */}
+      {movingItem && (
+        <Dialog open={!!movingItem} onOpenChange={(open) => !open && setMovingItem(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="truncate">Chuyển "{movingItem.name}"</DialogTitle>
+            </DialogHeader>
+            <div className="py-2">
+              <label className="text-xs font-semibold text-foreground mb-1 block">Thư mục đích</label>
+              <select
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                value={moveTarget}
+                onChange={(e) => setMoveTarget(e.target.value)}
+              >
+                {moveTargets.map((name) => (
+                  <option key={name} value={name}>
+                    {name || "Thư mục gốc"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setMovingItem(null)}>
+                Hủy
+              </Button>
+              <Button variant="default" onClick={handleMove}>
+                <FolderInput className="h-4 w-4" />
+                Chuyển
               </Button>
             </DialogFooter>
           </DialogContent>

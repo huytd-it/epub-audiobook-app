@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from app import google_drive, kaggle_accounts, repository, voice_taxonomy
+from app import google_drive, kaggle_accounts, media_library, repository, voice_taxonomy
 from app.config import settings
 from app.deps import locked_conn
 from app.jobqueue import store
@@ -158,7 +158,14 @@ def media(request: Request):
     photos = [{"name": path.name, "size": path.stat().st_size,
                "is_video": path.suffix.lower() in {".mp4", ".webm", ".mov"}}
               for path in sorted(backgrounds.iterdir()) if path.is_file()]
-    return {"music": music, "photos": photos, "voices": voice_items}
+    photo_folders = [
+        {"name": name,
+         "photos": [{"name": path.name, "size": path.stat().st_size,
+                     "is_video": path.suffix.lower() in {".mp4", ".webm", ".mov"}}
+                    for path in media_library.folder_files(name)]}
+        for name in media_library.list_folders()
+    ]
+    return {"music": music, "photos": photos, "photo_folders": photo_folders, "voices": voice_items}
 
 
 _RCLONE_CLIENT_ID_KEY = "rclone.drive_client_id"

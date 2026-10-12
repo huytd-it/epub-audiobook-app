@@ -36,11 +36,21 @@ def _backgrounds_dir() -> Path:
     return d
 
 
-def _safe_photo_path(name: str) -> Path:
+def _folder_dir(folder: str) -> Path:
+    """Directory a request addresses: the library root, or one of its sub folders."""
+    if not folder:
+        return _backgrounds_dir()
+    path = media_library.folder_path(folder)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy thư mục")
+    return path
+
+
+def _safe_photo_path(name: str, folder: str = "") -> Path:
     """Resolve a filename inside the backgrounds dir, refusing path traversal."""
     if not name or "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Tên file không hợp lệ")
-    return _backgrounds_dir() / name
+    return _folder_dir(folder) / name
 
 
 def _clean_new_name(new_name: str, suffix: str) -> str:
@@ -60,8 +70,8 @@ def _clean_new_name(new_name: str, suffix: str) -> str:
 
 
 @router.get("/photos/file/{name}")
-def serve_photo(name: str):
-    p = _safe_photo_path(name)
+def serve_photo(name: str, folder: str = Query(default="")):
+    p = _safe_photo_path(name, folder)
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh")
     media = _MIME_MAP.get(p.suffix.lower(), "application/octet-stream")
@@ -69,8 +79,8 @@ def serve_photo(name: str):
 
 
 @router.post("/photos/upload")
-async def upload_photos(files: list[UploadFile] = File(...)):
-    dest_dir = _backgrounds_dir()
+async def upload_photos(files: list[UploadFile] = File(...), folder: str = Form(default="")):
+    dest_dir = _folder_dir(folder)
     for file in files:
         ext = Path(file.filename or "").suffix.lower()
         if ext not in ALLOWED_MEDIA_EXTENSIONS:
@@ -89,11 +99,12 @@ def rename_photo(
     request: Request,
     old_name: str = Form(...),
     new_name: str = Form(default=""),
+    folder: str = Form(default=""),
 ):
-    src = _safe_photo_path(old_name)
+    src = _safe_photo_path(old_name, folder)
     if not src.exists() or not src.is_file():
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh")
-    dest = _backgrounds_dir() / _clean_new_name(new_name, src.suffix)
+    dest = src.parent / _clean_new_name(new_name, src.suffix)
     if dest == src:
         return RedirectResponse(url="/photos", status_code=303)
     if dest.exists():
@@ -109,10 +120,56 @@ def rename_photo(
 
 
 @router.post("/photos/delete")
-def delete_photo(request: Request, name: str = Form(...)):
-    p = _safe_photo_path(name)
+def delete_photo(request: Request, name: str = Form(...), folder: str = Form(default="")):
+    p = _safe_photo_path(name, folder)
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh")
     with locked_conn(request) as conn:
         media_library.delete_background(conn, p)
     return RedirectResponse(url="/photos", status_code=303)
+
+
+@router.post("/photos/folders/create")
+def create_photo_folder(name: str = Form(...)):
+    try:
+        cleaned = media_library.clean_folder_name(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Tên thư mục không hợp lệ") from exc
+    dest = _backgrounds_dir() / cleaned
+    if dest.exists():
+        raise HTTPException(status_code=400, detail=f"Đã có thư mục '{cleaned}'")
+    dest.mkdir()
+    return {"name": cleaned}
+
+
+@router.post("/photos/folders/delete")
+def delete_photo_folder(request: Request, name: str = Form(...)):
+    """Delete a sub folder together with every file inside it."""
+    if media_library.folder_path(name) is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy thư mục")
+    with locked_conn(request) as conn:
+        media_library.delete_folder(conn, name)
+    return {"status": "deleted", "name": name}
+
+
+@router.post("/photos/move")
+def move_photo(
+    request: Request,
+    name: str = Form(...),
+    folder: str = Form(default=""),
+    target: str = Form(default=""),
+):
+    """Move a file between the library root ("") and a sub folder."""
+    src = _safe_photo_path(name, folder)
+    if not src.exists() or not src.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh")
+    dest = _folder_dir(target) / src.name
+    if dest == src:
+        return {"status": "unchanged"}
+    if dest.exists():
+        raise HTTPException(status_code=400, detail=f"Thư mục đích đã có '{dest.name}'")
+    with locked_conn(request) as conn:
+        src.rename(dest)
+        media_library.replace_background_reference(conn, str(src), str(dest))
+        conn.commit()
+    return {"status": "moved", "folder": target}
