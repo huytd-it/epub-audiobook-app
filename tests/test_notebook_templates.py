@@ -107,12 +107,19 @@ def test_batch_cell_8_is_deterministic_and_streams_atomic_merge():
     assert "cfg_value=2.0" in src
     assert "VI_TIMESTEPS" in src
     assert 'TTS_OPTIONS.get("inference_timesteps")' in src
-    # Vietnamese quality flags (dropped on older voxcpm wheels via TypeError fallback)
-    assert "normalize=True" in src
+    # badcase retry (dropped on older voxcpm wheels via TypeError fallback); the
+    # upstream zh/en text normalizer must stay off for Vietnamese
+    assert "normalize=True" not in src
     assert "retry_badcase=True" in src
-    # every branch writes silence-cleaned audio, never raw model output
-    assert "clean_generated_audio" in src
-    assert src.count("clean_generated_audio(audio, SAMPLE_RATE)") >= 3
+    # only vieneu-fast/zerotts are silence-cleaned; voxcpm2/omnivoice pace their
+    # own pauses and are written as generated
+    assert src.count("clean_generated_audio(") == 3  # the def + two branches
+    for branch_start, branch_end in (('TTS_MODEL == "voxcpm2"', 'TTS_MODEL == "omnivoice"'),
+                                     ('TTS_MODEL == "omnivoice"', 'TTS_MODEL == "vieneu-fast"')):
+        loop = src[src.index("for offset, chunk_filename"):]
+        branch = loop[loop.index(branch_start):loop.index(branch_end)]
+        assert "clean_generated_audio" not in branch
+        assert "sf.write(out_path, audio, SAMPLE_RATE)" in branch
     assert "_CHUNK_PAUSE_MS = 300" in src
     assert "sf.SoundFile" in src
     assert "PCM_16" in src

@@ -86,7 +86,6 @@ def test_synthesize_chunk_passes_generation_defaults(monkeypatch):
             "text": "hello",
             "cfg_value": 2.0,
             "inference_timesteps": 20,
-            "normalize": True,
             "retry_badcase": True,
             "retry_badcase_max_times": 3,
         }
@@ -125,7 +124,6 @@ def test_synthesize_chunk_passes_ultimate_cloning_prompt_arguments(monkeypatch):
         "text": "hello",
         "cfg_value": 2.0,
         "inference_timesteps": 20,
-        "normalize": True,
         "retry_badcase": True,
         "retry_badcase_max_times": 3,
         "reference_wav_path": "voice.wav",
@@ -273,16 +271,20 @@ def test_omnivoice_omits_tuning_flags_on_old_wheels(monkeypatch):
     ]
 
 
-def test_omnivoice_output_is_silence_cleaned(monkeypatch):
+def test_omnivoice_output_is_returned_untrimmed(monkeypatch):
+    """OmniVoice already removes silence, fades and pads its own output; a second
+    trim would strip that padding and squash the pauses it paced."""
     monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
     speech = np.full(2400, 0.5, dtype=np.float32)
+    generated = np.concatenate([np.zeros(4800), speech, np.zeros(24000), speech, np.zeros(4800)])
     model = FakeModel()
-    model.generate = lambda **kwargs: (model.calls.append(kwargs)
-                                       or [np.concatenate([np.zeros(4800), speech, np.zeros(4800)])])
+    model.generate = lambda **kwargs: (model.calls.append(kwargs) or [generated])
     engine = OmniVoiceEngine()
     engine._model = model
 
-    assert engine.synthesize_chunk("xin chào").tolist() == speech.tolist()
+    result = engine.synthesize_chunk("xin chào")
+    assert result.dtype == np.float32
+    assert result.tolist() == generated.tolist()
 
 
 def test_omnivoice_options_schema_survives_normalization():
@@ -549,8 +551,9 @@ def test_voxcpm_extras_follow_what_the_installed_wheel_accepts():
                      normalize, retry_badcase, retry_badcase_max_times):
             return np.array([1.0])
 
+    # normalize is accepted by the wheel but never sent: upstream's normalizer is
+    # zh/en only and would read Vietnamese digits out in English.
     assert _voxcpm_extra_kwargs(NewWheel()) == {
-        "normalize": True,
         "retry_badcase": True,
         "retry_badcase_max_times": 3,
     }
@@ -580,6 +583,22 @@ def test_voxcpm_synthesize_chunk_omits_extras_on_old_wheels(monkeypatch):
     assert engine._model.calls == [
         {"text": "xin chào", "cfg_value": 2.0, "inference_timesteps": 20}
     ]
+
+
+def test_voxcpm_output_is_returned_untrimmed(monkeypatch):
+    """VoxCPM2 paces its own pauses; trimming them clips soft onsets/tails."""
+    monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
+    speech = np.full(4800, 0.5, dtype=np.float32)
+    generated = np.concatenate([np.zeros(9600), speech, np.zeros(48000), speech, np.zeros(9600)])
+    model = FakeModel()
+    model.generate = lambda **kwargs: (model.calls.append(kwargs) or generated)
+    engine = VoxCPMEngine()
+    engine._model = model
+
+    result = engine.synthesize_chunk("xin chào")
+    assert result.dtype == np.float32
+    assert result.tolist() == generated.tolist()
+    assert "normalize" not in model.calls[0]
 
 
 def test_clean_generated_audio_trims_ends_and_shortens_long_pauses():

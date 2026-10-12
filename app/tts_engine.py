@@ -629,14 +629,14 @@ def _pause_value(raw, default: int) -> int:
         return default
 
 
-# Extra generate() flags that make VoxCPM2 read Vietnamese more accurately:
-# normalize runs upstream's text normalizer (numbers/dates/abbreviations come out
-# speakable instead of ambiguous digits), retry_badcase re-runs a chunk that
-# collapses into endless silence or babble. Both exist on current voxcpm wheels;
-# _voxcpm_extra_kwargs() only sends the ones the installed wheel accepts, so an
-# older install keeps working instead of dying with TypeError mid-batch.
+# Extra generate() flags for VoxCPM2: retry_badcase re-runs a chunk that
+# collapses into endless silence or babble. normalize is deliberately not sent:
+# upstream's text normalizer is zh/en only, so Vietnamese falls into the English
+# branch and digits get read out in English - this app normalizes Vietnamese
+# itself. _voxcpm_extra_kwargs() only sends the flags the installed wheel
+# accepts, so an older install keeps working instead of dying with TypeError
+# mid-batch.
 _VOXCPM_VI_EXTRAS = {
-    "normalize": True,
     "retry_badcase": True,
     "retry_badcase_max_times": 3,
 }
@@ -669,10 +669,11 @@ def clean_generated_audio(audio, sample_rate: int = 48000,
     """Cut dead air from a generated chunk: trim both ends and shorten inner
     silences longer than max_silence_ms down to keep_ms.
 
-    VoxCPM emits leading/trailing silence and over-long mid-sentence gaps; once
-    concatenated those become audible holes in the audiobook. Anything quieter
-    than silence_db counts as silence. Pure numpy (mirrored in the Kaggle
-    notebook's Cell 8, which cannot import this module)."""
+    For models that emit leading/trailing silence and over-long mid-sentence
+    gaps; once concatenated those become audible holes in the audiobook. Not
+    applied to VoxCPM2/OmniVoice, which pace their own pauses and sound clipped
+    when trimmed. Anything quieter than silence_db counts as silence. Pure numpy
+    (mirrored in the Kaggle notebook's Cell 8, which cannot import this module)."""
     data = np.asarray(audio, dtype=np.float32).reshape(-1)
     if data.size == 0:
         return data
@@ -766,13 +767,14 @@ class VoxCPMEngine:
             text=text,
             cfg_value=self.cfg_value,
             inference_timesteps=self.inference_timesteps,
-            # Vietnamese-quality flags the installed wheel accepts (see
-            # _voxcpm_extra_kwargs): upstream TN for speakable numbers/dates,
+            # Flags the installed wheel accepts (see _voxcpm_extra_kwargs):
             # badcase retry for chunks collapsing into silence/babble.
             **_voxcpm_extra_kwargs(self._model),
             **kwargs,
         )
-        return clean_generated_audio(audio, self.sample_rate)
+        # Returned as generated: VoxCPM2 paces its own pauses, and trimming them
+        # clips soft onsets/tails and flattens the prosody.
+        return np.asarray(audio, dtype=np.float32).reshape(-1)
 
     def synthesize_patch(
         self,
@@ -802,10 +804,11 @@ class OmniVoiceEngine:
     steps, ``guidance_scale`` prompt adherence, and ``language="vi"`` (reads
     slightly better than language-agnostic mode). ``preprocess_prompt`` /
     ``postprocess_output`` stay at their True defaults (reference cleanup +
-    long-silence removal); ``instruct`` is never sent (voice-design is zh/en
-    only and unstable for Vietnamese); ``normalize_text`` is skipped (needs
-    the [tn] extra, helps zh/en only — this app normalizes Vietnamese itself).
-    Output additionally goes through :func:`clean_generated_audio`.
+    long-silence removal, fade and edge padding); ``instruct`` is never sent
+    (voice-design is zh/en only and unstable for Vietnamese); ``normalize_text``
+    is skipped (needs the [tn] extra, helps zh/en only — this app normalizes
+    Vietnamese itself). Output is returned as generated: a second trim would
+    strip that padding and squash the pauses again.
     """
 
     sample_rate = 24000
@@ -855,7 +858,7 @@ class OmniVoiceEngine:
         _seed_rng(self.seed)
         audio = self._model.generate(text=text, **_supported_kwargs(self._model, wanted), **kwargs)
         audio = np.asarray(audio[0] if isinstance(audio, (list, tuple)) else audio, dtype=np.float32)
-        return clean_generated_audio(audio, self.sample_rate)
+        return audio.reshape(-1)
 
 
 class Confucius4Engine:
