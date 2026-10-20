@@ -59,6 +59,25 @@ DEFAULT_DESCRIPTION_EXTRA = {
     "template": DEFAULT_DESCRIPTION_EXTRA_TEMPLATE,
 }
 
+
+def description_extra_is_default(extra) -> bool:
+    """True when the extended block is still the untouched default (empty).
+
+    Used to decide whether a book's own (empty) block should be filled in from
+    the general configuration instead of staying blank."""
+    try:
+        normalized = validate_description_extra(extra)
+    except (ValueError, TypeError):
+        return True
+    if normalized.get("enabled"):
+        return False
+    for key in EXTRA_PLACEHOLDERS:
+        if str(normalized.get(key) or "").strip():
+            return False
+    if str(normalized.get("template") or "").strip() != str(DEFAULT_DESCRIPTION_EXTRA.get("template") or "").strip():
+        return False
+    return True
+
 # Podcast: playlist của sách được YouTube đánh dấu là podcast; ảnh bìa 1:1 lấy
 # từ chính thumbnail (app.image_overlay.render_podcast_cover).
 DEFAULT_PODCAST_CONFIG = {"enabled": False, "upload_cover": True}
@@ -615,7 +634,16 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
 
 def get_book_youtube_config(conn, book_id: int) -> dict:
     row = conn.execute("SELECT automation_config FROM book WHERE id = ?", (book_id,)).fetchone()
-    return validate_book_youtube_config(_json_object((row[0] if row else None), {}).get("youtube", {}))
+    cfg = validate_book_youtube_config(_json_object((row[0] if row else None), {}).get("youtube", {}))
+    # Nội dung mở rộng mặc định để trống thì lấy từ Cấu hình chung (nếu có).
+    try:
+        from app.production_defaults import _global_group, description_extra_is_default
+        if description_extra_is_default(cfg.get("description_extra")):
+            global_cfg = _global_group(conn, "youtube")
+            cfg = {**cfg, "description_extra": global_cfg.get("description_extra", cfg.get("description_extra"))}
+    except Exception:
+        pass
+    return cfg
 
 
 def save_book_youtube_config(conn, book_id: int, config: dict) -> None:

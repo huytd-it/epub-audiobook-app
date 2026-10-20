@@ -489,9 +489,15 @@ def get_effective_youtube_config(conn: sqlite3.Connection, book) -> dict:
     config = parse_book_config(book)
     if get_group_mode(config, "youtube", book=book) == "inherit":
         return _global_group(conn, "youtube")
-    from app.youtube_metadata import get_book_youtube_config
+    from app.youtube_metadata import get_book_youtube_config, description_extra_is_default
 
-    return get_book_youtube_config(conn, getattr(book, "id", None))
+    cfg = get_book_youtube_config(conn, getattr(book, "id", None))
+    # Nội dung mở rộng (tránh bản quyền) mặc định để trống thì lấy từ Cấu hình chung.
+    global_cfg = _global_group(conn, "youtube")
+    if description_extra_is_default(cfg.get("description_extra")):
+        cfg = {**cfg, "description_extra": global_cfg.get(
+            "description_extra", cfg.get("description_extra"))}
+    return cfg
 
 
 def get_effective_audio_config(conn: sqlite3.Connection, book) -> dict:

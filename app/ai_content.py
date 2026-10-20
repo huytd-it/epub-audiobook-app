@@ -160,7 +160,8 @@ def _save_youtube_content(conn, book, result: dict, params: dict) -> dict:
     applied: list[str] = []
     if params.get("apply", True):
         try:
-            cfg = get_book_youtube_config(conn, book.id)
+            from app.production_defaults import get_effective_youtube_config as _effective_yt
+            cfg = _effective_yt(conn, book)
             if result.get("genre_tags"):
                 cfg["genre_tags"] = str(result["genre_tags"])[:500]
                 applied.append("genre_tags")
