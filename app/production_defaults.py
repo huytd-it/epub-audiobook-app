@@ -85,6 +85,13 @@ DEFAULT_BRANDING_CONFIG = {
         "opacity": 80,       # 0-100
         "margin": 16,
     },
+    # Full-canvas decorative frame (transparent PNG) picked from the background
+    # library; stretched to the output size and drawn beneath watermark/logo.
+    "frame": {
+        "enabled": False,
+        "path": "",
+        "opacity": 100,      # 0-100
+    },
     # Per-target overrides for whether branding is applied. When a target
     # inherits branding, it inherits from global defaults; this lets a user
     # disable branding on podcast covers while keeping it on thumbnails.
@@ -225,6 +232,13 @@ def validate_branding_config(config) -> dict:
         "margin": _clamped_int(logo_raw.get("margin"), 16, 0, 200),
     }
 
+    frame_raw = config.get("frame") if isinstance(config.get("frame"), dict) else {}
+    frame = {
+        "enabled": _flag(frame_raw.get("enabled", False), False),
+        "path": str(frame_raw.get("path") or "")[:500],
+        "opacity": _clamped_int(frame_raw.get("opacity"), 100, 0, 100),
+    }
+
     targets_raw = config.get("targets") if isinstance(config.get("targets"), dict) else {}
     targets = {
         "thumbnail": _flag(targets_raw.get("thumbnail", True), True),
@@ -232,7 +246,7 @@ def validate_branding_config(config) -> dict:
         "video": _flag(targets_raw.get("video", True), True),
     }
 
-    return {"watermark": watermark, "logo": logo, "targets": targets}
+    return {"watermark": watermark, "logo": logo, "frame": frame, "targets": targets}
 
 
 def _group_validator(group: str):

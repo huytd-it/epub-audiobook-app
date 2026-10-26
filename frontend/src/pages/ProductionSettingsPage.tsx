@@ -109,11 +109,15 @@ function BrandingTab({
   onChange,
   logoBrowserOpen,
   onLogoBrowserOpenChange,
+  frameBrowserOpen,
+  onFrameBrowserOpenChange,
 }: {
   branding: BrandingConfig;
   onChange: (patch: Partial<BrandingConfig>) => void;
   logoBrowserOpen: boolean;
   onLogoBrowserOpenChange: (open: boolean) => void;
+  frameBrowserOpen: boolean;
+  onFrameBrowserOpenChange: (open: boolean) => void;
 }) {
   const updateWatermark = useCallback(
     (patch: Partial<BrandingConfig["watermark"]>) =>
@@ -123,6 +127,11 @@ function BrandingTab({
   const updateLogo = useCallback(
     (patch: Partial<BrandingConfig["logo"]>) =>
       onChange({ logo: { ...branding.logo, ...patch } }),
+    [branding, onChange]
+  );
+  const updateFrame = useCallback(
+    (patch: Partial<BrandingConfig["frame"]>) =>
+      onChange({ frame: { ...branding.frame, ...patch } }),
     [branding, onChange]
   );
   const updateTargets = useCallback(
@@ -326,6 +335,55 @@ function BrandingTab({
         </CardContent>
       </Card>
 
+      {/* Frame */}
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-semibold">Khung</div>
+              <div className="text-xs text-muted-foreground">
+                Ảnh PNG nền trong suốt, kéo giãn phủ toàn khung hình, nằm dưới watermark và logo.
+              </div>
+            </div>
+            <CheckField
+              label="Bật"
+              checked={branding.frame.enabled}
+              onChange={(enabled) => updateFrame({ enabled })}
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Ảnh khung">
+              <div className="flex items-center gap-2">
+                <input
+                  className={fieldClass}
+                  value={branding.frame.path}
+                  readOnly
+                  placeholder="Chưa chọn khung"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onFrameBrowserOpenChange(true)}
+                >
+                  Chọn
+                </Button>
+              </div>
+            </Field>
+            <Field label={`Độ rõ: ${branding.frame.opacity}%`}>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                className="w-full accent-primary"
+                value={branding.frame.opacity}
+                onChange={(event) => updateFrame({ opacity: Number(event.target.value) })}
+              />
+            </Field>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Targets */}
       <Card>
         <CardContent className="space-y-3 p-4">
@@ -354,6 +412,36 @@ function BrandingTab({
           </div>
         </CardContent>
       </Card>
+
+      {/* Frame Browser Dialog */}
+      {frameBrowserOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="mx-4 flex h-[80vh] w-full max-w-4xl flex-col rounded-lg border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <span className="text-sm font-semibold">Chọn khung</span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => onFrameBrowserOpenChange(false)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <MediaBrowser
+                category="backgrounds"
+                selectedPath={branding.frame.path || null}
+                onSelect={(entry: MediaEntry) => {
+                  updateFrame({ path: entry.path });
+                  onFrameBrowserOpenChange(false);
+                }}
+                height="100%"
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Logo Browser Dialog */}
       {logoBrowserOpen && (
@@ -398,6 +486,7 @@ export function ProductionSettingsPage() {
   const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
   const [playlists, setPlaylists] = useState<{ id: string; title: string }[]>([]);
   const [logoBrowserOpen, setLogoBrowserOpen] = useState(false);
+  const [frameBrowserOpen, setFrameBrowserOpen] = useState(false);
 
   const { ttsModels, voiceOptions } = useGlobalTtsOptions(draft?.audio.model_id || "");
 
@@ -975,6 +1064,8 @@ export function ProductionSettingsPage() {
               onChange={(patch) => patchGroup("branding", patch as Partial<BrandingConfig>)}
               logoBrowserOpen={logoBrowserOpen}
               onLogoBrowserOpenChange={setLogoBrowserOpen}
+              frameBrowserOpen={frameBrowserOpen}
+              onFrameBrowserOpenChange={setFrameBrowserOpen}
             />
           )}
 

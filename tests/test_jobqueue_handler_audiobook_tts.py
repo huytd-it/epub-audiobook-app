@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import soundfile as sf
@@ -315,3 +317,41 @@ def test_subtitle_sidecar_survives_a_generation_failure(tmp_path, monkeypatch):
     ctx, _ = _ctx(conn, patch_id=patch_id)
     audiobook_tts.handle(ctx)
     assert repository.get_patch(conn, patch_id).status == "done"
+
+
+def _two_chapter_plan(second_text="Chương hai câu một."):
+    def build(_inputs):
+        return [
+            {"text": "Chương một câu một.", "chapter_index": 0, "chapter_title": "A", "is_chapter_start": True},
+            {"text": "Chương một câu hai.", "chapter_index": 0, "chapter_title": "A", "is_chapter_start": False},
+            {"text": second_text, "chapter_index": 1, "chapter_title": "B", "is_chapter_start": True},
+        ]
+    return build
+
+
+def test_regenerating_a_patch_only_resynthesizes_the_changed_chapter(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "tts_write_chunk_files", True)
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn)
+    engine = _FakeEngine()
+    seen = []
+    orig = engine.synthesize_chunk
+    engine.synthesize_chunk = lambda text, **k: (seen.append(text), orig(text, **k))[1]
+    monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: engine)
+
+    monkeypatch.setattr(repository, "build_chunk_plan_from_inputs", _two_chapter_plan())
+    ctx, _ = _ctx(conn, patch_id=patch_id)
+    audiobook_tts.handle(ctx)
+    first_audio = Path(repository.get_patch(conn, patch_id).audio_path)
+    first_frames = sf.info(str(first_audio)).frames
+    assert len(seen) == 3
+
+    # Chapter 2's text changes: regenerate the patch; chapter 1 must come from cache.
+    seen.clear()
+    first_audio.unlink()
+    repository.mark_patch_failed(conn, patch_id, "x")
+    monkeypatch.setattr(repository, "build_chunk_plan_from_inputs", _two_chapter_plan("Chương hai đã sửa."))
+    audiobook_tts.handle(ctx)
+    assert seen == ["Chương hai đã sửa."]
+    assert sf.info(str(first_audio)).frames == first_frames

@@ -84,8 +84,16 @@ _ERRNO_EXIT_FLOOR = 0xFFFFFF00
 
 
 def _is_transient_crash(returncode: int) -> bool:
-    """True for the Windows crash statuses that are worth retrying."""
-    return 0x80000000 <= returncode < _ERRNO_EXIT_FLOOR
+    """True for the Windows NTSTATUS crash statuses worth retrying.
+
+    Only NTSTATUS codes with error severity (0xC0000000-0xCFFFFFFF) are
+    genuine Windows crashes such as DLL_INIT_FAILED / CONTROL_C_EXIT /
+    ACCESS_VIOLATION.  ffmpeg's own failures are returned as AVERROR_* values
+    (FFERRTAG fourcc codes like 0xBE... or -errno values like 0xFFFFFFFE)
+    which also have the high bit set but are deterministic, so retrying them
+    only burns render attempts.
+    """
+    return 0xC0000000 <= returncode <= 0xCFFFFFFF
 
 
 def _run_encoder(cmd: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess:

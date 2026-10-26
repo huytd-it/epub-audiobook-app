@@ -322,6 +322,12 @@ export type BrandingLogo = {
   margin: number;
 };
 
+export type BrandingFrame = {
+  enabled: boolean;
+  path: string;
+  opacity: number;
+};
+
 export type BrandingTargets = {
   thumbnail: boolean;
   podcast: boolean;
@@ -331,6 +337,7 @@ export type BrandingTargets = {
 export type BrandingConfig = {
   watermark: BrandingWatermark;
   logo: BrandingLogo;
+  frame: BrandingFrame;
   targets: BrandingTargets;
 };
 

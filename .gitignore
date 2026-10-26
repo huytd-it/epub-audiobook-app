@@ -32,4 +32,5 @@ XuongSachNoi.exe
 *.tsbuildinfo
 data/zerotts
 data/zerotts_test.wav
-assets
+# Ignore the top-level `assets/` directory (generated/local), but keep `app/assets/`.
+/assets

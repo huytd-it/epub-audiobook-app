@@ -46,6 +46,48 @@ def chunk_fingerprint(engine, engine_id: str, max_chars: int, plan: list[dict]) 
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
+_CHAPTER_DIR = "chapters"
+
+
+def _chapter_groups(plan: list[dict]) -> list[tuple[str, list[int]]]:
+    """Split a chunk plan into per-chapter runs of chunk indices. A plan with no
+    chapter markers (Text Studio edit) is one group, keyed "all"."""
+    groups: list[tuple[str, list[int]]] = []
+    for index, item in enumerate(plan):
+        chapter_index = item.get("chapter_index")
+        if chapter_index is None:
+            if groups and groups[-1][0] == "all":
+                groups[-1][1].append(index)
+            else:
+                groups.append(("all", [index]))
+        elif groups and groups[-1][0] == f"{chapter_index:04d}" and not item.get("is_chapter_start"):
+            groups[-1][1].append(index)
+        else:
+            groups.append((f"{chapter_index:04d}", [index]))
+    return groups
+
+
+def _chapter_fingerprint(model_cfg: str, engine_id: str, max_chars: int, inner_pauses: list[int],
+                         texts: list[str]) -> str:
+    """Like chunk_fingerprint but scoped to one chapter; the gaps inside the chapter
+    are baked into its WAV, so they are part of the key."""
+    raw = f"{engine_id}|{model_cfg}|{max_chars}|{inner_pauses}|" + "\n\n".join(texts)
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def _load_chapter_cache(meta_file: Path, wav_path: Path, fingerprint: str, chunk_count: int) -> list[int] | None:
+    """Per-chunk frame counts of a reusable chapter WAV, or None if it must be redone."""
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        if meta.get("fingerprint") != fingerprint or len(meta["frame_counts"]) != chunk_count:
+            return None
+        if sf.info(str(wav_path)).frames <= 0:
+            return None
+        return [int(n) for n in meta["frame_counts"]]
+    except (OSError, ValueError, KeyError, RuntimeError):
+        return None
+
+
 def handle(ctx) -> dict:
     from app.tts_engine import normalize_tt_payload
 
@@ -215,25 +257,53 @@ def synthesize_patch(
     if start_index > 0:
         ctx.log(f"resume từ chunk {start_index}/{total}")
 
-    frame_counts = []
-    for index, item in enumerate(plan):
-        chunk_path = chunk_dir / f"chunk_{index:03d}.wav"
-        if index >= start_index:
-            if ctx.should_cancel():
-                raise asyncio.CancelledError()
-            ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
-            arr = engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
-            arr = level_chunk_loudness(arr)
-            ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / engine.sample_rate:.1f}s audio")
-            sf.write(chunk_path, arr, engine.sample_rate)
-            repository.update_patch_chunk_progress(ctx.conn, patch.id, index + 1)
-            ctx.progress(index + 1, total)
-        frame_counts.append(sf.info(str(chunk_path)).frames)
+    # Mỗi chương có một WAV riêng trong chunk_dir/chapters, kèm fingerprint của chính
+    # chương đó. Patch sinh lại (sửa text một chương, đổi lỗi một chương) chỉ phải
+    # tổng hợp lại đúng chương lệch fingerprint; các chương còn lại dùng lại file cũ.
+    chapter_dir = chunk_dir / _CHAPTER_DIR
+    chapter_dir.mkdir(exist_ok=True)
+    model_cfg = getattr(engine, "config_fingerprint", lambda: engine_id)()
+    groups = _chapter_groups(plan)
+    frame_counts: list[int] = []
+    chapter_paths: list[str] = []
+    chapter_pauses: list[int] = []
+    for key, indices in groups:
+        first, last = indices[0], indices[-1]
+        wav_path = chapter_dir / f"chapter_{key}.wav"
+        meta_file = chapter_dir / f"chapter_{key}.json"
+        fingerprint = _chapter_fingerprint(model_cfg, engine_id, effective_max_chars or 0,
+                                           pauses[first + 1:last + 1], [plan[i]["text"] for i in indices])
+        cached = _load_chapter_cache(meta_file, wav_path, fingerprint, len(indices))
+        if cached is not None:
+            ctx.log(f"chương {key}: dùng lại audio đã có ({len(indices)} chunk)")
+            frame_counts.extend(cached)
+            repository.update_patch_chunk_progress(ctx.conn, patch.id, last + 1)
+            ctx.progress(last + 1, total)
+        else:
+            for index in indices:
+                item = plan[index]
+                chunk_path = chunk_dir / f"chunk_{index:03d}.wav"
+                if index >= start_index or not chunk_path.is_file():
+                    if ctx.should_cancel():
+                        raise asyncio.CancelledError()
+                    ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
+                    arr = engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+                    arr = level_chunk_loudness(arr)
+                    ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / engine.sample_rate:.1f}s audio")
+                    sf.write(chunk_path, arr, engine.sample_rate)
+                    repository.update_patch_chunk_progress(ctx.conn, patch.id, index + 1)
+                    ctx.progress(index + 1, total)
+            counts = [sf.info(str(chunk_dir / f"chunk_{i:03d}.wav")).frames for i in indices]
+            frame_counts.extend(counts)
+            audio_merge.atomic_write_wav(str(wav_path), lambda p, ids=indices: audio_merge.concat_wavs(
+                [str(chunk_dir / f"chunk_{i:03d}.wav") for i in ids], p, pause_ms=pauses[ids[0]:ids[-1] + 1]))
+            meta_file.write_text(json.dumps({"fingerprint": fingerprint, "frame_counts": counts}), encoding="utf-8")
+        chapter_paths.append(str(wav_path))
+        chapter_pauses.append(pauses[first])
 
     chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, pauses)
-    chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
     ctx.progress(total, total, phase="merging")
-    audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_wavs(chunk_paths, p, pause_ms=pauses))
+    audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_wavs(chapter_paths, p, pause_ms=chapter_pauses))
     _apply_effects(ctx, with_effects, audio_path, plan)
     normalize_wav_in_place(audio_path)
     audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)

@@ -373,3 +373,23 @@ def test_standalone_video_handler_passes_branding(tmp_path, monkeypatch):
 
     assert seen.get("branding_overlay_path") is not None
     assert Path(seen["branding_overlay_path"]).exists()
+
+
+def test_render_branding_overlay_frame_only_fills_canvas(tmp_path):
+    from PIL import Image
+    frame = tmp_path / "frame.png"
+    img = Image.new("RGBA", (100, 50), (0, 0, 0, 0))
+    img.putpixel((0, 0), (255, 0, 0, 255))
+    img.save(frame)
+    branding = {"frame": {"enabled": True, "path": str(frame), "opacity": 100},
+                "targets": {"video": True}}
+    result = render_branding_overlay((200, 100), branding, target="video")
+    assert result is not None and result.size == (200, 100)
+    assert result.getpixel((0, 0))[3] == 255
+    assert result.getpixel((199, 99))[3] == 0
+
+
+def test_render_branding_overlay_frame_missing_file_is_none():
+    branding = {"frame": {"enabled": True, "path": "_Nền/nope.png", "opacity": 100},
+                "targets": {"video": True}}
+    assert render_branding_overlay((200, 100), branding, target="video") is None

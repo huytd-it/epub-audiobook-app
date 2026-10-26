@@ -739,6 +739,11 @@ def apply_branding(image: "Image.Image", branding: dict, *, target: str = "thumb
     watermark = branding.get("watermark") or {}
     logo = branding.get("logo") or {}
 
+    # --- frame (beneath watermark/logo) ---
+    frame_img = _load_frame(branding.get("frame"), img.size)
+    if frame_img is not None:
+        img = Image.alpha_composite(img, frame_img)
+
     # --- text watermark ---
     if watermark.get("enabled") and watermark.get("text"):
         wm_text = str(watermark["text"])[:200]
@@ -909,6 +914,28 @@ def render_podcast_cover(
     return str(out)
 
 
+def _load_frame(frame: dict | None, size: tuple[int, int]) -> "Image.Image | None":
+    """The configured frame stretched to ``size`` as RGBA, or None if unusable."""
+    frame = frame or {}
+    if not frame.get("enabled") or not frame.get("path"):
+        return None
+    resolved = resolve_media_path(frame["path"])
+    if not Path(resolved).is_file():
+        return None
+    from PIL import Image
+    try:
+        frame_img = Image.open(resolved).convert("RGBA")
+    except Exception:
+        logger.warning("image_overlay: cannot load frame %s", frame.get("path"))
+        return None
+    if frame_img.size != size:
+        frame_img = frame_img.resize(size, Image.LANCZOS)
+    opacity = max(0, min(100, int(frame.get("opacity", 100)))) / 100.0
+    if opacity < 1.0:
+        frame_img.putalpha(frame_img.split()[3].point(lambda p: int(p * opacity)))
+    return frame_img
+
+
 def render_branding_overlay(resolution: tuple[int, int], branding: dict,
                             target: str = "video") -> "Image.Image | None":
     """Render a transparent RGBA image with watermark + logo at video resolution.
@@ -926,12 +953,13 @@ def render_branding_overlay(resolution: tuple[int, int], branding: dict,
     logo = branding.get("logo") or {}
     wm_enabled = watermark.get("enabled") and watermark.get("text")
     logo_enabled = logo.get("enabled") and logo.get("path") and Path(logo.get("path", "")).is_file()
-    if not wm_enabled and not logo_enabled:
+    width, height = resolution
+    frame_img = _load_frame(branding.get("frame"), (width, height))
+    if not wm_enabled and not logo_enabled and frame_img is None:
         return None
 
-    width, height = resolution
     from PIL import Image, ImageDraw
-    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    img = frame_img or Image.new("RGBA", (width, height), (0, 0, 0, 0))
 
     if wm_enabled:
         wm_text = str(watermark["text"])[:200]
@@ -986,7 +1014,7 @@ def render_branding_overlay(resolution: tuple[int, int], branding: dict,
             layer.paste(logo_img, (lx, ly))
             img = Image.alpha_composite(img, layer)
 
-    return img if (wm_enabled or logo_enabled) else None
+    return img
 
 
 def ensure_podcast_cover(book: Book, patch: Patch, *, force: bool = False,
