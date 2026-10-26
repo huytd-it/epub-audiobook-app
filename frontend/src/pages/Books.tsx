@@ -25,7 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 
 type ViewMode = "grid" | "table";
-type SortKey = "newest" | "oldest" | "title_asc" | "title_desc" | "progress_desc" | "progress_asc";
+type SortKey = "in_progress" | "newest" | "oldest" | "title_asc" | "title_desc" | "progress_desc" | "progress_asc";
 
 const PAGE_SIZE_OPTIONS: Record<ViewMode, number[]> = {
   grid: [6, 12, 24, 48],
@@ -42,6 +42,7 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
 ];
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
+  { value: "in_progress", label: "Đang làm lên trước" },
   { value: "newest", label: "Mới nhất" },
   { value: "oldest", label: "Cũ nhất" },
   { value: "title_asc", label: "Tiêu đề A → Z" },
@@ -54,6 +55,21 @@ function getProgress(b: Book) {
   const total = b.patches?.total || 0;
   const done = b.patches?.done || 0;
   return total > 0 ? Math.round((done / total) * 100) : 0;
+}
+
+/** Started but not finished: some patch done/queued, or the book itself busy. */
+function isInProgress(b: Book) {
+  const total = b.patches?.total || 0;
+  const done = b.patches?.done || 0;
+  const active = b.patches?.active || 0;
+  return (b.status || "").toLowerCase() === "processing" || active > 0 || (done > 0 && done < total);
+}
+
+function activityTime(b: Book) {
+  // SQLite CURRENT_TIMESTAMP is "YYYY-MM-DD HH:MM:SS" (UTC, no zone) - ISO-ify it.
+  const raw = b.last_activity_at || b.updated_at || b.created_at || "";
+  const t = new Date(raw.includes("T") ? raw : raw.replace(" ", "T") + "Z").getTime();
+  return Number.isNaN(t) ? 0 : t;
 }
 
 function formatDate(value: string) {
@@ -92,7 +108,20 @@ export function Books() {
   // controls
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
-  const [sort, setSort] = useState<SortKey>("newest");
+  const [sort, setSort] = useState<SortKey>(() => {
+    try {
+      const v = localStorage.getItem("books:sort");
+      return SORT_OPTIONS.some((o) => o.value === v) ? (v as SortKey) : "newest";
+    } catch {
+      return "newest";
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("books:sort", sort);
+    } catch {}
+  }, [sort]);
   const [view, setView] = useState<ViewMode>(() => {
     try {
       const v = localStorage.getItem("books:view");
@@ -145,6 +174,8 @@ export function Books() {
     }
     out.sort((a, b) => {
       switch (sort) {
+        case "in_progress":
+          return Number(isInProgress(b)) - Number(isInProgress(a)) || activityTime(b) - activityTime(a);
         case "oldest":
           return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
         case "title_asc":

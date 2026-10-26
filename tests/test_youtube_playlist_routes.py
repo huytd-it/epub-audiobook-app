@@ -941,7 +941,8 @@ def test_playlists_bulk_update_passes_fields_and_marks_partial(make_client, monk
     c = make_client()
     calls = []
 
-    def fake(conn, playlist_ids, *, privacy_status=None, title_prefix="", title_suffix="", description_template=None):
+    def fake(conn, playlist_ids, *, privacy_status=None, title_prefix="", title_suffix="", description_template=None,
+             descriptions=None):
         calls.append((playlist_ids, privacy_status, title_prefix, title_suffix, description_template))
         return _batch(succeeded=1, failed=1)
 
@@ -955,6 +956,22 @@ def test_playlists_bulk_update_passes_fields_and_marks_partial(make_client, monk
     assert response.status_code == 200
     assert calls == [(["PL1", "PL2"], "public", "[X] ", "", "Mô tả chung")]
     assert response.json()["partial"] is True
+
+
+def test_playlists_bulk_update_passes_per_playlist_descriptions(make_client, monkeypatch):
+    c = make_client()
+    calls = []
+
+    def fake(conn, playlist_ids, **kwargs):
+        calls.append(kwargs["descriptions"])
+        return _batch(succeeded=2)
+
+    monkeypatch.setattr(youtube_module, "bulk_update_playlists", fake)
+    response = c.client.post("/youtube/api/playlists/bulk-update", json={
+        "playlist_ids": ["PL1", "PL2"], "descriptions": {"PL1": "Một", "PL2": "Hai"},
+    })
+    assert response.status_code == 200
+    assert calls == [{"PL1": "Một", "PL2": "Hai"}]
 
 
 def test_playlists_bulk_update_rejects_empty_id_list(make_client):
@@ -1184,3 +1201,42 @@ def test_channel_videos_bulk_remove_from_playlist_calls_shared_service_by_video_
 
     assert response.status_code == 200
     assert calls == [("PL1", ["v1"])]
+
+
+def test_playlists_list_reports_updated_at_from_newest_cached_video(make_client, monkeypatch):
+    c = make_client()
+    c.conn.execute(
+        "INSERT INTO youtube_channel_videos (video_id, title, published_at, playlist_ids, synced_at) VALUES (?,?,?,?,?)",
+        ("v1", "Tập 1", "2026-05-01T00:00:00Z", '["PL1"]', "2026-05-02T00:00:00Z"),
+    )
+    c.conn.commit()
+    _patch_service(monkeypatch, _Probe(c.lock), "list_playlists", [
+        {"id": "PL1", "published_at": "2026-01-01T00:00:00Z"},
+        {"id": "PL2", "published_at": "2026-02-01T00:00:00Z"},
+    ])
+    items = {item["id"]: item for item in c.client.get("/youtube/api/playlists").json()["items"]}
+    assert items["PL1"]["updated_at"] == "2026-05-01T00:00:00Z"
+    assert items["PL2"]["updated_at"] == "2026-02-01T00:00:00Z"
+
+
+def test_ai_playlist_description_grounds_prompt_in_cached_video_titles(make_client, monkeypatch):
+    from app import ai_providers
+
+    c = make_client()
+    c.conn.execute(
+        "INSERT INTO youtube_channel_videos (video_id, title, published_at, playlist_ids, synced_at) VALUES (?,?,?,?,?)",
+        ("v1", "Tập 1 - Khởi đầu", "2026-05-01T00:00:00Z", '["PL1"]', "2026-05-02T00:00:00Z"),
+    )
+    c.conn.commit()
+    seen = {}
+    monkeypatch.setattr(ai_providers, "is_configured", lambda provider_id=None: True)
+
+    def fake_generate(**kwargs):
+        seen.update(kwargs)
+        return '{"description": "Mô tả mới"}'
+
+    monkeypatch.setattr(ai_providers, "generate_text", fake_generate)
+    response = c.client.post("/youtube/api/playlists/PL1/ai-description", json={"title": "Truyện A"})
+    assert response.status_code == 200
+    assert response.json()["description"] == "Mô tả mới"
+    assert "Tập 1 - Khởi đầu" in seen["user"] and "Truyện A" in seen["user"]

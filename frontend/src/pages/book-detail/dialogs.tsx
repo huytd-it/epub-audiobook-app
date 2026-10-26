@@ -1381,7 +1381,7 @@ export function ConfigDialog({
                     </div>
                     <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
                       Tạo trực tiếp từ văn bản gốc và thời lượng từng chunk TTS thật — không dùng nhận diện
-                      giọng nói nên không lệch chữ. Đổi cỡ chữ/màu/vị trí không cần tạo lại audio.
+                      giọng nói nên không lệch chữ. Đổi cỡ chữ/màu/vị trí/nền không cần tạo lại audio. Câu dài tự xuống hàng trong khung.
                     </p>
                   </div>
                   <CheckField
@@ -1420,6 +1420,34 @@ export function ConfigDialog({
                       type="color"
                       value={videoConfig.subtitle_color}
                       onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_color: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="Nền phụ đề">
+                    <CheckField
+                      checked={videoConfig.subtitle_background_enabled}
+                      onChange={(value) => setVideoConfig({ ...videoConfig, subtitle_background_enabled: value })}
+                      label="Hiện khung nền"
+                    />
+                  </Field>
+                  <Field label="Màu nền">
+                    <input
+                      className="h-9 w-full cursor-pointer rounded-md border border-border bg-background p-1 disabled:opacity-45"
+                      type="color"
+                      disabled={!videoConfig.subtitle_background_enabled}
+                      value={videoConfig.subtitle_background_color}
+                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_background_color: event.target.value })}
+                    />
+                  </Field>
+                  <Field label={`Độ đậm nền: ${Math.round(videoConfig.subtitle_background_opacity * 100)}%`}>
+                    <input
+                      className="w-full accent-primary disabled:opacity-45"
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      disabled={!videoConfig.subtitle_background_enabled}
+                      value={videoConfig.subtitle_background_opacity}
+                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_background_opacity: Number(event.target.value) })}
                     />
                   </Field>
                 </div>

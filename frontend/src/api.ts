@@ -6,6 +6,9 @@ export type Book = {
   original_filename: string;
   epub_path?: string;
   created_at: string;
+  updated_at?: string;
+  /** Newest updated_at across the book and its patches (library summary only). */
+  last_activity_at?: string;
   /** Descriptive OPF metadata saved at upload — grounds AI generation. */
   author?: string;
   description?: string;
@@ -190,6 +193,10 @@ export type PlaylistItem = {
   itemCount: number;
   privacy: string;
   thumbnail?: string;
+  /** Playlist creation time (YouTube snippet.publishedAt). */
+  published_at?: string;
+  /** Newest of creation time and the latest cached video in the playlist. */
+  updated_at?: string;
 };
 
 export type PlaylistItemDetail = {

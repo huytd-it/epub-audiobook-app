@@ -137,12 +137,12 @@ _HEADER_TEMPLATE = """[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
 PlayResY: {height}
-WrapStyle: 2
+WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{font_name},{font_size},{color},&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,0,{alignment},20,20,{margin_v},1
+Style: Caption,{font_name},{font_size},{color},&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,0,{alignment},{margin_x},{margin_x},{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -166,7 +166,7 @@ def render_ass(
     header = _HEADER_TEMPLATE.format(
         width=width, height=height, font_name=font_name, font_size=font_size,
         color=ass_bgr(color), alignment=_ALIGNMENT_BY_POSITION.get(position, 2),
-        margin_v=margin_v,
+        margin_v=margin_v, margin_x=round(width * 0.06),
     )
     lines = [header]
     for cue in cues:

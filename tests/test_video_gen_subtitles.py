@@ -143,6 +143,35 @@ def test_segment_style_overrides_come_from_config_not_the_sidecar_file(still, na
         assert out.is_file()
 
 
+@requires_ffmpeg
+def test_segment_burns_subtitles_with_background_box_and_long_text(still, narration, tmp_path):
+    """Opaque box + a cue far wider than the frame at a large font: the box
+    force_style must parse and the forced WrapStyle must let it wrap."""
+    _write_sidecar(narration, "Một câu phụ đề rất dài " * 6)
+    out = tmp_path / "out_box.mp4"
+    video_gen.generate_segment(
+        still, narration, str(out), resolution=(320, 240), fps=24,
+        waveform_config={
+            "subtitle_enabled": True, "subtitle_font_size": 96,
+            "subtitle_background_enabled": True, "subtitle_background_color": "#112233",
+            "subtitle_background_opacity": 0.5,
+        },
+    )
+    assert out.is_file() and _has_video_stream(out)
+
+
+def test_subtitle_filter_forces_wrapping_and_background():
+    sidecar_dir = Path(__file__).parent
+    sidecar = sidecar_dir / "test_video_gen_subtitles.py"  # any existing file
+    plain = video_gen._build_subtitle_filter(sidecar, {"subtitle_enabled": True})
+    assert "WrapStyle=0" in plain and "BorderStyle" not in plain
+    boxed = video_gen._build_subtitle_filter(sidecar, {
+        "subtitle_enabled": True, "subtitle_background_enabled": True,
+        "subtitle_background_color": "#112233", "subtitle_background_opacity": 0.5,
+    })
+    assert "BorderStyle=4" in boxed and "BackColour=&H80332211" in boxed
+
+
 # ---------------------------------------------------------------------------
 # generate_background_sequence
 # ---------------------------------------------------------------------------

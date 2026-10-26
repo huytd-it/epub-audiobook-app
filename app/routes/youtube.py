@@ -634,8 +634,62 @@ def api_list_playlists(request: Request, max_results: int = 50):
     _require_connected(request)
     _validate_page_size(max_results)
     items = _call_youtube(request, youtube.list_playlists, max_results=max_results)
+    # The API has no "last modified" for a playlist; the newest video in it
+    # (from the local channel-videos cache) is the closest stand-in.
+    with locked_conn(request) as conn:
+        latest = dict(conn.execute(
+            """SELECT pl.value, MAX(v.published_at) FROM youtube_channel_videos v,
+                      json_each(v.playlist_ids) pl WHERE json_valid(v.playlist_ids) GROUP BY pl.value"""
+        ).fetchall())
+    for item in items:
+        if isinstance(item, dict):
+            stamps = [stamp for stamp in (item.get("published_at"), latest.get(item.get("id"))) if stamp]
+            item["updated_at"] = max(stamps) if stamps else ""
     return JSONResponse({"items": items, "count": len(items),
                          "next_page_token": None, "prev_page_token": None})
+
+
+class _PlaylistAiDescriptionBody(BaseModel):
+    title: str = ""
+    description: str = ""
+    provider: str | None = None
+    model: str | None = None
+
+
+@router.post("/youtube/api/playlists/{playlist_id}/ai-description")
+def api_ai_playlist_description(request: Request, playlist_id: str, body: _PlaylistAiDescriptionBody):
+    """Draft (never apply) an AI description for one playlist. The UI calls this
+    per selected playlist so a bulk run shows progress and survives one failure;
+    the drafts are then pushed together through /playlists/bulk-update."""
+    from app import ai_content, ai_providers, repository
+
+    _require_playlist_id(playlist_id)
+    if not ai_providers.is_configured(body.provider):
+        raise HTTPException(status_code=400, detail="Chưa cấu hình AI (xem mục Generative AI trong .env).")
+    with locked_conn(request) as conn:
+        row = conn.execute(
+            "SELECT book_id FROM youtube_playlist_map WHERE playlist_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (playlist_id,),
+        ).fetchone() or conn.execute(
+            "SELECT id FROM book WHERE automation_config LIKE ? ORDER BY updated_at DESC LIMIT 1",
+            (f'%"{playlist_id}"%',),
+        ).fetchone()
+        book = repository.get_book(conn, row[0]) if row else None
+        book_ctx = ai_content.build_book_context(conn, book) if book else None
+        video_titles = [r[0] for r in conn.execute(
+            "SELECT title FROM youtube_channel_videos WHERE playlist_ids LIKE ? ORDER BY published_at LIMIT 15",
+            (f'%"{playlist_id}"%',),
+        ).fetchall()]
+    try:
+        description = ai_content.generate_playlist_description(
+            title=body.title, current_description=body.description, video_titles=video_titles,
+            book_ctx=book_ctx, provider_id=body.provider, model=body.model,
+        )
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("AI playlist description failed for %s: %s", playlist_id, exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return JSONResponse({"playlist_id": playlist_id, "description": description,
+                         "book_id": book.id if book else None})
 
 
 class _PlaylistUpdateBody(BaseModel):
@@ -948,6 +1002,8 @@ class _PlaylistBulkUpdateBody(BaseModel):
     title_prefix: str = ""
     title_suffix: str = ""
     description_template: str | None = None
+    # Per-playlist descriptions (AI drafts); wins over description_template.
+    descriptions: dict[str, str] | None = None
 
     @field_validator("privacy_status")
     @classmethod
@@ -965,6 +1021,7 @@ def api_bulk_update_playlists(request: Request, body: _PlaylistBulkUpdateBody):
         request, youtube.bulk_update_playlists, body.playlist_ids,
         privacy_status=body.privacy_status, title_prefix=body.title_prefix,
         title_suffix=body.title_suffix, description_template=body.description_template,
+        descriptions=body.descriptions,
     )
     return JSONResponse(_mark_partial(result))
 

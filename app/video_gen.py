@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from app import media_library, music_bed
+from app import media_library, music_bed, subtitle_gen
 from app.audio_mastering import VIDEO_SAMPLE_RATE, VIDEO_TARGET_LUFS, loudnorm_filter
 from app.config import settings
 from app.models import Book, Patch
@@ -254,7 +254,22 @@ def _build_subtitle_filter(subtitle_path: Path, config: dict) -> str | None:
     font_size = config.get("subtitle_font_size", 46)
     color = ass_bgr(config.get("subtitle_color", "#ffffff"))
     alignment = _SUBTITLE_ALIGNMENT_BY_POSITION.get(config.get("subtitle_position", "bottom"), 2)
-    force_style = f"Fontsize={font_size},PrimaryColour={color},Alignment={alignment}"
+    # WrapStyle=0 (smart wrap) + side margins: sidecars written before this
+    # carry WrapStyle 2 (no wrapping), so a big font ran off the frame edges.
+    # libass accepts WrapStyle as a force_style override of [Script Info].
+    margin_x = round(subtitle_gen.PLAY_RES[0] * 0.06)
+    force_style = (
+        f"WrapStyle=0,Fontsize={font_size},PrimaryColour={color},Alignment={alignment},"
+        f"MarginL={margin_x},MarginR={margin_x}"
+    )
+    if config.get("subtitle_background_enabled"):
+        # BorderStyle=4 (libass >= 0.17) draws ONE box in BackColour behind
+        # the whole cue; BorderStyle=3 boxes each wrapped line separately and
+        # the semi-transparent boxes overlap into a darker band between lines.
+        box = ass_bgr(config.get("subtitle_background_color", "#000000"))
+        opacity = float(config.get("subtitle_background_opacity", 0.6))
+        alpha = f"{round((1 - max(0.0, min(1.0, opacity))) * 255):02X}"
+        force_style += f",BorderStyle=4,BackColour=&H{alpha}{box[4:]},Outline=2,Shadow=0"
     filename_arg = _escape_ffmpeg_filter_path(subtitle_path)
     fontsdir_arg = _escape_ffmpeg_filter_path(_SUBTITLE_FONTS_DIR)
     return f"subtitles=filename={filename_arg}:fontsdir={fontsdir_arg}:force_style='{force_style}'"

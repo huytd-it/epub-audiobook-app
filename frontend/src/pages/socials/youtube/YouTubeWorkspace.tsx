@@ -65,6 +65,21 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
+type PlaylistAiDraft = {
+  id: string;
+  title: string;
+  /** Description currently on YouTube, sent to the AI as context. */
+  old: string;
+  description: string;
+  status: "pending" | "running" | "done" | "error";
+  error?: string;
+};
+
+function formatPlaylistDate(value: string) {
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
 /** Columns of the playlist-order sheet; `position` drives the imported order. */
 const PLAYLIST_COLUMNS = ["position", "playlist_item_id", "video_id", "title", "description"];
 
@@ -180,8 +195,8 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
   const [sortMode, setSortMode] = useState<"natural" | "episode" | "manual">("natural");
 
   // Playlist list: search/sort/pagination (left panel) + bulk selection + create/delete
-  const [playlistSort, setPlaylistSort] = useState<"title" | "itemCount">("title");
-  const [playlistSortDir, setPlaylistSortDir] = useState<"asc" | "desc">("asc");
+  const [playlistSort, setPlaylistSort] = useState<"title" | "itemCount" | "published_at" | "updated_at">("updated_at");
+  const [playlistSortDir, setPlaylistSortDir] = useState<"asc" | "desc">("desc");
   const [playlistPage, setPlaylistPage] = useState(1);
   const PLAYLIST_PAGE_SIZE = 10;
   const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
@@ -196,6 +211,11 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
   const [playlistBulkTitleSuffix, setPlaylistBulkTitleSuffix] = useState("");
   const [playlistBulkDescription, setPlaylistBulkDescription] = useState("");
   const [playlistBulkBusy, setPlaylistBulkBusy] = useState(false);
+  // AI mô tả hàng loạt: sinh nháp từng playlist (xem/sửa được) rồi mới đẩy lên YouTube.
+  const [showPlaylistAiModal, setShowPlaylistAiModal] = useState(false);
+  const [playlistAiDrafts, setPlaylistAiDrafts] = useState<PlaylistAiDraft[]>([]);
+  const [playlistAiRunning, setPlaylistAiRunning] = useState(false);
+  const [playlistAiApplying, setPlaylistAiApplying] = useState(false);
 
   // Playlist items: multi-select + pagination + copy/move to another playlist
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
@@ -529,6 +549,62 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
       alert(`Cập nhật hàng loạt playlist thất bại: ${err.message}`);
     } finally {
       setPlaylistBulkBusy(false);
+    }
+  };
+
+  const openPlaylistAiModal = () => {
+    const byId = new Map(playlists.map((p) => [p.id, p]));
+    setPlaylistAiDrafts(
+      selectedPlaylistIds.map((id) => {
+        const pl = byId.get(id);
+        return { id, title: pl?.title || id, old: pl?.description || "", description: "", status: "pending" };
+      })
+    );
+    setShowPlaylistAiModal(true);
+  };
+
+  /** One request per playlist, in turn, so progress shows and one failure doesn't sink the batch. */
+  const runPlaylistAiGenerate = async () => {
+    setPlaylistAiRunning(true);
+    const patch = (id: string, changes: Partial<PlaylistAiDraft>) =>
+      setPlaylistAiDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, ...changes } : d)));
+    try {
+      for (const draft of playlistAiDrafts) {
+        if (draft.status === "done") continue;
+        patch(draft.id, { status: "running", error: undefined });
+        try {
+          const res = await postJson<{ description: string }>(`/youtube/api/playlists/${draft.id}/ai-description`, {
+            title: draft.title,
+            description: draft.old,
+          });
+          patch(draft.id, { status: "done", description: res.description });
+        } catch (err: any) {
+          patch(draft.id, { status: "error", error: err.message });
+        }
+      }
+    } finally {
+      setPlaylistAiRunning(false);
+    }
+  };
+
+  const applyPlaylistAiDrafts = async () => {
+    const ready = playlistAiDrafts.filter((d) => d.status === "done" && d.description.trim());
+    if (ready.length === 0) return;
+    setPlaylistAiApplying(true);
+    try {
+      const result = await postJson<BatchResult>("/youtube/api/playlists/bulk-update", {
+        playlist_ids: ready.map((d) => d.id),
+        descriptions: Object.fromEntries(ready.map((d) => [d.id, d.description.trim()])),
+      });
+      setShowPlaylistAiModal(false);
+      setSelectedPlaylistIds([]);
+      invalidatePlaylists();
+      loadPlaylists(true);
+      alert(`Đã cập nhật mô tả ${result.succeeded}/${result.requested} playlist` + (result.failed ? `, ${result.failed} lỗi` : "") + ".");
+    } catch (err: any) {
+      alert(`Cập nhật mô tả playlist thất bại: ${err.message}`);
+    } finally {
+      setPlaylistAiApplying(false);
     }
   };
 
@@ -957,9 +1033,17 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
 
   const sortedPlaylists = useMemo(() => {
     const dir = playlistSortDir === "asc" ? 1 : -1;
-    return [...filteredPlaylists].sort((a, b) =>
-      playlistSort === "itemCount" ? (a.itemCount - b.itemCount) * dir : a.title.localeCompare(b.title) * dir
-    );
+    return [...filteredPlaylists].sort((a, b) => {
+      if (playlistSort === "itemCount") return ((a.itemCount || 0) - (b.itemCount || 0)) * dir;
+      if (playlistSort === "published_at" || playlistSort === "updated_at") {
+        // ISO-8601 strings compare chronologically; missing dates always sink.
+        const x = a[playlistSort] || "";
+        const y = b[playlistSort] || "";
+        if (!x || !y) return x ? -1 : y ? 1 : 0;
+        return x.localeCompare(y) * dir;
+      }
+      return a.title.localeCompare(b.title) * dir;
+    });
   }, [filteredPlaylists, playlistSort, playlistSortDir]);
 
   const playlistPageCount = Math.max(1, Math.ceil(sortedPlaylists.length / PLAYLIST_PAGE_SIZE));
@@ -1764,6 +1848,12 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
                     Tạo playlist
                   </Button>
                   {selectedPlaylistIds.length > 0 && (
+                    <Button variant="outline" size="sm" className="h-8 text-xs font-semibold" onClick={openPlaylistAiModal}>
+                      <Sparkles className="h-3.5 w-3.5" />
+                      AI tạo mô tả ({selectedPlaylistIds.length})
+                    </Button>
+                  )}
+                  {selectedPlaylistIds.length > 0 && (
                     <Button variant="default" size="sm" className="h-8 text-xs font-semibold" onClick={() => setShowPlaylistBulkUpdateModal(true)}>
                       <Layers className="h-3.5 w-3.5" />
                       Cập nhật hàng loạt ({selectedPlaylistIds.length})
@@ -1792,6 +1882,9 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
                   className="h-9 rounded-md border border-input bg-background px-3 text-xs font-medium shrink-0 sm:w-48"
                   aria-label="Sắp xếp playlist"
                 >
+                  <option value="updated_at:desc">Cập nhật mới nhất</option>
+                  <option value="published_at:desc">Tạo mới nhất</option>
+                  <option value="published_at:asc">Tạo cũ nhất</option>
                   <option value="title:asc">Tên A → Z</option>
                   <option value="title:desc">Tên Z → A</option>
                   <option value="itemCount:desc">Nhiều video nhất</option>
@@ -1883,6 +1976,19 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
                                 <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded border border-border break-all">
                                   {pl.id}
                                 </span>
+                                {pl.published_at && (
+                                  <span className="text-[10px] text-muted-foreground" title="Ngày tạo playlist">
+                                    Tạo {formatPlaylistDate(pl.published_at)}
+                                  </span>
+                                )}
+                                {pl.updated_at && pl.updated_at !== pl.published_at && (
+                                  <span
+                                    className="text-[10px] text-muted-foreground"
+                                    title="Video mới nhất trong playlist (theo dữ liệu đồng bộ Video kênh)"
+                                  >
+                                    · Cập nhật {formatPlaylistDate(pl.updated_at)}
+                                  </span>
+                                )}
                                 <a
                                   href={`https://www.youtube.com/playlist?list=${pl.id}`}
                                   target="_blank"
@@ -3050,6 +3156,73 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
               <Button variant="outline" onClick={() => setShowCreatePlaylistModal(false)}>Hủy</Button>
               <Button onClick={handleCreatePlaylist} disabled={creatingPlaylist || !newPlaylistTitle.trim()}>
                 {creatingPlaylist ? "Đang tạo..." : "Tạo playlist"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* AI playlist descriptions (bulk) */}
+      {showPlaylistAiModal && (
+        <Dialog open={showPlaylistAiModal} onOpenChange={(open) => !playlistAiRunning && setShowPlaylistAiModal(open)}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                AI tạo mô tả cho {playlistAiDrafts.length} playlist
+              </DialogTitle>
+            </DialogHeader>
+            <p className="text-[11px] text-muted-foreground">
+              AI dựa vào tên playlist, mô tả hiện tại, tên các video (theo dữ liệu đồng bộ Video kênh) và thông tin sách nếu
+              playlist gắn với một sách. Bản nháp sửa được trước khi áp dụng; chỉ playlist đã tạo xong mới được cập nhật.
+            </p>
+            <div className="max-h-[60vh] space-y-3 overflow-y-auto py-1 pr-1">
+              {playlistAiDrafts.map((d) => (
+                <div key={d.id} className="space-y-1.5 rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 break-words text-xs font-semibold">{d.title}</div>
+                    <span
+                      className={`shrink-0 font-mono text-[10px] ${
+                        d.status === "done" ? "text-emerald-600" : d.status === "error" ? "text-destructive" : "text-muted-foreground"
+                      }`}
+                    >
+                      {d.status === "pending" ? "Chờ" : d.status === "running" ? "Đang tạo..." : d.status === "done" ? "Xong" : "Lỗi"}
+                    </span>
+                  </div>
+                  {d.old && <div className="line-clamp-2 text-[11px] text-muted-foreground">Hiện tại: {d.old}</div>}
+                  {d.status === "error" && <div className="text-[11px] text-destructive">{d.error}</div>}
+                  {d.status === "done" && (
+                    <Textarea
+                      rows={4}
+                      className="text-xs"
+                      value={d.description}
+                      onChange={(e) =>
+                        setPlaylistAiDrafts((prev) => prev.map((x) => (x.id === d.id ? { ...x, description: e.target.value } : x)))
+                      }
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" disabled={playlistAiRunning} onClick={() => setShowPlaylistAiModal(false)}>
+                Đóng
+              </Button>
+              <Button variant="outline" disabled={playlistAiRunning || playlistAiApplying} onClick={runPlaylistAiGenerate}>
+                <Sparkles className="h-3.5 w-3.5" />
+                {playlistAiRunning
+                  ? `Đang tạo ${playlistAiDrafts.filter((d) => d.status === "done").length}/${playlistAiDrafts.length}...`
+                  : playlistAiDrafts.some((d) => d.status === "done" || d.status === "error")
+                    ? "Tạo tiếp / thử lại lỗi"
+                    : "Tạo mô tả"}
+              </Button>
+              <Button
+                disabled={playlistAiRunning || playlistAiApplying || !playlistAiDrafts.some((d) => d.status === "done" && d.description.trim())}
+                onClick={applyPlaylistAiDrafts}
+              >
+                {playlistAiApplying
+                  ? "Đang cập nhật..."
+                  : `Áp dụng ${playlistAiDrafts.filter((d) => d.status === "done" && d.description.trim()).length} mô tả`}
               </Button>
             </DialogFooter>
           </DialogContent>

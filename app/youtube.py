@@ -1242,14 +1242,20 @@ def list_playlists(conn: sqlite3.Connection, max_results: int = 50) -> list[dict
     items = []
     page_token = None
     while True:
-        params = {"part": "snippet", "mine": True, "maxResults": max_results}
+        # Extra parts cost no extra quota (playlists.list is 1 unit per call).
+        params = {"part": "snippet,contentDetails,status", "mine": True, "maxResults": max_results}
         if page_token:
             params["pageToken"] = page_token
         resp = _execute(service.playlists().list(**params))
         for item in resp.get("items", []):
             snippet = item.get("snippet") or {}
+            thumbs = snippet.get("thumbnails") or {}
             item["title"] = snippet.get("title", "")
             item["description"] = snippet.get("description", "")
+            item["itemCount"] = (item.get("contentDetails") or {}).get("itemCount", 0)
+            item["privacy"] = (item.get("status") or {}).get("privacyStatus", "private")
+            item["thumbnail"] = next((thumbs[k]["url"] for k in ("medium", "high", "default") if k in thumbs), "")
+            item["published_at"] = snippet.get("publishedAt", "")
             items.append(item)
         page_token = resp.get("nextPageToken")
         if not page_token:
@@ -2728,8 +2734,12 @@ def bulk_update_playlists(
     title_prefix: str = "",
     title_suffix: str = "",
     description_template: str | None = None,
+    descriptions: dict[str, str] | None = None,
 ) -> dict:
     """Apply the same privacy/title-affix/description change to several playlists.
+
+    `descriptions` sets a different description per playlist id (e.g. AI drafts)
+    and wins over `description_template` for the ids it names.
 
     `title_prefix`/`title_suffix` are prepended/appended to each playlist's current
     title (not a replacement); `description_template` replaces the description
@@ -2752,12 +2762,14 @@ def bulk_update_playlists(
             snippet = playlist.get("snippet") or {}
             status = playlist.get("status") or {}
             new_title = f"{title_prefix}{snippet.get('title', '')}{title_suffix}"[:150]
+            new_description = (descriptions or {}).get(playlist_id)
+            if new_description is None:
+                new_description = description_template if description_template is not None else snippet.get("description", "")
             body = {
                 "id": playlist_id,
                 "snippet": {
                     "title": new_title,
-                    "description": description_template if description_template is not None
-                    else snippet.get("description", ""),
+                    "description": new_description,
                 },
                 "status": {"privacyStatus": privacy_status or status.get("privacyStatus", "private")},
             }

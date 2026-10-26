@@ -184,6 +184,9 @@ export type VideoConfig = {
   subtitle_font_size: number;
   subtitle_color: string;
   subtitle_position: "top" | "center" | "bottom";
+  subtitle_background_enabled: boolean;
+  subtitle_background_color: string;
+  subtitle_background_opacity: number;
   /** Tự động thêm text overlay tên giọng đọc + TTS model dưới mỗi khung hình video. */
   narrator_credit_enabled: boolean;
 };

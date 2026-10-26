@@ -291,6 +291,50 @@ def run_task(conn, book, task_name: str, *, params: dict | None = None,
     return summary
 
 
+PLAYLIST_DESCRIPTION_LIMIT = 5000  # YouTube's playlist description cap
+
+
+def generate_playlist_description(
+    *, title: str, current_description: str = "", video_titles: list[str] | None = None,
+    book_ctx: dict[str, Any] | None = None, provider_id: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Draft a description for one YouTube playlist (not saved anywhere).
+
+    Grounded in the linked book's context when the playlist belongs to a book,
+    otherwise only in what the channel itself shows: the playlist title, its
+    current description and the titles of videos already in it.
+    """
+    from app import ai_providers as _providers
+
+    lines = [f"- Tên playlist: {title or '(chưa có)'}"]
+    if current_description.strip():
+        lines.append(f"- Mô tả hiện tại: {current_description.strip()[:1500]}")
+    titles = [t for t in (video_titles or []) if t][:15]
+    if titles:
+        lines.append(f"- Một số video trong playlist: {'; '.join(titles)}")
+    brief = "\n".join(lines)
+    if book_ctx:
+        brief += "\n\nThông tin sách gốc của playlist:\n" + context_to_brief(book_ctx)
+    system = (
+        "Bạn là biên tập viên nội dung YouTube cho kênh sách nói. Luôn viết bằng Tiếng Việt. "
+        "Trả về JSON object duy nhất, không markdown."
+    )
+    user = (
+        "Viết mô tả cho playlist YouTube sau:\n"
+        f"{brief}\n\n"
+        "Yêu cầu: 3-6 câu giới thiệu hấp dẫn nội dung + lời mời nghe trọn bộ và theo dõi kênh, "
+        "≤ 800 ký tự, không bịa tên sách/tác giả/nhân vật không có trong thông tin trên, "
+        "không chèn link. JSON: {\"description\": \"...\"}."
+    )
+    raw = _providers.generate_text(system=system, user=user, provider_id=provider_id, model=model,
+                                   max_tokens=800, response_format="json")
+    description = str(_parse_json_object(raw).get("description") or "").strip()
+    if not description:
+        raise RuntimeError("AI không trả về mô tả")
+    return description[:PLAYLIST_DESCRIPTION_LIMIT]
+
+
 def generate_book_thumbnail(conn, book, *, prompt: str | None = None,
                             provider_id: str | None = None, model: str | None = None,
                             style: str | None = None, size: str = "1280x720",

@@ -74,6 +74,14 @@ def _book_summary(conn, book) -> dict:
     patches = repository.list_patches(conn, book.id)
     return {
         **asdict(book),
+        # Newest touch on the book or any of its patches - what "being worked
+        # on" means for the library's in-progress sort.
+        # Rows mix ISO (with "T") and SQLite CURRENT_TIMESTAMP (with " ")
+        # stamps, so compare on a normalised key.
+        "last_activity_at": max(
+            [book.updated_at or book.created_at or ""] + [p.updated_at or "" for p in patches],
+            key=lambda stamp: stamp.replace(" ", "T"),
+        ),
         "patches": {
             "total": len(patches),
             "done": sum(p.status == "done" for p in patches),

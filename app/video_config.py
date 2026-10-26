@@ -55,6 +55,9 @@ VIDEO_DEFAULTS = {
     "subtitle_font_size": 46,
     "subtitle_color": "#ffffff",
     "subtitle_position": "bottom",
+    "subtitle_background_enabled": False,
+    "subtitle_background_color": "#000000",
+    "subtitle_background_opacity": 0.6,
     # Tự động thêm text overlay tên giọng đọc + TTS model dưới mỗi khung hình.
     "narrator_credit_enabled": False,
 }
@@ -150,7 +153,7 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("quality must be 18-28")
     if not isinstance(result["concurrency"], int) or result["concurrency"] not in {1, 2, 3, 4, 6, 8}:
         raise ValueError("invalid concurrency")
-    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool) or not isinstance(result["waveform_enabled"], bool) or not isinstance(result["subtitle_enabled"], bool) or not isinstance(result["narrator_credit_enabled"], bool):
+    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool) or not isinstance(result["waveform_enabled"], bool) or not isinstance(result["subtitle_enabled"], bool) or not isinstance(result["narrator_credit_enabled"], bool) or not isinstance(result["subtitle_background_enabled"], bool):
         raise ValueError("enhancement flags must be boolean")
     if not isinstance(result["crossfade_seconds"], (int, float)) or not 0 <= result["crossfade_seconds"] <= 3:
         raise ValueError("crossfade must be 0-3 seconds")
@@ -167,7 +170,9 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("invalid subtitle position")
     if not isinstance(result["subtitle_font_size"], int) or not 20 <= result["subtitle_font_size"] <= 96:
         raise ValueError("subtitle font size must be 20-96")
-    for field in ("waveform_color", "waveform_background_color", "subtitle_color"):
+    if not isinstance(result["subtitle_background_opacity"], (int, float)) or not 0 <= result["subtitle_background_opacity"] <= 1:
+        raise ValueError("subtitle background opacity must be 0-1")
+    for field in ("waveform_color", "waveform_background_color", "subtitle_color", "subtitle_background_color"):
         color = result[field]
         if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
             raise ValueError(f"invalid {field}")

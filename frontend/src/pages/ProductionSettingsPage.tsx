@@ -1034,6 +1034,34 @@ export function ProductionSettingsPage() {
                       onChange={(event) => setVideo({ subtitle_color: event.target.value })}
                     />
                   </Field>
+                  <Field label="Nền phụ đề">
+                    <CheckField
+                      checked={video.subtitle_background_enabled}
+                      onChange={(value) => setVideo({ subtitle_background_enabled: value })}
+                      label="Hiện khung nền"
+                    />
+                  </Field>
+                  <Field label="Màu nền">
+                    <input
+                      className="h-9 w-full cursor-pointer rounded-md border border-border bg-background p-1 disabled:opacity-45"
+                      type="color"
+                      disabled={!video.subtitle_background_enabled}
+                      value={video.subtitle_background_color}
+                      onChange={(event) => setVideo({ subtitle_background_color: event.target.value })}
+                    />
+                  </Field>
+                  <Field label={`Độ đậm nền: ${Math.round(video.subtitle_background_opacity * 100)}%`}>
+                    <input
+                      className="w-full accent-primary disabled:opacity-45"
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      disabled={!video.subtitle_background_enabled}
+                      value={video.subtitle_background_opacity}
+                      onChange={(event) => setVideo({ subtitle_background_opacity: Number(event.target.value) })}
+                    />
+                  </Field>
                 </div>
               </section>
             </div>
