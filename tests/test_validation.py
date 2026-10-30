@@ -646,3 +646,26 @@ def test_roman_numerals_are_not_reported_as_abbreviations():
 def test_abbreviations_show_up_as_highlight_spans():
     spans = analyze_chapter_spans("Anh ấy sống ở TP.HCM từ nhỏ.")
     assert any(span.code == "abbreviation" and span.severity == "warning" for span in spans)
+
+
+def _titled(*titles: str) -> list[ParsedChapter]:
+    return [ParsedChapter(title=title, text=f"body {title}") for title in titles]
+
+
+def test_sort_chapters_by_number_reorders_and_keeps_unnumbered_attached():
+    from app.validation import sort_chapters_by_number
+
+    chapters = _titled("Lời mở đầu", "Chương 2", "Chương 3", "Ngoại truyện", "Chương 1")
+    result, reordered = sort_chapters_by_number(chapters)
+    assert reordered is True
+    assert [c.title for c in result] == ["Lời mở đầu", "Chương 1", "Chương 2", "Chương 3", "Ngoại truyện"]
+
+
+def test_sort_chapters_by_number_keeps_order_when_sorted_or_ambiguous():
+    from app.validation import sort_chapters_by_number
+
+    ordered = _titled("Chương 1", "Chương 2")
+    assert sort_chapters_by_number(ordered) == (ordered, False)
+    # Numbering restarts per volume -> duplicates -> leave parse order alone.
+    restarted = _titled("Chương 2", "Chương 1", "Chương 1")
+    assert sort_chapters_by_number(restarted) == (restarted, False)

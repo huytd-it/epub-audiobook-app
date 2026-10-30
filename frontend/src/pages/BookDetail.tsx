@@ -711,10 +711,16 @@ export function BookDetail() {
     if (reimporting) return;
     setReimporting(true);
     try {
-      const result = await api<{ chapters: number }>(`/books/${bookId}/chapters/reimport`, { method: "POST" });
+      const result = await api<{ chapters: number; reordered?: boolean }>(`/books/${bookId}/chapters/reimport`, {
+        method: "POST",
+      });
       setSelectedIds([]);
       setReimportOpen(false);
-      showToast(`Đã nạp lại ${result.chapters} chương từ EPUB gốc. Hãy xây dựng patch mới.`);
+      showToast(
+        `Đã nạp lại ${result.chapters} chương từ EPUB gốc${
+          result.reordered ? ", đã tự sắp xếp lại theo số chương" : ""
+        }. Hãy xây dựng patch mới.`
+      );
       await Promise.all([refresh(), chapterVal.reload()]);
     } catch (err) {
       showToast(errorText(err));
@@ -729,8 +735,12 @@ export function BookDetail() {
     try {
       const form = new FormData();
       form.append("epub_file", sourceFile);
-      const result = await postForm<{ chapters: number }>(`/books/${bookId}/source`, form);
-      showToast(`Đã tải EPUB mới với ${result.chapters} chương. Bạn có thể xây dựng patch mới.`);
+      const result = await postForm<{ chapters: number; reordered?: boolean }>(`/books/${bookId}/source`, form);
+      showToast(
+        `Đã tải EPUB mới với ${result.chapters} chương${
+          result.reordered ? ", đã tự sắp xếp lại theo số chương" : ""
+        }. Bạn có thể xây dựng patch mới.`
+      );
       setSourceOpen(false);
       setSourceFile(undefined);
       setTab("chapters");

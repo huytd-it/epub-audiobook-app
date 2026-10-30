@@ -13,6 +13,9 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import asdict, dataclass, field
+from typing import TypeVar
+
+T = TypeVar("T")
 
 # Severity ordering matters for rollups: error > warning > info.
 ERROR = "error"
@@ -82,6 +85,34 @@ def detect_chapter_number(title: str | None) -> int | None:
             except ValueError:
                 return None
     return None
+
+
+def sort_chapters_by_number(chapters: list[T]) -> tuple[list[T], bool]:
+    """Reorder parsed chapters by the chapter number detected in their titles.
+
+    EPUB spine order is sometimes wrong (chapters appended late, files out of order).
+    A chapter with no detectable number (prologue, interlude) stays glued behind the
+    numbered chapter it followed — or at the front when nothing numbered precedes it.
+    When a number repeats (numbering restarts per volume) the order is ambiguous, so the
+    parse order is kept untouched. Returns (chapters, reordered).
+    """
+    numbers = [detect_chapter_number(getattr(chapter, "title", None)) for chapter in chapters]
+    detected = [number for number in numbers if number is not None]
+    if len(detected) < 2 or len(set(detected)) != len(detected):
+        return chapters, False
+
+    keys: list[tuple[int, int, int]] = []
+    previous = -1
+    for index, number in enumerate(numbers):
+        if number is not None:
+            previous = number
+            keys.append((number, 0, index))
+        else:
+            keys.append((previous, 1, index))
+    order = sorted(range(len(chapters)), key=keys.__getitem__)
+    if order == list(range(len(chapters))):
+        return chapters, False
+    return [chapters[index] for index in order], True
 
 
 def split_chapter_title(title: str | None) -> tuple[int | None, str]:

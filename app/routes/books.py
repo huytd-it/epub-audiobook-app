@@ -17,6 +17,7 @@ from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
 from app.normalization import normalize_text
+from app.validation import sort_chapters_by_number
 from app.youtube_metadata import get_book_youtube_config, save_book_youtube_config
 from app.video_config import save_book_video_config, validate_video_config
 from app.audio_merge import DEFAULT_CHAPTER_PAUSE_MS, DEFAULT_CHUNK_PAUSE_MS
@@ -1198,6 +1199,7 @@ async def reimport_book_chapters(request: Request, book_id: int):
     chapters = await asyncio.to_thread(parse_epub, epub_path)
     if not chapters:
         raise HTTPException(status_code=400, detail="EPUB không chứa chương hợp lệ.")
+    chapters, reordered = sort_chapters_by_number(chapters)
 
     with locked_conn(request) as conn:
         try:
@@ -1206,7 +1208,7 @@ async def reimport_book_chapters(request: Request, book_id: int):
             raise HTTPException(status_code=404, detail="Không tìm thấy sách.") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return JSONResponse({"chapters": len(chapters)})
+    return JSONResponse({"chapters": len(chapters), "reordered": reordered})
 
 
 @router.post("/books/{book_id}/source")
@@ -1237,6 +1239,7 @@ async def upload_book_source(
         chapters = await asyncio.to_thread(parse_epub, str(temporary_path))
         if not chapters:
             raise HTTPException(status_code=400, detail="EPUB không chứa chương hợp lệ.")
+        chapters, reordered = sort_chapters_by_number(chapters)
 
         installed_file = False
         try:
@@ -1298,7 +1301,9 @@ async def upload_book_source(
     finally:
         temporary_path.unlink(missing_ok=True)
 
-    return JSONResponse({"status": "uploaded", "chapters": len(chapters), "filename": filename})
+    return JSONResponse(
+        {"status": "uploaded", "chapters": len(chapters), "filename": filename, "reordered": reordered}
+    )
 
 
 @router.post("/books/{book_id}/voice-select")
