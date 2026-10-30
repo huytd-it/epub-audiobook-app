@@ -123,8 +123,7 @@ $models = @(
     @{ Index = 3; Id = "vieneu-fast"; Name = "VieNeu fast (giong preset)" ; Module = "vieneu";  Extra = "vieneu-fast"; Detail = "Package VieNeu va voice presets." },
     @{ Index = 4; Id = "edge-tts";   Name = "Edge TTS (online)"          ; Module = "edge_tts"; Extra = "light-tts";   Detail = "Dich vu Edge TTS truc tuyen." },
     @{ Index = 5; Id = "gtts";       Name = "Google Translate TTS (online)"; Module = "gtts"; Extra = "light-tts"; Detail = "Dich vu Google Translate TTS truc tuyen." },
-    @{ Index = 6; Id = "zerotts";    Name = "ZeroTTS (giong preset)"     ; Module = "zerotts"; Extra = "zerotts";     Detail = "Weights ONNX va voice pack cuc bo (chay scripts/download_zerotts.py)." },
-    @{ Index = 7; Id = "f5-vivoice"; Name = "F5-TTS Vietnamese ViVoice"  ; Module = "f5_tts";  Extra = "f5-vivoice";  Detail = "Weights tu Hugging Face (hynt/F5-TTS-Vietnamese-ViVoice)." }
+    @{ Index = 6; Id = "zerotts";    Name = "ZeroTTS (giong preset)"     ; Module = "zerotts"; Extra = "zerotts";     Detail = "Weights ONNX va voice pack cuc bo (chay scripts/download_zerotts.py)." }
 )
 
 Write-Host ""

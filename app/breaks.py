@@ -2,8 +2,7 @@
 
 Nền tảng: `docs/toi_uu_tts.md` mục 3 (Cách 1 — rule-based) và mục 6 (mức B0–B3).
 
-Mọi engine đang dùng (VoxCPM2, OmniVoice, Confucius, F5-ViVoice, VieNeu, ZeroTTS,
-Edge, gTTS) đều nhận **plain text**, không có SSML, nên "break tag" duy nhất mà
+Mọi engine đang dùng (VoxCPM2, OmniVoice, VieNeu, ZeroTTS, Edge, gTTS) đều nhận **plain text**, không có SSML, nên "break tag" duy nhất mà
 chúng hiểu là *dấu câu*. Vì vậy predictor ở đây chỉ chèn `,` `;` `...` — không sinh
 thẻ XML, không đổi mặt chữ, không xóa hay đảo từ.
 

@@ -23,13 +23,11 @@ _jobs: dict[str, dict] = {}
 # Tiến trình render giọng mẫu sang thư viện offline (riêng với _jobs tải model).
 _offline_jobs: dict[str, dict] = {}
 
-# Pip distribution đứng sau mỗi model local. None = checkout repo ngoài pip
-# (Confucius4), không có version để hiển thị/cập nhật.
+# Pip distribution đứng sau mỗi model local. None = không qua pip, không có
+# version để hiển thị/cập nhật.
 _MODEL_PACKAGE_DISTS: dict[str, str | None] = {
     "voxcpm2": "voxcpm",
     "omnivoice": "omnivoice",
-    "confucius4": None,
-    "f5-vivoice": "f5-tts",
     "vieneu-fast": "vieneu",
     "zerotts": "zerotts",
     "edge-tts": "edge-tts",
@@ -66,32 +64,6 @@ def _zero_status() -> dict:
             "package": "zerotts", "package_version": _package_version("zerotts")}
 
 
-def _f5_status() -> dict:
-    files = ("model_last.pt", "config.json")
-    try:
-        from huggingface_hub import try_to_load_from_cache
-        cached = [try_to_load_from_cache("hynt/F5-TTS-Vietnamese-ViVoice", name) for name in files]
-        ready = all(isinstance(path, str) and Path(path).is_file() for path in cached)
-        paths = [Path(path) for path in cached if isinstance(path, str)]
-        return {"managed": True, "ready": ready, "path": str(paths[0].parent) if paths else "",
-                "size_bytes": sum(path.stat().st_size for path in paths if path.is_file()),
-                "detail": "Checkpoint và vocabulary từ Hugging Face cache.",
-                "package": "f5-tts", "package_version": _package_version("f5-tts")}
-    except ImportError:
-        return {"managed": True, "ready": False, "path": "", "size_bytes": 0,
-                "detail": "Cần cài extra f5-vivoice trước khi tải weights.",
-                "package": "f5-tts", "package_version": _package_version("f5-tts")}
-
-
-def _confucius_status() -> dict:
-    root = Path(settings.confucius4_repo_dir) if settings.confucius4_repo_dir else None
-    ready = bool(root and (root / "confuciustts").is_dir())
-    return {"managed": False, "ready": ready, "path": str(root) if root else "",
-            "size_bytes": _dir_size(root) if root else 0,
-            "detail": "Cần checkout upstream và đặt CONFUCIUS4_REPO_DIR; upstream có thêm dependencies/checkpoints.",
-            "package": None, "package_version": None}
-
-
 def _package_status(module: str, extra: str, detail: str, dist: str | None = None) -> dict:
     ready = find_spec(module) is not None
     return {"managed": True, "ready": ready, "path": "", "size_bytes": 0,
@@ -108,8 +80,6 @@ def list_models() -> list[dict]:
         "edge-tts": _package_status("edge_tts", "light-tts", "Dịch vụ Edge TTS trực tuyến.", "edge-tts"),
         "gtts": _package_status("gtts", "light-tts", "Dịch vụ Google Translate TTS trực tuyến.", "gtts"),
         "zerotts": _zero_status(),
-        "f5-vivoice": _f5_status(),
-        "confucius4": _confucius_status(),
     }
     result = []
     for model in list_tts_models():
@@ -145,19 +115,6 @@ def _commands(model_id: str, update: bool) -> list[list[str]]:
             ensure_pip,
             [sys.executable, "-m", "pip", "install", *( ["--upgrade"] if update else []), ".[zerotts]"],
             [sys.executable, str(_PROJECT_ROOT / "scripts" / "download_zerotts.py")],
-        ]
-    if model_id == "f5-vivoice":
-        code = (
-            "from huggingface_hub import hf_hub_download; "
-            "repo='hynt/F5-TTS-Vietnamese-ViVoice'; "
-            f"force={update!r}; "
-            "[print(hf_hub_download(repo, name, force_download=force)) "
-            "for name in ('model_last.pt','config.json')]"
-        )
-        return [
-            ensure_pip,
-            [sys.executable, "-m", "pip", "install", *( ["--upgrade"] if update else []), ".[f5-vivoice]"],
-            [sys.executable, "-c", code],
         ]
     raise ValueError("Model này không có quy trình tải tự động trong ứng dụng")
 
@@ -347,7 +304,7 @@ def sample_voice_file(model_id: str, voice_id: str) -> Path:
 # nghe thử ở Playground; pipeline sách/production giữ nguyên tts_options của
 # riêng từng sách nên cấu hình ở đây không làm đổi giọng sách đang chạy.
 
-_MODEL_OPTION_MODELS = ("voxcpm2", "omnivoice", "confucius4", "f5-vivoice", "vieneu-fast", "zerotts")
+_MODEL_OPTION_MODELS = ("voxcpm2", "omnivoice", "vieneu-fast", "zerotts")
 
 
 def _model_options_file() -> Path:

@@ -30,12 +30,11 @@ def test_install_status_carries_package_version_keys(tmp_path, monkeypatch):
 
 def test_model_options_roundtrip_and_clamp(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_root", str(tmp_path))
-    assert tts_model_manager.get_model_options("f5-vivoice")["speed"] == 1.0
+    assert tts_model_manager.get_model_options("omnivoice")["num_step"] == 32
     saved = tts_model_manager.save_model_options(
-        "f5-vivoice", {"speed": 99, "device": "cuda", "bogus": 1})
-    assert saved == {"speed": 2.0, "nfe_step": 32, "cfg_strength": 2.0,
-                     "sway_sampling_coef": -1.0, "device": "cuda"}
-    assert tts_model_manager.get_model_options("f5-vivoice") == saved
+        "omnivoice", {"num_step": 99, "language": "en", "bogus": 1})
+    assert saved == {"num_step": 64, "guidance_scale": 2.0, "language": "en"}
+    assert tts_model_manager.get_model_options("omnivoice") == saved
 
 
 def test_model_options_empty_schema_and_unknown_model(tmp_path, monkeypatch):

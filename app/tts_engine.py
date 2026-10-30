@@ -95,26 +95,6 @@ _CAP_LOCAL_VOICES = {
     "online": False,
 }
 
-_CONFUCIUS_OPTIONS = [
-    {"key": "lang", "label": "Ngôn ngữ", "type": "select", "default": "vi",
-     "choices": [{"value": "vi", "label": "Tiếng Việt"}, {"value": "zh", "label": "Chinese"},
-                 {"value": "en", "label": "English"}, {"value": "ja", "label": "Japanese"},
-                 {"value": "ko", "label": "Korean"}, {"value": "th", "label": "Thai"}]},
-    {"key": "device", "label": "Thiết bị", "type": "select", "default": "auto",
-     "choices": [{"value": "auto", "label": "Tự động"}, {"value": "cuda", "label": "CUDA"},
-                 {"value": "cpu", "label": "CPU"}]},
-]
-
-_F5_VIVOICE_OPTIONS = [
-    {"key": "speed", "label": "Tốc độ", "type": "number", "default": 1.0, "min": 0.3, "max": 2.0, "step": 0.05},
-    {"key": "nfe_step", "label": "Số bước suy luận", "type": "number", "default": 32, "min": 4, "max": 128, "step": 1},
-    {"key": "cfg_strength", "label": "CFG strength", "type": "number", "default": 2.0, "min": 0.0, "max": 10.0, "step": 0.1},
-    {"key": "sway_sampling_coef", "label": "Sway sampling", "type": "number", "default": -1.0, "min": -1.0, "max": 2.0, "step": 0.05},
-    {"key": "device", "label": "Thiết bị", "type": "select", "default": "auto",
-     "choices": [{"value": "auto", "label": "Tự động"}, {"value": "cuda", "label": "CUDA"},
-                 {"value": "cpu", "label": "CPU"}]},
-]
-
 # Per-model tuning for OmniVoice (verified against omnivoice 0.2.1's generate()
 # + OmniVoiceGenerationConfig): num_step/guidance_scale ride **kwargs into the
 # config; language="vi" reads slightly better than language-agnostic mode.
@@ -164,14 +144,6 @@ _MODELS = {
     "omnivoice": TTSModel(
         "omnivoice", "OmniVoice", "k2-fsa/OmniVoice", "omnivoice", 24000, capabilities=_CAP_LOCAL,
         options_schema=_OMNIVOICE_OPTIONS,
-    ),
-    "confucius4": TTSModel(
-        "confucius4", "Confucius4-TTS", "netease-youdao/Confucius4-TTS", "confuciustts", 22050,
-        capabilities=_CAP_LOCAL, options_schema=_CONFUCIUS_OPTIONS,
-    ),
-    "f5-vivoice": TTSModel(
-        "f5-vivoice", "F5-TTS Vietnamese ViVoice", "hynt/F5-TTS-Vietnamese-ViVoice", "f5-tts", 24000,
-        capabilities=_CAP_LOCAL, options_schema=_F5_VIVOICE_OPTIONS,
     ),
     "vieneu-fast": TTSModel(
         "vieneu-fast", "VieNeu V3 Turbo", "pnnbao-ump/VieNeu-TTS-v3-Turbo", "vieneu", 48000,
@@ -539,8 +511,6 @@ def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
     factories = {
         "voxcpm2": VoxCPMEngine,
         "omnivoice": OmniVoiceEngine,
-        "confucius4": Confucius4Engine,
-        "f5-vivoice": F5ViVoiceEngine,
         "vieneu-fast": VieNeuFastEngine,
         "zerotts": ZeroTTSEngine,
         "edge-tts": EdgeTTSEngine,
@@ -859,137 +829,6 @@ class OmniVoiceEngine:
         audio = self._model.generate(text=text, **_supported_kwargs(self._model, wanted), **kwargs)
         audio = np.asarray(audio[0] if isinstance(audio, (list, tuple)) else audio, dtype=np.float32)
         return audio.reshape(-1)
-
-
-class Confucius4Engine:
-    """Confucius4 zero-shot multilingual cloning.
-
-    The upstream API intentionally has a compact inference surface: language,
-    device and the repository inference YAML.  It does not need a reference
-    transcript, unlike several older cloning engines.
-    """
-
-    sample_rate = 22050
-
-    def __init__(self, voice: str | None = None, lang: str = "vi", device: str = "auto",
-                 config_path: str = "config/inference_config.yaml", **options):
-        self.voice = voice
-        self.lang = lang
-        self.device = device
-        self.config_path = config_path
-        self._model = None
-
-    def config_fingerprint(self) -> str:
-        return f"confucius4:lang={self.lang}:device={self.device}:config={self.config_path}:ref={self.voice or ''}"
-
-    def _ensure_loaded(self) -> None:
-        if self._model is not None:
-            return
-        import torch
-        from app.config import settings
-        try:
-            if settings.confucius4_repo_dir:
-                import sys
-                repo = Path(settings.confucius4_repo_dir)
-                if not repo.is_dir():
-                    raise RuntimeError(f"CONFUCIUS4_REPO_DIR không tồn tại: {repo}")
-                if str(repo) not in sys.path:
-                    sys.path.insert(0, str(repo))
-                if self.config_path == "config/inference_config.yaml":
-                    self.config_path = str(repo / self.config_path)
-            from confuciustts.cli.inference import ConfuciusTTS
-        except ImportError as exc:
-            raise RuntimeError(
-                "Chưa cài Confucius4-TTS. Cài repo netease-youdao/Confucius4-TTS "
-                "và các requirements của nó, rồi chạy lại."
-            ) from exc
-        device = self.device
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._model = ConfuciusTTS(config_path=self.config_path, device=device)
-        self.sample_rate = int(self._model.sample_rate)
-
-    def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
-        reference_wav_path, _ = resolve_reference(self.voice, reference_wav_path, prompt_text)
-        if not reference_wav_path:
-            raise ValueError("Confucius4-TTS cần audio mẫu để clone giọng")
-        self._ensure_loaded()
-        audio = self._model.generate(text, self.lang, reference_wav_path, verbose=False)
-        if hasattr(audio, "detach"):
-            audio = audio.detach().cpu().numpy()
-        return np.asarray(audio, dtype=np.float32).reshape(-1)
-
-
-class F5ViVoiceEngine:
-    """hynt's Vietnamese F5-TTS fine-tune, using the installed F5 inference API."""
-
-    sample_rate = 24000
-
-    def __init__(self, voice: str | None = None, speed: float = 1.0, nfe_step: int = 32,
-                 cfg_strength: float = 2.0, sway_sampling_coef: float = -1.0,
-                 device: str = "auto", **options):
-        self.voice = voice
-        self.speed = speed
-        self.nfe_step = nfe_step
-        self.cfg_strength = cfg_strength
-        self.sway_sampling_coef = sway_sampling_coef
-        self.device = device
-        self._model = None
-        self._vocoder = None
-        self._utils = None
-
-    def config_fingerprint(self) -> str:
-        return (f"f5-vivoice:speed={self.speed}:steps={self.nfe_step}:cfg={self.cfg_strength}:"
-                f"sway={self.sway_sampling_coef}:device={self.device}:ref={self.voice or ''}")
-
-    def _ensure_loaded(self) -> None:
-        if self._model is not None:
-            return
-        try:
-            from cached_path import cached_path
-            from f5_tts.model import DiT
-            from f5_tts.infer import utils_infer
-        except ImportError as exc:
-            raise RuntimeError(
-                "Chưa cài F5-TTS Vietnamese. Cài f5-tts và cached_path trước khi dùng model này."
-            ) from exc
-        # This is the exact architecture/checkpoint pairing published by hynt.
-        self._vocoder = utils_infer.load_vocoder()
-        import inspect
-        load_kwargs = {
-            "ckpt_path": str(cached_path("hf://hynt/F5-TTS-Vietnamese-ViVoice/model_last.pt")),
-            "vocab_file": str(cached_path("hf://hynt/F5-TTS-Vietnamese-ViVoice/config.json")),
-        }
-        if self.device != "auto" and "device" in inspect.signature(utils_infer.load_model).parameters:
-            load_kwargs["device"] = self.device
-        self._model = utils_infer.load_model(
-            DiT, dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4), **load_kwargs
-        )
-        self._utils = utils_infer
-
-    def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
-        reference_wav_path, prompt_text = resolve_reference(self.voice, reference_wav_path, prompt_text)
-        if not reference_wav_path:
-            raise ValueError("F5-TTS ViVoice cần audio mẫu để clone giọng")
-        self._ensure_loaded()
-        ref_audio, detected_text = self._utils.preprocess_ref_audio_text(reference_wav_path, prompt_text or "")
-        import inspect
-        kwargs = {
-            "speed": self.speed,
-            "nfe_step": self.nfe_step,
-            "cfg_strength": self.cfg_strength,
-            "sway_sampling_coef": self.sway_sampling_coef,
-        }
-        # F5 forks have changed this signature several times.  Passing only
-        # supported knobs keeps the engine compatible while preserving every
-        # detailed control on current releases.
-        accepted = inspect.signature(self._utils.infer_process).parameters
-        kwargs = {key: value for key, value in kwargs.items() if key in accepted}
-        wave, sample_rate, _ = self._utils.infer_process(
-            ref_audio, str(detected_text).lower(), str(text).lower(), self._model, self._vocoder, **kwargs
-        )
-        self.sample_rate = int(sample_rate)
-        return np.asarray(wave, dtype=np.float32).reshape(-1)
 
 
 class VieNeuFastEngine:

@@ -153,7 +153,7 @@ def test_model_catalog_and_factory_are_unified(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "tts_api_providers", "")
     models = list_tts_models()
     assert [model["id"] for model in models] == [
-        "voxcpm2", "omnivoice", "confucius4", "f5-vivoice", "vieneu-fast", "zerotts", "edge-tts", "gtts",
+        "voxcpm2", "omnivoice", "vieneu-fast", "zerotts", "edge-tts", "gtts",
     ]
     assert isinstance(create_tts_engine("voxcpm2"), VoxCPMEngine)
     assert isinstance(create_tts_engine("omnivoice"), OmniVoiceEngine)

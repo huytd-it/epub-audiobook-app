@@ -49,7 +49,7 @@
 |------|------|-------|
 | 📖 | **EPUB Parsing** | Trích xuất chương với phát hiện chương thông minh (`app/epub_parser.py:1`) |
 | 🧩 | **Patch System** | Chia sách thành patch dễ quản lý (`app/chunker.py`) |
-| 🎙️ | **TTS đa engine** | VoxCPM2 · OmniVoice · Confucius4-TTS · F5 ViVoice · VieNeu Fast · ZeroTTS · Edge TTS · gTTS — thống nhất qua `app/tts_engine.py` |
+| 🎙️ | **TTS đa engine** | VoxCPM2 · OmniVoice · VieNeu Fast · ZeroTTS · Edge TTS · gTTS — thống nhất qua `app/tts_engine.py` |
 | 🗣️ | **Reference Voice** | Clone giọng từ thư viện `/voices`, preset `preset:<engine>:<voice>` (cache `data/voices/_presets`), hoặc clip riêng của sách |
 | 📦 | **Batch Colab/Kaggle Export** | Xuất 1..n patch qua notebook batch chung — xem [Batch Export](#-batch-export-colabkaggle) |
 | 🔗 | **Audio Merge** | Ghép patch thành audiobook hoàn chỉnh (`app/audio_merge.py`) |
@@ -62,10 +62,6 @@
 | 📥 | **Batch Processing** | Upload nhiều sách, tạo video hàng loạt |
 | ⚙️ | **Background Worker** | Queue không block UI, điều khiển admin |
 | 💾 | **Crash Recovery** | SQLite tracking sống sót sau restart |
-
-> **Confucius4 & F5 ViVoice** — cả hai đều là zero-shot voice-cloning cục bộ, cần clip giọng mẫu.
-> - F5 ViVoice tự tải `hynt/F5-TTS-Vietnamese-ViVoice` lần đầu — cài bằng `pip install -e ".[f5-vivoice]"`.
-> - Confucius4 hiện là repo `netease-youdao/Confucius4-TTS`: clone → `pip install -r requirements.txt` → set `CONFUCIUS4_REPO_DIR`.
 
 ---
 
@@ -230,7 +226,6 @@ python -m venv .venv
 
 # 2️⃣ TTS engine (tuỳ chọn)
 ./.venv/Scripts/python.exe -m pip install voxcpm          # VoxCPM2
-./.venv/Scripts/python.exe -m pip install -e ".[f5-vivoice]"  # F5 ViVoice
 ./.venv/Scripts/python.exe -m pip install -e ".[all-tts]"     # tất cả TTS local
 ./.venv/Scripts/python.exe -m pip install -e ".[light-tts]"   # Edge TTS + gTTS + Piper
 
