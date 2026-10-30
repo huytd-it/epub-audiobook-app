@@ -314,7 +314,13 @@ export type BrandingWatermark = {
   margin: number;
   shadow_enabled: boolean;
   shadow_color: string;
+  /** Chỉ áp dụng cho video: đứng yên, chạy trái → phải, hoặc nhảy vị trí ngẫu nhiên. */
+  motion: WatermarkMotion;
+  /** Số giây cho một lượt chạy ngang / một lần đổi vị trí (3–600). */
+  motion_seconds: number;
 };
+
+export type WatermarkMotion = "static" | "scroll" | "random";
 
 export type BrandingLogo = {
   enabled: boolean;

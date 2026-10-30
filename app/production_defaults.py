@@ -76,6 +76,10 @@ DEFAULT_BRANDING_CONFIG = {
         "margin": 16,
         "shadow_enabled": True,
         "shadow_color": "#000000",
+        # Video only: static | scroll (left -> right, looping) | random (jumps
+        # to a new spot every motion_seconds). Thumbnails always stay static.
+        "motion": "static",
+        "motion_seconds": 20,  # one scroll pass / one random hop, 3-600
     },
     "logo": {
         "enabled": False,
@@ -103,6 +107,7 @@ DEFAULT_BRANDING_CONFIG = {
 }
 
 _BRANDING_POSITIONS = {"top-left", "top-right", "bottom-left", "bottom-right", "center"}
+_WATERMARK_MOTIONS = {"static", "scroll", "random"}
 
 _TABLE = "automation_settings"
 _SINGLE_ROW = "automation_settings WHERE id = 1"
@@ -220,6 +225,8 @@ def validate_branding_config(config) -> dict:
         "margin": _clamped_int(watermark_raw.get("margin"), 16, 0, 200),
         "shadow_enabled": _flag(watermark_raw.get("shadow_enabled", True), True),
         "shadow_color": str(watermark_raw.get("shadow_color") or "#000000"),
+        "motion": watermark_raw.get("motion") if watermark_raw.get("motion") in _WATERMARK_MOTIONS else "static",
+        "motion_seconds": _clamped_int(watermark_raw.get("motion_seconds"), 20, 3, 600),
     }
 
     logo_raw = config.get("logo") if isinstance(config.get("logo"), dict) else {}

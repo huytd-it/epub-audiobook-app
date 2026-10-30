@@ -12,7 +12,7 @@ import soundfile as sf
 from app import gameplay_renderer, image_overlay, media_library, repository, video_gen
 from app.gameplay_repository import apply_replay_stats, consume_reserved, load_replay
 from app.config import settings
-from app.image_overlay import render_branding_overlay
+from app.image_overlay import save_video_branding
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
 from app.patch_publishing import (MAX_PATCH_RENDER_ATTEMPTS, audio_fingerprint,
@@ -188,16 +188,10 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     seq_config = snapshot.get("sequence_config") or {}
     waveform_config = seq_config
 
-    # Render a transparent branding overlay PNG for FFmpeg overlay filter.
-    branding_overlay_path = None
-    if branding:
-        overlay_img = render_branding_overlay(resolution, branding, target="video")
-        if overlay_img is not None:
-            import tempfile as _tf
-            _bo_dir = Path(settings.data_root) / "books" / str(book.id) / ".branding"
-            _bo_dir.mkdir(parents=True, exist_ok=True)
-            branding_overlay_path = str(_bo_dir / f"branding_{patch.id}.png")
-            overlay_img.save(branding_overlay_path, "PNG")
+    # Transparent branding layers (plus a moving-watermark sidecar) for FFmpeg.
+    branding_overlay_path = save_video_branding(
+        resolution, branding,
+        Path(settings.data_root) / "books" / str(book.id) / ".branding" / f"branding_{patch.id}.png")
 
     def render_main(target: str) -> None:
         if background_type == "gameplay":
@@ -448,15 +442,10 @@ def handle(ctx) -> dict:
                 "audio_bitrate": config["audio_bitrate"],
             }
 
-            # Render a transparent branding overlay PNG for FFmpeg overlay filter.
-            branding_overlay_path = None
-            if branding:
-                overlay_img = render_branding_overlay(resolution, branding, target="video")
-                if overlay_img is not None:
-                    _bo_dir = Path(settings.data_root) / "books" / str(book.id) / ".branding"
-                    _bo_dir.mkdir(parents=True, exist_ok=True)
-                    branding_overlay_path = str(_bo_dir / f"branding_{patch.id}.png")
-                    overlay_img.save(branding_overlay_path, "PNG")
+            # Transparent branding layers (plus a moving-watermark sidecar) for FFmpeg.
+            branding_overlay_path = save_video_branding(
+                resolution, branding,
+                Path(settings.data_root) / "books" / str(book.id) / ".branding" / f"branding_{patch.id}.png")
 
             # Legacy path không có snapshot: dùng audio đã resolve (chỉ-đọc)
             _audio = _resolved_audio

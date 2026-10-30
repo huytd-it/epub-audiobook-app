@@ -393,3 +393,107 @@ def test_render_branding_overlay_frame_missing_file_is_none():
     branding = {"frame": {"enabled": True, "path": "_Nền/nope.png", "opacity": 100},
                 "targets": {"video": True}}
     assert render_branding_overlay((200, 100), branding, target="video") is None
+
+
+# ---------------------------------------------------------------------------
+# Real FFmpeg: branding covers the whole video, watermark can move
+# ---------------------------------------------------------------------------
+# The handler tests above stub the encoder, which is how a filter that FFmpeg
+# rejected outright (and, once wired, cut the video to one frame) shipped.
+
+
+def _have_ffmpeg() -> bool:
+    import shutil
+    from app.config import settings
+    ffmpeg = settings.get_ffmpeg_path()
+    return bool(shutil.which(ffmpeg) or Path(ffmpeg).is_file())
+
+
+requires_ffmpeg = pytest.mark.skipif(not _have_ffmpeg(), reason="ffmpeg not available")
+
+
+def _branded_render_inputs(tmp_path, motion: str):
+    import subprocess
+    from app.config import settings
+    audio = tmp_path / "a.wav"
+    subprocess.run([settings.get_ffmpeg_path(), "-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=6",
+                    "-ar", "48000", str(audio)], check=True)
+    bg = tmp_path / "bg.png"
+    Image.new("RGB", (320, 180), (20, 40, 160)).save(bg)
+    logo = _make_logo(str(tmp_path / "logo.png"), size=(40, 40))
+    branding = validate_branding_config({
+        "watermark": {"enabled": True, "text": "BRAND", "font_size": 30, "text_color": "#FFFF00",
+                      "opacity": 100, "shadow_enabled": False, "motion": motion, "motion_seconds": 3},
+        "logo": {"enabled": True, "path": logo, "position": "top-left", "opacity": 100, "margin": 10},
+    })
+    overlay = image_overlay.save_video_branding((320, 180), branding, tmp_path / "branding.png")
+    return str(bg), str(audio), overlay
+
+
+def _frame_at(path: str, seconds: float, tmp_path) -> Image.Image:
+    import subprocess
+    from app.config import settings
+    out = tmp_path / f"frame_{seconds}.png"
+    subprocess.run([settings.get_ffmpeg_path(), "-v", "error", "-y", "-ss", str(seconds), "-i", path,
+                    "-frames:v", "1", str(out)], check=True)
+    return Image.open(out).convert("RGB")
+
+
+def _yellow_centre(frame: Image.Image) -> tuple[int, int] | None:
+    hits = [(x, y) for x in range(0, frame.width, 2) for y in range(0, frame.height, 2)
+            if (lambda p: p[0] > 200 and p[1] > 200 and p[2] < 90)(frame.getpixel((x, y)))]
+    if not hits:
+        return None
+    return sum(x for x, _ in hits) // len(hits), sum(y for _, y in hits) // len(hits)
+
+
+@requires_ffmpeg
+@pytest.mark.parametrize("renderer", ["segment", "sequence"])
+def test_branding_stays_from_first_to_last_frame(tmp_path, renderer):
+    from app import video_gen
+    bg, audio, overlay = _branded_render_inputs(tmp_path, "static")
+    out = str(tmp_path / "out.mp4")
+    if renderer == "segment":
+        video_gen.generate_segment(bg, audio, out, resolution=(320, 180), fps=24, branding_overlay_path=overlay)
+    else:
+        video_gen.generate_background_sequence([bg, bg], audio, out, resolution=(320, 180), fps=24,
+                                               image_duration=3, branding_overlay_path=overlay,
+                                               music_path=audio)
+    assert video_gen._probe_duration(out) == pytest.approx(6.0, abs=0.2)
+    positions = []
+    for seconds in (0.1, 3.0, 5.8):
+        frame = _frame_at(out, seconds, tmp_path)
+        red, _, blue = frame.getpixel((30, 30))
+        assert red > 180 and blue < 90, f"logo missing at {seconds}s"
+        positions.append(_yellow_centre(frame))
+    assert None not in positions
+    assert len(set(positions)) == 1
+
+
+@requires_ffmpeg
+def test_scrolling_watermark_moves_left_to_right(tmp_path):
+    from app import video_gen
+    bg, audio, overlay = _branded_render_inputs(tmp_path, "scroll")
+    out = str(tmp_path / "out.mp4")
+    video_gen.generate_segment(bg, audio, out, resolution=(320, 180), fps=24, branding_overlay_path=overlay)
+    xs = [_yellow_centre(_frame_at(out, seconds, tmp_path)) for seconds in (0.8, 1.5, 2.2)]
+    assert None not in xs
+    assert xs[0][0] < xs[1][0] < xs[2][0]
+
+
+def test_save_video_branding_removes_stale_motion_sidecar(tmp_path):
+    branding = validate_branding_config({"watermark": {"enabled": True, "text": "B", "motion": "random"}})
+    out = tmp_path / "branding.png"
+    image_overlay.save_video_branding((320, 180), branding, out)
+    assert image_overlay.load_branding_motion(str(out))["mode"] == "random"
+
+    branding["watermark"]["motion"] = "static"
+    image_overlay.save_video_branding((320, 180), branding, out)
+    assert image_overlay.load_branding_motion(str(out)) is None
+
+
+def test_video_branding_resolves_library_logo_path(tmp_path, monkeypatch):
+    logo = _make_logo(str(tmp_path / "logo.png"))
+    monkeypatch.setattr(image_overlay, "resolve_media_path", lambda virtual: logo)
+    branding = validate_branding_config({"logo": {"enabled": True, "path": "library/logo.png"}})
+    assert render_branding_overlay((320, 180), branding, target="video") is not None

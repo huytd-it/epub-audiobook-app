@@ -104,6 +104,12 @@ const BRANDING_POSITIONS: { value: BrandingConfig["watermark"]["position"]; labe
   { value: "center", label: "Giữa" },
 ];
 
+const WATERMARK_MOTIONS: { value: BrandingConfig["watermark"]["motion"]; label: string }[] = [
+  { value: "static", label: "Đứng yên" },
+  { value: "scroll", label: "Chạy từ trái sang phải" },
+  { value: "random", label: "Nhảy vị trí ngẫu nhiên" },
+];
+
 function BrandingTab({
   branding,
   onChange,
@@ -225,6 +231,39 @@ function BrandingTab({
                 onChange={(event) => updateWatermark({ margin: Number(event.target.value) })}
               />
             </Field>
+            <Field label="Chuyển động trong video" hint="Thumbnail luôn giữ watermark đứng yên">
+              <select
+                className={fieldClass}
+                value={branding.watermark.motion ?? "static"}
+                onChange={(event) =>
+                  updateWatermark({ motion: event.target.value as BrandingConfig["watermark"]["motion"] })
+                }
+              >
+                {WATERMARK_MOTIONS.map((motion) => (
+                  <option key={motion.value} value={motion.value}>
+                    {motion.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {(branding.watermark.motion ?? "static") !== "static" && (
+              <Field
+                label={
+                  branding.watermark.motion === "scroll"
+                    ? `Một lượt chạy ngang: ${branding.watermark.motion_seconds ?? 20}s`
+                    : `Đổi vị trí mỗi: ${branding.watermark.motion_seconds ?? 20}s`
+                }
+              >
+                <input
+                  type="range"
+                  min={3}
+                  max={120}
+                  className="w-full accent-primary"
+                  value={branding.watermark.motion_seconds ?? 20}
+                  onChange={(event) => updateWatermark({ motion_seconds: Number(event.target.value) })}
+                />
+              </Field>
+            )}
           </div>
           <div className="flex flex-wrap gap-4 rounded-md bg-muted/30 p-3">
             <CheckField

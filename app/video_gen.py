@@ -521,13 +521,49 @@ def _prepare_music_bed(
     return music_bed.build_chapter_bed(audio_path, music_path, bed_path, music_mix), False
 
 
-def _branding_overlay_filter(branding_overlay_path: str | None) -> str:
-    """Return the FFmpeg filter fragment that overlays a transparent branding PNG,
-    or an empty string when no overlay is provided."""
+def _hash01(seed: str, salt: float) -> str:
+    """FFmpeg expression for a pseudo-random 0..1 value fixed per ``seed``."""
+    noise = f"sin(({seed})*{salt}+1)*43758.5453"
+    return f"({noise}-floor({noise}))"
+
+
+def _watermark_motion_xy(motion: dict) -> tuple[str, str]:
+    """overlay x/y expressions for a moving watermark sprite (W/H frame, w/h sprite)."""
+    period = max(3.0, float(motion.get("seconds") or 20))
+    margin = max(0, int(motion.get("margin") or 0))
+    if motion.get("mode") == "random":
+        hop = f"floor(t/{period:g})"
+        x = f"{margin}+max(0\,W-w-{2 * margin})*{_hash01(hop, 12.9898)}"
+        y = f"{margin}+max(0\,H-h-{2 * margin})*{_hash01(hop, 78.233)}"
+        return x, y
+    # scroll: enter at the left edge, leave at the right, then start again.
+    return f"-w+mod(t\,{period:g})*(W+w)/{period:g}", str(int(motion.get("y") or 0))
+
+
+def _branding_chains(video_label: str, branding_overlay_path: str | None,
+                     first_input: int) -> tuple[list[str], list[str], str]:
+    """``(inputs, chains, label)`` that lay the branding over ``video_label``.
+
+    The PNG layers are looped so they cover every frame: a bare one-frame PNG
+    paired with ``shortest=1`` used to end the overlay - and the video - after
+    the first frame. ``shortest=1`` against the looped layer ends it with the
+    main video instead. A moving watermark (see image_overlay.save_video_branding)
+    goes on top as a second, animated layer.
+    """
     if not branding_overlay_path:
-        return ""
-    escaped = _escape_ffmpeg_filter_path(branding_overlay_path)
-    return f",overlay={escaped}:shortest=1"
+        return [], [], video_label
+    from app import image_overlay
+
+    inputs = ["-loop", "1", "-i", branding_overlay_path]
+    chains = [f"{video_label}[{first_input}:v]overlay=0:0:shortest=1[vbranded]"]
+    label = "[vbranded]"
+    motion = image_overlay.load_branding_motion(branding_overlay_path)
+    if motion:
+        inputs += ["-loop", "1", "-i", str(motion["sprite"])]
+        x, y = _watermark_motion_xy(motion)
+        chains.append(f"{label}[{first_input + 1}:v]overlay=x={x}:y={y}:shortest=1:eval=frame[vwatermark]")
+        label = "[vwatermark]"
+    return inputs, chains, label
 
 
 def generate_segment(
@@ -664,23 +700,23 @@ def generate_segment(
 
     # Normalize after the optional music mix so every output path has the same
     # perceived loudness and the narration/music ratio remains unchanged.
-    if music_idx is not None or waveform:
+    # The branding layers are extra inputs, which a plain '-vf' cannot take.
+    use_graph = music_idx is not None or bool(waveform) or bool(branding_overlay_path)
+    if use_graph:
         audio_chains.append(f"{audio_map_label}{AUDIO_LOUDNESS_FILTER}[anorm]")
         audio_map_label = "[anorm]"
 
-    if music_idx is not None or waveform:
+    if use_graph:
         # Label the video chain: ffmpeg 5+ rejects mapping raw 0:v once it is
         # consumed by the complex filtergraph.
         chains = video_chains + audio_chains if waveform else audio_chains + [f"[0:v]{base_vf}[vout]"]
         if subtitle_filter:
             chains.append(f"{video_map_label}{subtitle_filter}[vsub]")
             video_map_label = "[vsub]"
-        if branding_overlay_path:
-            branding_input_idx = len(inputs) // 2 + 1  # account for already-added inputs
-            inputs.extend(["-i", branding_overlay_path])
-            escaped_branding = _escape_ffmpeg_filter_path(branding_overlay_path)
-            chains.append(f"{video_map_label}overlay={escaped_branding}:shortest=1[vbranded]")
-            video_map_label = "[vbranded]"
+        branding_inputs, branding_chains, video_map_label = _branding_chains(
+            video_map_label, branding_overlay_path, next_idx)
+        inputs.extend(branding_inputs)
+        chains.extend(branding_chains)
         cmd = [
             settings.get_ffmpeg_path(), "-y",
             *inputs,
@@ -705,10 +741,6 @@ def generate_segment(
         # images have no audio, so default stream selection is fine there.
         map_args = ["-map", "0:v", "-map", "1:a"] if is_video_bg else []
         final_vf = f"{base_vf},{subtitle_filter}" if subtitle_filter else base_vf
-        if branding_overlay_path:
-            escaped_branding = _escape_ffmpeg_filter_path(branding_overlay_path)
-            final_vf += f",overlay={escaped_branding}:shortest=1"
-            inputs.extend(["-i", branding_overlay_path])
         cmd = [
             settings.get_ffmpeg_path(), "-y",
             *inputs,
@@ -1125,17 +1157,18 @@ def generate_background_sequence(
             video_in = video_map if video_map.startswith("[") else f"[{video_map}]"
             chains.append(f"{video_in}{subtitle_filter}[vsub]")
             video_map = "[vsub]"
+        next_input = 2  # 0 = visual, 1 = narration
         if branding_overlay_path:
-            branding_input_idx = len(inputs) // 2  # each input is -i + path
-            inputs.extend(["-i", branding_overlay_path])
-            escaped_branding = _escape_ffmpeg_filter_path(branding_overlay_path)
             branding_in = video_map if video_map.startswith("[") else f"[{video_map}]"
-            chains.append(f"{branding_in}overlay={escaped_branding}:shortest=1[vbranded]")
-            video_map = "[vbranded]"
+            branding_inputs, branding_chains, video_map = _branding_chains(
+                branding_in, branding_overlay_path, next_input)
+            inputs.extend(branding_inputs)
+            chains.extend(branding_chains)
+            next_input += branding_inputs.count("-i")
         if music_path:
             inputs += (["-stream_loop", "-1"] if loop_music else []) + ["-i", music_path]
             narration_in = audio_map if audio_map.startswith("[") else f"[{audio_map}]"
-            chains.extend(["[2:a]volume=" + str(music_volume) + "[music]", f"{narration_in}[music]amix=inputs=2:duration=first:normalize=0[aout]"])
+            chains.extend([f"[{next_input}:a]volume={music_volume}[music]", f"{narration_in}[music]amix=inputs=2:duration=first:normalize=0[aout]"])
             audio_map = "[aout]"
         audio_in = audio_map if audio_map.startswith("[") else f"[{audio_map}]"
         chains.append(f"{audio_in}{AUDIO_LOUDNESS_FILTER}[anorm]")

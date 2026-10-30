@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app import repository, video_gen, youtube
 from app.config import settings
-from app.image_overlay import render_branding_overlay
+from app.image_overlay import save_video_branding
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
 from app.production_defaults import get_effective_branding_config, get_effective_video_config, resolve_voice_clip
@@ -76,16 +76,10 @@ def _render(ctx, book_job_id: int, book_id: int) -> str:
     book_dir.mkdir(parents=True, exist_ok=True)
     out_path = str(book_dir / f"video_{book_job_id}.mp4")
 
-    # Render a transparent branding overlay PNG for FFmpeg overlay filter.
-    branding_overlay_path = None
-    if branding:
-        w, h = (book.video_resolution or "1920x1080").split("x")
-        overlay_img = render_branding_overlay((int(w), int(h)), branding, target="video")
-        if overlay_img is not None:
-            _bo_dir = book_dir / ".branding"
-            _bo_dir.mkdir(parents=True, exist_ok=True)
-            branding_overlay_path = str(_bo_dir / f"branding_book_{book_job_id}.png")
-            overlay_img.save(branding_overlay_path, "PNG")
+    # Transparent branding layers (plus a moving-watermark sidecar) for FFmpeg.
+    w, h = (book.video_resolution or "1920x1080").split("x")
+    branding_overlay_path = save_video_branding(
+        (int(w), int(h)), branding, book_dir / ".branding" / f"branding_book_{book_job_id}.png")
 
     def _on_progress(event: str, fields: dict) -> None:
         if event in _ENCODING_EVENTS:

@@ -951,8 +951,13 @@ def render_branding_overlay(resolution: tuple[int, int], branding: dict,
 
     watermark = branding.get("watermark") or {}
     logo = branding.get("logo") or {}
-    wm_enabled = watermark.get("enabled") and watermark.get("text")
-    logo_enabled = logo.get("enabled") and logo.get("path") and Path(logo.get("path", "")).is_file()
+    # A moving watermark is a separate sprite animated by FFmpeg (see
+    # render_watermark_sprite); baking it here too would leave a static copy.
+    wm_enabled = (watermark.get("enabled") and watermark.get("text")
+                  and not (target == "video" and _watermark_motion(watermark) != "static"))
+    # Logo paths are media-library virtual paths, like apply_branding resolves.
+    logo_file = resolve_media_path(logo.get("path") or "") if logo.get("path") else ""
+    logo_enabled = logo.get("enabled") and logo_file and Path(logo_file).is_file()
     width, height = resolution
     frame_img = _load_frame(branding.get("frame"), (width, height))
     if not wm_enabled and not logo_enabled and frame_img is None:
@@ -991,7 +996,7 @@ def render_branding_overlay(resolution: tuple[int, int], branding: dict,
 
     if logo_enabled:
         try:
-            logo_img = Image.open(logo["path"]).convert("RGBA")
+            logo_img = Image.open(logo_file).convert("RGBA")
         except Exception:
             logger.warning("image_overlay: cannot load logo %s", logo.get("path"))
         else:
@@ -1015,6 +1020,104 @@ def render_branding_overlay(resolution: tuple[int, int], branding: dict,
             img = Image.alpha_composite(img, layer)
 
     return img
+
+
+def _watermark_motion(watermark: dict) -> str:
+    motion = watermark.get("motion") or "static"
+    return motion if motion in ("scroll", "random") else "static"
+
+
+def render_watermark_sprite(watermark: dict) -> "Image.Image | None":
+    """The watermark text alone on a tight transparent canvas (shadow included),
+    for FFmpeg to move across the frame. None when there is no text."""
+    if not (watermark.get("enabled") and watermark.get("text")):
+        return None
+    from PIL import Image, ImageDraw
+
+    wm_text = str(watermark["text"])[:200]
+    font_size = int(watermark.get("font_size", 28))
+    font = _load_font(watermark.get("font_path") or None, font_size)
+    opacity = max(0, min(100, int(watermark.get("opacity", 80)))) / 100.0
+    color = _hex_to_rgb(watermark.get("text_color", "#FFFFFF"))
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    try:
+        left, top, right, bottom = probe.textbbox((0, 0), wm_text, font=font)
+    except AttributeError:
+        left, top, right, bottom = 0, 0, int(probe.textlength(wm_text, font=font)), font_size
+    pad = 2  # room for the shadow offsets
+    img = Image.new("RGBA", (right - left + 2 * pad, bottom - top + 2 * pad), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    x, y = pad - left, pad - top
+    if watermark.get("shadow_enabled"):
+        shadow_color = _hex_to_rgb(watermark.get("shadow_color", "#000000"))
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                if dx or dy:
+                    draw.text((x + dx, y + dy), wm_text, font=font,
+                              fill=(*shadow_color, int(255 * opacity * 0.5)))
+    draw.text((x, y), wm_text, font=font, fill=(*color, int(255 * opacity)))
+    return img
+
+
+def branding_motion_path(overlay_path: str) -> Path:
+    """Sidecar describing the moving watermark that goes with a video branding PNG."""
+    return Path(overlay_path).with_suffix(".motion.json")
+
+
+def load_branding_motion(overlay_path: str) -> dict | None:
+    """The moving-watermark sidecar written by save_video_branding, or None."""
+    sidecar = branding_motion_path(overlay_path)
+    try:
+        motion = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(motion, dict) or not Path(str(motion.get("sprite") or "")).is_file():
+        return None
+    return motion
+
+
+def save_video_branding(resolution: tuple[int, int], branding: dict | None,
+                        out_path: str | Path) -> str | None:
+    """Write the video branding layers next to ``out_path`` and return its path.
+
+    ``out_path`` gets the static layer (frame + logo + a static watermark). A
+    moving watermark is written as its own sprite plus a ``.motion.json``
+    sidecar that video_gen animates over the whole video. Stale sidecars from
+    an earlier render are removed. None when there is nothing to draw.
+    """
+    out = Path(out_path)
+    sidecar = branding_motion_path(str(out))
+    sprite_path = out.with_suffix(".watermark.png")
+    sidecar.unlink(missing_ok=True)
+    sprite_path.unlink(missing_ok=True)
+    if not branding or not (branding.get("targets") or {}).get("video", True):
+        return None
+
+    watermark = branding.get("watermark") or {}
+    motion = _watermark_motion(watermark)
+    sprite = render_watermark_sprite(watermark) if motion != "static" else None
+    static = render_branding_overlay(resolution, branding, target="video")
+    if static is None and sprite is None:
+        return None
+
+    from PIL import Image
+    width, height = resolution
+    out.parent.mkdir(parents=True, exist_ok=True)
+    (static or Image.new("RGBA", (width, height), (0, 0, 0, 0))).save(str(out), "PNG")
+    if sprite is not None:
+        sprite.save(str(sprite_path), "PNG")
+        margin = int(watermark.get("margin", 16))
+        position = watermark.get("position", "bottom-right")
+        # A scroll keeps the configured row; "center" scrolls across the middle.
+        _, row = _position_to_xy(position, width, height, sprite.width, sprite.height, margin)
+        sidecar.write_text(json.dumps({
+            "sprite": str(sprite_path),
+            "mode": motion,
+            "seconds": max(3, int(watermark.get("motion_seconds", 20))),
+            "y": row,
+            "margin": margin,
+        }), encoding="utf-8")
+    return str(out)
 
 
 def ensure_podcast_cover(book: Book, patch: Patch, *, force: bool = False,
