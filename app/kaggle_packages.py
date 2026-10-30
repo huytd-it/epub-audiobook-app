@@ -131,6 +131,14 @@ def has_file(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 0
 
 
+def remote_ready(entry: dict, remote: dict) -> bool:
+    """The patch is finished on Drive: its chunks' done marker (current notebooks,
+    merged here) or a merged WAV (notebooks from before the app merged)."""
+    from app.chunk_import import marker_name
+
+    return marker_name(entry["wav"]) in remote or entry["wav"] in remote
+
+
 def result_inventory(service, folder_id: str) -> dict[str, dict]:
     # Merge historical duplicate result folders. Never create/modify any of them.
     inventory = {}

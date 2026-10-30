@@ -118,6 +118,58 @@ def test_missing_timeline_is_downloaded_without_redownloading_audio(batch):
     assert batch.downloads == [f"{batch.bid}_001.timeline.json"]
 
 
+def _add_marker(batch, index):
+    name = f"{batch.bid}_{index + 1:03d}.chunks.json"
+    batch.remote[name] = {"id": name, "name": name, "size": "80", "modifiedTime": packages.now()}
+
+
+def test_done_marker_merges_chunks_locally_instead_of_downloading_a_wav(batch, monkeypatch):
+    from app import chunk_import
+
+    merged = []
+
+    def import_from_drive(db, service, folder_id, patch, staging):
+        assert folder_id == "original-folder"
+        with db() as conn:
+            assert conn is batch.conn
+        target = repository.get_patch_audio_path(patch.book_id, patch.patch_index)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(target, np.zeros(100), 16000)
+        merged.append(patch.id)
+        return str(target)
+
+    monkeypatch.setattr(chunk_import, "import_from_drive", import_from_drive)
+    _add_marker(batch, 0); _add_marker(batch, 1)
+    assert batch.run()["complete"] is True
+    assert merged == batch.ids
+    assert batch.downloads == []  # no merged WAV exists, none is fetched
+    assert all(repository.get_patch(batch.conn, pid).status == "done" for pid in batch.ids)
+
+
+def test_chunks_not_yet_visible_on_drive_are_retried_not_fatal(batch, monkeypatch):
+    from app import chunk_import
+
+    def import_from_drive(*args):
+        raise chunk_import.ChunkImportError("thiếu 1/5 chunk", transient=True)
+
+    monkeypatch.setattr(chunk_import, "import_from_drive", import_from_drive)
+    _add_marker(batch, 0)
+    assert batch.run(check=True)["complete"] is False
+    assert repository.get_patch(batch.conn, batch.ids[0]).status != "done"
+
+
+def test_chunks_that_no_longer_match_the_patch_fail_the_job(batch, monkeypatch):
+    from app import chunk_import
+
+    def import_from_drive(*args):
+        raise chunk_import.ChunkImportError("văn bản patch đã đổi kể từ lúc export")
+
+    monkeypatch.setattr(chunk_import, "import_from_drive", import_from_drive)
+    _add_marker(batch, 0)
+    with pytest.raises(JobFatalError, match="đã đổi"):
+        batch.run(check=True)
+
+
 def test_check_only_keeps_partial_package_incomplete_without_kaggle(batch):
     batch.add(0)
     assert batch.run(check=True)["complete"] is False

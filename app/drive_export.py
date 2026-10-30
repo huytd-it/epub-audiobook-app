@@ -164,6 +164,54 @@ def _export_tts_config(
     }, reference, transcript
 
 
+def _zerotts_voice_pack(model_id: str, voice_id: str | None) -> Path | None:
+    """voice.npz of an imported ZeroTTS voice, which has to travel with the batch.
+
+    Bundled voices come with the weights the notebook downloads; an imported one
+    (custom_<sha256>) exists only in this app's data dir, so without the file the
+    remote run would die on its first chunk."""
+    from app.zerotts_voices import voice_path
+
+    if model_id != "zerotts" or not voice_id:
+        return None
+    path = voice_path(voice_id)
+    if path is None:
+        return None
+    if not path.is_file():
+        raise ValueError(
+            f"imported ZeroTTS voice {voice_id!r} is missing its voice.npz - "
+            "re-import the voice pack or pick another voice"
+        )
+    return path
+
+
+ZEROTTS_VOICE_FILE = "zerotts_voice.npz"
+
+
+def ensure_zerotts_voice_on_drive(service, folder_id: str, model_id: str | None,
+                                  voice_id: str | None) -> bool:
+    """Add an imported ZeroTTS voice's latents to an already-uploaded batch folder.
+
+    A Drive batch folder is reused as-is on every resume, so a folder uploaded before
+    exports shipped the voice (or by a backend still running that older code) never
+    gets it - and the notebook dies on its first chunk asking for a voice the
+    downloaded weights do not have. Only adds the missing file; nothing on Drive is
+    overwritten. The notebook looks for it under this fixed name. Returns True when
+    it uploaded."""
+    from app import google_drive
+
+    pack = _zerotts_voice_pack(model_id or "", voice_id)
+    if pack is None:
+        return False
+    if any(f.get("name") == ZEROTTS_VOICE_FILE for f in google_drive.list_files(service, folder_id)):
+        return False
+    with tempfile.TemporaryDirectory(prefix="zerotts-voice-") as tmp:
+        staged = Path(tmp) / ZEROTTS_VOICE_FILE
+        shutil.copyfile(pack, staged)
+        google_drive.upload_file(service, folder_id, str(staged))
+    return True
+
+
 def _write_patch_files(
     conn: sqlite3.Connection,
     book: Book,
@@ -238,6 +286,14 @@ def result_wav_name(patch: Patch) -> str:
     return f"{patch.book_id}_{patch.patch_index + 1:03d}.wav"
 
 
+def result_chunks_name(patch: Patch) -> str:
+    """Marker the notebook writes into result/ once every chunk of the patch exists.
+
+    The notebook no longer merges: the app downloads the chunks and merges them
+    locally (app/chunk_import.py), and this marker is the "patch done" signal."""
+    return f"{patch.book_id}_{patch.patch_index + 1:03d}.chunks.json"
+
+
 def result_mp4_name(patch: Patch) -> str:
     """Tên MP4 dùng cùng book/episode key với WAV kết quả."""
     return f"{patch.book_id}_{patch.patch_index + 1:03d}.mp4"
@@ -285,6 +341,7 @@ def build_batch_export_package(
         raise ValueError(f"book {patches[0].book_id} not found")
     tts, voice_clip, reference_transcript = _export_tts_config(book, model_id, voice_id)
     tts["options"]["with_effects"] = with_effects
+    voice_pack = _zerotts_voice_pack(model_id, tts["voice_id"])
 
     patches = sorted(patches, key=lambda p: p.patch_index)
 
@@ -296,6 +353,10 @@ def build_batch_export_package(
     if voice_clip is not None:
         reference_wav_name = "reference" + voice_clip.suffix
         shutil.copyfile(voice_clip, package_dir / reference_wav_name)
+    zerotts_voice_name = None
+    if voice_pack is not None:
+        zerotts_voice_name = ZEROTTS_VOICE_FILE
+        shutil.copyfile(voice_pack, package_dir / zerotts_voice_name)
 
     patch_entries = []
     for patch in patches:
@@ -315,6 +376,7 @@ def build_batch_export_package(
             "max_chars": manifest["max_chars"],
             "chunk_count": manifest["chunk_count"],
             "result_wav": f"result/{result_wav_name(patch)}",
+            "result_chunks": f"result/{result_chunks_name(patch)}",
             "result_mp4": f"result/{result_mp4_name(patch)}",
         })
 
@@ -337,6 +399,7 @@ def build_batch_export_package(
         "tts": tts,
         "reference_wav": reference_wav_name,
         "reference_transcript": reference_transcript or book.voice_transcript or None,
+        "zerotts_voice_npz": zerotts_voice_name,
         "patch_count": len(patch_entries),
         "patches": patch_entries,
         "video_config": video_config,

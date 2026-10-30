@@ -178,5 +178,94 @@ def test_processing_is_idempotent_across_calls(client, monkeypatch):
     assert sf.info(str(_patch_audio(book_id, 41))).frames == FRAMES
 
 
+def _chunk_batch(tmp_path: Path, book_id: int, patch_id: int = 41) -> Path:
+    """A batch folder as a notebook run leaves it: manifest + chunk WAVs, no merge."""
+    from app import drive_export, repository
+
+    conn = db.connect(settings.db_path)
+    try:
+        book = repository.get_book(conn, book_id)
+        patch = repository.get_patch(conn, patch_id)
+        folder = tmp_path / "Batch" / "patches" / f"patch_{patch.patch_index:03d}"
+        manifest = drive_export._write_patch_files(
+            conn, book, patch, folder, None, tts={"model_id": "zerotts", "voice_id": "maichi", "options": {}})
+    finally:
+        conn.close()
+    (folder / "output").mkdir()
+    for index in range(manifest["chunk_count"]):
+        tone = 0.2 * np.sin(np.linspace(0, 880 * np.pi, 24000)).astype(np.float32)
+        sf.write(folder / "output" / f"chunk_{index:03d}.wav", tone, 24000)
+    return tmp_path / "Batch"
+
+
+def _zip_dir(root: Path, archive: Path) -> Path:
+    import zipfile
+
+    with zipfile.ZipFile(archive, "w") as zf:
+        for path in root.rglob("*"):
+            if path.is_file():
+                zf.write(path, Path(root.name) / path.relative_to(root))
+    return archive
+
+
+def test_upload_results_merges_a_drive_zip_of_chunks(client, tmp_path, monkeypatch):
+    from app import repository
+
+    c, book_id = client
+    monkeypatch.setattr("app.routes.patches._warm_thumbnail", lambda request, patch_id: None)
+    archive = _zip_dir(_chunk_batch(tmp_path / "src", book_id), tmp_path / "Batch-20260101.zip")
+
+    with open(archive, "rb") as handle:
+        body = c.post(f"/books/{book_id}/patches/upload-results",
+                      files=[("files", (archive.name, handle, "application/zip"))]).json()
+
+    assert body["installed"] == 1
+    row = body["results"][0]
+    assert (row["status"], row["patch_id"]) == ("ok", 41)
+    assert "audio_path" not in row
+    audio = repository.get_patch_audio_path(book_id, 0)
+    assert sf.info(str(audio)).frames >= 24000  # one chunk in this fixture's patch
+    conn = db.connect(settings.db_path)
+    try:
+        assert repository.get_patch(conn, 41).status == "done"
+    finally:
+        conn.close()
+    # Nothing is left behind in the inbox's staging area.
+    assert not list(_inbox(book_id).glob(".chunk-import-*"))
+
+
+def test_inbox_merges_an_extracted_batch_folder_and_archives_it(client, monkeypatch):
+    import shutil
+
+    c, book_id = client
+    monkeypatch.setattr("app.routes.patches._warm_thumbnail", lambda request, patch_id: None)
+    folder = _inbox(book_id)
+    source = _chunk_batch(Path(settings.data_root) / "src", book_id)
+    shutil.move(str(source), str(folder / "Batch"))
+
+    status = c.get(f"/books/{book_id}/patches/result-inbox").json()
+    assert "Batch/" in status["files"]
+
+    body = c.post(f"/books/{book_id}/patches/result-inbox/process").json()
+    assert body["installed"] == 1
+    assert body["archived"]["processed"] == [{"from": "Batch", "to": "Batch"}]
+    assert (folder / "processed" / "Batch").is_dir()
+    assert not (folder / "Batch").exists()
+
+
+def test_inbox_rejects_a_zip_without_patch_folders(client, monkeypatch):
+    import zipfile
+
+    c, book_id = client
+    folder = _inbox(book_id)
+    with zipfile.ZipFile(folder / "random.zip", "w") as zf:
+        zf.writestr("notes.txt", "hello")
+
+    body = c.post(f"/books/{book_id}/patches/result-inbox/process").json()
+    assert body["installed"] == 0
+    assert [row["from"] for row in body["archived"]["rejected"]] == ["random.zip"]
+    assert (folder / "rejected" / "random.zip.reason.txt").read_text(encoding="utf-8")
+
+
 def test_processing_rejects_unknown_book(client):
     assert client[0].post("/books/9999/patches/result-inbox/process").status_code == 404

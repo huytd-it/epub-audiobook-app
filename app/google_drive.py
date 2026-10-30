@@ -524,6 +524,52 @@ def download_result_directory(service, batch_folder_id: str, dest_root: str) -> 
     return downloaded
 
 
+_FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+def _subfolders(service, parent_id: str, name: str) -> list[str]:
+    # Every match, not the first: Drive permits duplicate sibling names, and a later
+    # kernel version may have written into the other copy.
+    return [f["id"] for f in list_files(service, parent_id)
+            if f.get("name") == name and f.get("mimeType") == _FOLDER_MIME]
+
+
+def download_patch_chunks(service, batch_folder_id: str, folder_rel: str, dest_root: Path) -> Path:
+    """Download one patch folder's manifest.json and output/chunk_*.wav.
+
+    ``folder_rel`` is the batch-relative patch folder (``patches/patch_NNN``). Files
+    are merged across duplicate folders, keeping the newest non-empty copy of each
+    name. Returns the local patch folder (``dest_root/folder_rel``), laid out like the
+    notebook's, for chunk_import.read_patch_folder."""
+    parents = [batch_folder_id]
+    for part in folder_rel.strip("/").split("/"):
+        parents = [child for parent in parents for child in _subfolders(service, parent, part)]
+    if not parents:
+        raise FileNotFoundError(f"Drive folder not found: {folder_rel}")
+    newest: dict[str, dict] = {}
+
+    def keep(rel: str, entry: dict) -> None:
+        if entry.get("mimeType") == _FOLDER_MIME or int(entry.get("size") or 0) <= 0:
+            return
+        if rel not in newest or entry.get("modifiedTime", "") > newest[rel].get("modifiedTime", ""):
+            newest[rel] = entry
+
+    for parent in parents:
+        for entry in list_files(service, parent):
+            if entry.get("name") == "manifest.json":
+                keep("manifest.json", entry)
+        for output in _subfolders(service, parent, "output"):
+            for entry in list_files(service, output):
+                name = entry.get("name") or ""
+                if name.startswith("chunk_") and name.endswith(".wav") and "/" not in name and "\\" not in name:
+                    keep(f"output/{name}", entry)
+    target = Path(dest_root).joinpath(*folder_rel.strip("/").split("/"))
+    (target / "output").mkdir(parents=True, exist_ok=True)
+    for rel, entry in newest.items():
+        download_file(service, entry["id"], str(target / rel))
+    return target
+
+
 def list_result_files(service, batch_folder_id: str) -> list[dict]:
     """List (without downloading) the batch's direct ``result`` folder.
 

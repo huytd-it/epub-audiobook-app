@@ -21,7 +21,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from app import audio_merge, drive_export, google_drive, image_overlay, patch_import, repository, video_gen, video_repository, youtube
+from app import audio_merge, chunk_import, drive_export, google_drive, image_overlay, patch_import, repository, video_gen, video_repository, youtube
 from app import db as app_db
 from app.chunker import split_into_tts_chunks
 from app.config import settings
@@ -914,7 +914,9 @@ def check_kaggle_drive_result(
                 "patch_index": p.patch_index,
                 "status": p.status,
                 "result_wav": wav,
-                "ready": wav in available,
+                # Chunks + done marker (merged here on import), or a merged WAV
+                # from a notebook that still merged.
+                "ready": chunk_import.marker_name(wav) in available or wav in available,
             })
     return JSONResponse({"batch": batch, "files": files, "patches": items})
 
@@ -948,11 +950,6 @@ def import_kaggle_drive_result(
             patches.append(p)
         if not patches:
             raise HTTPException(status_code=400, detail="no patches selected")
-        wanted: set[str] = set()
-        for p in patches:
-            wav = drive_export.result_wav_name(p)
-            wanted.add(wav)
-            wanted.add(Path(wav).stem + ".timeline.json")
     tmp_dir = Path(tempfile.mkdtemp(prefix="kaggle-drive-import-"))
     try:
         with locked_conn(request) as conn:
@@ -960,28 +957,51 @@ def import_kaggle_drive_result(
             folder_id = google_drive.find_batch_folder(service, batch)
             if folder_id is None:
                 raise HTTPException(status_code=404, detail=f"Drive batch folder not found: {batch}")
-            downloaded = google_drive.download_selected_results(service, folder_id, str(tmp_dir), wanted)
+            available = {f.get("name") for f in google_drive.list_result_files(service, folder_id)}
+            # Patches with a done marker are merged here from their chunks; only the
+            # rest (older notebooks that merged) need their result WAV downloaded.
+            chunked = {p.id for p in patches
+                       if chunk_import.marker_name(drive_export.result_wav_name(p)) in available}
+            wanted: set[str] = set()
+            for p in patches:
+                if p.id in chunked:
+                    continue
+                wav = drive_export.result_wav_name(p)
+                wanted.update({wav, Path(wav).stem + ".timeline.json"})
+            downloaded = (google_drive.download_selected_results(service, folder_id, str(tmp_dir), wanted)
+                          if wanted else [])
         by_name = {Path(d).name: Path(d) for d in downloaded}
         imported: list[int] = []
         missing: list[int] = []
+        errors: dict[int, str] = {}
         for p in patches:
-            src = by_name.get(drive_export.result_wav_name(p))
-            if src is None or not src.is_file():
-                missing.append(p.id)
-                continue
-            try:
-                sf.info(str(src))
-            except Exception:
-                logger.warning("Drive/result WAV invalid for patch %s", p.id, exc_info=True)
-                missing.append(p.id)
-                continue
             audio_path = repository.get_patch_audio_path(book_id, p.patch_index)
-            try:
-                patch_import.install_imported_wav(src, audio_path)
-            except Exception:
-                logger.warning("install Drive/result WAV failed for patch %s", p.id, exc_info=True)
-                missing.append(p.id)
-                continue
+            if p.id in chunked:
+                try:
+                    audio_path = Path(chunk_import.import_from_drive(
+                        lambda: locked_conn(request), service, folder_id, p, tmp_dir / "chunks"))
+                except chunk_import.ChunkImportError as exc:
+                    logger.warning("chunk import failed for patch %s: %s", p.id, exc)
+                    errors[p.id] = str(exc)
+                    missing.append(p.id)
+                    continue
+            else:
+                src = by_name.get(drive_export.result_wav_name(p))
+                if src is None or not src.is_file():
+                    missing.append(p.id)
+                    continue
+                try:
+                    sf.info(str(src))
+                except Exception:
+                    logger.warning("Drive/result WAV invalid for patch %s", p.id, exc_info=True)
+                    missing.append(p.id)
+                    continue
+                try:
+                    patch_import.install_imported_wav(src, audio_path)
+                except Exception:
+                    logger.warning("install Drive/result WAV failed for patch %s", p.id, exc_info=True)
+                    missing.append(p.id)
+                    continue
             _warm_thumbnail(request, p.id)
             with locked_conn(request) as conn:
                 repository.mark_patch_done(conn, p.id, str(audio_path))
@@ -1002,7 +1022,8 @@ def import_kaggle_drive_result(
         raise HTTPException(status_code=500, detail=f"Drive/result import failed: {exc}")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-    return JSONResponse({"imported": imported, "missing": missing})
+    return JSONResponse({"imported": imported, "missing": missing,
+                         "errors": {str(pid): reason for pid, reason in errors.items()}})
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/import")
@@ -1059,6 +1080,24 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
                     repository.update_patch_export(conn, export.id, status="imported", imported_chunk_count=expected_chunk_count)
                 return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
         patch_folder = patch_import.safe_batch_path(batch_root, entry.get("folder", "")) if entry else package_folder
+        if patch_folder and (patch_folder / "manifest.json").is_file():
+            # Current notebooks leave only chunks: merge them through the same pipeline
+            # a local TTS run uses. Anything short of a complete, matching set falls
+            # through to the chunk-progress import below.
+            with locked_conn(request) as conn:
+                patch_row = repository.get_patch(conn, patch_id)
+            try:
+                merged = chunk_import.assemble_patch_from_chunks(
+                    lambda: locked_conn(request), patch_row, chunk_import.read_patch_folder(patch_folder))
+            except chunk_import.ChunkImportError as exc:
+                logger.info("patch %s chunks not mergeable yet (%s); importing chunk progress", patch_id, exc)
+            else:
+                _warm_thumbnail(request, patch_id)
+                with locked_conn(request) as conn:
+                    repository.mark_patch_done(conn, patch_id, merged)
+                    on_patch_audio_ready(conn, patch_id)
+                    repository.update_patch_export(conn, export.id, status="imported", imported_chunk_count=expected_chunk_count)
+                return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
         chunk_source_dir = patch_folder / "output" if patch_folder else package_folder / "output"
         if not chunk_source_dir.is_dir():
             chunk_source_dir = package_folder / "output"
@@ -1571,7 +1610,7 @@ def _archive_move(root: Path, source: Path, kind: str) -> Path:
     dest = dest_dir / source.name
     n = 1
     while dest.exists():
-        base = source.name[:-(len(source.suffix) or 0)]
+        base = source.name[:len(source.name) - len(source.suffix)]
         dest = dest_dir / f"{base}.{n}{source.suffix}"
         n += 1
     source.replace(dest)
@@ -1605,6 +1644,19 @@ def _row_file_outcomes(row: dict, group: dict, outcome: dict | None) -> list[dic
     return entries
 
 
+def _inbox_chunk_dirs(folder: Path) -> list[Path]:
+    """Top-level inbox folders holding notebook chunk output (a batch folder, its
+    patches/ folder or one patch_NNN folder, as extracted from Drive's zip)."""
+    # The inbox is the book's own data folder: skip the app's folders (the chapter
+    # chunk store alone can hold thousands of files) instead of walking them.
+    own = {"processed", "rejected", "chapters", "audio", "patches"}
+    return [
+        path for path in folder.iterdir()
+        if path.is_dir() and path.name not in own and not path.name.startswith(".")
+        and next(chunk_import.find_patch_folders(path), None) is not None
+    ]
+
+
 @router.get("/books/{book_id}/patches/result-inbox")
 def result_inbox_status(request: Request, book_id: int):
     with locked_conn(request) as conn:
@@ -1614,8 +1666,8 @@ def result_inbox_status(request: Request, book_id: int):
     folder = _result_inbox(book_id)
     files = sorted(
         path.name for path in folder.iterdir()
-        if path.is_file() and (path.name.lower().endswith(".wav") or path.name.lower().endswith(".timeline.json"))
-    )
+        if path.is_file() and path.name.lower().endswith((".wav", ".timeline.json", ".zip"))
+    ) + sorted(f"{path.name}/" for path in _inbox_chunk_dirs(folder))
     processed_dir = folder / "processed"
     rejected_dir = folder / "rejected"
     processed = sorted(p.name for p in processed_dir.iterdir() if p.is_file()) if processed_dir.is_dir() else []
@@ -1669,6 +1721,10 @@ async def process_result_inbox(request: Request, book_id: int):
         path for path in folder.iterdir()
         if path.is_file() and (path.name.lower().endswith(".wav") or path.name.lower().endswith(".timeline.json"))
     )
+    # Notebook chunk output: Drive's zip(s) of the batch folder, or that folder
+    # already extracted here. Both are merged locally.
+    zips = sorted(path for path in folder.iterdir() if path.is_file() and path.name.lower().endswith(".zip"))
+    chunk_dirs = sorted(_inbox_chunk_dirs(folder))
     renamed: list[dict] = []
     ready: list[Path] = []
     occupied: set[Path] = set()
@@ -1687,16 +1743,16 @@ async def process_result_inbox(request: Request, book_id: int):
             renamed.append({"from": source.name, "to": target.name})
         occupied.add(target)
         ready.append(target)
-    if not ready:
+    if not ready and not zips and not chunk_dirs:
         return {"ok": True, "installed": 0, "renamed": [], "results": [], "path": str(folder.resolve())}
     handles = []
     uploads = []
     try:
-        for path in ready:
+        for path in [*ready, *zips]:
             handle = open(path, "rb")
             handles.append(handle)
             uploads.append(UploadFile(filename=path.name, file=handle))
-        result = await upload_batch_results(request, book_id, uploads)
+        result = await _install_results(request, book_id, uploads, chunk_dirs)
     finally:
         for handle in handles:
             handle.close()
@@ -1704,13 +1760,16 @@ async def process_result_inbox(request: Request, book_id: int):
     result["path"] = str(folder.resolve())
 
     # Lưu trữ file đã xử lý: file OK vào <book>/processed, file lỗi vào <book>/rejected
-    # kèm file .reason.txt — giữ vĩnh viễn để đối soát, không bao giờ ghi đè.
+    # kèm file .reason.txt — giữ vĩnh viễn để đối soát, không bao giờ ghi đè. Một zip /
+    # thư mục chunk phủ nhiều patch: chỉ cần một patch ghép được là tính đã xử lý.
     outcome_by_file: dict[str, tuple[str, str | None]] = {}
     for row in result.get("results", []):
         for entry in row.get("file_outcomes") or []:
+            if outcome_by_file.get(entry["filename"], ("",))[0] == "processed":
+                continue
             outcome_by_file[entry["filename"]] = (entry["outcome"], entry.get("reason"))
     archived = {"processed": [], "rejected": []}
-    for target in ready:
+    for target in [*ready, *zips, *chunk_dirs]:
         outcome, reason = outcome_by_file.get(target.name, (None, None))
         if outcome is None or outcome == "kept":
             continue
@@ -1725,19 +1784,98 @@ async def process_result_inbox(request: Request, book_id: int):
     return result
 
 
+async def _install_chunk_folders(
+    request: Request, book_id: int, labels: list[str], root: Path,
+    patches: dict, publish_states: dict, done_ids: set[int],
+) -> list[dict]:
+    """Merge every patch_NNN chunk folder under ``root`` into its patch's audio.
+
+    The patch is identified by its manifest's patch_id (the folder name is only a
+    fallback for manifests without one); a manifest from another book is refused.
+    ``labels`` are the dropped files the folders came from, for the per-file report.
+    Returned ok rows carry ``audio_path`` for the caller to mark done."""
+    def outcomes(outcome: str, reason: str | None = None) -> list[dict]:
+        return [{"filename": label, "outcome": outcome, "reason": reason} for label in labels]
+
+    by_id = {p.id: p for p in patches.values()}
+    folders = list(chunk_import.find_patch_folders(root))
+    if not folders:
+        reason = "không có thư mục patch_NNN kèm manifest.json"
+        return [{"filename": ", ".join(labels), "status": "skipped", "detail": reason,
+                 "file_outcomes": outcomes("rejected", reason)}]
+    rows = []
+    for folder in folders:
+        row = {"filename": f"{', '.join(labels)} › {folder.name}"}
+        try:
+            source = chunk_import.read_patch_folder(folder)
+        except chunk_import.ChunkImportError as exc:
+            rows.append({**row, "status": "error", "detail": str(exc), "file_outcomes": outcomes("rejected", str(exc))})
+            continue
+        manifest = source.manifest
+        patch = by_id.get(manifest.get("patch_id")) if manifest.get("patch_id") is not None else None
+        if patch is None and manifest.get("patch_id") is None:
+            try:
+                patch = patches.get(int(folder.name.removeprefix("patch_")))
+            except ValueError:
+                patch = None
+        if manifest.get("book_id") not in (None, book_id) or patch is None:
+            reason = "không khớp patch nào của sách này"
+            rows.append({**row, "status": "skipped", "detail": reason, "file_outcomes": outcomes("rejected", reason)})
+            continue
+        row.update(patch_id=patch.id, patch_index=patch.patch_index, patch_name=patch.name or str(patch.patch_index))
+        if patch.id in done_ids:
+            reason = f"trùng kết quả cho patch {patch.patch_index:03d}"
+            rows.append({**row, "status": "skipped", "detail": reason, "file_outcomes": outcomes("rejected", reason)})
+            continue
+        if patch.status == "processing":
+            rows.append({**row, "status": "error", "detail": "patch đang xử lý",
+                         "file_outcomes": outcomes("rejected", "patch đang xử lý")})
+            continue
+        if publish_states[patch.id] == "active":
+            reason = "patch đang tạo hoặc upload video"
+            rows.append({**row, "status": "error", "detail": reason, "publish_status": "blocked_active_pipeline",
+                         "file_outcomes": outcomes("rejected", reason)})
+            continue
+        try:
+            audio_path = await asyncio.to_thread(
+                chunk_import.assemble_patch_from_chunks, lambda: locked_conn(request), patch, source)
+        except (chunk_import.ChunkImportError, OSError, RuntimeError) as exc:
+            logger.warning("chunk import failed for patch %s", patch.id, exc_info=True)
+            rows.append({**row, "status": "error", "detail": str(exc), "file_outcomes": outcomes("rejected", str(exc))})
+            continue
+        done_ids.add(patch.id)
+        timeline = "installed" if Path(audio_path).with_suffix(".timeline.json").is_file() else "none"
+        rows.append({**row, "status": "ok", "audio": True, "timeline": timeline,
+                     "publish_status": "pending_automation", "audio_path": audio_path,
+                     "file_outcomes": outcomes("processed")})
+    return rows
+
+
 @router.post("/books/{book_id}/patches/upload-results")
 async def upload_batch_results(
     request: Request,
     book_id: int,
     files: list[UploadFile] = File(...),
 ):
-    """Install a batch's whole result/ folder in one drop.
+    """Install a batch's results in one drop.
 
-    Every "NNN - name.wav" is matched to the patch with index NNN and installed as
-    that patch's audio; a "NNN - name.timeline.json" beside it becomes the chapter
-    sidecar. Timelines may also arrive on their own to backfill patches whose audio
-    is already installed. Each file is reported back individually - one bad file
-    never blocks the rest of the drop."""
+    A ``.zip`` of the batch folder (or its ``patches/`` folder) - what Drive hands
+    over when a folder is downloaded, possibly split over several zips - carries
+    each patch's chunk WAVs and manifest.json; those patches are merged here, the
+    way a local TTS run merges them (app/chunk_import.py). Merged WAVs from older
+    notebooks still install as before: every "NNN - name.wav" is matched to the
+    patch with index NNN, and a "NNN - name.timeline.json" beside it becomes the
+    chapter sidecar. Timelines may also arrive on their own to backfill patches
+    whose audio is already installed. Each file is reported back individually - one
+    bad file never blocks the rest of the drop."""
+    return await _install_results(request, book_id, files, [])
+
+
+async def _install_results(
+    request: Request, book_id: int, files: list[UploadFile], chunk_dirs: list[Path],
+) -> dict:
+    """upload_batch_results' body; ``chunk_dirs`` are folders already on disk (the
+    result inbox) searched for patch_NNN chunk folders like an uploaded zip."""
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail="book not found")
@@ -1748,13 +1886,17 @@ async def upload_batch_results(
 
     groups: dict[int, dict[str, UploadFile]] = {}
     skipped: list[dict] = []
+    zips: list[UploadFile] = []
     for upload in files:
         name = Path(upload.filename or "").name
         lower = name.lower()
+        if lower.endswith(".zip"):
+            zips.append(upload)
+            continue
         kind = "timeline" if lower.endswith(".timeline.json") else "audio" if lower.endswith(".wav") else None
         index = _result_patch_index(name, book_id)
         if kind is None:
-            reason = "chỉ nhận .wav và .timeline.json"
+            reason = "chỉ nhận .zip (chunk của batch), .wav và .timeline.json"
         elif index is None or index not in patches:
             reason = "không khớp patch nào của sách này"
         elif kind in groups.get(index, {}):
@@ -1807,6 +1949,44 @@ async def upload_batch_results(
         row["file_outcomes"] = _row_file_outcomes(row, group, outcome)
         results.append({**row, "status": "ok", **outcome,
                         "publish_status": "pending_automation" if outcome["audio"] else "skipped_no_new_audio"})
+
+    if zips or chunk_dirs:
+        staging = Path(tempfile.mkdtemp(prefix=".chunk-import-", dir=_result_inbox(book_id)))
+        try:
+            sources: list[tuple[list[str], Path]] = [([d.name], d) for d in chunk_dirs]
+            if zips:
+                # All zips extract into one tree: Drive splits a big folder download
+                # across several archives, and one patch's chunks may straddle two.
+                tree = staging / "tree"
+                tree.mkdir()
+                names = []
+                for upload in zips:
+                    name = Path(upload.filename or "").name
+                    archive = staging / f"{uuid.uuid4().hex}.zip"
+                    try:
+                        with open(archive, "wb") as out:
+                            await asyncio.to_thread(shutil.copyfileobj, upload.file, out)
+                        await asyncio.to_thread(chunk_import.extract_chunk_zip, archive, tree)
+                        names.append(name)
+                    except (zipfile.BadZipFile, OSError) as exc:
+                        reason = f"zip không đọc được: {exc}"
+                        skipped.append({"filename": name, "status": "skipped", "detail": reason,
+                                        "file_outcomes": [{"filename": name, "outcome": "rejected", "reason": reason}]})
+                    finally:
+                        archive.unlink(missing_ok=True)
+                if names:
+                    sources.append((names, tree))
+            done_ids = {patch_id for patch_id, _ in installed_audio}
+            for labels, root in sources:
+                rows = await _install_chunk_folders(request, book_id, labels, root, patches,
+                                                    publish_states, done_ids)
+                for row in rows:
+                    if row.get("status") == "ok":
+                        installed_audio.append((row["patch_id"], Path(row.pop("audio_path"))))
+                        done_ids.add(row["patch_id"])
+                    results.append(row)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     for patch_id, _ in installed_audio:
         await asyncio.to_thread(_warm_thumbnail, request, patch_id)

@@ -547,14 +547,14 @@ export function BuildPanel({
           <SectionHead
             icon={FolderOpen}
             title="Nhận kết quả trong folder ebook"
-            detail="Chép WAV/timeline vào data/books/{bookId}, sau đó nhấn Xử lý — không upload file lớn qua trình duyệt."
+            detail="Chép zip thư mục batch tải từ Drive (hoặc thư mục đã giải nén) vào data/books/{bookId}, rồi nhấn Xử lý — app ghép chunk thành patch. WAV/timeline đã ghép sẵn vẫn nhận được."
           />
         </CardHeader>
         <CardContent className="space-y-4 pt-5">
           <div className="rounded-md border border-border bg-muted/20 px-3 py-2.5">
             <div className="break-all font-mono text-[11px] text-foreground">{inbox?.path || "Đang tạo folder..."}</div>
             <div className="mt-1 text-[11px] text-muted-foreground">
-              {inbox?.count || 0} file chờ · tên chuẩn: {bookId}_001.wav và {bookId}_001.timeline.json
+              {inbox?.count || 0} mục chờ · zip/thư mục batch từ Drive, hoặc {bookId}_001.wav + {bookId}_001.timeline.json
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -576,7 +576,7 @@ export function BuildPanel({
                 className="hidden"
                 type="file"
                 multiple
-                accept=".wav,.json"
+                accept=".zip,.wav,.json"
                 onChange={(event) => {
                   uploadResults(event.target.files);
                   event.currentTarget.value = "";
@@ -584,7 +584,7 @@ export function BuildPanel({
               />
               <span className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-input px-3 text-xs font-medium hover:bg-muted">
                 <Upload className="h-4 w-4" />
-                {uploading ? "Đang upload..." : "Chọn WAV / timeline"}
+                {uploading ? "Đang upload..." : "Chọn zip batch / WAV / timeline"}
               </span>
             </label>
           </details>

@@ -100,7 +100,7 @@ def test_manifest_cell_requires_reference_wav(template):
         )
 
 
-def test_batch_cell_8_is_deterministic_and_streams_atomic_merge():
+def test_batch_cell_8_is_deterministic_and_leaves_merging_to_the_app():
     src = _code_cells(TEMPLATES[0])[7]
     assert "torch.manual_seed(42)" in src
     assert "seed=42" not in src
@@ -120,12 +120,11 @@ def test_batch_cell_8_is_deterministic_and_streams_atomic_merge():
         branch = loop[loop.index(branch_start):loop.index(branch_end)]
         assert "clean_generated_audio" not in branch
         assert "sf.write(out_path, audio, SAMPLE_RATE)" in branch
-    assert "_CHUNK_PAUSE_MS = 300" in src
-    assert "sf.SoundFile" in src
-    assert "PCM_16" in src
-    assert "NamedTemporaryFile" in src or "tempfile" in src
-    assert "os.replace" in src
-    assert "np.concatenate" not in src
+    # The app downloads the chunks and merges them (app/chunk_import.py): nothing
+    # in the notebook concatenates audio or writes a timeline any more.
+    assert "write_chunks_marker(" in src
+    for gone in ("merge_wav_files", "_CHUNK_PAUSE_MS", "write_timeline_atomic", "np.concatenate"):
+        assert gone not in src
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
@@ -138,29 +137,22 @@ def test_voxcpm_seed_is_global_and_set_immediately_before_generate(template):
         assert src.index("torch.manual_seed(42)") < src.index("model.generate(")
 
 
-def test_batch_cell_8_validates_metadata_and_writes_version_1_timeline():
+def test_batch_cell_8_marks_a_complete_patch_instead_of_merging_it():
     src = _code_cells(TEMPLATES[0])[7]
-    for token in (
-        "chunk_metadata", "chapter_index", "chapter_title", "is_chapter_start",
-        "timeline", '"version": 1', "flush", "fsync", "warning",
-    ):
-        assert token in src
-    assert "actual frame" in src.lower() or "frames" in src.lower()
-    assert "drive_persist" in src
-    assert '"total_frames"' in src
-    assert '"title"' in src
-    assert '"start_seconds"' in src
-    assert "validate_chunk_metadata" in src
-    assert "merge_wav_files" in src
+    # The marker is written only after the missing-chunk check, and then persisted
+    # to Drive/result where the app looks for it.
+    assert src.index('missing = [w for w in manifest["expected_outputs"]') < src.index(
+        "        write_chunks_marker(marker_path, entry, manifest)")
+    assert 'persist(marker_path, "result")' in src
+    assert 'entry.get("result_chunks")' in src
 
 
-def test_batch_cell_8_preserves_legacy_fallback_and_skip_warning():
+def test_batch_cell_8_counts_an_older_merged_result_as_done():
+    """A batch half-run by a notebook that still merged must not be re-synthesized."""
     src = _code_cells(TEMPLATES[0])[7]
-    assert 'manifest.get("chunk_metadata")' in src
     assert "SKIP_EXISTING" in src
-    assert "delete result and rerun" in src.lower()
-    assert "chunk_metadata missing" in src.lower()
-    assert "finally" in src
+    assert 'os.path.exists(result_path) or entry["result_wav"] in REMOTE' in src
+    assert "marker_rel in REMOTE" in src
 
 
 def test_kaggle_drive_persist_rechecks_parent_before_creating_result_folder():
@@ -176,7 +168,7 @@ def test_kaggle_notebook_exposes_merged_results_without_creating_result_zip():
     cells = _code_cells(TEMPLATES[0])
     assert len(cells) == 9  # Cell 8 synthesis + Cell 9 Drive/result note, no archive cell
     assert 'RESULT_DIR = os.path.join(WORK_ROOT, "result")' in cells[-2]
-    assert 'persist(result_path, "result")' in cells[-2]
+    assert 'persist(marker_path, "result")' in cells[-2]
     assert "Cell 9" in cells[-1] and "Google Drive/result" in cells[-1]
     assert "result.zip" not in TEMPLATES[0].read_text(encoding="utf-8")
     assert "make_archive" not in TEMPLATES[0].read_text(encoding="utf-8")
@@ -191,160 +183,32 @@ def _cell8_helpers():
     return namespace
 
 
-def test_cell8_helpers_merge_mono_and_stereo_with_exact_pause_and_timeline():
-    import numpy as np
-    import soundfile as sf
-
+def test_cell8_chunks_marker_is_atomic_and_lists_every_chunk(tmp_path):
     helpers = _cell8_helpers()
-    with tempfile.TemporaryDirectory() as directory:
-        paths = []
-        for channels in (1, 2):
-            paths.clear()
-            for index, value in enumerate((1000, 2000)):
-                path = Path(directory) / f"{channels}-{index}.wav"
-                data = np.full((3, channels), value, dtype=np.int16) if channels == 2 else np.full(3, value, dtype=np.int16)
-                sf.write(path, data, 10, subtype="PCM_16")
-                paths.append(str(path))
-            result = Path(directory) / f"result-{channels}.wav"
-            timeline = helpers["merge_wav_files"](paths, str(result), 300, [{"filename": Path(p).name, "chapter_index": i, "chapter_title": f"C{i}", "is_chapter_start": True, "text": "hello"} for i, p in enumerate(paths)])
-            audio, rate = sf.read(result, dtype="int16", always_2d=(channels == 2))
-            assert rate == 10 and len(audio) == 9
-            assert np.all(audio[3:6] == 0)
-            assert timeline["total_frames"] == 9
-            assert set(timeline) == {"version", "sample_rate", "total_frames", "chapters"}
-            assert timeline["chapters"][1]["start_frame"] == 6
-            assert timeline["chapters"][1]["start_seconds"] == 0.6
+    manifest = {"expected_outputs": ["chunk_000.wav", "chunk_001.wav"]}
+    marker = tmp_path / "7_001.chunks.json"
+
+    payload = helpers["write_chunks_marker"](str(marker), {"patch_id": 7, "folder": "patches/patch_000"}, manifest)
+
+    assert json.loads(marker.read_text(encoding="utf-8")) == payload == {
+        "patch_id": 7, "folder": "patches/patch_000", "chunk_count": 2,
+        "chunks": ["chunk_000.wav", "chunk_001.wav"],
+    }
+    assert not list(tmp_path.glob(".chunks-*.json"))
 
 
-def test_cell8_helper_rejects_invalid_metadata_without_raising():
-    validate = _cell8_helpers()["validate_chunk_metadata"]
-    cases = [None, {}, True, [None], [{"filename": "x"}], [{"filename": "x", "chapter_index": True, "chapter_title": "", "is_chapter_start": True}]]
-    for metadata in cases:
-        assert validate(metadata, ["x", "y"]) is None
-
-
-def test_cell8_merge_format_failures_preserve_result_and_clean_temp():
-    import numpy as np
-    import soundfile as sf
-
-    merge = _cell8_helpers()["merge_wav_files"]
-    with tempfile.TemporaryDirectory() as directory:
-        result = Path(directory) / "result.wav"
-        result.write_bytes(b"old-result")
-        first = Path(directory) / "first.wav"
-        second = Path(directory) / "second.wav"
-        sf.write(first, np.ones(3, dtype=np.int16), 10, subtype="PCM_16")
-        sf.write(second, np.ones((3, 2), dtype=np.int16), 10, subtype="PCM_16")
-        for paths in ((first, second),):
-            with pytest.raises(RuntimeError, match="sample rates/channels"):
-                merge([str(path) for path in paths], str(result), 300)
-        assert result.read_bytes() == b"old-result"
-        assert not list(Path(directory).glob(".result-*.wav"))
-
-
-def test_cell8_merge_sample_rate_and_corrupt_failures_preserve_result():
-    import numpy as np
-    import soundfile as sf
-
-    merge = _cell8_helpers()["merge_wav_files"]
-    with tempfile.TemporaryDirectory() as directory:
-        result = Path(directory) / "result.wav"
-        result.write_bytes(b"old-result")
-        first = Path(directory) / "first.wav"
-        second = Path(directory) / "second.wav"
-        sf.write(first, np.ones(3, dtype=np.int16), 10, subtype="PCM_16")
-        sf.write(second, np.ones(3, dtype=np.int16), 20, subtype="PCM_16")
-        with pytest.raises(RuntimeError, match="sample rates/channels"):
-            merge([str(first), str(second)], str(result), 300)
-        corrupt = Path(directory) / "corrupt.wav"
-        corrupt.write_bytes(b"not-a-wav")
-        with pytest.raises(RuntimeError, match="preflight"):
-            merge([str(first), str(corrupt)], str(result), 300)
-        assert result.read_bytes() == b"old-result"
-        assert not list(Path(directory).glob(".result-*.wav"))
-
-
-def test_cell8_merge_failure_after_temp_creation_preserves_result_and_cleans_temp(monkeypatch):
-    import numpy as np
-    import soundfile as sf
-
+def test_cell8_chunks_marker_failure_leaves_no_marker(tmp_path, monkeypatch):
+    """A half-written marker would look like a finished patch to the app."""
     helpers = _cell8_helpers()
-    merge = helpers["merge_wav_files"]
-    with tempfile.TemporaryDirectory() as directory:
-        result = Path(directory) / "result.wav"
-        result.write_bytes(b"old-result")
-        first = Path(directory) / "first.wav"
-        sf.write(first, np.ones(3, dtype=np.int16), 10, subtype="PCM_16")
-        original_replace = helpers["os"].replace
-        monkeypatch.setattr(helpers["os"], "replace", lambda *_args: (_ for _ in ()).throw(OSError("replace failed")))
-        try:
-            with pytest.raises(OSError, match="replace failed"):
-                merge([str(first)], str(result), 300)
-        finally:
-            helpers["os"].replace = original_replace
-        assert result.read_bytes() == b"old-result"
-        assert not list(Path(directory).glob(".result-*.wav"))
+    marker = tmp_path / "7_001.chunks.json"
+    monkeypatch.setattr(helpers["os"], "fsync", lambda *_args: (_ for _ in ()).throw(OSError("fsync failed")))
 
+    with pytest.raises(OSError):
+        helpers["write_chunks_marker"](str(marker), {"folder": "patches/patch_000"},
+                                       {"expected_outputs": ["chunk_000.wav"]})
 
-def test_cell8_sidecar_atomic_write_preserves_old_file_on_replace_failure():
-    import json
-
-    helpers = _cell8_helpers()
-    assert "write_timeline_atomic" in helpers
-    with tempfile.TemporaryDirectory() as directory:
-        sidecar = Path(directory) / "result.timeline.json"
-        sidecar.write_text('{"old": true}', encoding="utf-8")
-        original_replace = helpers["os"].replace
-        helpers["os"].replace = lambda *_args: (_ for _ in ()).throw(OSError("replace failed"))
-        try:
-            with pytest.raises(OSError):
-                helpers["write_timeline_atomic"]({"version": 1}, str(sidecar))
-        finally:
-            helpers["os"].replace = original_replace
-        assert json.loads(sidecar.read_text(encoding="utf-8")) == {"old": True}
-        assert not list(Path(directory).glob(".timeline-*.json"))
-
-
-@pytest.mark.parametrize("failure", ["dump", "fsync"])
-def test_cell8_sidecar_pre_replace_failures_preserve_old_file_and_cleanup(monkeypatch, failure):
-    helpers = _cell8_helpers()
-    with tempfile.TemporaryDirectory() as directory:
-        sidecar = Path(directory) / "result.timeline.json"
-        sidecar.write_text('{"old": true}', encoding="utf-8")
-        if failure == "dump":
-            monkeypatch.setattr(helpers["json"], "dump", lambda *_args: (_ for _ in ()).throw(OSError("dump failed")))
-        else:
-            monkeypatch.setattr(helpers["os"], "fsync", lambda *_args: (_ for _ in ()).throw(OSError("fsync failed")))
-        with pytest.raises(OSError):
-            helpers["write_timeline_atomic"]({"version": 1}, str(sidecar))
-        assert sidecar.read_text(encoding="utf-8") == '{"old": true}'
-        assert not list(Path(directory).glob(".timeline-*.json"))
-
-
-def test_cell8_validator_requires_non_empty_text():
-    helpers = _cell8_helpers()
-    validate = helpers["validate_chunk_metadata"]
-    chunks = ["chunk_000.txt", "chunk_001.txt"]
-
-    def entry(offset, **overrides):
-        item = {
-            "filename": chunks[offset],
-            "chapter_index": 0,
-            "chapter_title": "One",
-            "is_chapter_start": offset == 0,
-            "text": "hello",
-        }
-        item.update(overrides)
-        return item
-
-    assert validate([entry(0), entry(1)], chunks) is not None
-    # four-field legacy metadata is no longer valid
-    legacy = entry(0)
-    del legacy["text"]
-    assert validate([legacy, entry(1)], chunks) is None
-    assert validate([entry(0, text=""), entry(1)], chunks) is None
-    assert validate([entry(0, text="   "), entry(1)], chunks) is None
-    assert validate([entry(0, text=123), entry(1)], chunks) is None
+    assert not marker.exists()
+    assert not list(tmp_path.glob(".chunks-*.json"))
 
 
 def test_cell8_normalize_chunk_manifest_rebuilds_derivable_fields():
@@ -432,7 +296,8 @@ def test_cell8_available_wavs_merges_local_dirs_and_remote_inventory(tmp_path):
 def test_batch_cell_8_uses_remote_inventory_and_lazy_fetch():
     src = _code_cells(TEMPLATES[0])[7]
     assert "_drive_file_ids" in src
-    assert "drive_fetch_many" in src
+    # Nothing is merged, so no chunk WAV is ever pulled back down from Drive.
+    assert "drive_fetch_many" not in src
     assert 'entry["result_wav"] in REMOTE' in src
     assert "available_wavs(" in src
     assert "chunk_text_for(" in src
@@ -442,9 +307,8 @@ def test_batch_cell_8_uses_remote_inventory_and_lazy_fetch():
 
 def test_cell8_persist_failures_are_caught_separately():
     src = _code_cells(TEMPLATES[0])[7]
-    assert "Result persistence failed" in src
-    assert "Timeline persistence failed after local install" in src
-    assert "try: persist(result_path, \"result\")" in src
+    assert "Done marker persistence failed" in src
+    assert "try: persist(marker_path, \"result\")" in src
     tree = ast.parse(src)
     persist_try_bodies = [
         node.body for node in ast.walk(tree)
@@ -453,7 +317,7 @@ def test_cell8_persist_failures_are_caught_separately():
             for call in ast.walk(node)
         )
     ]
-    assert len(persist_try_bodies) >= 2
+    assert len(persist_try_bodies) >= 1
 
 
 def _cell4_helpers():
@@ -511,6 +375,61 @@ def test_cell4_plan_downloads_only_manifests_and_reference():
         assert not rel.startswith("result/")
         assert not rel.startswith("music/")
         assert "background" not in rel
+
+
+def test_cell4_plan_downloads_an_imported_zerotts_voice():
+    plan_batch_downloads = _cell4_helpers()["plan_batch_downloads"]
+    manifest, remote = _fake_batch_inventory(patch_count=1)
+    manifest["zerotts_voice_npz"] = "zerotts_voice.npz"
+    remote["zerotts_voice.npz"] = "id"
+
+    assert "zerotts_voice.npz" in plan_batch_downloads(manifest, remote)
+
+
+def test_cell4_fetches_a_voice_added_after_upload_even_if_the_manifest_omits_it():
+    plan_batch_downloads = _cell4_helpers()["plan_batch_downloads"]
+    manifest, remote = _fake_batch_inventory(patch_count=1)
+    remote["zerotts_voice.npz"] = "id"
+
+    assert "zerotts_voice.npz" in plan_batch_downloads(manifest, remote)
+
+
+def test_cell5_finds_an_imported_voice_the_manifest_does_not_name():
+    """Folders uploaded before exports shipped the voice get zerotts_voice.npz added
+    later; Cell 5 must find it from the custom_ voice id, or stop right there."""
+    src = next(s for s in _code_cells(TEMPLATES[0]) if "VOICE_ID_MODELS = " in s)
+    assert 'str(VOICE_ID or "").startswith("custom_")' in src
+    assert '_voice_npz_rel = "zerotts_voice.npz"' in src
+    assert src.index("raise RuntimeError(\n            f\"Imported ZeroTTS voice") < src.index("_data[\"voice_emb\"]")
+
+
+def test_imported_zerotts_voice_reaches_synthesize_as_latents():
+    for template in TEMPLATES:
+        cells = _code_cells(template)
+        manifest_cell = next(src for src in cells if "VOICE_ID_MODELS = " in src)
+        load = next(src for src in cells if "ZeroTTS.from_pretrained" in src)
+        gen = next(src for src in cells if "zerotts_synthesize(" in src and "model.infer(" in src)
+        # Bundled voices stay a name; an imported one is loaded from the shipped npz.
+        assert "ZEROTTS_VOICE = VOICE_ID" in manifest_cell
+        assert 'batch_manifest.get("zerotts_voice_npz")' in manifest_cell
+        assert '_data["voice_emb"]' in manifest_cell
+        assert "model.n_voice_queries" in load
+        assert "zerotts_synthesize(text, ZEROTTS_VOICE)" in gen
+
+
+def test_zerotts_decodes_long_chunks_through_the_streaming_decoder():
+    """synthesize()'s one-shot decode ran a T4 (and Kaggle's RAM) out of memory on a
+    ~1 min chunk (book 45, max_chars=1200); the streaming decoder is bit-identical
+    and bounded. Same approach as the app's local ZeroTTSEngine."""
+    for template in TEMPLATES:
+        cells = _code_cells(template)
+        load = next(src for src in cells if "ZeroTTS.from_pretrained" in src)
+        gen = next(src for src in cells if "zerotts_synthesize(" in src and "model.infer(" in src)
+        assert "model.codec.streaming_decoder()" in load
+        assert "stream.close()" in load
+        assert "zerotts_codes_loop(codes)" in load
+        assert "model.codec.decode(" not in load
+        assert "model.synthesize(" not in gen
 
 
 def test_cell4_plan_skips_paths_absent_from_the_inventory():
@@ -602,7 +521,7 @@ def test_batch_notebook_does_not_create_a_kaggle_result_zip():
     assert "shutil.make_archive" not in src
     assert 'archive_base = "/kaggle/working/result"' not in src
     # Cell 8 must still be the eighth code cell for the other tests in this file
-    assert "_CHUNK_PAUSE_MS = 300" in _code_cells(TEMPLATES[0])[7]
+    assert "write_chunks_marker(" in _code_cells(TEMPLATES[0])[7]
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +626,19 @@ def test_model_load_cell_dispatches_per_model():
         assert "gtts" not in load
 
 
+def test_zerotts_runs_on_cuda_when_a_gpu_is_present():
+    for template in TEMPLATES:
+        load = next(src for src in _code_cells(template) if "ZeroTTS.from_pretrained" in src)
+        zerotts = load.split('elif TTS_MODEL == "zerotts":')[1].split("\nelse:")[0]
+        # Unpinned onnxruntime-gpu targets CUDA 13; on the CUDA 12 Kaggle/Colab images
+        # its CUDA provider fails to load and ZeroTTS quietly stays on CPU (~8x slower).
+        assert '"onnxruntime-gpu==1.23.2"' in zerotts
+        assert '"CUDAExecutionProvider"' in zerotts
+        assert "providers=providers" in zerotts
+        # The swap is gated on a GPU: a CPU session keeps the CPU wheel.
+        assert "if use_cuda:" in zerotts
+
+
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
 def test_generation_cells_dispatch_every_model(template):
     gen = "\n".join(
@@ -720,7 +652,7 @@ def test_generation_cells_dispatch_every_model(template):
     assert "save_online_mp3" not in gen
     assert "model.generate(" in gen  # voxcpm2 / omnivoice
     assert "model.infer(" in gen     # vieneu-fast
-    assert "model.synthesize(" in gen  # zerotts
+    assert "zerotts_synthesize(" in gen  # zerotts (streaming decode, see Cell 7)
     # OmniVoice quality tuning: pinned diffusion steps/guidance + Vietnamese
     # language hint, with a TypeError fallback for older wheels.
     assert "OMNI_NUM_STEP" in gen

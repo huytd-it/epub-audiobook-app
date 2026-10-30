@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -148,6 +149,88 @@ def test_zerotts_export_keeps_the_chosen_voice(conn, tmp_path, monkeypatch):
     )
     try:
         assert batch_manifest["tts"]["voice_id"] == "giahuy"
+    finally:
+        import shutil
+
+        shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_zerotts_export_ships_an_imported_voice(conn, tmp_path, monkeypatch):
+    """An imported voice lives only in the app's data dir, so its latents must travel."""
+    voice_id = "custom_" + "ab" * 32
+    pack = tmp_path / "zerotts_custom_voices" / voice_id / "voice.npz"
+    pack.parent.mkdir(parents=True)
+    pack.write_bytes(b"fake npz")
+    monkeypatch.setattr(drive_export.settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn, voice_clip_path=None)
+
+    package_dir, batch_manifest = drive_export.build_batch_export_package(
+        conn, [patch], model_id="zerotts", voice_id=voice_id
+    )
+    try:
+        assert batch_manifest["tts"]["voice_id"] == voice_id
+        assert batch_manifest["zerotts_voice_npz"] == "zerotts_voice.npz"
+        assert (package_dir / "zerotts_voice.npz").read_bytes() == b"fake npz"
+    finally:
+        import shutil
+
+        shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_zerotts_export_refuses_an_imported_voice_without_its_npz(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(drive_export.settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn, voice_clip_path=None)
+
+    with pytest.raises(ValueError, match="missing its voice.npz"):
+        drive_export.build_batch_export_package(
+            conn, [patch], model_id="zerotts", voice_id="custom_" + "cd" * 32
+        )
+    assert not list((tmp_path / "export_tmp").glob("batch_*"))
+
+
+def test_an_uploaded_folder_without_the_imported_voice_gets_it_added(tmp_path, monkeypatch):
+    """A Drive batch folder is reused untouched on resume; one uploaded before exports
+    shipped the voice must still end up with it, or Kaggle dies on chunk one."""
+    from app import google_drive
+
+    voice_id = "custom_" + "ef" * 32
+    pack = tmp_path / "zerotts_custom_voices" / voice_id / "voice.npz"
+    pack.parent.mkdir(parents=True)
+    pack.write_bytes(b"latents")
+    monkeypatch.setattr(drive_export.settings, "data_root", str(tmp_path))
+    listing: list[dict] = [{"name": "batch_manifest.json"}]
+    uploads = []
+
+    def upload_file(service, folder_id, local_path, mime_type=None):
+        uploads.append((folder_id, Path(local_path).name, Path(local_path).read_bytes()))
+        listing.append({"name": Path(local_path).name})
+        return "new-id"
+
+    monkeypatch.setattr(google_drive, "list_files", lambda service, folder_id: listing)
+    monkeypatch.setattr(google_drive, "upload_file", upload_file)
+
+    assert drive_export.ensure_zerotts_voice_on_drive(None, "folder", "zerotts", voice_id) is True
+    assert uploads == [("folder", "zerotts_voice.npz", b"latents")]
+    # Already there: never uploaded twice, never overwritten.
+    assert drive_export.ensure_zerotts_voice_on_drive(None, "folder", "zerotts", voice_id) is False
+    # Bundled voices and other models need nothing.
+    assert drive_export.ensure_zerotts_voice_on_drive(None, "folder", "zerotts", "maichi") is False
+    assert drive_export.ensure_zerotts_voice_on_drive(None, "folder", "voxcpm2", voice_id) is False
+    assert len(uploads) == 1
+
+
+def test_zerotts_export_ships_no_npz_for_a_bundled_voice(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn, voice_clip_path=None)
+
+    package_dir, batch_manifest = drive_export.build_batch_export_package(
+        conn, [patch], model_id="zerotts", voice_id="giahuy"
+    )
+    try:
+        assert batch_manifest["zerotts_voice_npz"] is None
+        assert not (package_dir / "zerotts_voice.npz").exists()
     finally:
         import shutil
 

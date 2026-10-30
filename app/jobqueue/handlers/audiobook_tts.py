@@ -167,7 +167,7 @@ def synthesize_patch(
         frame_counts = [len(a) for a in wavs]
         chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, pauses)
         audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_chunks_to_wav(wavs, engine.sample_rate, p, pause_ms=pauses))
-        _apply_effects(ctx, with_effects, audio_path, plan)
+        _apply_effects(ctx.conn, with_effects, audio_path, plan)
         normalize_wav_in_place(audio_path)
         audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
         subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, pauses)
@@ -229,26 +229,39 @@ def synthesize_patch(
             f"chunk có sample rate lệch nhau {sorted(sample_rates)}; xoá audio các chương liên quan rồi tạo lại")
     sample_rate = sample_rates.pop()
 
-    chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, sample_rate, pauses)
     ctx.progress(total, total, phase="merging")
     chunk_paths = [str(cache.path(local)) for cache, local in targets]
-    audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_wavs(chunk_paths, p, pause_ms=pauses))
-    _apply_effects(ctx, with_effects, audio_path, plan)
-    normalize_wav_in_place(audio_path)
-    audio_merge.try_write_timeline(timeline_path, sample_rate, chapters, sf.info(audio_path).frames)
-    subtitle_gen.try_generate(subtitle_path, plan, frame_counts, sample_rate, pauses)
+    merge_patch_audio(ctx.conn, plan, chunk_paths, frame_counts, sample_rate, pauses,
+                      audio_path, with_effects=with_effects)
     ctx.progress(total, total, phase="synthesizing")
     return audio_path, total
 
 
-def _apply_effects(ctx, with_effects: bool, audio_path: str, plan: list[dict]) -> None:
+def merge_patch_audio(conn, plan: list[dict], chunk_paths: list[str], frame_counts: list[int],
+                      sample_rate: int, pauses: list[int], audio_path: str, *,
+                      with_effects: bool) -> None:
+    """Ghép chunk đã có trên đĩa thành audio patch: nối theo pause plan, effects,
+    normalize, rồi timeline + phụ đề từ cùng frame_counts. Dùng chung cho chunk tổng
+    hợp tại chỗ và chunk tải về từ Colab/Kaggle (app/chunk_import.py), nên hai nguồn
+    cho ra cùng một kiểu audio."""
+    audio_path_obj = Path(audio_path)
+    chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, sample_rate, pauses)
+    audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_wavs(chunk_paths, p, pause_ms=pauses))
+    _apply_effects(conn, with_effects, audio_path, plan)
+    normalize_wav_in_place(audio_path)
+    audio_merge.try_write_timeline(audio_path_obj.with_suffix(".timeline.json"), sample_rate, chapters,
+                                   sf.info(audio_path).frames)
+    subtitle_gen.try_generate(audio_path_obj.with_suffix(".ass"), plan, frame_counts, sample_rate, pauses)
+
+
+def _apply_effects(conn, with_effects: bool, audio_path: str, plan: list[dict]) -> None:
     """Overlay sound-effect clips onto the merged patch audio. Shared with the
     LightTTS preview path so effects behave identically for every engine."""
     if not with_effects:
         return
     from app.routes.text_studio import _mix_effects
 
-    mixed = _mix_effects(Path(audio_path).read_bytes(), "\n\n".join(i["text"] for i in plan), ctx.conn)
+    mixed = _mix_effects(Path(audio_path).read_bytes(), "\n\n".join(i["text"] for i in plan), conn)
     Path(audio_path).write_bytes(mixed)
 
 

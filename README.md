@@ -350,9 +350,9 @@ Remote TTS chỉ dùng workflow **batch**:
 3. 📤 Bấm **Export** → chọn model TTS, voice/ngôn ngữ, chunk size, effects.
 4. ⬇️ Tải ZIP, hoặc export vào Drive Desktop target, hoặc upload qua Drive API (cho Kaggle).
 5. ▶️ Chạy `colab_kaggle_batch_tts_template.ipynb` trong package.
-6. ⬆️ Import kết quả WAV trở lại app — video sẽ render локально.
+6. ⬆️ Đưa chunk về app: Kaggle tự động thì app tự tải; chạy tay thì tải thư mục batch từ Drive (Drive trả về `.zip`) rồi thả vào result inbox hoặc **Upload results**.
 
-Mỗi export chứa `batch_manifest.json` và dùng pipeline batch resumable (pause 300 ms giữa các chunk + chapter timeline). Package chỉ gồm **text + clip voice reference** — text chunk nằm trong `manifest.json` của từng patch, ảnh & nhạc nền ở lại app.
+Notebook **chỉ tổng hợp chunk** (`patches/patch_NNN/output/chunk_NNN.wav`) và ghi marker `result/<book>_<NNN>.chunks.json` khi patch đủ chunk — không ghép. App tải chunk về rồi ghép ở local bằng đúng pipeline TTS local (`app/chunk_import.py`: chuẩn âm lượng từng chunk, pause chunk/chương theo cấu hình sách, effects, normalize, timeline, phụ đề). Package chỉ gồm **text + clip voice reference** — text chunk nằm trong `manifest.json` của từng patch, ảnh & nhạc nền ở lại app.
 
 > Xem [`docs/google-drive-accounts.md`](docs/google-drive-accounts.md) để cấu hình Drive Desktop, rclone & Kaggle.
 

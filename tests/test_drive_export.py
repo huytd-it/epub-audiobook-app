@@ -129,14 +129,18 @@ def test_exported_manifest_satisfies_the_notebook_and_the_importer(conn, tmp_pat
     drive_export._write_patch_files(connection, book, patch, dest, None)
     exported = (dest / "manifest.json").read_text(encoding="utf-8")
 
-    # Notebook side: rebuild the omitted fields, then run its own validator over them.
+    # Notebook side: rebuild the omitted fields, read every chunk's text, and write the
+    # done marker the app watches for.
     helpers = _cell8_helpers()
     manifest = json.loads(exported)
     assert helpers["normalize_chunk_manifest"](manifest) is True
-    assert helpers["validate_chunk_metadata"](manifest["chunk_metadata"], manifest["chunks"]) is not None
     assert [helpers["chunk_text_for"](manifest, i, str(dest)) for i in range(manifest["chunk_count"])] == [
         item["text"] for item in json.loads(exported)["chunk_metadata"]
     ]
+    marker = tmp_path / drive_export.result_chunks_name(patch)
+    payload = helpers["write_chunks_marker"](str(marker), {"patch_id": patch.id, "folder": "patches/patch_000"}, manifest)
+    assert json.loads(marker.read_text(encoding="utf-8")) == payload
+    assert payload["chunk_count"] == manifest["chunk_count"]
 
     # Import side: titles come back out of the chapter_titles map, in chunk order.
     imported = timeline_metadata(json.loads(exported))

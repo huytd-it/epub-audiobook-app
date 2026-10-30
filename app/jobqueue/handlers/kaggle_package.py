@@ -6,10 +6,11 @@ import json
 import shutil
 import tempfile
 import time
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import drive_export, google_drive, kaggle_accounts, kaggle_api, kaggle_packages as packages
+from app import chunk_import, drive_export, google_drive, kaggle_accounts, kaggle_api, kaggle_packages as packages
 from app import patch_import, repository
 from app.config import settings
 from app.jobqueue.models import JobFatalError, JobRescheduled
@@ -22,7 +23,7 @@ def reconcile(ctx, package, service, staging, imported, policy, mode, active):
 
     entries = json.loads(package["patches_json"])
     remote = packages.result_inventory(service, package["drive_folder_id"])
-    ready = sum(entry["wav"] in remote for entry in entries)
+    ready = sum(packages.remote_ready(entry, remote) for entry in entries)
     packages.update(ctx.conn, package["id"], remote_count=ready, checked_at=packages.now(),
                     status="incomplete", error_message=None)
     for entry in entries:
@@ -32,14 +33,25 @@ def reconcile(ctx, package, service, staging, imported, policy, mode, active):
         if patch is None or patch.book_id != package["book_id"]:
             raise JobFatalError(f"Patch {entry['patch_id']} của gói đã bị xóa.")
         wav = entry["wav"]
-        if wav not in remote:
+        if not packages.remote_ready(entry, remote):
             continue
         target = packages.local_path(package, entry)
         sidecar = target.with_suffix(".timeline.json")
         timeline_name = Path(wav).with_suffix(".timeline.json").name
         was_done = patch.status == "done"
         had_audio = packages.has_file(target)
-        if not had_audio:
+        if not had_audio and chunk_import.marker_name(wav) in remote:
+            # Current notebooks only synthesize: download the chunks, merge here.
+            try:
+                chunk_import.import_from_drive(
+                    lambda: nullcontext(ctx.conn), service, package["drive_folder_id"], patch, staging)
+            except chunk_import.ChunkImportError as exc:
+                if exc.transient:
+                    ctx.log(f"Patch {patch.id}: {exc}; thử lại ở lượt kiểm tra sau")
+                    continue
+                raise JobFatalError(f"Patch {patch.id}: {exc}") from exc
+            ctx.log(f"Đã tải chunk và ghép patch {patch.id} tại máy")
+        elif not had_audio:
             source = staging / wav
             google_drive.download_file(service, remote[wav]["id"], str(source))
             if timeline_name in remote:
@@ -162,11 +174,18 @@ def handle(ctx):
                 if missing_inputs:
                     remote = packages.result_inventory(service, package["drive_folder_id"])
                     entries = json.loads(package["patches_json"])
-                    if any(e["patch_id"] in missing_inputs and e["wav"] not in remote for e in entries):
+                    if any(e["patch_id"] in missing_inputs and not packages.remote_ready(e, remote)
+                           for e in entries):
                         raise JobFatalError("Drive thiếu manifest đầu vào cho một số patch chưa xong; không tự upload lại gói cũ.")
                 credentials = google_drive.kaggle_credentials(conn, package["drive_account_id"])
                 if not credentials:
                     raise JobFatalError("Tài khoản Drive của gói chưa có thông tin xác thực cho Kaggle.")
+                try:
+                    if drive_export.ensure_zerotts_voice_on_drive(
+                            service, package["drive_folder_id"], payload.get("model_id"), payload.get("voice_id")):
+                        ctx.log("Đã bổ sung giọng ZeroTTS import (zerotts_voice.npz) vào thư mục Drive của gói.")
+                except ValueError as exc:
+                    raise JobFatalError(str(exc)) from exc
                 drive_export.build_kaggle_continuation_notebook(
                     staging, batch_id=package["batch_id"], folder_id=package["drive_folder_id"],
                     credentials=credentials,

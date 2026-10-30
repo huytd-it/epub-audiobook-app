@@ -13,10 +13,11 @@ import json
 import logging
 import shutil
 import time
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import drive_export, kaggle_accounts, kaggle_api, patch_import, repository
+from app import chunk_import, drive_export, kaggle_accounts, kaggle_api, patch_import, repository
 from app.config import settings
 from app.jobqueue.context import JobContext
 from app.jobqueue.models import JobFatalError, JobRescheduled
@@ -325,6 +326,31 @@ def _find_drive_sync_folder_id(service, batch_id: str) -> str | None:
     return None
 
 
+def _assemble_patch_chunks(ctx: JobContext, conn, patch, *, service=None, folder_id: str | None = None,
+                           local_folder: Path | None = None, staging: Path | None = None) -> str | None:
+    """Merge one patch locally from the notebook's chunks - from Drive, or from a
+    patch folder already on disk (Kaggle output). None while the chunks are not all
+    visible yet; a mismatch that no retry can fix is fatal."""
+    db = lambda: nullcontext(conn)  # noqa: E731 - the job owns its connection
+    try:
+        if local_folder is not None:
+            return chunk_import.assemble_patch_from_chunks(db, patch, chunk_import.read_patch_folder(local_folder))
+        return chunk_import.import_from_drive(db, service, folder_id, patch, staging)
+    except chunk_import.ChunkImportError as exc:
+        if exc.transient:
+            ctx.log(f"Patch {patch.id}: {exc}; thử lại ở lượt sau")
+            return None
+        raise JobFatalError(f"Patch {patch.id}: {exc}") from exc
+
+
+def _local_chunk_folder(package_dir: Path, patch) -> Path | None:
+    """The patch's folder in a downloaded Kaggle output, if it carries chunks."""
+    for folder in chunk_import.find_patch_folders(package_dir):
+        if folder.name == f"patch_{patch.patch_index:03d}" and any((folder / "output").glob("chunk_*.wav")):
+            return folder
+    return None
+
+
 def _poll_drive_for_completed_patches(
     ctx: JobContext, conn, *, book_id: int, patches: list,
     drive_state: dict, batch_id: str, package_dir: Path,
@@ -371,6 +397,23 @@ def _poll_drive_for_completed_patches(
             if current is None or current.status == "done" or patch.id in imported_this_job:
                 continue
             wav_name = drive_export.result_wav_name(patch)
+            if chunk_import.marker_name(wav_name) in remote:
+                staging.mkdir(parents=True, exist_ok=True)
+                merged = _assemble_patch_chunks(ctx, conn, patch, service=service,
+                                                folder_id=folder_id, staging=staging)
+                if merged is None:
+                    continue
+                repository.mark_patch_done(conn, patch.id, merged)
+                if automation_active and automation_mode == AUTOMATION_PER_PATCH:
+                    _automate_patch(ctx, patch.id, request_policy)
+                elif not automation_active:
+                    on_patch_audio_ready(conn, patch.id)
+                imported_this_job.append(patch.id)
+                done_holder[0] += 1
+                newly += 1
+                ctx.progress(done_holder[0], total)
+                ctx.log(f"Đã tải chunk và ghép patch {patch.id} tại máy ({done_holder[0]}/{total})")
+                continue
             file_id = remote.get(wav_name)
             if not file_id:
                 continue
@@ -569,19 +612,28 @@ def _poll_drive_results(
         current = repository.get_patch(conn, patch.id)
         if current is None or current.book_id != book_id or current.status == "done":
             continue
-        patch_folder = package_dir / "patches" / f"patch_{patch.patch_index:03d}"
-        result = patch_import.resolve_batch_result(patch_folder, patch.id)
-        if result is None or not result.is_file():
-            continue
         audio_path = repository.get_patch_audio_path(book_id, patch.patch_index)
-        try:
-            patch_import.install_imported_wav(result, audio_path)
-        except Exception:
-            logger.warning(
-                "Kaggle result WAV invalid for patch %s; will check Drive again",
-                patch.id, exc_info=True,
-            )
-            continue
+        marker = package_dir / "result" / chunk_import.marker_name(drive_export.result_wav_name(patch))
+        if marker.is_file():
+            with ctx.keep_alive():
+                merged = _assemble_patch_chunks(ctx, conn, patch, service=service,
+                                                folder_id=drive_batch_folder_id,
+                                                staging=package_dir / "_drive_chunks")
+            if merged is None:
+                continue
+        else:
+            patch_folder = package_dir / "patches" / f"patch_{patch.patch_index:03d}"
+            result = patch_import.resolve_batch_result(patch_folder, patch.id)
+            if result is None or not result.is_file():
+                continue
+            try:
+                patch_import.install_imported_wav(result, audio_path)
+            except Exception:
+                logger.warning(
+                    "Kaggle result WAV invalid for patch %s; will check Drive again",
+                    patch.id, exc_info=True,
+                )
+                continue
         repository.mark_patch_done(conn, patch.id, str(audio_path))
         if automation_active and automation_mode == AUTOMATION_PER_PATCH:
             _automate_patch(ctx, patch.id, request_policy)
@@ -737,6 +789,12 @@ def handle(ctx: JobContext) -> dict | None:
                     conn, drive_account_id, package_dir, slug,
                 )
                 drive_batch_folder_id = drive_batch_folder["id"]
+                # An existing folder is reused untouched; make sure it has the voice.
+                from app import google_drive
+                drive_export.ensure_zerotts_voice_on_drive(
+                    google_drive.get_drive_service(conn, drive_account_id),
+                    drive_batch_folder_id, model_id, voice_id,
+                )
 
             ctx.progress(done, total, phase="pushing")
             ctx.log(f"Pushing kernel {account['username']}/{slug} ({len(patches)} patch(es))")
@@ -892,21 +950,28 @@ def handle(ctx: JobContext) -> dict | None:
                         continue
                 patch_folder = package_dir / "patches" / f"patch_{patch.patch_index:03d}"
                 result = patch_import.resolve_batch_result(patch_folder, patch.id)
-                if result is None or not result.is_file():
-                    continue
                 # Layout chuẩn: audio/{book_id}_{episode}.wav (episode = patch_index+1,
                 # đệm 3 số), cùng chỗ với audiobook_tts/light_tts ghi qua
                 # repository.get_patch_audio_path — không dùng legacy patches/{patch_id}.wav.
                 audio_path = repository.get_patch_audio_path(book_id, patch.patch_index)
                 audio_path.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    patch_import.install_imported_wav(result, audio_path)
-                except Exception:
-                    logger.warning(
-                        "Kaggle result WAV invalid for patch %s; will retry next cycle",
-                        patch.id, exc_info=True,
-                    )
-                    continue
+                if result is None or not result.is_file():
+                    # Current notebooks leave chunks, not a merged WAV: merge them here.
+                    chunk_folder = _local_chunk_folder(package_dir, patch)
+                    if chunk_folder is None:
+                        continue
+                    with ctx.keep_alive():
+                        if _assemble_patch_chunks(ctx, conn, patch, local_folder=chunk_folder) is None:
+                            continue
+                else:
+                    try:
+                        patch_import.install_imported_wav(result, audio_path)
+                    except Exception:
+                        logger.warning(
+                            "Kaggle result WAV invalid for patch %s; will retry next cycle",
+                            patch.id, exc_info=True,
+                        )
+                        continue
                 repository.mark_patch_done(conn, patch.id, str(audio_path))
                 if automation_active and automation_mode == AUTOMATION_PER_PATCH:
                     # Chuỗi ngay từng patch: audio xong -> video/upload luôn, patch
