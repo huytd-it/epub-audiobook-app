@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import uuid
 from pathlib import Path
 
 import soundfile as sf
 
-from app import audio_merge, repository
+from app import audio_merge, chunk_store, repository
 from app.audio_mastering import normalize_wav_in_place
 from app.config import settings
 from app.jobqueue.models import JobFatalError
@@ -61,22 +60,12 @@ def handle(ctx) -> dict:
         ctx.emit({"type": "error", "message": "Patch này không có chunk nào"})
         raise JobFatalError("patch không có chunk nào")
 
-    # Cùng thư mục chunk với pipeline TTS chính (audio/{book}_{episode}_chunks) để
-    # endpoint phát thử chunk chỉ phải đọc một chỗ; hai bên phân biệt chunk của nhau
-    # bằng marker riêng (.light_tts_meta ở đây, fingerprint ở audiobook_tts).
-    chunk_dir = repository.get_patch_chunk_dir(book_id, patch.patch_index)
-    chunk_dir.mkdir(parents=True, exist_ok=True)
-    joined = "\n\n".join(item["text"] for item in plan)
-    meta_key = hashlib.md5(f"{backend}|{voice}|{effective_max_chars}|{joined}".encode("utf-8")).hexdigest()
-    meta_path = chunk_dir / ".light_tts_meta"
-    try:
-        reusable = meta_path.read_text(encoding="utf-8").strip() == meta_key
-    except OSError:
-        reusable = False
-    if not reusable:
-        for stale in chunk_dir.glob("chunk_*.wav"):
-            stale.unlink(missing_ok=True)
-        meta_path.write_text(meta_key, encoding="utf-8")
+    # Cùng kho chunk theo chương với pipeline TTS chính (app/chunk_store.py) để endpoint
+    # phát thử chunk chỉ phải đọc một chỗ; key từng chunk (backend|voice|text) phân biệt
+    # chunk của hai bên, nên chunk lệch key được tổng hợp lại thay vì dùng nhầm.
+    patch_dir = repository.get_patch_chunk_dir(book_id, patch.patch_index)
+    targets = chunk_store.resolve_plan_chunks(book_id, patch_dir, plan)
+    model_cfg = f"light:{backend}:{voice or ''}"
     if max_chars == 0 and patch.chunk_count != total:
         repository.update_patch_chunk_count(ctx.conn, patch_id, total)
     try:
@@ -89,13 +78,16 @@ def handle(ctx) -> dict:
     ctx.progress(0, total, phase="synthesizing")
     ok_count = fail_count = contiguous = 0
     prefix_open = True
+    chapter_ok = True
+    chapters_by_index = {c.chapter_index: c for c in plan_inputs.get("chapters") or []}
     for index, item in enumerate(plan):
         if ctx.should_cancel():
             raise asyncio.CancelledError()
-        chunk_path = chunk_dir / f"chunk_{index:03d}.wav"
-        chunk_url = f"/books/{book_id}/patches/{patch_id}/chunk-audio/{index}?v={cache_bust}"
+        cache, local = targets[index]
+        key = chunk_store.chunk_key(backend, model_cfg, item["text"])
+        chunk_url = f"{chunk_store.chunk_audio_url(book_id, patch_id, item.get('chapter_index'), local)}?v={cache_bust}"
         present = False
-        if chunk_path.is_file():
+        if cache.is_valid(local, key):
             ok_count += 1; present = True
             ctx.emit({"type": "chunk", "index": index, "total": total, "url": chunk_url, "reused": True})
         else:
@@ -106,8 +98,21 @@ def handle(ctx) -> dict:
                 ctx.log(f"chunk {index} lỗi: {exc}", level=logging.WARNING)
                 ctx.emit({"type": "chunk_error", "index": index, "total": total, "message": str(exc)})
             else:
-                chunk_path.write_bytes(wav_bytes); ok_count += 1; present = True
+                cache.dir.mkdir(parents=True, exist_ok=True)
+                cache.path(local).write_bytes(wav_bytes)
+                info = sf.info(str(cache.path(local)))
+                cache.record(local, key=key, text=item["text"], frames=info.frames, sample_rate=info.samplerate,
+                             engine=backend, voice=voice or None, max_chars=effective_max_chars)
+                ok_count += 1; present = True
                 ctx.emit({"type": "chunk", "index": index, "total": total, "url": chunk_url})
+        # Đánh dấu chương đủ chunk (cho bảng patch đếm chương sẵn sàng) chỉ khi mọi
+        # chunk của chương trong lượt này đều có mặt.
+        chapter_ok = present and (local == 0 or chapter_ok)
+        chapter = chapters_by_index.get(item.get("chapter_index"))
+        last_of_store = index + 1 == total or targets[index + 1][0] is not cache
+        if last_of_store and chapter is not None and chapter_ok:
+            cache.mark_complete(repository.chapter_tts_source_key(
+                chapter, plan_inputs["opts"], plan_inputs["rules"], plan_inputs["limit"]), local + 1)
         if prefix_open:
             if present: contiguous = index + 1
             else: prefix_open = False
@@ -123,7 +128,7 @@ def handle(ctx) -> dict:
     audio_path = repository.get_patch_audio_path(book_id, patch.patch_index)
     audio_path.parent.mkdir(parents=True, exist_ok=True)
     audio_path = str(audio_path)
-    chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
+    chunk_paths = [str(cache.path(local)) for cache, local in targets]
     pauses = audio_merge.build_pause_plan(
         plan, payload["chunk_pause_ms"], payload["chapter_pause_ms"])
     audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=pauses)

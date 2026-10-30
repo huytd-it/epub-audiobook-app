@@ -31,6 +31,7 @@ import {
 import { cn } from "@/lib/utils";
 import { MediaBrowser } from "@/components/media-browser/MediaBrowser";
 import {
+  ChapterAudioSummary,
   OnlineVoice,
   PatchRangeReport,
   PatchRangesReport,
@@ -85,6 +86,10 @@ const INTERACTIVE = "button, a, input, label, select, textarea, [role='button']"
 const isInteractive = (target: EventTarget | null) =>
   target instanceof Element && Boolean(target.closest(INTERACTIVE));
 
+const CHAPTER_AUDIO_HINT =
+  "Chương đã có đủ chunk TTS cho nội dung hiện tại (kho books/{id}/chapters). " +
+  "Đủ hết thì tạo âm thanh cho patch chỉ là ghép lại, không tổng hợp mới.";
+
 type RowProps = {
   patch: Patch;
   chapters: Chapter[];
@@ -92,6 +97,8 @@ type RowProps = {
   chunkReport?: PatchReport;
   rangeReport?: PatchRangeReport;
   textTotals?: TextTotals;
+  /** Chương có đủ chunk TTS cho text hiện tại / số chương đọc được của patch. */
+  chapterAudio?: { ready: number; total: number };
   selected: boolean;
   busy: boolean;
   onSelect: (patchId: number, mode: SelectMode) => void;
@@ -162,6 +169,7 @@ const PatchRow = React.memo(function PatchRow({
   chunkReport,
   rangeReport,
   textTotals,
+  chapterAudio,
   selected,
   busy,
   onSelect,
@@ -287,6 +295,21 @@ const PatchRow = React.memo(function PatchRow({
           <span className="font-semibold text-foreground">{Math.round(percent)}%</span>
         </div>
         <Progress value={percent} className="h-1.5" />
+        {chapterAudio && chapterAudio.total > 0 && (
+          <div
+            className={cn(
+              "mt-1 font-mono text-[10px]",
+              chapterAudio.ready === chapterAudio.total
+                ? "text-emerald-700"
+                : chapterAudio.ready > 0
+                ? "text-amber-700"
+                : "text-muted-foreground"
+            )}
+            title={CHAPTER_AUDIO_HINT}
+          >
+            {chapterAudio.ready}/{chapterAudio.total} chương có audio
+          </div>
+        )}
       </TableCell>
 
       <TableCell className="min-w-28 py-2.5">
@@ -430,6 +453,7 @@ export function PatchesPanel({
   bookModelId,
   bookVoiceId,
   bookVoiceName,
+  chapterAudio,
 }: {
   bookId: string;
   patches: Patch[];
@@ -449,6 +473,8 @@ export function PatchesPanel({
   bookVoiceId: string;
   /** Tên file clip mẫu của sách (cho model clone). */
   bookVoiceName: string;
+  /** Kho chunk TTS theo chương (useChapterAudio) — đếm chương sẵn sàng của từng patch. */
+  chapterAudio: Record<string, ChapterAudioSummary>;
 }) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [audioFilter, setAudioFilter] = useState<PresenceFilter>("all");
@@ -462,6 +488,23 @@ export function PatchesPanel({
   const [textChecks, setTextChecks] = useState<Record<number, TextTotals>>();
   const [checkingText, setCheckingText] = useState(false);
   const [resyncing, setResyncing] = useState(false);
+
+  // Patch build lại chỉ cần ghép khi mọi chương đọc được đã "ready" (đủ chunk cho text
+  // hiện tại). Chương bị bỏ qua không tính.
+  const chapterAudioByPatch = useMemo(() => {
+    const result: Record<number, { ready: number; total: number }> = {};
+    for (const patch of patches) {
+      let ready = 0;
+      let total = 0;
+      for (const chapter of chapters) {
+        if (chapter.is_excluded || chapter.chapter_index < patch.chapter_start || chapter.chapter_index > patch.chapter_end) continue;
+        total += 1;
+        if (chapterAudio[String(chapter.chapter_index)]?.ready) ready += 1;
+      }
+      result[patch.id] = { ready, total };
+    }
+    return result;
+  }, [patches, chapters, chapterAudio]);
 
   // Giọng riêng từng patch: clip thư viện tải một lần; giọng online tải theo
   // model khi dòng cần (edge-tts/gTTS), cache theo model để không gọi lặp.
@@ -903,6 +946,7 @@ export function PatchesPanel({
                     chunkReport={chunkReports?.[patch.id]}
                     rangeReport={rangeByPatchId[patch.id]}
                     textTotals={textChecks?.[patch.id]}
+                    chapterAudio={chapterAudioByPatch[patch.id]}
                     selected={selectedIds.includes(patch.id)}
                     busy={importingId === patch.id}
                     onSelect={select}

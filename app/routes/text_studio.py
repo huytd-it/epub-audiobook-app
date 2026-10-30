@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import FileResponse, Response, StreamingResponse
 
-from app import audio_merge, repository, text_analysis
+from app import audio_merge, chunk_store, repository, text_analysis
 from app.config import settings
 from app.deps import locked_conn
 from app.light_tts import _BACKENDS, LightTTSEngine, _check_backend, list_voices
@@ -351,8 +351,9 @@ def reconcile_chunk_counts(request: Request, book_id: int):
 
 @router.get("/books/{book_id}/patches/{patch_id}/chunk-audio/{index}")
 def serve_patch_chunk_audio(request: Request, book_id: int, patch_id: int, index: int):
-    """Serve one persisted chunk WAV so the preview-stream client can play chunks as
-    they land (or are reused from an earlier run)."""
+    """Serve one chunk WAV from the patch's own chunk dir: Text Studio chunks, plus
+    chunks of the pre-chapter-store layout. Chapter chunks are served by
+    /books/{id}/chapter-audio/... (see chunk_store.chunk_audio_url)."""
     if index < 0:
         raise HTTPException(status_code=400, detail="invalid chunk index")
     with locked_conn(request) as conn:
@@ -376,7 +377,6 @@ def completed_chunks_preview(request: Request, book_id: int, patch_id: int):
         inputs = repository.fetch_patch_chunk_inputs(conn, patch)
         audio_config = get_effective_audio_config(conn, book)
 
-    plan = repository.build_chunk_plan_from_inputs(inputs)
     chunk_dir = repository.resolve_patch_chunk_dir(patch)
     try:
         tts_request = json.loads((chunk_dir / ".tts_request.json").read_text(encoding="utf-8"))
@@ -386,20 +386,24 @@ def completed_chunks_preview(request: Request, book_id: int, patch_id: int):
             "voice": audio_config.get("voice_id"),
             "source": "book_settings",
         }
-    completed = [
-        {"index": index, "text": item["text"], "pause_ms": pause_ms}
-        for index, (item, pause_ms) in enumerate(
-            zip(
-                plan,
-                audio_merge.build_pause_plan(
-                    plan,
-                    audio_config["chunk_pause_ms"],
-                    audio_config["chapter_pause_ms"],
-                ),
-            )
-        )
-        if (chunk_dir / f"chunk_{index:03d}.wav").is_file()
-    ]
+    # Tách lại đúng như lần chạy TTS gần nhất, nếu không index chunk sẽ lệch.
+    requested_max_chars = tts_request.get("max_chars") if isinstance(tts_request.get("max_chars"), int) else 0
+    if requested_max_chars > 0:
+        inputs = {**inputs, "limit": requested_max_chars}
+    plan = repository.build_chunk_plan_from_inputs(inputs)
+    targets = chunk_store.resolve_plan_chunks(book_id, repository.get_patch_chunk_dir(book_id, patch.patch_index), plan)
+    pauses = audio_merge.build_pause_plan(plan, audio_config["chunk_pause_ms"], audio_config["chapter_pause_ms"])
+    completed = []
+    for index, (item, pause_ms, (cache, local)) in enumerate(zip(plan, pauses, targets)):
+        chapter_index = item.get("chapter_index")
+        if cache.has_text(local, item["text"]):
+            url = chunk_store.chunk_audio_url(book_id, patch_id, chapter_index, local)
+        elif (chunk_dir / f"chunk_{index:03d}.wav").is_file():
+            # Chunk của layout cũ (audio/{book}_{ep}_chunks, đánh số theo patch) — không migrate.
+            url = chunk_store.chunk_audio_url(book_id, patch_id, None, index)
+        else:
+            continue
+        completed.append({"index": index, "text": item["text"], "pause_ms": pause_ms, "url": url})
     return {"chunks": completed, "tts": tts_request}
 
 

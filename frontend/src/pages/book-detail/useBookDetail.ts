@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, VoiceItem } from "@/api";
 import {
   BookStatus,
+  ChapterAudioSummary,
   ChaptersValidation,
   Detail,
   ExportContext,
@@ -148,6 +149,26 @@ export function useChapterValidation(id: string | undefined) {
   }, [reload]);
 
   return { report, loading, reload };
+}
+
+/** Trạng thái audio theo chương cho cột Audio của Mục lục. */
+export function useChapterAudio(id: string | undefined) {
+  const [summary, setSummary] = useState<Record<string, ChapterAudioSummary>>({});
+
+  const reload = useCallback(async () => {
+    if (!id) return;
+    try {
+      setSummary((await api<{ chapters: Record<string, ChapterAudioSummary> }>(`/books/${id}/chapter-audio`)).chapters);
+    } catch {
+      // im lặng như báo cáo kiểm tra: cột Audio chỉ bổ trợ.
+    }
+  }, [id]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  return { summary, reload };
 }
 
 export type TtsOptions = {

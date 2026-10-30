@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search, SkipBack, SkipForward, Square } from "lucide-react";
+import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search, Square } from "lucide-react";
 import { api, Chapter, Patch, post, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -38,13 +38,7 @@ import { MusicMixFields } from "./MusicMixFields";
 import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
 import { AiContentGenerator, YouTubeConfigFields } from "./YouTubeFields";
 import { useTtsOptions } from "./useBookDetail";
-
-type PreviewChunk = { index: number; text: string; pause_ms: number };
-
-function formatPreviewTime(totalSeconds: number) {
-  const total = Math.max(0, Math.floor(totalSeconds));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-}
+import { ChunkPreviewBar, PreviewChunk, useChunkPreview } from "./useChunkPreview";
 
 const WAVEFORM_TEMPLATES = [  { id: "bold", name: "Dải nổi", description: "Line sáng trên nền tối", style: "line", layout: "horizontal", color: "#ffffff", background: "#050816", backgroundOpacity: 0.68, position: "bottom", height: 150, opacity: 1 },
   { id: "studio", name: "Studio", description: "Sóng đối xứng giữa khung", style: "cline", layout: "horizontal", color: "#22d3ee", background: "#082f49", backgroundOpacity: 0.62, position: "center", height: 200, opacity: 1 },
@@ -83,22 +77,21 @@ export function PatchPreviewDialog({
   const [quickModelId, setQuickModelId] = useState(defaultModelId);
   const [quickVoiceId, setQuickVoiceId] = useState(defaultVoiceId);
   const [quickGenerating, setQuickGenerating] = useState(false);
-  const [chunkPreviewState, setChunkPreviewState] = useState<"idle" | "loading" | "playing">("idle");
-  const [chunkCaption, setChunkCaption] = useState("");
   const [completedChunksTts, setCompletedChunksTts] = useState<{ engine?: string; voice?: string; source?: string }>();
-  // Phát tạm nối nhiều file chunk nên progress/seek tính trên tổng thời lượng:
-  // durations nạp sẵn qua metadata, pos/time bám theo audio đang phát.
-  const [previewChunks, setPreviewChunks] = useState<PreviewChunk[]>([]);
-  const [previewDurations, setPreviewDurations] = useState<Record<number, number>>({});
-  const [previewPos, setPreviewPos] = useState(0);
-  const [previewTime, setPreviewTime] = useState(0);
-  // Mirror đồng bộ của chunks/durations cho engine (tránh đọc state cũ ngay sau load).
-  const previewData = useRef<{ chunks: PreviewChunk[]; durations: Record<number, number> }>({
-    chunks: [],
-    durations: {},
-  });
-  const previewRun = useRef<{ audio: HTMLAudioElement | null; cancelled: boolean } | null>(null);
-  const previewRunId = useRef(0);
+  const loadPreviewChunks = useCallback(async () => {
+    if (!patch) return null;
+    const preview = await api<{
+      chunks: (Omit<PreviewChunk, "url"> & { url?: string })[];
+      tts: { tts_engine?: string; voice?: string; source?: string };
+    }>(`/books/${bookId}/patches/${patch.id}/completed-chunks-preview`);
+    setCompletedChunksTts({ engine: preview.tts.tts_engine, voice: preview.tts.voice, source: preview.tts.source });
+    // Chunk theo chương có URL riêng (kho books/{id}/chapters); thiếu thì là layout cũ của patch.
+    return preview.chunks.map((chunk) => ({
+      ...chunk,
+      url: chunk.url || `/books/${bookId}/patches/${patch.id}/chunk-audio/${chunk.index}`,
+    }));
+  }, [bookId, patch]);
+  const chunkPreview = useChunkPreview({ load: loadPreviewChunks, onMessage, resetKey: `${open}:${patch?.id}` });
   const quickTts = useTtsOptions(data, quickModelId);
 
   useEffect(() => {
@@ -125,47 +118,6 @@ export function PatchPreviewDialog({
       cancelled = true;
     };
   }, [open, patch, chapters, bookId, onMessage, defaultModelId, defaultVoiceId]);
-
-  const stopChunkPreview = useCallback((fullReset = false) => {
-    previewRunId.current += 1;
-    const run = previewRun.current;
-    if (run?.audio) {
-      try {
-        run.audio.pause();
-      } catch {
-        // Bỏ qua lỗi pause trên audio đã hủy.
-      }
-      run.audio.src = "";
-      run.audio = null;
-    }
-    previewRun.current = null;
-    setChunkPreviewState("idle");
-    setChunkCaption("");
-    if (fullReset) {
-      // Đóng dialog / đổi patch: quên hết để lần sau nạp mới.
-      previewData.current = { chunks: [], durations: {} };
-      setPreviewChunks([]);
-      setPreviewDurations({});
-      setPreviewPos(0);
-      setPreviewTime(0);
-      setCompletedChunksTts(undefined);
-    }
-    // Dừng tay thì giữ nguyên vị trí thanh tua để bấm phát lại tiếp tục từ đó.
-  }, []);
-
-  useEffect(() => () => stopChunkPreview(true), [open, patch?.id, stopChunkPreview]);
-
-  const previewTotal = useMemo(
-    () => previewChunks.reduce((sum, chunk) => sum + (previewDurations[chunk.index] || 0), 0),
-    [previewChunks, previewDurations]
-  );
-  const previewElapsed = useMemo(() => {
-    let elapsed = 0;
-    for (let i = 0; i < previewPos && i < previewChunks.length; i++) {
-      elapsed += previewDurations[previewChunks[i].index] || 0;
-    }
-    return elapsed + previewTime;
-  }, [previewChunks, previewDurations, previewPos, previewTime]);
 
   const percent = patch?.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
   const patchChapters = patch
@@ -216,218 +168,6 @@ export function PatchPreviewDialog({
       onMessage(errorText(error));
     } finally {
       setQuickGenerating(false);
-    }
-  };
-
-  const playPreviewChunk = useCallback(
-    (chunk: { index: number; text: string }, offset: number) =>
-      new Promise<void>((resolve, reject) => {
-        const run = previewRun.current;
-        if (!run || !patch) {
-          reject(new Error("Phiên phát đã kết thúc."));
-          return;
-        }
-        const audio = new Audio(`/books/${bookId}/patches/${patch.id}/chunk-audio/${chunk.index}`);
-        audio.preload = "auto";
-        run.audio = audio;
-        const detach = () => {
-          audio.removeEventListener("timeupdate", onTimeUpdate);
-          audio.removeEventListener("ended", onEnded);
-          audio.removeEventListener("error", onError);
-        };
-        const onTimeUpdate = () => setPreviewTime(audio.currentTime);
-        const onEnded = () => {
-          detach();
-          resolve();
-        };
-        const onError = () => {
-          detach();
-          reject(new Error(`Không thể phát chunk ${chunk.index + 1}.`));
-        };
-        audio.addEventListener("timeupdate", onTimeUpdate);
-        audio.addEventListener("ended", onEnded);
-        audio.addEventListener("error", onError);
-        const start = () => {
-          try {
-            if (offset > 0 && Number.isFinite(audio.duration) && offset < audio.duration) {
-              audio.currentTime = offset;
-            }
-          } catch {
-            // Metadata chưa sẵn — phát từ đầu chunk.
-          }
-          setPreviewTime(audio.currentTime || 0);
-          audio.play().catch(reject);
-        };
-        if (audio.readyState >= 1) start();
-        else audio.addEventListener("loadedmetadata", start, { once: true });
-      }),
-    [bookId, patch]
-  );
-
-  const runPreviewLoop = useCallback(
-    async (runId: number, chunks: { index: number; text: string; pause_ms: number }[], startPos: number, startOffset: number) => {
-      let pos = startPos;
-      let offset = startOffset;
-      while (pos < chunks.length) {
-        const run = previewRun.current;
-        if (!run || run.cancelled || previewRunId.current !== runId) return;
-        const chunk = chunks[pos];
-        setPreviewPos(pos);
-        // Tua vào giữa chunk thì bỏ khoảng nghỉ đầu chunk đó.
-        if (offset <= 0 && chunk.pause_ms) {
-          await new Promise((resolve) => window.setTimeout(resolve, chunk.pause_ms));
-          if (!previewRun.current || previewRun.current.cancelled || previewRunId.current !== runId) return;
-        }
-        setChunkCaption(chunk.text);
-        try {
-          await playPreviewChunk(chunk, offset);
-        } catch (error) {
-          if (previewRun.current && !previewRun.current.cancelled && previewRunId.current === runId) {
-            onMessage(errorText(error));
-          }
-          return;
-        }
-        pos += 1;
-        offset = 0;
-      }
-      if (previewRun.current && !previewRun.current.cancelled && previewRunId.current === runId) {
-        stopChunkPreview();
-      }
-    },
-    [playPreviewChunk, onMessage, stopChunkPreview]
-  );
-
-  /** Nhảy tới chunk/offset bất kỳ: đang phát thì tua tiếp, đang dừng thì phát từ đó. */
-  const jumpPreview = useCallback(
-    (pos: number, offset = 0) => {
-      const { chunks } = previewData.current;
-      if (!chunks.length) return;
-      const clamped = Math.max(0, Math.min(chunks.length - 1, pos));
-      previewRunId.current += 1;
-      const run = previewRun.current;
-      if (run?.audio) {
-        try {
-          run.audio.pause();
-        } catch {
-          // Bỏ qua lỗi pause trên audio đã hủy.
-        }
-        run.audio.src = "";
-        run.audio = null;
-      }
-      const runId = previewRunId.current;
-      previewRun.current = { audio: null, cancelled: false };
-      setChunkPreviewState("playing");
-      void runPreviewLoop(runId, chunks, clamped, Math.max(0, offset));
-    },
-    [runPreviewLoop]
-  );
-
-  const seekPreview = useCallback(
-    (fraction: number) => {
-      const { chunks, durations } = previewData.current;
-      const total = chunks.reduce((sum, chunk) => sum + (durations[chunk.index] || 0), 0);
-      if (!chunks.length || total <= 0) return;
-      const target = Math.min(Math.max(fraction, 0), 1) * total;
-      let acc = 0;
-      for (let i = 0; i < chunks.length; i++) {
-        const duration = durations[chunks[i].index] || 0;
-        if (target < acc + duration || i === chunks.length - 1) {
-          jumpPreview(i, Math.max(0, target - acc));
-          return;
-        }
-        acc += duration;
-      }
-    },
-    [jumpPreview]
-  );
-
-  const stepPreviewChunk = useCallback(
-    (delta: number) => {
-      if (!previewData.current.chunks.length) return;
-      jumpPreview(previewPos + delta, 0);
-    },
-    [previewPos, jumpPreview]
-  );
-
-  const loadPreviewChunks = useCallback(async () => {
-    if (!patch) return null;
-    const preview = await api<{
-      chunks: PreviewChunk[];
-      tts: { tts_engine?: string; voice?: string; source?: string };
-    }>(
-      `/books/${bookId}/patches/${patch.id}/completed-chunks-preview`
-    );
-    setCompletedChunksTts({ engine: preview.tts.tts_engine, voice: preview.tts.voice, source: preview.tts.source });
-    if (!preview.chunks.length) {
-      onMessage("Chưa có chunk audio hoàn thành để phát thử.");
-      return null;
-    }
-    // Nạp sẵn thời lượng từng chunk để thanh tua biết tổng độ dài.
-    const durations: Record<number, number> = {};
-    await Promise.all(
-      preview.chunks.map(
-        (chunk) =>
-          new Promise<void>((resolve) => {
-            const probe = new Audio(`/books/${bookId}/patches/${patch.id}/chunk-audio/${chunk.index}`);
-            probe.preload = "metadata";
-            const done = () => {
-              if (Number.isFinite(probe.duration) && probe.duration > 0) {
-                durations[chunk.index] = probe.duration;
-              }
-              probe.src = "";
-              resolve();
-            };
-            probe.addEventListener("loadedmetadata", done, { once: true });
-            probe.addEventListener("error", done, { once: true });
-            window.setTimeout(done, 8000);
-          })
-      )
-    );
-    previewData.current = { chunks: preview.chunks, durations };
-    setPreviewChunks(preview.chunks);
-    setPreviewDurations(durations);
-    return { chunks: preview.chunks, durations };
-  }, [bookId, patch, onMessage]);
-
-  const playCompletedChunks = async () => {
-    if (!patch || chunkPreviewState === "loading") return;
-    if (chunkPreviewState === "playing") {
-      stopChunkPreview();
-      return;
-    }
-    // Giữ tỉ lệ thanh tua đang đứng để phát tiếp từ đó sau khi nạp mới.
-    const keptFraction = previewTotal > 0 ? previewElapsed / previewTotal : 0;
-    setChunkPreviewState("loading");
-    try {
-      const loaded = await loadPreviewChunks();
-      if (!loaded) {
-        setChunkPreviewState("idle");
-        return;
-      }
-      const total = loaded.chunks.reduce((sum, chunk) => sum + (loaded.durations[chunk.index] || 0), 0);
-      const target = keptFraction * total;
-      let acc = 0;
-      let startPos = 0;
-      let startOffset = 0;
-      for (let i = 0; i < loaded.chunks.length; i++) {
-        const duration = loaded.durations[loaded.chunks[i].index] || 0;
-        if (target < acc + duration || i === loaded.chunks.length - 1) {
-          startPos = i;
-          startOffset = Math.max(0, target - acc);
-          break;
-        }
-        acc += duration;
-      }
-      previewRunId.current += 1;
-      const runId = previewRunId.current;
-      previewRun.current = { audio: null, cancelled: false };
-      setPreviewPos(startPos);
-      setPreviewTime(startOffset);
-      setChunkPreviewState("playing");
-      await runPreviewLoop(runId, loaded.chunks, startPos, startOffset);
-    } catch (error) {
-      onMessage(errorText(error));
-      stopChunkPreview();
     }
   };
 
@@ -487,64 +227,12 @@ export function PatchPreviewDialog({
                 </p>
               )}
             </div>
-            <Button size="sm" variant="outline" disabled={!patch || chunkPreviewState === "loading"} onClick={playCompletedChunks}>
-              {chunkPreviewState === "playing" ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-              {chunkPreviewState === "loading" ? "Đang chuẩn bị..." : chunkPreviewState === "playing" ? "Dừng phát" : "Phát tạm"}
+            <Button size="sm" variant="outline" disabled={!patch || chunkPreview.state === "loading"} onClick={() => void chunkPreview.toggle()}>
+              {chunkPreview.state === "playing" ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+              {chunkPreview.state === "loading" ? "Đang chuẩn bị..." : chunkPreview.state === "playing" ? "Dừng phát" : "Phát tạm"}
             </Button>
           </div>
-          {chunkCaption && (
-            <div className="mt-3 rounded bg-background px-3 py-2 text-xs leading-5 text-foreground" aria-live="polite">
-              <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                <Captions className="h-3 w-3" /> Phụ đề
-              </div>
-              {chunkCaption}
-            </div>
-          )}
-          {previewChunks.length > 0 && (
-            <div className="mt-3 space-y-1.5" aria-label="Tua nhanh audio nghe thử">
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 shrink-0 px-1.5"
-                  disabled={chunkPreviewState === "loading" || previewPos <= 0}
-                  onClick={() => stepPreviewChunk(-1)}
-                  title="Lùi một chunk"
-                  aria-label="Lùi một chunk"
-                >
-                  <SkipBack className="h-3.5 w-3.5" />
-                </Button>
-                <input
-                  type="range"
-                  min={0}
-                  max={1000}
-                  aria-label="Tua tới vị trí"
-                  className="w-full accent-primary"
-                  disabled={chunkPreviewState === "loading" || previewTotal <= 0}
-                  value={previewTotal > 0 ? Math.round((previewElapsed / previewTotal) * 1000) : 0}
-                  onChange={(event) => seekPreview(Number(event.target.value) / 1000)}
-                />
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 shrink-0 px-1.5"
-                  disabled={chunkPreviewState === "loading" || previewPos >= previewChunks.length - 1}
-                  onClick={() => stepPreviewChunk(1)}
-                  title="Tới một chunk"
-                  aria-label="Tới một chunk"
-                >
-                  <SkipForward className="h-3.5 w-3.5" />
-                </Button>
-                <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
-                  {formatPreviewTime(previewElapsed)} / {formatPreviewTime(previewTotal)}
-                </span>
-              </div>
-              <p className="font-mono text-[10px] text-muted-foreground">
-                Chunk {Math.min(previewPos + 1, previewChunks.length)}/{previewChunks.length}
-                {chunkPreviewState === "idle" ? " · bấm Phát tạm để nghe từ vị trí đã tua" : ""}
-              </p>
-            </div>
-          )}
+          <ChunkPreviewBar preview={chunkPreview} />
         </div>
 
         <div className="rounded-md border border-border bg-muted/20 p-3">

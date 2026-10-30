@@ -8,6 +8,9 @@ import { cn } from "@/lib/utils";
 import { ChapterAnalyzeResult, ChapterDetail, ChapterSaveResult, Span, errorText } from "./types";
 import { CheckField, SeverityTag, TabBar, fieldClass } from "./parts";
 import { HighlightedText } from "./HighlightedText";
+import { ChapterAudioPanel } from "./ChapterAudioPanel";
+
+export type ChapterTab = "view" | "edit" | "audio";
 
 const TITLE_STATE_LABEL: Record<string, string> = {
   canonical: "Chuẩn",
@@ -31,6 +34,8 @@ export function ChapterDialog({
   onChapterIndexChange,
   onMessage,
   onSaved,
+  onAudioChanged,
+  initialTab,
 }: {
   bookId: string;
   chapterIndex?: number;
@@ -40,10 +45,14 @@ export function ChapterDialog({
   onChapterIndexChange: (index: number) => void;
   onMessage: (message: string) => void;
   onSaved: () => Promise<void> | void;
+  /** Kho chunk của chương đổi (xoá chunk / ghép lại patch) ở tab Audio. */
+  onAudioChanged: () => void;
+  /** Tab mở sẵn khi dialog mở (vd. bấm cột Audio của Mục lục). */
+  initialTab?: ChapterTab;
 }) {
   const [detail, setDetail] = useState<ChapterDetail>();
   const [loading, setLoading] = useState(false);
-  const [mode, setMode] = useState<"view" | "edit">("view");
+  const [mode, setMode] = useState<ChapterTab>("view");
   const [draftTitle, setDraftTitle] = useState("");
   const [draftText, setDraftText] = useState("");
   const [draftExcluded, setDraftExcluded] = useState(false);
@@ -59,7 +68,8 @@ export function ChapterDialog({
     let cancelled = false;
     setDetail(undefined);
     setLoading(true);
-    setMode("view");
+    // Tab Audio giữ nguyên khi chuyển chương để nghe/duyệt liền mạch.
+    setMode((current) => (current === "audio" ? "audio" : "view"));
     setDraftSpans(null);
     setActiveCode(undefined);
     api<ChapterDetail>(`/books/${bookId}/chapters/${chapterIndex}?analyze=1`)
@@ -76,6 +86,10 @@ export function ChapterDialog({
       cancelled = true;
     };
   }, [open, chapterIndex, bookId, onMessage]);
+
+  useEffect(() => {
+    if (open && initialTab) setMode(initialTab);
+  }, [open, initialTab]);
 
   const dirty = Boolean(
     detail && (draftTitle !== detail.title || draftText !== detail.text || draftExcluded !== detail.is_excluded)
@@ -245,7 +259,7 @@ export function ChapterDialog({
                 <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
                 <span>
                   Chương này nằm trong patch #{doneWarning.patch_index + 1} đã tạo audio. Sửa nội dung sẽ không tự
-                  tạo lại audio — cần chạy lại TTS cho patch đó.
+                  tạo lại audio — dùng “Ghép lại patch” ở tab Audio: chỉ chunk có text đổi được tổng hợp lại.
                 </span>
               </div>
             )}
@@ -268,15 +282,16 @@ export function ChapterDialog({
         )}
 
         <div className="shrink-0 flex items-center justify-between gap-3 border-b border-border px-6 py-2">
-          <TabBar<"view" | "edit">
+          <TabBar<ChapterTab>
             value={mode}
             onChange={setMode}
             tabs={[
               { value: "view", label: "Xem lỗi" },
               { value: "edit", label: "Chỉnh sửa" },
+              { value: "audio", label: "Audio" },
             ]}
           />
-          <div className="hidden items-center gap-2 text-[10px] text-muted-foreground sm:flex">
+          <div className={cn("hidden items-center gap-2 text-[10px] text-muted-foreground", mode !== "audio" && "sm:flex")}>
             <span className="inline-flex items-center gap-1">
               <span className="h-2.5 w-2.5 rounded-sm bg-red-200 ring-1 ring-red-400" /> Lỗi
             </span>
@@ -289,7 +304,16 @@ export function ChapterDialog({
           </div>
         </div>
 
-        {loading || !detail ? (
+        {mode === "audio" && chapterIndex !== undefined ? (
+          <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+            <ChapterAudioPanel
+              bookId={bookId}
+              chapterIndex={chapterIndex}
+              onMessage={onMessage}
+              onChanged={onAudioChanged}
+            />
+          </div>
+        ) : loading || !detail ? (
           <div className="flex-1 py-12 text-center text-xs text-muted-foreground">Đang tải chương...</div>
         ) : (
           <div className="grid flex-1 gap-4 overflow-hidden px-6 py-4 lg:grid-cols-[1fr_16rem]">

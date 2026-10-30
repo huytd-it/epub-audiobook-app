@@ -500,6 +500,42 @@ export type ChaptersValidation = {
   chapters: ChapterReport[];
 };
 
+/** Trạng thái kho chunk TTS của một chương (app/chunk_store.py — chỉ đọc manifest). */
+export type ChapterAudioSummary = {
+  /** Có đủ chunk cho text/chuẩn hoá hiện tại — patch phủ chương chỉ cần ghép lại. */
+  ready: boolean;
+  max_chars?: number | null;
+  chunks: number;
+  files: number;
+  bytes: number;
+  duration: number;
+  engine?: string | null;
+  voice?: string | null;
+};
+
+export type ChapterAudioPatch = { patch_id: number; patch_index: number; name: string; status: string };
+
+/** Bản chuẩn hoá của chương tách chunk, kèm trạng thái từng chunk trên đĩa. */
+export type ChapterAudioDetail = {
+  chapter_index: number;
+  title: string | null;
+  is_excluded: boolean;
+  max_chars: number;
+  engine?: string | null;
+  voice?: string | null;
+  directory: string;
+  chunks: {
+    index: number;
+    text: string;
+    pause_ms: number;
+    status: "done" | "stale" | "missing";
+    duration: number | null;
+    url: string | null;
+  }[];
+  orphans: number;
+  patches: ChapterAudioPatch[];
+};
+
 export type Span = { start: number; length: number; code: string; severity: Severity; label: string; excerpt: string };
 
 export type ChapterPatchSummary = {

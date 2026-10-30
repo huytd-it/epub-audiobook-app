@@ -1,6 +1,9 @@
 """CRUD operations for book/chapter/patch, plus combined DB+filesystem operations."""
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 import logging
 import math
 import os
@@ -12,6 +15,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.audio_merge import cleanup_chunk_dir
+from app.chunk_store import (
+    ChunkStore, get_book_chapters_dir, get_chapter_chunk_dir, remap_chapter_stores, resolve_plan_chunks,
+)
 from app.chunker import group_into_patches, split_into_tts_chunks
 from app.config import settings
 from app.epub_parser import ParsedChapter
@@ -45,6 +51,44 @@ def get_patch_audio_path(book_id: int, patch_index: int) -> Path:
 def get_patch_chunk_dir(book_id: int, patch_index: int) -> Path:
     episode = f"{patch_index + 1:03d}"
     return Path(settings.data_root) / "books" / str(book_id) / "audio" / f"{book_id}_{episode}_chunks"
+
+
+def chapter_tts_source_key(
+    chapter: Chapter, opts: NormalizationOptions, rules: list[TextReplaceRule], limit: int | None
+) -> str:
+    """Hash of every input that decides a chapter's chunk texts (prepare_chapter_tts_text
+    + split): raw title/text, chapter_no, normalization options, replace rules and the
+    chunk cap. Hashing the inputs instead of the normalized output keeps the "chapter
+    audio ready" check cheap enough to run on every page refresh."""
+    raw = json.dumps(
+        [chapter.title, chapter.text, chapter.chapter_no, dataclasses.asdict(opts),
+         [(rule.find, rule.replace, bool(rule.is_regex)) for rule in rules], int(limit or 0)],
+        ensure_ascii=False, default=str,
+    )
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def list_chapter_audio_summary(
+    book_id: int, chapters: list[Chapter], opts: NormalizationOptions, rules: list[TextReplaceRule]
+) -> dict[int, dict]:
+    """On-disk TTS state of each chapter's chunk store — reads manifests only, no
+    chunk plan, so it is cheap enough for the chapter table and the patch list.
+
+    ``ready`` = the chapter has every chunk for its *current* text/normalization (the
+    completion marker the TTS run leaves, see ChunkStore.mark_complete), so a patch
+    covering it can be rebuilt by merging alone."""
+    if not get_book_chapters_dir(book_id).is_dir():
+        return {}
+    result = {}
+    for chapter in chapters:
+        store = ChunkStore(get_chapter_chunk_dir(book_id, chapter.chapter_index))
+        if not store.dir.is_dir():
+            continue
+        summary = store.summary()
+        source = chapter_tts_source_key(chapter, opts, rules, summary["max_chars"])
+        summary["ready"] = store.is_complete(source)
+        result[chapter.chapter_index] = summary
+    return result
 
 
 def resolve_patch_chunk_dir(patch) -> Path:
@@ -610,16 +654,16 @@ def set_patch_max_chars(conn: sqlite3.Connection, patch_id: int, max_chars: int 
 def resume_patch_from_chunk(conn: sqlite3.Connection, patch_id: int, from_index: int) -> bool:
     """Resume a failed patch starting at a chosen chunk index instead of regenerating the
     whole patch from scratch. Chunk files before from_index are left alone (already
-    synthesized); files at or after from_index are deleted so the worker's normal chunk
-    loop (worker.py _synthesize, start_index logic) regenerates them cleanly."""
+    synthesized); chunks at or after from_index are dropped from their chapter store
+    (app/chunk_store.py) so the next TTS run regenerates exactly those."""
     patch = get_patch(conn, patch_id)
     if patch is None or patch.status != "failed":
         return False
     from_index = max(0, min(from_index, patch.next_chunk_index))
-    chunk_dir = _chunk_dir_for(patch.book_id, patch_id)
-    if chunk_dir.exists():
-        for i in range(from_index, max(patch.chunk_count, patch.next_chunk_index)):
-            (chunk_dir / f"chunk_{i:03d}.wav").unlink(missing_ok=True)
+    plan = build_patch_chunk_plan(conn, patch)
+    targets = resolve_plan_chunks(patch.book_id, get_patch_chunk_dir(patch.book_id, patch.patch_index), plan)
+    for store, local in targets[from_index:]:
+        store.delete(local)
     conn.execute(
         """UPDATE patch SET status = 'pending', next_chunk_index = ?, error_message = NULL,
            updated_at = ? WHERE id = ?""",
@@ -933,7 +977,9 @@ def _purge_book_content(conn: sqlite3.Connection, book_id: int) -> None:
     conn.execute("DELETE FROM chapter WHERE book_id = ?", (book_id,))
 
 
-def _purge_book_content_files(book: Book, data_root: str, *, drop_epub: bool) -> None:
+def _purge_book_content_files(
+    book: Book, data_root: str, *, drop_epub: bool, chapter_remap: dict[int, int] | None = None
+) -> None:
     """Remove the on-disk output of the rows cleared by `_purge_book_content`.
 
     Call after the DB transaction commits. Stable book artwork (patch_overlays and
@@ -954,6 +1000,12 @@ def _purge_book_content_files(book: Book, data_root: str, *, drop_epub: bool) ->
     book_dir = Path(data_root) / "books" / str(book.id)
     for dirname in ("audio", "videos", "patches", "patch_videos"):
         shutil.rmtree(book_dir / dirname, ignore_errors=True)
+    # chapters/ là kho chunk TTS theo chương. Gỡ EPUB thì bỏ hết; nạp lại mục lục chỉ
+    # giữ kho của những chương có nội dung không đổi, dời sang số chương mới.
+    if chapter_remap is None:
+        shutil.rmtree(book_dir / "chapters", ignore_errors=True)
+    else:
+        remap_chapter_stores(book.id, chapter_remap)
     # Uploaded per-patch images are keyed by obsolete patch ids. Book-level media and
     # generated stable overlays live elsewhere and remain untouched.
     shutil.rmtree(Path(data_root) / "uploads" / str(book.id) / "patches", ignore_errors=True)
@@ -1008,7 +1060,9 @@ def reimport_book_chapters(
 
     Chapter edits, patches and the audio/video built from them are dropped — patches
     address chapters by index, so they cannot survive a re-parse — while the EPUB,
-    book settings, branding and thumbnail artwork stay in place.
+    book settings, branding and thumbnail artwork stay in place. Per-chapter TTS chunks
+    of chapters whose body is unchanged are kept (renumbered), so the rebuilt patches
+    only need a merge.
     """
     book = get_book(conn, book_id)
     if book is None:
@@ -1017,6 +1071,19 @@ def reimport_book_chapters(
         raise ValueError("Sách chưa có EPUB nguồn để nạp lại.")
     if not chapters:
         raise ValueError("EPUB không chứa chương hợp lệ.")
+
+    # Chunk TTS theo chương sống sót qua lần nạp lại khi nội dung chương không đổi:
+    # khớp theo hash thân chương, chương được đánh số lại thì kho của nó đổi số theo.
+    # Tiêu đề không tham gia khớp — chunk tiêu đề lệch tự bị tổng hợp lại nhờ key.
+    old_by_hash: dict[str, list[int]] = {}
+    for old in list_chapters(conn, book_id):
+        if old.text_hash:
+            old_by_hash.setdefault(old.text_hash, []).append(old.chapter_index)
+    chapter_remap: dict[int, int] = {}
+    for new_index, parsed_chapter in enumerate(chapters):
+        candidates = old_by_hash.get(text_hash(parsed_chapter.text))
+        if candidates:
+            chapter_remap[candidates.pop(0)] = new_index
 
     _purge_book_content(conn, book_id)
     _insert_chapters(conn, book_id, chapters)
@@ -1027,7 +1094,7 @@ def reimport_book_chapters(
         (_now(), book_id),
     )
     conn.commit()
-    _purge_book_content_files(book, data_root, drop_epub=False)
+    _purge_book_content_files(book, data_root, drop_epub=False, chapter_remap=chapter_remap)
     return get_book(conn, book_id)
 
 
@@ -1842,6 +1909,8 @@ def append_new_chapters(
                     book_id, entry["chapter_index"],
                 ),
             )
+            # Chương đổi nội dung: bỏ kho chunk của riêng nó, chương khác giữ nguyên.
+            ChunkStore(get_chapter_chunk_dir(book_id, entry["chapter_index"])).clear()
             updated += 1
 
     inserted = 0

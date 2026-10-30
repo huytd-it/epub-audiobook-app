@@ -32,14 +32,14 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { AudioSettings, ConfigTab, NormalizationSettings, errorText } from "./book-detail/types";
-import { useBookDetail, useChapterValidation, useTtsOptions } from "./book-detail/useBookDetail";
+import { useBookDetail, useChapterAudio, useChapterValidation, useTtsOptions } from "./book-detail/useBookDetail";
 import { showToast } from "@/components/ui/toast";
 import { CheckField, LiveIndicator, TabBar } from "./book-detail/parts";
 import { PatchesPanel } from "./book-detail/PatchesPanel";
 import { BuildPanel } from "./book-detail/BuildPanel";
 import { ExportPanel } from "./book-detail/ExportPanel";
 import { ChaptersPanel } from "./book-detail/ChaptersPanel";
-import { ChapterDialog } from "./book-detail/ChapterDialog";
+import { ChapterDialog, ChapterTab } from "./book-detail/ChapterDialog";
 import { ConfigDialog, DeletePatchDialog, PatchPreviewDialog, TitleNormalizeDialog } from "./book-detail/dialogs";
 import { OverlayEditor } from "./book-detail/OverlayEditor";
 import { AiPanel } from "./book-detail/AiPanel";
@@ -222,6 +222,7 @@ export function BookDetail() {
   const [configTab, setConfigTab] = useState<ConfigTab>("audio");
   const [chapterOpen, setChapterOpen] = useState(false);
   const [chapterIndex, setChapterIndex] = useState<number>();
+  const [chapterTab, setChapterTab] = useState<ChapterTab>();
   const [normalizeOpen, setNormalizeOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [bookTitle, setBookTitle] = useState("");
@@ -282,6 +283,7 @@ export function BookDetail() {
   );
   const { ttsModels, voiceOptions, currentVoiceName } = useTtsOptions(data, settings.modelId);
   const chapterVal = useChapterValidation(bookId);
+  const chapterAudio = useChapterAudio(bookId);
 
   useEffect(() => {
     if (!data) return;
@@ -657,8 +659,9 @@ export function BookDetail() {
     }
   }, [automation, batchTargets, bookId, pipeline, refresh, running, setBusy]);
 
-  const openChapter = useCallback((index: number) => {
+  const openChapter = useCallback((index: number, tab?: ChapterTab) => {
     setChapterIndex(index);
+    setChapterTab(tab);
     setChapterOpen(true);
   }, []);
 
@@ -745,6 +748,20 @@ export function BookDetail() {
     await chapterVal.reload();
     await refresh();
   }, [chapterVal, refresh]);
+
+  // Kho chunk theo chương đổi (xoá chunk / ghép lại patch): làm mới cột Audio, rồi
+  // patch (ghép lại đưa patch về pending và xếp hàng TTS).
+  const reloadChapterAudio = chapterAudio.reload;
+  const onChapterAudioChanged = useCallback(() => {
+    void reloadChapterAudio();
+    void refresh();
+  }, [reloadChapterAudio, refresh]);
+
+  // TTS chạy nền ghi thêm chunk: đang ở tab Mục lục thì làm mới cột Audio theo nhịp
+  // làm mới của trang.
+  useEffect(() => {
+    if (tab === "chapters" || tab === "patches") void reloadChapterAudio();
+  }, [tab, updatedAt, reloadChapterAudio]);
 
   if (loading && !data) return <LoadingState text={`Đang mở hồ sơ sách #${bookId}...`} />;
   if (!data)
@@ -986,6 +1003,7 @@ export function BookDetail() {
             bookModelId={settings.modelId}
             bookVoiceId={settings.voiceId}
             bookVoiceName={currentVoiceName}
+            chapterAudio={chapterAudio.summary}
           />
           <ExportPanel
             bookId={bookId}
@@ -1018,7 +1036,11 @@ export function BookDetail() {
 
       {tab === "chapters" && (
         <ChaptersPanel
+          bookId={bookId}
           chapters={data.chapters}
+          audio={chapterAudio.summary}
+          onAudioChanged={onChapterAudioChanged}
+          onMessage={showToast}
           report={chapterVal.report}
           loading={chapterVal.loading}
           onAnalyze={chapterVal.reload}
@@ -1298,6 +1320,8 @@ export function BookDetail() {
         onChapterIndexChange={setChapterIndex}
         onMessage={showToast}
         onSaved={onChapterSaved}
+        onAudioChanged={onChapterAudioChanged}
+        initialTab={chapterTab}
       />
 
       <TitleNormalizeDialog

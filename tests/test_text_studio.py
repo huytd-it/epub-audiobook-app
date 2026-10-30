@@ -381,10 +381,16 @@ def test_preview_paragraph_requires_text(client, book_and_patch, fake_engine):
 
 def test_chunk_audio_is_served_after_a_run(client, book_and_patch, fake_engine, synchronous_light_tts):
     book, patch = book_and_patch
-    _stream_events(client, f"/books/{book.id}/text-studio/patches/{patch.id}/preview-stream")
+    events = _stream_events(client, f"/books/{book.id}/text-studio/patches/{patch.id}/preview-stream")
 
-    assert client.get(f"/books/{book.id}/patches/{patch.id}/chunk-audio/0").status_code == 200
-    assert client.get(f"/books/{book.id}/patches/{patch.id}/chunk-audio/99").status_code == 404
+    # Chunk của chương được phục vụ từ kho theo chương; URL đi kèm sự kiện stream và
+    # bản xem trước, nên client không phải tự dựng đường dẫn.
+    url = next(event["url"] for event in events if event["type"] == "chunk")
+    assert "/chapter-audio/" in url
+    assert client.get(url).status_code == 200
+    preview = client.get(f"/books/{book.id}/patches/{patch.id}/completed-chunks-preview").json()
+    assert preview["chunks"] and all(client.get(chunk["url"]).status_code == 200 for chunk in preview["chunks"])
+    assert client.get(f"/books/{book.id}/chapter-audio/0/chunks/99").status_code == 404
 
 
 def _write_silent_wav(path):
@@ -423,13 +429,15 @@ def test_chunk_preview_falls_back_to_the_legacy_chunk_layout(client, book_and_pa
 
 
 def test_light_tts_writes_into_the_current_layout(client, book_and_patch, fake_engine, synchronous_light_tts):
-    """Đầu ghi (LightTTS) và đầu đọc (phát thử) phải trỏ cùng một thư mục, nếu không
-    bản xem trước vừa sinh sẽ bị bản chunk cũ ở thư mục kia che mất."""
+    """Đầu ghi (LightTTS) và đầu đọc (phát thử) phải trỏ cùng một kho — chunk theo
+    chương ở books/{id}/chapters/NNNN, không còn nằm trong thư mục chunk của patch."""
     book, patch = book_and_patch
     _stream_events(client, f"/books/{book.id}/text-studio/patches/{patch.id}/preview-stream")
 
-    chunk_dir = repository.get_patch_chunk_dir(book.id, patch.patch_index)
-    assert sorted(p.name for p in chunk_dir.glob("chunk_*.wav"))
+    chapter_dir = repository.get_chapter_chunk_dir(book.id, patch.chapter_start)
+    assert sorted(p.name for p in chapter_dir.glob("chunk_*.wav"))
+    assert (chapter_dir / "chunks.json").is_file()
+    assert not list(repository.get_patch_chunk_dir(book.id, patch.patch_index).glob("chunk_*.wav"))
     assert not repository._chunk_dir_for(book.id, patch.id).exists()
     saved = repository.get_patch(client.app.state.conn, patch.id).audio_path
     assert saved == str(repository.get_patch_audio_path(book.id, patch.patch_index))
