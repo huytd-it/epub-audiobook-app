@@ -258,6 +258,7 @@ export type YouTubeSettings = {
 export type YouTubeMetadataPreview = {
   title: string;
   description: string;
+  playlist_description?: string;
   tags: string[];
   privacy_status: string;
   youtube: { mode: string; playlist_id: string };

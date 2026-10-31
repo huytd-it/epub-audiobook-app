@@ -2912,6 +2912,61 @@ def apply_book_podcast(conn: sqlite3.Connection, book_id: int | None, playlist_i
         return None
 
 
+def merge_playlist_description(current: str, addition: str, marker: str) -> str | None:
+    """Add the book description to a playlist's, or None when nothing should change.
+
+    Whatever is already there stays (it may be an AI draft or hand-written), and the
+    ownership marker stays on its own last line so reclaiming the playlist still works.
+    """
+    current = (current or "").replace("\r\n", "\n")
+    addition = addition.replace("\r\n", "\n").strip()
+    if not addition or addition in current:
+        return None
+    lines = current.split("\n")
+    has_marker = marker in lines
+    body = "\n".join(line for line in lines if line != marker).strip()
+    merged = f"{body}\n\n{addition}" if body else addition
+    return f"{merged}\n{marker}" if has_marker else merged
+
+
+def apply_book_playlist_description(conn: sqlite3.Connection, book_id: int | None, playlist_id: str) -> str | None:
+    """Best-effort sync of the book description to its playlist; returns the new text.
+
+    Never raises, for the same reason as apply_book_podcast: the video is already
+    published, so a rejected playlist edit must not fail it.
+    """
+    if not book_id or not playlist_id:
+        return None
+    try:
+        from app import repository
+        from app.production_defaults import get_effective_youtube_config
+        from app.youtube_metadata import render_playlist_description
+
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            return None
+        addition = render_playlist_description(book.title, get_effective_youtube_config(conn, book))
+        if not addition:
+            return None
+        playlist = get_playlist(conn, playlist_id)
+        if playlist is None:
+            return None
+        snippet = playlist.get("snippet") or {}
+        merged = merge_playlist_description(snippet.get("description", ""), addition, _playlist_marker(book_id))
+        if merged is None:
+            return None
+        if len(merged) > 5000:
+            logger.warning("playlist %s description would exceed 5000 characters; not updated", playlist_id)
+            return None
+        update_playlist_title(conn, playlist_id, snippet.get("title", ""), merged)
+        return merged
+    except Exception:
+        logger.warning(
+            "playlist description sync failed for book %s / playlist %s", book_id, playlist_id, exc_info=True
+        )
+        return None
+
+
 @_with_upload_account
 def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
     """Set thumbnail and add to playlist for a completed upload.
@@ -3008,6 +3063,7 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
                         (playlist_id, upload_id),
                     )
                     conn.commit()
+                    apply_book_playlist_description(conn, _resolve_book_id(conn, upload_id), playlist_id)
                     apply_book_podcast(conn, _resolve_book_id(conn, upload_id), playlist_id)
                     # Tự động sắp xếp playlist theo episode sau khi thêm video mới
                     try:

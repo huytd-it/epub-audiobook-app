@@ -40,7 +40,7 @@ export function YouTubeConfigFields({
             onChange={(event) => onChange({ title_template: event.target.value })}
           />
         </Field>
-        <Field label="Mô tả">
+        <Field label="Mô tả sách (thêm vào mô tả playlist)">
           <Textarea
             className="min-h-20 text-xs"
             value={config.description}

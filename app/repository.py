@@ -2891,11 +2891,14 @@ def delete_sound_effect(conn: sqlite3.Connection, effect_id: int) -> None:
 
 def build_patch_metadata_context(conn: sqlite3.Connection, book: Book, patch: Patch) -> dict:
     """Database facts the generated YouTube description needs: the chapters this
-    patch actually speaks, and the background track whose licence must be credited."""
+    patch actually speaks, the first of them (its excerpt opens the description),
+    and the background track whose licence must be credited."""
     chapters = get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end)
     music = get_music(conn, book.music_id) if book.music_id else None
+    first = next((ch for ch in chapters if not ch.is_excluded and (ch.text or "").strip()), None)
     return {
         "chapter_titles": [ch.title for ch in chapters if not ch.is_excluded and ch.title],
+        "first_chapter": {"title": first.title, "text": first.text} if first else None,
         "music": {"name": music.name, "description": music.description, "license": music.license} if music else None,
     }
 

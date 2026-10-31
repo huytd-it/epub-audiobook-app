@@ -1250,6 +1250,14 @@ export function ConfigDialog({
                     <div className="whitespace-pre-wrap break-words rounded-md bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
                       {ytPreview.description || "—"}
                     </div>
+                    {ytPreview.playlist_description && ytPreview.youtube.mode !== "none" && (
+                      <div className="space-y-1">
+                        <div className="text-[11px] font-medium text-muted-foreground">Thêm vào mô tả playlist</div>
+                        <div className="whitespace-pre-wrap break-words rounded-md bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                          {ytPreview.playlist_description}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="px-3 py-2 text-[11px] text-muted-foreground">Chưa có preview.</div>

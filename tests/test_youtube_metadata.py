@@ -357,6 +357,35 @@ def test_configured_description_is_not_replaced_by_generated_sections():
     assert description == "book description"
 
 
+def test_description_opens_with_first_chapter_excerpt_instead_of_book_description():
+    context = {"first_chapter": {"title": "Chương 1: Mưa", "text": "Chương 1: Mưa\n\nTrời <mưa>\nrất to."},
+               "music": {"name": "Incredulity", "license": "CC"}}
+    result = resolve_patch_youtube_metadata(_book(), _patch(), None, context=context)
+    assert result["description"].split("\n")[0] == "Trời mưa rất to."
+    assert "book description" not in result["description"]
+    assert "CC" in result["description"]
+    assert result["playlist_description"] == "book description"
+
+
+def test_patch_description_override_beats_the_excerpt():
+    context = {"first_chapter": {"title": "", "text": "Trời mưa."}}
+    result = resolve_patch_youtube_metadata(_book(), _patch(), {"description": "Riêng"}, context=context)
+    assert result["description"] == "Riêng"
+
+
+def test_chapter_excerpt_is_cut_at_a_sentence_end():
+    context = {"first_chapter": {"title": "", "text": "Câu mở đầu. " * 100}}
+    first_line = resolve_patch_youtube_metadata(_book(), _patch(), None, context=context)["description"].split("\n")[0]
+    assert len(first_line) <= 500
+    assert first_line.endswith(".")
+
+
+def test_per_episode_book_description_is_not_sent_to_the_playlist():
+    book = _book()
+    book.automation_config = json.dumps({"youtube": {"description": "Tập {episode_number}"}})
+    assert resolve_patch_youtube_metadata(book, _patch(), None)["playlist_description"] == ""
+
+
 def test_generated_description_is_capped_at_youtube_limit():
     context = {"chapter_titles": [f"Chương {i}: " + "x" * 90 for i in range(200)]}
     description = resolve_patch_youtube_metadata(

@@ -18,6 +18,8 @@ ALLOWED_FIELDS = {"book_title", "episode_number", "chapter_start", "chapter_end"
 YOUTUBE_TITLE_LIMIT = 100
 YOUTUBE_DESCRIPTION_LIMIT = 5000
 CHAPTER_SECTION_HEADING = "📖 Nội dung:"
+# Độ dài tối đa của đoạn trích chương đầu mở màn description của mỗi video.
+CHAPTER_EXCERPT_CHARS = 500
 # Tên chương cho đoạn intro chèn trước nội dung patch trong video.
 INTRO_TIMELINE_TITLE = "Giới thiệu"
 OVERRIDE_FIELDS = {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"}
@@ -466,7 +468,44 @@ def _fit_description(blocks: list[list[str]], limit: int = YOUTUBE_DESCRIPTION_L
     return text if len(text) <= limit else text[:limit].rstrip()
 
 
-def _default_description(values: dict, chapter_titles, music, timeline: str, extra: str = "", playlist_lines=()) -> str:
+def _chapter_excerpt(chapter, limit: int = CHAPTER_EXCERPT_CHARS) -> str:
+    """Đoạn mở đầu của chương trên một dòng, cắt ở cuối câu nếu có thể.
+
+    Bỏ dấu ngoặc nhọn vì YouTube từ chối description chứa chúng, và bỏ tiêu đề
+    chương nếu phần thân lặp lại nó.
+    """
+    if not isinstance(chapter, dict):
+        return ""
+    text = chapter.get("text") or ""
+    title = (chapter.get("title") or "").strip()
+    text = text.lstrip()
+    if title and text.startswith(title):
+        text = text[len(title):]
+    text = " ".join(re.sub(r"[<>]", "", text).split()).lstrip(" :.-–—")
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    sentence_end = max(head.rfind(mark) for mark in ".!?…")
+    if sentence_end >= limit // 2:
+        return head[:sentence_end + 1]
+    return head.rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+
+
+def render_playlist_description(book_title: str, config: dict) -> str:
+    """Ô "Mô tả" của sách, dựng cho playlist; rỗng nếu nó phụ thuộc vào từng tập.
+
+    Playlist thuộc cả cuốn sách nên chỉ nhận placeholder cấp sách: một mô tả chứa
+    {episode_number} sẽ khác nhau ở mỗi tập và bị nối thêm vào playlist mỗi lần đăng.
+    """
+    template = config.get("description") or ""
+    genre_text = ", ".join(split_tags(config.get("genre_tags") or ""))
+    try:
+        return template.format(book_title=book_title, genre_tags=genre_text).strip()
+    except (KeyError, ValueError, IndexError):
+        return ""
+
+
+def _default_description(values: dict, chapter_titles, music, timeline: str, extra: str = "", playlist_lines=(), excerpt: str = "") -> str:
     """Fallback description so videos never upload with an empty one."""
     line = f"Tập {values['episode_number']} - {format_chapter_range(values['chapter_start'], values['chapter_end'])}"
     if values["patch_name"]:
@@ -476,6 +515,7 @@ def _default_description(values: dict, chapter_titles, music, timeline: str, ext
         header.append(f"Thể loại: {values['genre_tags']}")
     chapters = _chapter_lines(chapter_titles, timeline)
     return _fit_description([
+        [excerpt] if excerpt else [],
         header,
         list(playlist_lines),
         [CHAPTER_SECTION_HEADING, *chapters] if chapters else [],
@@ -587,11 +627,17 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
     playlist = {**config["playlist"], **(override.get("playlist") or {})}
     playlist = validate_book_youtube_config({**config, "playlist": playlist})["playlist"]
     playlist_block = _playlist_lines(playlist)
+    # Mô tả của sách giờ thuộc về playlist; video mở bằng đoạn trích chương đầu của
+    # patch. Mô tả viết riêng cho patch vẫn thắng, và sách vẫn là phương án dự phòng
+    # khi patch không có chữ để trích.
+    excerpt = _chapter_excerpt(context.get("first_chapter"))
+    if excerpt and not override.get("description"):
+        description = ""
     if not description.strip():
         # The generated description already places the timeline inside its chapter
         # list, so only an author-written description gets the block appended.
         description = _default_description(
-            values, context.get("chapter_titles"), context.get("music"), timeline, extra, playlist_block)
+            values, context.get("chapter_titles"), context.get("music"), timeline, extra, playlist_block, excerpt)
     else:
         # An author-written description keeps its own opening; the playlist link is
         # appended right below it, ahead of the timeline, unless it is already there.
@@ -629,7 +675,8 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
             tags = list(dict.fromkeys(tags + ai_labels))
         except Exception:
             pass
-    return {"title": title, "description": description, "tags": tags, "privacy_status": privacy, "youtube": playlist}
+    return {"title": title, "description": description, "playlist_description": render_playlist_description(book.title, config),
+            "tags": tags, "privacy_status": privacy, "youtube": playlist}
 
 
 def get_book_youtube_config(conn, book_id: int) -> dict:
