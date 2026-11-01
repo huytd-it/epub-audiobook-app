@@ -33,14 +33,17 @@ export function YouTubeConfigFields({
       />
 
       <div className="grid grid-cols-1 gap-4">
-        <Field label="Title template">
+        <Field
+          label="Title template"
+          hint="{book_title} - PHẦN {episode_number} | {genre_tags}"
+        >
           <input
             className={fieldClass}
             value={config.title_template}
             onChange={(event) => onChange({ title_template: event.target.value })}
           />
         </Field>
-        <Field label="Mô tả sách (thêm vào mô tả playlist)">
+        <Field label="Mô tả chung (dùng cho playlist)" hint="Video mở bằng đoạn trích chương đầu của patch">
           <Textarea
             className="min-h-20 text-xs"
             value={config.description}
@@ -373,7 +376,8 @@ export function DescriptionExtraFields({
           </div>
           <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
             Nối vào cuối description mỗi video: thông báo bản quyền, miễn trừ AI, nội dung hư cấu, nguồn truyện và
-            Fair Use.
+            Fair Use. Khối còn trống được tự điền từ Cấu hình chung và luôn bật; chỉ khối đã có nội dung riêng mới
+            tắt được.
           </p>
         </div>
         <CheckField checked={value.enabled} onChange={(next) => onChange({ enabled: next })} label="Bật" />

@@ -8,7 +8,8 @@ from app import db
 from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_override,
                                   resolve_patch_youtube_metadata, save_book_youtube_config,
                                   save_patch_youtube_override, validate_book_youtube_config,
-                                  load_timeline, render_description_extra, PLAYLIST_LINK_LABEL)
+                                  load_timeline, render_description_extra, format_chapter_range,
+                                  PLAYLIST_LINK_LABEL)
 
 
 def test_load_timeline_returns_valid_sidecar(tmp_path):
@@ -91,6 +92,9 @@ def _book():
     return SimpleNamespace(title="Nha Tro", automation_config=json.dumps({"youtube": {
         "description": "book description",
         "genre_tags": "kinh di, huyen huyen",
+        # Khối mở rộng mặc định bật; các test về timeline/mô tả ở đây dùng một
+        # khối riêng đã tắt để chuỗi so sánh không phụ thuộc nội dung mặc định.
+        "description_extra": {"enabled": False, "contact_email": "fixture@example.com"},
     }}))
 
 
@@ -167,7 +171,10 @@ def test_existing_timeline_after_prose_and_blank_line_is_unchanged(tmp_path):
                                      {"start_frame": 200, "title": "Two"}])
     block = "00:00 Intro\n00:10 One\n00:20 Two"
     book = _book()
-    book.automation_config = json.dumps({"youtube": {"description": f"Prose\n\n{block}"}})
+    book.automation_config = json.dumps({"youtube": {
+        "description": f"Prose\n\n{block}",
+        "description_extra": {"enabled": False, "contact_email": "fixture@example.com"},
+    }})
     description = resolve_patch_youtube_metadata(book, _patch(str(audio)), None)["description"]
     assert description == f"Prose\n\n{block}"
     assert description.count("00:00 Intro") == 1
@@ -227,12 +234,22 @@ def test_timeline_ten_second_boundaries(tmp_path, chapters, frames, valid):
 
 def test_default_patch_title_and_tags():
     result = resolve_patch_youtube_metadata(_book(), _patch(), None)
-    assert result["title"] == "Nha Tro - Tập 4 - Chương 1-8: Mua | kinh di, huyen huyen"
+    assert result["title"] == "Nha Tro - PHẦN 4 | kinh di, huyen huyen"
     assert result["tags"] == ["kinh di", "huyen huyen"]
 
 
 def test_episode_number_comes_from_patch_index():
-    assert "Tập 4" in resolve_patch_youtube_metadata(_book(), _patch(), None)["title"]
+    assert "PHẦN 4" in resolve_patch_youtube_metadata(_book(), _patch(), None)["title"]
+
+
+def test_legacy_default_template_is_upgraded():
+    book = _book()
+    book.automation_config = json.dumps({"youtube": {
+        "title_template": "{book_title} - Tập {episode_number} - Chương {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}",
+        "genre_tags": "kinh di",
+    }})
+    result = resolve_patch_youtube_metadata(book, _patch(), None)
+    assert result["title"] == "Nha Tro - PHẦN 4 | kinh di"
 
 
 def test_legacy_ascii_default_template_is_upgraded():
@@ -242,14 +259,25 @@ def test_legacy_ascii_default_template_is_upgraded():
         "genre_tags": "kinh di",
     }})
     result = resolve_patch_youtube_metadata(book, _patch(), None)
-    assert result["title"] == "Nha Tro - Tập 4 - Chương 1-8: Mua | kinh di"
+    assert result["title"] == "Nha Tro - PHẦN 4 | kinh di"
+
+
+def _chapter_book():
+    """A book whose title template still spells out the chapter range."""
+    book = _book()
+    book.automation_config = json.dumps({"youtube": {
+        "title_template": "{book_title} - Chương {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}",
+        "genre_tags": "kinh di, huyen huyen",
+        "description_extra": {"enabled": False, "contact_email": "fixture@example.com"},
+    }})
+    return book
 
 
 def test_chapter_range_detected_from_patch_name():
     patch = SimpleNamespace(name="Chương 11: Thất thủ", chapter_start=12, chapter_end=21,
                             patch_index=1, audio_path=None)
-    result = resolve_patch_youtube_metadata(_book(), patch, None)
-    assert result["title"] == "Nha Tro - Tập 2 - Chương 11-20: Thất thủ | kinh di, huyen huyen"
+    result = resolve_patch_youtube_metadata(_chapter_book(), patch, None)
+    assert result["title"] == "Nha Tro - Chương 11-20: Thất thủ | kinh di, huyen huyen"
 
 
 def test_chapter_range_detected_from_timeline(tmp_path):
@@ -260,23 +288,26 @@ def test_chapter_range_detected_from_timeline(tmp_path):
     ])
     patch = SimpleNamespace(name="Chương 5: Mở màn", chapter_start=6, chapter_end=8,
                             patch_index=0, audio_path=str(audio))
-    result = resolve_patch_youtube_metadata(_book(), patch, None)
+    result = resolve_patch_youtube_metadata(_chapter_book(), patch, None)
     assert "Chương 5-7: Mở màn" in result["title"]
 
 
 def test_single_chapter_patch_shows_one_number():
     patch = SimpleNamespace(name="Chương 9: Riêng", chapter_start=10, chapter_end=10,
                             patch_index=0, audio_path=None)
+    # The default title hides the chapter range; the range formatter still
+    # collapses a one-chapter patch to a single number.
     result = resolve_patch_youtube_metadata(_book(), patch, None)
-    assert "Chương 9: Riêng" in result["title"]
+    assert result["title"] == "Nha Tro - PHẦN 1 | kinh di, huyen huyen"
     assert "9-9" not in result["title"]
+    assert format_chapter_range(9, 9) == "Chương 9"
 
 
 def test_fallback_chapter_range_is_1_based():
     """When no timeline/name/chapter_no gives real numbers, fallback adds 1."""
     patch = SimpleNamespace(name="Mua", chapter_start=0, chapter_end=0,
                             patch_index=0, audio_path=None)
-    result = resolve_patch_youtube_metadata(_book(), patch, None)
+    result = resolve_patch_youtube_metadata(_chapter_book(), patch, None)
     assert "Chương 1" in result["title"]
     assert "Chương 0" not in result["title"]
 
@@ -285,7 +316,7 @@ def test_fallback_chapter_range_multi_chapter():
     """Fallback 1-based range for multi-chapter patch."""
     patch = SimpleNamespace(name="Interlude", chapter_start=3, chapter_end=7,
                             patch_index=2, audio_path=None)
-    result = resolve_patch_youtube_metadata(_book(), patch, None)
+    result = resolve_patch_youtube_metadata(_chapter_book(), patch, None)
     assert "Chương 4-8" in result["title"]
 
 
@@ -407,14 +438,14 @@ def test_optional_title_segments_are_omitted():
     patch.name = ""
     book = _book()
     book.automation_config = json.dumps({"youtube": {"genre_tags": ""}})
-    assert resolve_patch_youtube_metadata(book, patch, None)["title"] == "Nha Tro - Tập 4 - Chương 1-8"
+    assert resolve_patch_youtube_metadata(book, patch, None)["title"] == "Nha Tro - PHẦN 4"
 
 
 def test_empty_patch_name_keeps_non_empty_genre_suffix():
     patch = _patch()
     patch.name = ""
     result = resolve_patch_youtube_metadata(_book(), patch, None)
-    assert result["title"] == "Nha Tro - Tập 4 - Chương 1-8 | kinh di, huyen huyen"
+    assert result["title"] == "Nha Tro - PHẦN 4 | kinh di, huyen huyen"
 
 
 def test_patch_override_wins_and_empty_field_inherits():
@@ -461,6 +492,7 @@ def test_description_template_renders_allowed_values_and_snapshot_playlist_shape
     book.automation_config = json.dumps({"youtube": {
         "description": "{book_title} episode {episode_number}",
         "genre_tags": "mystery, fantasy",
+        "description_extra": {"enabled": False, "contact_email": "fixture@example.com"},
     }})
     result = resolve_patch_youtube_metadata(book, _patch(), None)
     assert result["description"] == "Nha Tro episode 4"
@@ -573,7 +605,7 @@ def test_generated_title_is_fitted_to_youtube_limit():
 
 def test_generated_title_drops_genre_suffix_before_truncating_text():
     """The genre suffix is the least useful part, so it goes first."""
-    book = _long_book(genre_tags="kinh di, huyen huyen", title_length=50)
+    book = _long_book(genre_tags="kinh di, huyen huyen", title_length=90)
     result = resolve_patch_youtube_metadata(book, _long_patch(name_length=30), None)
     assert len(result["title"]) <= 100
     assert "kinh di" not in result["title"]
@@ -608,7 +640,9 @@ def test_persistence_and_migration(tmp_path):
 
 
 def _config(**values):
-    return {"description": "book description", "genre_tags": "kinh di", **values}
+    return {"description": "book description", "genre_tags": "kinh di",
+            "description_extra": {"enabled": False, "contact_email": "fixture@example.com"},
+            **values}
 
 
 def test_timeline_is_omitted_when_timeline_display_is_disabled(tmp_path):
@@ -659,8 +693,54 @@ def test_description_extra_reaches_the_generated_fallback_description():
 def test_youtube_config_defaults_expose_timeline_and_extra_block():
     config = validate_book_youtube_config({})
     assert config["timeline_enabled"] is True
-    assert config["description_extra"]["enabled"] is False
+    assert config["description_extra"]["enabled"] is True
     assert "{contact_email}" in config["description_extra"]["template"]
+
+
+def test_blank_extra_block_inherits_the_global_notice_and_is_forced_active(tmp_path):
+    """New books and books saved with a blank block must ship the notice."""
+    from app.production_defaults import save_global_production_defaults
+
+    conn = db.connect(str(tmp_path / "extra.db"))
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO book (title, original_filename, epub_path, patch_size, created_at, updated_at) "
+        "VALUES ('Book', 'x', 'x', 8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    book_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    save_global_production_defaults(conn, {"youtube": {"description_extra": {
+        "enabled": False, "contact_email": "global@example.com",
+        "template": "Contact: {contact_email}",
+    }}})
+
+    cfg = get_book_youtube_config(conn, book_id)
+    assert cfg["description_extra"]["enabled"] is True
+    assert cfg["description_extra"]["contact_email"] == "global@example.com"
+
+
+def test_a_book_owned_extra_block_keeps_its_disabled_state(tmp_path):
+    conn = db.connect(str(tmp_path / "extra-custom.db"))
+    db.init_schema(conn)
+    conn.execute(
+        "INSERT INTO book (title, original_filename, epub_path, patch_size, created_at, updated_at) "
+        "VALUES ('Book', 'x', 'x', 8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    book_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    save_book_youtube_config(conn, book_id, {"description_extra": {
+        "enabled": False, "contact_email": "book@example.com",
+        "template": "Contact: {contact_email}",
+    }})
+
+    cfg = get_book_youtube_config(conn, book_id)
+    assert cfg["description_extra"]["enabled"] is False
+
+
+def test_chapter_excerpt_extends_to_the_next_period_when_the_head_has_none():
+    text = "a" * 500 + " câu kết thúc." + "b" * 100
+    context = {"first_chapter": {"title": "", "text": text}}
+    first_line = resolve_patch_youtube_metadata(_book(), _patch(), None, context=context)["description"].split("\n")[0]
+    assert first_line.endswith(".")
+    assert first_line.startswith("a" * 500)
 
 
 def test_youtube_config_rejects_a_non_boolean_timeline_flag():

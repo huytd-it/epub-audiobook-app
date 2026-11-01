@@ -513,11 +513,13 @@ def get_effective_youtube_config(conn: sqlite3.Connection, book) -> dict:
     from app.youtube_metadata import get_book_youtube_config, description_extra_is_default
 
     cfg = get_book_youtube_config(conn, getattr(book, "id", None))
-    # Nội dung mở rộng (tránh bản quyền) mặc định để trống thì lấy từ Cấu hình chung.
+    # Nội dung mở rộng (tránh bản quyền) mặc định để trống thì lấy từ Cấu hình
+    # chung và bắt buộc bật, kể cả khi khối chung từng bị lưu ở trạng thái tắt.
     global_cfg = _global_group(conn, "youtube")
     if description_extra_is_default(cfg.get("description_extra")):
-        cfg = {**cfg, "description_extra": global_cfg.get(
-            "description_extra", cfg.get("description_extra"))}
+        extra = dict(global_cfg.get("description_extra") or cfg.get("description_extra") or {})
+        extra["enabled"] = True
+        cfg = {**cfg, "description_extra": extra}
     return cfg
 
 

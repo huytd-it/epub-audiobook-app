@@ -9,9 +9,11 @@ import string
 
 import soundfile as sf
 
-DEFAULT_TITLE_TEMPLATE = "{book_title} - Tập {episode_number} - Chương {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}"
-# Older builds shipped (and saved into book configs) an unaccented default template.
+DEFAULT_TITLE_TEMPLATE = "{book_title} - PHẦN {episode_number} | {genre_tags}"
+# Older builds shipped (and saved into book configs) the chapter-heavy default;
+# treat them as the current default so saved books pick up the new title.
 _LEGACY_TITLE_TEMPLATES = {
+    "{book_title} - Tập {episode_number} - Chương {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}",
     "{book_title} - Tap {episode_number} - Chuong {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}",
 }
 ALLOWED_FIELDS = {"book_title", "episode_number", "chapter_start", "chapter_end", "patch_name", "genre_tags"}
@@ -52,7 +54,10 @@ Tên Truyện: {story_title}
 I do not own all the materials used in this video and comply with copyright law and the Fair Use doctrine. ({fair_use_url})"""
 
 DEFAULT_DESCRIPTION_EXTRA = {
-    "enabled": False,
+    # Bật sẵn: khối thông báo bản quyền/AI là bắt buộc trên mọi video. Một khối
+    # còn trống được tự điền từ Cấu hình chung và luôn ở trạng thái bật; chỉ khối
+    # đã có nội dung riêng mới được phép tắt.
+    "enabled": True,
     "contact_email": "",
     "story_title": "",
     "story_source_name": "",
@@ -62,23 +67,35 @@ DEFAULT_DESCRIPTION_EXTRA = {
 }
 
 
+def _description_extra_is_blank(extra: dict) -> bool:
+    """True when the block carries no per-book content of its own.
+
+    A placeholder that still holds its built-in default (``fair_use_url`` ships
+    with the YouTube policy URL) does not count as author content.
+    """
+    for key in EXTRA_PLACEHOLDERS:
+        value = str(extra.get(key) or "").strip()
+        default = str(DEFAULT_DESCRIPTION_EXTRA.get(key) or "").strip()
+        if value and value != default:
+            return False
+    return str(extra.get("template") or "").strip() == str(
+        DEFAULT_DESCRIPTION_EXTRA.get("template") or ""
+    ).strip()
+
+
 def description_extra_is_default(extra) -> bool:
-    """True when the extended block is still the untouched default (empty).
+    """True when the extended block is still blank.
 
     Used to decide whether a book's own (empty) block should be filled in from
-    the general configuration instead of staying blank."""
+    the general configuration instead of staying blank. The ``enabled`` flag is
+    deliberately ignored: a blank block is auto-filled and forced active, so an
+    old book that saved it disabled must still inherit the notice.
+    """
     try:
         normalized = validate_description_extra(extra)
     except (ValueError, TypeError):
         return True
-    if normalized.get("enabled"):
-        return False
-    for key in EXTRA_PLACEHOLDERS:
-        if str(normalized.get(key) or "").strip():
-            return False
-    if str(normalized.get("template") or "").strip() != str(DEFAULT_DESCRIPTION_EXTRA.get("template") or "").strip():
-        return False
-    return True
+    return _description_extra_is_blank(normalized)
 
 # Podcast: playlist của sách được YouTube đánh dấu là podcast; ảnh bìa 1:1 lấy
 # từ chính thumbnail (app.image_overlay.render_podcast_cover).
@@ -266,6 +283,10 @@ def validate_description_extra(extra) -> dict:
         result[key] = result[key].strip() if key != "template" else result[key]
     if len(result["template"]) > YOUTUBE_DESCRIPTION_LIMIT:
         raise ValueError("description_extra template exceeds 5000 characters")
+    # Khối trống bắt buộc bật: nó sẽ được tự điền từ Cấu hình chung và phải
+    # xuất hiện trên mọi video để tránh rủi ro bản quyền.
+    if _description_extra_is_blank(result):
+        result["enabled"] = True
     return {key: result[key] for key in DEFAULT_DESCRIPTION_EXTRA}
 
 
@@ -469,10 +490,12 @@ def _fit_description(blocks: list[list[str]], limit: int = YOUTUBE_DESCRIPTION_L
 
 
 def _chapter_excerpt(chapter, limit: int = CHAPTER_EXCERPT_CHARS) -> str:
-    """Đoạn mở đầu của chương trên một dòng, cắt ở cuối câu nếu có thể.
+    """Đoạn mở đầu của chương trên một dòng, luôn ngắt ở cuối câu.
 
     Bỏ dấu ngoặc nhọn vì YouTube từ chối description chứa chúng, và bỏ tiêu đề
-    chương nếu phần thân lặp lại nó.
+    chương nếu phần thân lặp lại nó. Đoạn trích ưu tiên dừng đúng dấu chấm/câu
+    hỏi/chấm than rơi gần cuối giới hạn; chỉ khi cả đoạn văn không có dấu ngắt
+    câu nào mới lùi về ranh giới từ.
     """
     if not isinstance(chapter, dict):
         return ""
@@ -484,10 +507,18 @@ def _chapter_excerpt(chapter, limit: int = CHAPTER_EXCERPT_CHARS) -> str:
     text = " ".join(re.sub(r"[<>]", "", text).split()).lstrip(" :.-–—")
     if len(text) <= limit:
         return text
+    marks = ".!?…"
     head = text[:limit]
-    sentence_end = max(head.rfind(mark) for mark in ".!?…")
-    if sentence_end >= limit // 2:
+    sentence_end = max(head.rfind(mark) for mark in marks)
+    if sentence_end > 0:
         return head[:sentence_end + 1]
+    # Không có dấu ngắt câu trong phần đầu: nới tới dấu kế tiếp (tối đa gấp đôi
+    # giới hạn) để đoạn trích không dừng giữa câu.
+    tail = text[limit:limit * 2]
+    next_ends = [tail.find(mark) for mark in marks]
+    next_ends = [index for index in next_ends if index >= 0]
+    if next_ends:
+        return text[:limit + min(next_ends) + 1]
     return head.rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
 
 
@@ -594,19 +625,12 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
     chapter_start, chapter_end, patch_name = resolve_patch_chapter_range(patch)
     values = {"book_title": book.title, "episode_number": patch.patch_index + 1, "chapter_start": chapter_start, "chapter_end": chapter_end, "patch_name": patch_name, "genre_tags": genre_text}
     try:
-        if config["title_template"] == DEFAULT_TITLE_TEMPLATE:
-            title = f"{book.title} - Tập {values['episode_number']} - {format_chapter_range(chapter_start, chapter_end)}"
-            if values["patch_name"]:
-                title += f": {values['patch_name']}"
-            if genre_text:
-                title += f" | {genre_text}"
-        else:
-            template = config["title_template"]
-            if not values["patch_name"]:
-                template = template.replace(": {patch_name}", "")
-            if not genre_text:
-                template = template.replace(" | {genre_tags}", "")
-            title = _clean_title(template.format(**values))
+        template = config["title_template"]
+        if not values["patch_name"]:
+            template = template.replace(": {patch_name}", "")
+        if not genre_text:
+            template = template.replace(" | {genre_tags}", "")
+        title = _clean_title(template.format(**values))
     except (KeyError, ValueError, IndexError) as exc:
         raise ValueError("invalid title template") from exc
     explicit_title = bool(override.get("title"))
@@ -682,12 +706,15 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
 def get_book_youtube_config(conn, book_id: int) -> dict:
     row = conn.execute("SELECT automation_config FROM book WHERE id = ?", (book_id,)).fetchone()
     cfg = validate_book_youtube_config(_json_object((row[0] if row else None), {}).get("youtube", {}))
-    # Nội dung mở rộng mặc định để trống thì lấy từ Cấu hình chung (nếu có).
+    # Nội dung mở rộng mặc định để trống thì lấy từ Cấu hình chung (nếu có) và
+    # bắt buộc bật — khối này sinh ra để tránh rủi ro bản quyền.
     try:
-        from app.production_defaults import _global_group, description_extra_is_default
+        from app.production_defaults import _global_group
         if description_extra_is_default(cfg.get("description_extra")):
             global_cfg = _global_group(conn, "youtube")
-            cfg = {**cfg, "description_extra": global_cfg.get("description_extra", cfg.get("description_extra"))}
+            extra = dict(global_cfg.get("description_extra") or cfg.get("description_extra") or {})
+            extra["enabled"] = True
+            cfg = {**cfg, "description_extra": extra}
     except Exception:
         pass
     return cfg

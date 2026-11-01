@@ -480,7 +480,7 @@ def test_effective_metadata_shifts_the_timeline_by_the_configured_intro(tmp_path
     sf.write(voices / "intro.wav", np.zeros(12 * 16000), 16000)
 
     conn = _conn()
-    book = _insert_book(conn, config={"youtube": {"description": "mo ta"}})
+    book = _insert_book(conn, config={"youtube": {"description": "mo ta", "description_extra": {"enabled": False, "contact_email": "fixture@example.com"}}})
     # video inherit để nhận intro từ global defaults, youtube custom để giữ
     # description tự viết (timeline được nối vào sau nó).
     set_book_group_mode_db(conn, book.id, "video", "inherit")
@@ -501,7 +501,7 @@ def test_effective_metadata_ignores_an_intro_whose_file_is_gone(tmp_path, monkey
 
     monkeypatch.setattr(settings, "data_root", str(tmp_path))
     conn = _conn()
-    book = _insert_book(conn, config={"youtube": {"description": "mo ta"}})
+    book = _insert_book(conn, config={"youtube": {"description": "mo ta", "description_extra": {"enabled": False, "contact_email": "fixture@example.com"}}})
     set_book_group_mode_db(conn, book.id, "video", "inherit")
     set_book_group_mode_db(conn, book.id, "youtube", "custom")
     save_global_production_defaults(conn, {"video": {"intro_voice": "missing.wav"}})

@@ -33,7 +33,7 @@ def test_enqueue_snapshots_metadata_and_is_idempotent(tmp_path, monkeypatch):
     second = enqueue_patch_publish(conn, patch_id)
 
     assert first["patch_id"] == patch_id
-    assert json.loads(first["config_snapshot"])["title"].startswith("Book - Tập 1")
+    assert json.loads(first["config_snapshot"])["title"].startswith("Book - PHẦN 1")
     assert json.loads(first["config_snapshot"])["automation"]["youtube"]["mode"] == "none"
     assert first["id"] == second["id"]
     assert conn.execute("SELECT COUNT(*) FROM patch_pipeline").fetchone()[0] == 1
@@ -122,10 +122,10 @@ def test_upload_creation_re_resolves_stale_snapshot(tmp_path, monkeypatch):
     row = dict(conn.execute("SELECT * FROM patch_pipeline WHERE patch_id=?", (patch_id,)).fetchone())
     upload_id = _create_upload_atomically(conn, row)
     upload = conn.execute("SELECT title, metadata_snapshot FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
-    assert upload["title"].startswith("Book - Tập 1")
-    assert json.loads(upload["metadata_snapshot"])["title"].startswith("Book - Tập 1")
+    assert upload["title"].startswith("Book - PHẦN 1")
+    assert json.loads(upload["metadata_snapshot"])["title"].startswith("Book - PHẦN 1")
     refreshed = conn.execute("SELECT config_snapshot FROM patch_pipeline WHERE patch_id=?", (patch_id,)).fetchone()
-    assert json.loads(refreshed["config_snapshot"])["title"].startswith("Book - Tập 1")
+    assert json.loads(refreshed["config_snapshot"])["title"].startswith("Book - PHẦN 1")
 
 
 def test_thumbnail_path_must_exist_before_enqueue_is_complete(tmp_path, monkeypatch):
