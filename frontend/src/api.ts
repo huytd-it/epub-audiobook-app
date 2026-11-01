@@ -365,6 +365,24 @@ export type PatchExport = {
   sync_target_email: string | null;
 };
 
+/** Kết quả nhập file text sách (POST /text-bundles/import). */
+export type TextBundleSummary = {
+  status: string;
+  mode: "merge" | "new";
+  dry_run: boolean;
+  /** True khi file tạo sách mới trên máy này; False khi gộp vào sách có sẵn. */
+  created: boolean;
+  book_id: number;
+  title: string;
+  chapters: { created: number; updated: number };
+  patches: { created: number; updated: number; skipped: number };
+  replace_rules: number;
+  /** patch_index của những patch đổi nội dung và đã bị đưa về trạng thái chờ. */
+  text_changed: number[];
+  warnings: string[];
+  book_updated?: boolean;
+};
+
 export type VideoItem = {
   id: number;
   filename: string;

@@ -52,6 +52,7 @@
 | 🎙️ | **TTS đa engine** | VoxCPM2 · OmniVoice · VieNeu Fast · ZeroTTS · Edge TTS · gTTS — thống nhất qua `app/tts_engine.py` |
 | 🗣️ | **Reference Voice** | Clone giọng từ thư viện `/voices`, preset `preset:<engine>:<voice>` (cache `data/voices/_presets`), hoặc clip riêng của sách |
 | 📦 | **Batch Colab/Kaggle Export** | Xuất 1..n patch qua notebook batch chung — xem [Batch Export](#-batch-export-colabkaggle) |
+| 🔄 | **Text Bundle (chuyển máy)** | Xuất/nhập riêng phần text: **mục lục đầy đủ** (mọi chương, kể cả chương bị loại/rỗng), nội dung chương, patch, luật thay thế, cấu hình đọc — không kèm audio/video/ảnh/EPUB; nhập lại gộp đúng sách, không tạo bản trùng (`app/book_text_bundle.py`) |
 | 🔗 | **Audio Merge** | Ghép patch thành audiobook hoàn chỉnh (`app/audio_merge.py`) |
 | 🎬 | **Video Generation** | Tạo video với background riêng cho từng patch/chapter — multi-source + webcam PiP (`app/video_gen.py`, `app/video_compositor.py`) |
 | 📤 | **YouTube Upload** | Auto-upload, thumbnail, playlist (`app/youtube.py`, `app/upload_worker.py`) |
@@ -356,6 +357,17 @@ Notebook **chỉ tổng hợp chunk** (`patches/patch_NNN/output/chunk_NNN.wav`)
 
 > Xem [`docs/google-drive-accounts.md`](docs/google-drive-accounts.md) để cấu hình Drive Desktop, rclone & Kaggle.
 
+### 🔄 Chuyển text sách sang máy khác
+
+File `.book-text.json` chỉ chứa **text**: metadata sách, **mục lục đầy đủ** (mọi chương kể cả chương bị loại hoặc rỗng — kèm tiêu đề, số chương, char count, thứ tự), nội dung chương, khoảng/override của patch, luật thay thế và cấu hình TTS/chuẩn hoá. Không có audio, video, ảnh hay EPUB nên có thể copy qua lại giữa các máy.
+
+1. 📖 Mở sách → tab **Patches & Export** → **Text sách · chuyển máy** → **Tải file text**.
+2. 💻 Ở máy khác, mở **Thư viện** → **Nhập text** → chọn file → **Xem trước** (tuỳ chọn) → **Nhập file**.
+3. 🔁 Copy file về máy gốc và nhập lại: bundle id được lưu trong `app_state` nên app **gộp vào đúng sách**, không tạo bản trùng.
+4. 🎙️ Patch nào có nội dung thay đổi được đưa về `pending` để tạo lại audio; audio/video cũ vẫn giữ trên đĩa.
+
+Chế độ nhập: **Gộp** (mặc định — dò sách gốc theo bundle id/origin, tạo mới nếu chưa có) và **Tạo bản sao mới** (luôn tạo sách riêng với identity mới). `dry_run` chỉ xem trước, không ghi DB.
+
 ---
 
 ## 📖 Pages & Điều hướng
@@ -397,6 +409,8 @@ Notebook **chỉ tổng hợp chunk** (`patches/patch_NNN/output/chunk_NNN.wav`)
 | `PUT` | `/books/{id}/automation/media/{role}` | 🖼️ | Set ordered media (background/webcam) |
 | `POST` | `/books/{id}/automation/enqueue` | 🤖 | Enqueue all patches cho pipeline |
 | `POST` | `/books/{id}/automation/retry/{patch_id}` | 🔄 | Retry failed pipeline stage |
+| `GET` | `/books/{book_id}/text-bundle` | ⬇️ | Tải text bundle của sách (JSON, không kèm media) |
+| `POST` | `/text-bundles/import` | ⬆️ | Nhập text bundle (`mode=merge|new`, `dry_run`, `target_book_id`) |
 
 ---
 

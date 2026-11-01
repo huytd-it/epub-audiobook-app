@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Plus,
   Search,
@@ -14,6 +14,7 @@ import {
   Calendar,
   FileText,
   SlidersHorizontal,
+  Upload,
 } from "lucide-react";
 import { api, Book } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
@@ -23,6 +24,7 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
+import { TextBundleImportDialog } from "@/components/common/TextBundleImport";
 
 type ViewMode = "grid" | "table";
 type SortKey = "in_progress" | "newest" | "oldest" | "title_asc" | "title_desc" | "progress_desc" | "progress_asc";
@@ -101,9 +103,11 @@ function getPageNumbers(current: number, total: number): (number | "...")[] {
 }
 
 export function Books() {
+  const navigate = useNavigate();
   const [data, setData] = useState<any>();
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState("");
+  const [textImportOpen, setTextImportOpen] = useState(false);
 
   // controls
   const [q, setQ] = useState("");
@@ -258,12 +262,18 @@ export function Books() {
         title="Thư viện sách EPUB"
         subtitle={`Quản lý ${totalBooks} bản thảo · ${totalFiltered !== totalBooks ? `đang hiển thị ${totalFiltered} kết quả` : "kiểm tra trạng thái chia patch và tiến độ tổng hợp."}`}
         action={
-          <Button asChild variant="accent">
-            <Link to="/upload">
-              <Plus className="h-4 w-4" />
-              Nhập sách mới
-            </Link>
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => setTextImportOpen(true)}>
+              <Upload className="h-4 w-4" />
+              Nhập text
+            </Button>
+            <Button asChild variant="accent">
+              <Link to="/upload">
+                <Plus className="h-4 w-4" />
+                Nhập sách mới
+              </Link>
+            </Button>
+          </>
         }
       />
 
@@ -610,6 +620,12 @@ export function Books() {
           </div>
         </div>
       )}
+
+      <TextBundleImportDialog
+        open={textImportOpen}
+        onOpenChange={setTextImportOpen}
+        onImported={(summary) => navigate(`/books/${summary.book_id}`)}
+      />
     </div>
   );
 }

@@ -9,6 +9,7 @@ const BACKEND = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 const API_PREFIXES = [
   "/api",
   "/books",
+  "/text-bundles",
   "/queue",
   "/video",
   "/music",
@@ -120,7 +121,7 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern:
-              /^https?:.*\/(api|books|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|local-bridge|tts-models|shorts|socials\/api)\//,
+              /^https?:.*\/(api|books|text-bundles|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|local-bridge|tts-models|shorts|socials\/api)\//,
             handler: "NetworkOnly",
           },
         ],

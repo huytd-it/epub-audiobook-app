@@ -727,6 +727,29 @@ export function errorText(error: unknown) {
   return error instanceof Error ? error.message : "Đã xảy ra lỗi không xác định.";
 }
 
+/** GET một URL rồi lưu response về máy dưới dạng file (dùng cho route tải file). */
+export async function downloadUrl(url: string, fallbackName: string) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    try {
+      const body = await response.json();
+      throw new Error(body.detail?.message || body.detail || `Lỗi ${response.status}`);
+    } catch (error) {
+      if (error instanceof Error) throw error;
+      throw new Error(`Lỗi ${response.status}`);
+    }
+  }
+  const header = response.headers.get("content-disposition") || "";
+  const match = header.match(/filename="?([^";]+)"?/i);
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(await response.blob());
+  anchor.download = match?.[1] || fallbackName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(anchor.href);
+}
+
 /** POST một FormData rồi lưu response về máy dưới dạng file. */
 export async function downloadForm(url: string, form: FormData) {
   const response = await fetch(url, { method: "POST", body: form });

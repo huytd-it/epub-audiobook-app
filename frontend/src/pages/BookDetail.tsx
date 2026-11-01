@@ -38,6 +38,7 @@ import { CheckField, LiveIndicator, TabBar } from "./book-detail/parts";
 import { PatchesPanel } from "./book-detail/PatchesPanel";
 import { BuildPanel } from "./book-detail/BuildPanel";
 import { ExportPanel } from "./book-detail/ExportPanel";
+import { TextBundlePanel } from "./book-detail/TextBundlePanel";
 import { ChaptersPanel } from "./book-detail/ChaptersPanel";
 import { ChapterDialog, ChapterTab } from "./book-detail/ChapterDialog";
 import { ConfigDialog, DeletePatchDialog, PatchPreviewDialog, TitleNormalizeDialog } from "./book-detail/dialogs";
@@ -1026,6 +1027,13 @@ export function BookDetail() {
             onSettingsChange={updateExportSettings}
             ttsModels={exportTtsOptions.ttsModels}
             voiceOptions={exportTtsOptions.voiceOptions}
+            onMessage={showToast}
+            onRefresh={refresh}
+            onBusyChange={setBusy}
+          />
+          <TextBundlePanel
+            bookId={bookId}
+            bookTitle={data.book.title}
             onMessage={showToast}
             onRefresh={refresh}
             onBusyChange={setBusy}
