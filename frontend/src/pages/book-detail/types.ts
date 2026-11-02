@@ -740,10 +740,13 @@ export async function downloadUrl(url: string, fallbackName: string) {
     }
   }
   const header = response.headers.get("content-disposition") || "";
+  const encoded = header.match(/filename\*=UTF-8''([^;]+)/i);
   const match = header.match(/filename="?([^";]+)"?/i);
+  let name = match?.[1] || fallbackName;
+  if (encoded) { try { name = decodeURIComponent(encoded[1]); } catch {} }
   const anchor = document.createElement("a");
   anchor.href = URL.createObjectURL(await response.blob());
-  anchor.download = match?.[1] || fallbackName;
+  anchor.download = name;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

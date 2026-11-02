@@ -5,7 +5,7 @@ import time
 
 import soundfile as sf
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from app import tts_model_manager
 
@@ -15,16 +15,83 @@ router = APIRouter(prefix="/tts-models", tags=["tts-models"])
 @router.post("/zerotts/voices/import")
 def import_zerotts_voice(file: UploadFile = File(...)):
     from app.tts_engine import zerotts_model_dir
-    from app.zerotts_voices import MAX_PACK_BYTES, import_voice_pack
+    from app.zerotts_voices import MAX_PACK_BYTES, import_voice_pack, save_repo_copy
 
     try:
         if not (file.filename or "").lower().endswith(".zip"):
             raise ValueError("Chọn gói giọng .zip tải từ ZeroWeight.")
-        return {"voice": import_voice_pack(file.file.read(MAX_PACK_BYTES + 1), zerotts_model_dir())}
+        voice = import_voice_pack(file.file.read(MAX_PACK_BYTES + 1), zerotts_model_dir())
+        repo_copy = save_repo_copy(voice["id"])
+        return {"voice": voice, "repo_pack": str(repo_copy) if repo_copy else None}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     finally:
         file.file.close()
+
+
+@router.get("/zerotts/voices")
+def list_zerotts_custom_voices():
+    from app.tts_engine import zerotts_model_dir
+    from app.zerotts_voices import list_voices, repo_packs_dir, sync_repo_packs
+
+    try:
+        sync = sync_repo_packs(zerotts_model_dir())
+    except OSError as exc:
+        sync = {"imported": [], "exported": [], "failed": [{"file": "", "error": str(exc)}]}
+    return {"voices": list_voices(), "repo_dir": str(repo_packs_dir()), "sync": sync}
+
+
+@router.get("/zerotts/voices/{voice_id}/pack")
+def download_zerotts_voice_pack(voice_id: str):
+    """Gói .zip của giọng clone đã nhập (bản gốc nếu còn, không thì dựng lại)."""
+    from urllib.parse import quote
+
+    from app.zerotts_voices import pack_bytes
+
+    try:
+        payload, filename = pack_bytes(voice_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Không tìm thấy giọng ZeroTTS này") from exc
+    return Response(payload, media_type="application/zip", headers={
+        "Content-Disposition": f"attachment; filename=\"voice.zip\"; filename*=UTF-8''{quote(filename)}",
+    })
+
+
+@router.get("/zerotts/runtime")
+def get_zerotts_runtime():
+    """Cấu hình CPU/GPU + số luồng của ZeroTTS trên máy này, kèm phần cứng phát hiện được."""
+    from app import zerotts_runtime
+
+    return {**zerotts_runtime.status(), "install_job": tts_model_manager.job_status("zerotts-gpu")}
+
+
+@router.post("/zerotts/runtime/build")
+def build_zerotts_gpu_graph():
+    """Dựng (lại) graph ZeroTTS tối ưu cho GPU ngay, thay vì đợi lần đọc đầu tiên."""
+    from app import zerotts_runtime
+    from app.tts_engine import zerotts_model_dir
+    from app.zerotts_gpu import build_frame_decoder
+
+    if not (zerotts_model_dir() / "config.json").exists():
+        raise HTTPException(400, "Chưa tải model ZeroTTS.")
+    try:
+        build_frame_decoder(zerotts_model_dir(), force=True)
+    except ImportError as exc:
+        raise HTTPException(400, "Thiếu package onnx — bấm Cài onnxruntime GPU hoặc pip install onnx.") from exc
+    except Exception as exc:
+        raise HTTPException(500, f"Dựng graph GPU thất bại: {exc}") from exc
+    return {**zerotts_runtime.status(), "install_job": tts_model_manager.job_status("zerotts-gpu")}
+
+
+@router.put("/zerotts/runtime")
+async def save_zerotts_runtime(request: Request):
+    from app import zerotts_runtime
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "payload must be an object")
+    zerotts_runtime.save_config(body)
+    return {**zerotts_runtime.status(), "install_job": tts_model_manager.job_status("zerotts-gpu")}
 
 
 @router.get("/providers")

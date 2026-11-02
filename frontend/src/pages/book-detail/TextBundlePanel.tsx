@@ -33,7 +33,7 @@ export function TextBundlePanel({
     setDownloading(true);
     onBusyChange(true);
     try {
-      await downloadUrl(`/books/${bookId}/text-bundle`, `${bookId}.book-text.json`);
+      await downloadUrl(`/books/${bookId}/text-bundle`, `book-${bookId}.book-text.json`);
       onMessage("Đã tải file text của sách.", "success");
     } catch (error) {
       onMessage(errorText(error), "error");
@@ -62,6 +62,10 @@ export function TextBundlePanel({
         <p className="text-xs text-muted-foreground">
           Dùng khi muốn sửa text ở máy khác rồi mang về. File xuất từ máy này khi nhập lại sẽ gộp vào đúng sách này;
           audio/video đã tạo vẫn được giữ. Patch nào đổi nội dung sẽ được đưa về trạng thái chờ để tạo lại audio.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          File ghi rõ id sách này (<span className="font-mono font-semibold text-foreground">#{bookId}</span>), id máy
+          xuất và id sách tương ứng trên từng máy đã nhập, nên copy qua lại bao nhiêu lần vẫn gộp đúng sách.
         </p>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

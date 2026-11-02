@@ -111,12 +111,30 @@ def _commands(model_id: str, update: bool) -> list[list[str]]:
             [sys.executable, "-m", "pip", "install", *( ["--upgrade"] if update else []), f".[{extras[model_id]}]"],
         ]
     if model_id == "zerotts":
-        return [
+        from app import zerotts_runtime
+
+        commands = [
             ensure_pip,
             [sys.executable, "-m", "pip", "install", *( ["--upgrade"] if update else []), ".[zerotts]"],
-            [sys.executable, str(_PROJECT_ROOT / "scripts" / "download_zerotts.py")],
         ]
+        # zerotts depends on the CPU `onnxruntime`, so reinstalling it would quietly put
+        # the CPU build back over an onnxruntime-gpu the user installed: swap it back.
+        if "onnxruntime-gpu" in zerotts_runtime.onnxruntime_builds():
+            commands += zerotts_runtime.gpu_install_commands()
+        return [*commands, [sys.executable, str(_PROJECT_ROOT / "scripts" / "download_zerotts.py")]]
+    if model_id == "zerotts-gpu":
+        from app import zerotts_runtime
+
+        if not zerotts_runtime.nvidia_gpu():
+            raise ValueError("Không tìm thấy GPU NVIDIA (nvidia-smi) trên máy này.")
+        return [ensure_pip, *zerotts_runtime.gpu_install_commands()]
     raise ValueError("Model này không có quy trình tải tự động trong ứng dụng")
+
+
+def job_status(model_id: str) -> dict | None:
+    with _lock:
+        job = _jobs.get(model_id)
+        return dict(job) if job else None
 
 
 def start_download(model_id: str, *, update: bool = False) -> dict:

@@ -6,7 +6,28 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { EmptyState, Header, LoadingState } from "@/components/common/Header";
-import { ProductionSettings, TtsModel } from "@/pages/book-detail/types";
+import { ProductionSettings, TtsModel, downloadUrl } from "@/pages/book-detail/types";
+
+type ZeroVoice = { id: string; label: string; language: string };
+type ZeroRuntime = {
+  config: { device: "auto" | "cpu" | "gpu"; threads: number };
+  max_threads: number;
+  cpu_count: number;
+  available_providers: string[];
+  gpu_provider_available: boolean;
+  resolved_providers: string[];
+  last_active_providers: string[];
+  last_accelerated: boolean;
+  gpu_graph_built: boolean;
+  onnxruntime: Record<string, string>;
+  nvidia_gpu: { name: string; driver: string } | null;
+  can_install_gpu: boolean;
+  gpu_package: string | null;
+  restart_required: boolean;
+  install_job: { state: string; log: string } | null;
+};
+const providerLabel = (providers: string[]) => providers[0] === "CUDAExecutionProvider" ? "GPU (CUDA)"
+  : providers[0] === "DmlExecutionProvider" ? "GPU (DirectML)" : providers.length ? "CPU" : "—";
 
 type Job = { state: "running" | "done" | "failed"; action: string; log: string; returncode: number | null };
 type PlaygroundResult = {
@@ -68,6 +89,10 @@ export function TtsModelsPage() {
   const [playError, setPlayError] = useState("");
   const [importingVoice, setImportingVoice] = useState(false);
   const [voiceImportMessage, setVoiceImportMessage] = useState("");
+  const [zeroVoices, setZeroVoices] = useState<ZeroVoice[]>([]);
+  const [zeroRepoDir, setZeroRepoDir] = useState("");
+  const [zeroRuntime, setZeroRuntime] = useState<ZeroRuntime | null>(null);
+  const [runtimeDraft, setRuntimeDraft] = useState<ZeroRuntime["config"] | null>(null);
   const [playResult, setPlayResult] = useState<PlaygroundResult>();
   const [customProviders, setCustomProviders] = useState<CustomProvider[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -97,6 +122,7 @@ export function TtsModelsPage() {
   const load = useCallback(() => {
     api<{ models: ManagedModel[] }>("/tts-models").then((value) => setModels(value.models || [])).catch((error) => setMessage(error instanceof Error ? error.message : "Không thể tải catalog TTS.")).finally(() => setLoading(false));
     api<{ providers: CustomProvider[] }>("/tts-models/providers").then((value) => setCustomProviders(value.providers || [])).catch(() => {});
+    api<{ voices: ZeroVoice[]; repo_dir: string }>("/tts-models/zerotts/voices").then((value) => { setZeroVoices(value.voices || []); setZeroRepoDir(value.repo_dir || ""); }).catch(() => {});
   }, []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -208,6 +234,10 @@ export function TtsModelsPage() {
     setAdvModel(model); setAdvMsg(""); setAdvSchema(model.options_schema || []); setAdvOptions({});
     setAdvLoading(true);
     try {
+      if (model.id === "zerotts") {
+        const runtimeStatus = await api<ZeroRuntime>("/tts-models/zerotts/runtime");
+        setZeroRuntime(runtimeStatus); setRuntimeDraft(runtimeStatus.config);
+      }
       const result = await api<{ options: Record<string, string | number>; schema: TtsModel["options_schema"] }>(`/tts-models/${model.id}/options`);
       setAdvSchema(result.schema || []);
       setAdvOptions(result.options || {});
@@ -220,12 +250,51 @@ export function TtsModelsPage() {
     if (!advModel) return;
     setAdvSaving(true); setAdvMsg("");
     try {
-      const result = await put<{ options: Record<string, string | number> }>(`/tts-models/${advModel.id}/options`, { options: advOptions });
-      setAdvOptions(result.options || {});
-      setAdvMsg("Đã lưu. Playground ở trang này sẽ tự dùng cấu hình này khi nghe thử.");
+      if (advModel.id === "zerotts" && runtimeDraft) {
+        const runtimeStatus = await put<ZeroRuntime>("/tts-models/zerotts/runtime", runtimeDraft);
+        setZeroRuntime(runtimeStatus); setRuntimeDraft(runtimeStatus.config);
+      }
+      if (advSchema.length) {
+        const result = await put<{ options: Record<string, string | number> }>(`/tts-models/${advModel.id}/options`, { options: advOptions });
+        setAdvOptions(result.options || {});
+      }
+      setAdvMsg(advModel.id === "zerotts"
+        ? "Đã lưu. Cấu hình phần cứng áp dụng cho mọi lần đọc ZeroTTS trên máy này (Playground và sách) từ lần chạy kế tiếp."
+        : "Đã lưu. Playground ở trang này sẽ tự dùng cấu hình này khi nghe thử.");
     } catch (error) {
       setAdvMsg(error instanceof Error ? error.message : "Không thể lưu cấu hình.");
     } finally { setAdvSaving(false); }
+  };
+
+  const refreshRuntime = useCallback(() => {
+    api<ZeroRuntime>("/tts-models/zerotts/runtime").then(setZeroRuntime).catch(() => {});
+  }, []);
+  const installingGpu = zeroRuntime?.install_job?.state === "running";
+  useEffect(() => {
+    if (!installingGpu) return;
+    const timer = window.setInterval(refreshRuntime, 2000);
+    return () => window.clearInterval(timer);
+  }, [installingGpu, refreshRuntime]);
+  const [buildingGraph, setBuildingGraph] = useState(false);
+  const buildGpuGraph = async () => {
+    setBuildingGraph(true); setAdvMsg("");
+    try {
+      setZeroRuntime(await postJson<ZeroRuntime>("/tts-models/zerotts/runtime/build", {}));
+      setAdvMsg("Đã dựng lại graph GPU. Lần đọc ZeroTTS kế tiếp sẽ dùng bản mới.");
+    } catch (error) { setAdvMsg(error instanceof Error ? error.message : "Không thể dựng graph GPU."); }
+    finally { setBuildingGraph(false); }
+  };
+  const installGpuRuntime = async () => {
+    setAdvMsg("");
+    try {
+      await postJson("/tts-models/zerotts-gpu/download", {});
+      refreshRuntime();
+    } catch (error) { setAdvMsg(error instanceof Error ? error.message : "Không thể bắt đầu cài onnxruntime-gpu."); }
+  };
+  const downloadZeroPack = async (voice: ZeroVoice) => {
+    try {
+      await downloadUrl(`/tts-models/zerotts/voices/${voice.id}/pack`, `${voice.label}.zip`);
+    } catch (error) { setVoiceImportMessage(error instanceof Error ? error.message : "Không thể tải gói giọng."); }
   };
 
   const choosePlayModel = (modelId: string) => {
@@ -414,6 +483,19 @@ export function TtsModelsPage() {
         }} />
       </label>
       {voiceImportMessage && <p role="status" className="text-sm">{voiceImportMessage}</p>}
+      {zeroVoices.length > 0 && <div className="space-y-1.5 border-t pt-3">
+        <p className="text-xs font-semibold">Giọng đã nhập · {zeroVoices.length}</p>
+        <p className="text-xs text-muted-foreground">Mỗi gói .zip (~1 MB) được lưu thêm vào thư mục trong repo{zeroRepoDir ? <> <span className="break-all font-mono">{zeroRepoDir}</span></> : ""} — commit và push lên GitHub; máy khác pull về là giọng tự được nhập.</p>
+        <ul className="divide-y rounded-md border text-sm">
+          {zeroVoices.map((voice) => <li key={voice.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+            <div className="min-w-0"><p className="truncate font-medium">{voice.label}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{voice.id.slice(0, 19)}… · {voice.language}</p></div>
+            <div className="flex shrink-0 gap-2">
+              <Button size="sm" variant="outline" onClick={() => { setPlayModelId("zerotts"); setPlayVoice(voice.id); setPlayResult(undefined); setPlayError(""); document.getElementById("tts-playground")?.scrollIntoView({ behavior: "smooth" }); }}><Play className="h-3.5 w-3.5" /> Nghe thử</Button>
+              <Button size="sm" variant="outline" onClick={() => void downloadZeroPack(voice)}><Download className="h-3.5 w-3.5" /> Tải .zip</Button>
+            </div>
+          </li>)}
+        </ul>
+      </div>}
     </section>
     <section id="tts-playground" className="grid gap-5 scroll-mt-4 rounded-xl border bg-card p-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(300px,.75fr)]">
       <div className="space-y-4">
@@ -550,6 +632,39 @@ export function TtsModelsPage() {
             <InfoRow label="Tham chiếu clone" value={advModel.supports_reference ? "Có (dùng clip mẫu)" : "Không (giọng cố định)"} />
             <InfoRow label="Chế độ" value={(advModel.capabilities as { offline?: boolean; online?: boolean }).offline ? "Offline" : (advModel.capabilities as { offline?: boolean; online?: boolean }).online ? "Online" : "—"} />
           </div>
+          {advModel.id === "zerotts" && zeroRuntime && runtimeDraft && <div className="space-y-3 rounded-md border p-3">
+            <p className="text-xs font-semibold">Phần cứng (áp dụng cho cả máy)</p>
+            <div className="grid gap-2 rounded-md bg-muted/30 p-2 sm:grid-cols-2">
+              <InfoRow label="GPU NVIDIA" value={zeroRuntime.nvidia_gpu ? `${zeroRuntime.nvidia_gpu.name} · driver ${zeroRuntime.nvidia_gpu.driver}` : "Không phát hiện"} />
+              <InfoRow label="onnxruntime" value={Object.entries(zeroRuntime.onnxruntime).map(([name, ver]) => `${name} ${ver}`).join(", ") || "Chưa cài"} mono />
+              <InfoRow label="Sẽ chạy trên" value={providerLabel(zeroRuntime.resolved_providers)} />
+              <InfoRow label="Lần chạy gần nhất" value={providerLabel(zeroRuntime.last_active_providers) + (zeroRuntime.last_accelerated ? " · đã tối ưu (CUDA graph)" : "")} />
+              <InfoRow label="Graph GPU tối ưu" value={zeroRuntime.gpu_graph_built ? "Đã dựng" : "Chưa dựng (tự dựng ở lần đọc GPU đầu tiên)"} />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1.5 font-medium">Thiết bị
+                <select className={inputClass} value={runtimeDraft.device} onChange={(event) => setRuntimeDraft((prev) => prev && { ...prev, device: event.target.value as ZeroRuntime["config"]["device"] })}>
+                  <option value="auto">Tự động (GPU nếu có)</option>
+                  <option value="gpu" disabled={!zeroRuntime.gpu_provider_available}>GPU{zeroRuntime.gpu_provider_available ? "" : " — chưa có onnxruntime GPU"}</option>
+                  <option value="cpu">CPU</option>
+                </select>
+              </label>
+              <label className="space-y-1.5 font-medium">Số luồng CPU (1–{zeroRuntime.max_threads})
+                <input className={inputClass} type="number" min={1} max={zeroRuntime.max_threads} step={1} value={runtimeDraft.threads} onChange={(event) => setRuntimeDraft((prev) => prev && { ...prev, threads: Number(event.target.value) })} />
+              </label>
+            </div>
+            <p className="text-muted-foreground">Trên CPU, khoảng 4 luồng đã bão hòa; tăng thêm ít khi nhanh hơn. Trên GPU, app tự dựng graph tối ưu (CUDA graph, KV cache giữ trên GPU): đo trên RTX 3050 Laptop nhanh hơn CPU khoảng 2,5 lần.</p>
+            {zeroRuntime.can_install_gpu && <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+              <p>Máy có GPU NVIDIA nhưng onnxruntime hiện là bản CPU. Cài <span className="font-mono">{zeroRuntime.gpu_package}</span> (kèm thư viện CUDA/cuDNN, khoảng 1–2 GB) để ZeroTTS chạy trên GPU. Nên dừng các job TTS đang chạy trước khi cài, và khởi động lại ứng dụng sau khi cài xong.</p>
+              <Button size="sm" onClick={installGpuRuntime} disabled={installingGpu}>{installingGpu ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Cài onnxruntime GPU</Button>
+            </div>}
+            {zeroRuntime.available_providers.includes("CUDAExecutionProvider") && <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="outline" onClick={buildGpuGraph} disabled={buildingGraph}>{buildingGraph ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Dựng lại graph GPU</Button>
+              <span className="text-muted-foreground">Viết lại bước sampling để toàn bộ frame decoder chạy bằng một CUDA graph (~2,5× nhanh hơn CPU trên RTX 3050).</span>
+            </div>}
+            {zeroRuntime.restart_required && <p className="rounded-md border border-amber-500/40 px-2 py-1.5">Đã cài onnxruntime-gpu — khởi động lại ứng dụng để dùng GPU.</p>}
+            {zeroRuntime.install_job && <pre className={`max-h-28 overflow-auto whitespace-pre-wrap rounded p-2 text-[10px] ${zeroRuntime.install_job.state === "failed" ? "bg-destructive/10 text-destructive" : "bg-muted"}`}>{installingGpu ? "Đang cài…\n" : ""}{zeroRuntime.install_job.log}</pre>}
+          </div>}
           {advSchema.length > 0 ? <div className="space-y-3 rounded-md border p-3">
             <p className="text-xs font-semibold">Tùy chọn suy luận</p>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -563,11 +678,11 @@ export function TtsModelsPage() {
                 )}
               </label>)}
             </div>
-          </div> : <p className="rounded-md border border-dashed px-3 py-2 text-muted-foreground">Model này không có tham số suy luận mở — cấu hình nâng cao chỉ xem thông tin.</p>}
+          </div> : advModel.id !== "zerotts" && <p className="rounded-md border border-dashed px-3 py-2 text-muted-foreground">Model này không có tham số suy luận mở — cấu hình nâng cao chỉ xem thông tin.</p>}
           {advMsg && <p className="rounded-md border px-3 py-2 text-muted-foreground">{advMsg}</p>}
         </div>}
         <DialogFooter className="gap-2">
-          {advSchema.length > 0 && <Button onClick={saveAdvanced} disabled={advSaving || advLoading}>{advSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu cấu hình</Button>}
+          {(advSchema.length > 0 || advModel?.id === "zerotts") && <Button onClick={saveAdvanced} disabled={advSaving || advLoading}>{advSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Lưu cấu hình</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

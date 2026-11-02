@@ -41,12 +41,14 @@ vieneu-fast = [
 ]
 zerotts = [
     "zerotts==0.1.5", # Matched to the pinned ONNX revision in app.tts_engine.
+    "onnx>=1.16", # app.zerotts_gpu rewrites a graph for CUDA-graph replay on GPU.
 ]
 all-tts = [
     "voxcpm",
     "omnivoice",
     "vieneu>=3.8.3",
     "zerotts==0.1.5",
+    "onnx>=1.16",
 ]
 light-tts = [
     "edge-tts>=7.0",

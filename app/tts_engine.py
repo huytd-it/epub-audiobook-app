@@ -944,7 +944,8 @@ def _zerotts_decode_streaming(codec, codes: np.ndarray) -> np.ndarray:
 
 
 class ZeroTTSEngine:
-    """ZeroTTS (local, ONNX, CPU-only -- no torch, no GPU).
+    """ZeroTTS (local, ONNX, no torch). Runs on CPU, or on the GPU when onnxruntime has a
+    GPU provider -- see app.zerotts_runtime for the machine-level device/thread settings.
 
     Speaks bundled voices or imported ZeroWeight voice packs. The repo ships only the
     decode half of the MOSS codec, so there is no encoder to turn a reference clip into
@@ -958,12 +959,16 @@ class ZeroTTSEngine:
     supports_reference = False
 
     def __init__(self, voice: str | None = None, model_dir: str | None = None,
-                 threads: int | None = None, **options):
-        from app.config import settings
+                 threads: int | None = None, device: str | None = None, **options):
+        from app.zerotts_runtime import load_config
 
+        runtime = load_config()
         self.voice = voice or _MODELS["zerotts"].default_voice
         self.model_dir = Path(model_dir) if model_dir else zerotts_model_dir()
-        self.threads = threads or settings.zerotts_threads
+        self.threads = threads or runtime["threads"]
+        self.device = device or runtime["device"]
+        self.active_providers: list[str] = []
+        self.gpu_accelerated = False
         self._model = None
         self._voice_emb: np.ndarray | None = None
 
@@ -1007,11 +1012,15 @@ class ZeroTTSEngine:
                 f"Chưa có weights ZeroTTS ở {self.model_dir}. "
                 f"Chạy: python scripts/download_zerotts.py"
             )
+        from app import zerotts_runtime
+
+        providers = zerotts_runtime.resolve_providers(self.device)
+        zerotts_runtime.prepare_providers(providers)
         from zerotts import ZeroTTS  # heavy import, deferred until first real use
 
         try:
             model = ZeroTTS.from_pretrained(
-                str(self.model_dir), intra_op_num_threads=self.threads
+                str(self.model_dir), intra_op_num_threads=self.threads, providers=providers
             )
         except ValueError as exc:
             if "not enough values to unpack (expected 4, got 3)" in str(exc):
@@ -1022,9 +1031,34 @@ class ZeroTTSEngine:
                 ) from exc
             raise
         self._voice_emb = self._load_voice_emb(model.n_voice_queries)
+        session = getattr(model, "prefix_step_sess", None)
+        try:
+            self.active_providers = list(session.get_providers()) if session else list(providers)
+        except Exception:
+            self.active_providers = list(providers)
+        if providers[0] != "CPUExecutionProvider" and self.active_providers[:1] == ["CPUExecutionProvider"]:
+            logger.warning("ZeroTTS: %s không khởi tạo được (thiếu thư viện CUDA/cuDNN?) — đang chạy CPU",
+                           providers[0])
+        if self.active_providers[:1] == ["CUDAExecutionProvider"]:
+            from app import zerotts_gpu
+
+            self.gpu_accelerated = zerotts_gpu.accelerate(model, self.model_dir)
+        zerotts_runtime.record_active(self.active_providers, accelerated=self.gpu_accelerated)
         self._model = model
 
     _MAX_GENERATION_ATTEMPTS = 3
+
+    def _generate(self, model, text, voice_emb, max_frames) -> list:
+        if self.gpu_accelerated:
+            from app import zerotts_gpu
+
+            try:
+                return list(zerotts_gpu.generate_frames(model, text, 4, max_frames, voice_emb))
+            except Exception:
+                # e.g. out of GPU memory on a very long chunk: the stock loop (numpy KV)
+                # still runs on the same sessions.
+                logger.exception("ZeroTTS GPU: vòng sinh frame trên GPU lỗi — dùng vòng chuẩn")
+        return list(model._generate_frames(text, 4, max_frames, voice_emb=voice_emb))
 
     def synthesize_chunk(self, text, reference_wav_path=None, prompt_text=None) -> np.ndarray:
         self._ensure_loaded()
@@ -1038,7 +1072,7 @@ class ZeroTTSEngine:
             # min_frames/max_frames/voice_emb match zerotts.Synthesizer.synthesize's
             # own defaults; every other generation kwarg is left to _generate_frames'
             # matching defaults.
-            frames = list(model._generate_frames(text, 4, DEFAULT_MAX_FRAMES, voice_emb=voice_emb))
+            frames = self._generate(model, text, voice_emb, DEFAULT_MAX_FRAMES)
             if not frames:
                 return np.zeros(0, dtype=np.float32)
             codes = np.stack(frames, axis=1)[0].transpose(1, 0)  # (K, T)

@@ -372,6 +372,16 @@ export type TextBundleSummary = {
   dry_run: boolean;
   /** True khi file tạo sách mới trên máy này; False khi gộp vào sách có sẵn. */
   created: boolean;
+  /** Cách tìm ra sách đích: target (chọn tay), book_id, bundle_id, origin, title; rỗng khi tạo mới. */
+  matched_by: "" | "target" | "book_id" | "bundle_id" | "origin" | "title";
+  identity: {
+    bundle_id: string | null;
+    source_machine_id: string | null;
+    source_book_id: number | null;
+    machine_id: string;
+    /** id sách trên từng máy: { machine_id: book_id } */
+    book_ids: Record<string, number>;
+  };
   book_id: number;
   title: string;
   chapters: { created: number; updated: number };

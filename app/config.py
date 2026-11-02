@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # which is where scripts/download_zerotts.py puts them. The weights are ~910 MB and are not
     # fetched on demand: without them the engine refuses to load and says how to get them.
     zerotts_model_dir: str = ""
+    # Repo folder that keeps a copy of every imported ZeroTTS voice pack (~1 MB each) so it
+    # can be committed and pulled on another machine. Empty => "<app>/voice_packs/zerotts".
+    zerotts_voice_packs_dir: str = ""
     # onnxruntime intra-op threads for ZeroTTS. Measured flat from 4 upward on a 28-core CPU
     # (memory-bandwidth bound, not thread bound), so the package default is kept.
     zerotts_threads: int = 4

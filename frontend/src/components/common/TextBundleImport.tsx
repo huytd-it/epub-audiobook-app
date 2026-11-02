@@ -29,9 +29,72 @@ function Metric({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+const MATCHED_BY_LABEL: Record<string, string> = {
+  target: "sách đang mở (chọn tay)",
+  book_id: "id sách ghi trong file",
+  bundle_id: "bundle id",
+  origin: "sách gốc",
+  title: "tên + ngày tạo",
+};
+
+/** Định danh đọc thẳng từ file .book-text.json (trước khi gửi lên server). */
+type BundleFileInfo = {
+  title: string;
+  bookId: number | null;
+  machineId: string | null;
+  bundleId: string | null;
+  bookIds: Record<string, number>;
+  chapterCount: number;
+  exportedAt: string | null;
+};
+
+function readBundleInfo(data: unknown): BundleFileInfo | null {
+  if (!data || typeof data !== "object") return null;
+  const bundle = data as Record<string, any>;
+  const source = bundle.source && typeof bundle.source === "object" ? bundle.source : {};
+  const book = bundle.book && typeof bundle.book === "object" ? bundle.book : {};
+  const rawId = source.book_id ?? book.id;
+  return {
+    title: String(source.title || book.title || ""),
+    bookId: Number.isFinite(Number(rawId)) && rawId !== null && rawId !== undefined ? Number(rawId) : null,
+    machineId: source.machine_id ? String(source.machine_id) : null,
+    bundleId: bundle.bundle_id || bundle.origin?.bundle_id || null,
+    bookIds: bundle.book_ids && typeof bundle.book_ids === "object" ? bundle.book_ids : {},
+    chapterCount: Array.isArray(bundle.chapters) ? bundle.chapters.length : 0,
+    exportedAt: bundle.exported_at || null,
+  };
+}
+
+function IdChip({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-semibold">{value}</span>
+    </span>
+  );
+}
+
+/** Hiển thị id sách theo từng máy ghi trong file. */
+function BookIdList({ ids, localMachine }: { ids: Record<string, number>; localMachine?: string }) {
+  const entries = Object.entries(ids);
+  if (!entries.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {entries.map(([machine, id]) => (
+        <IdChip
+          key={machine}
+          label={machine === localMachine ? `máy này (${machine})` : `máy ${machine}`}
+          value={`#${id}`}
+        />
+      ))}
+    </div>
+  );
+}
+
 /** Tóm tắt kết quả import — dùng chung cho bước xem trước và import thật. */
 export function TextBundleSummaryView({ summary }: { summary: TextBundleSummary }) {
   const changed = summary.text_changed.length;
+  const identity = summary.identity;
   return (
     <div className="space-y-3 rounded-md border border-border bg-muted/10 p-3">
       <div className="flex items-start gap-2">
@@ -50,9 +113,26 @@ export function TextBundleSummaryView({ summary }: { summary: TextBundleSummary 
           </p>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
             {summary.title || "(không có tiêu đề)"} · sách #{summary.book_id}
+            {summary.matched_by && ` · khớp theo ${MATCHED_BY_LABEL[summary.matched_by] || summary.matched_by}`}
           </p>
         </div>
       </div>
+
+      {identity && (
+        <div className="space-y-1.5 rounded-md border border-border bg-background px-3 py-2">
+          <div className="flex flex-wrap gap-1.5">
+            {identity.source_book_id != null && (
+              <IdChip
+                label={`nguồn${identity.source_machine_id ? ` (máy ${identity.source_machine_id})` : ""}`}
+                value={`#${identity.source_book_id}`}
+              />
+            )}
+            <IdChip label="máy này" value={`#${summary.book_id}`} />
+            {identity.bundle_id && <IdChip label="bundle" value={identity.bundle_id.slice(0, 12)} />}
+          </div>
+          <BookIdList ids={identity.book_ids} localMachine={identity.machine_id} />
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Metric label="Chương mới" value={summary.chapters.created} />
@@ -117,6 +197,7 @@ export function TextBundleImportDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [summary, setSummary] = useState<TextBundleSummary | null>(null);
+  const [fileInfo, setFileInfo] = useState<BundleFileInfo | null>(null);
 
   const notify =
     onMessage ??
@@ -131,7 +212,24 @@ export function TextBundleImportDialog({
     setBusy(false);
     setError("");
     setSummary(null);
+    setFileInfo(null);
   }, [open, defaultMode]);
+
+  const pickFile = (next: File | null) => {
+    setFile(next);
+    setSummary(null);
+    setError("");
+    setFileInfo(null);
+    if (!next) return;
+    next
+      .text()
+      .then((text) => {
+        const info = readBundleInfo(JSON.parse(text.replace(/^﻿/, "")));
+        setFileInfo(info);
+        if (!info) setError("File không phải file text sách hợp lệ.");
+      })
+      .catch(() => setError("Không đọc được file JSON."));
+  };
 
   const submit = async (dryRun: boolean) => {
     if (!file) {
@@ -187,11 +285,7 @@ export function TextBundleImportDialog({
               type="file"
               accept=".json,application/json"
               disabled={busy}
-              onChange={(event) => {
-                setFile(event.target.files?.[0] || null);
-                setSummary(null);
-                setError("");
-              }}
+              onChange={(event) => pickFile(event.target.files?.[0] || null)}
               className={cn(
                 "block w-full cursor-pointer rounded-md border border-input bg-background px-3 py-2 text-xs file:mr-3 file:rounded file:border-0 file:bg-muted file:px-2.5 file:py-1 file:text-xs file:font-medium",
                 busy && "cursor-not-allowed opacity-60"
@@ -203,6 +297,42 @@ export function TextBundleImportDialog({
               </span>
             )}
           </label>
+
+          {fileInfo && (
+            <div className="space-y-1.5 rounded-md border border-border bg-muted/10 px-3 py-2">
+              <p className="truncate text-xs font-medium">
+                {fileInfo.title || "(không có tiêu đề)"}
+                <span className="font-normal text-muted-foreground">
+                  {" "}
+                  · {fileInfo.chapterCount} chương
+                  {fileInfo.exportedAt && ` · xuất lúc ${new Date(fileInfo.exportedAt).toLocaleString("vi-VN")}`}
+                </span>
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {fileInfo.bookId != null ? (
+                  <IdChip
+                    label={`sách nguồn${fileInfo.machineId ? ` (máy ${fileInfo.machineId})` : ""}`}
+                    value={`#${fileInfo.bookId}`}
+                  />
+                ) : (
+                  <span className="text-[11px] text-muted-foreground">
+                    File bản cũ chưa ghi id sách — sẽ dò theo bundle id.
+                  </span>
+                )}
+                {fileInfo.bundleId && <IdChip label="bundle" value={fileInfo.bundleId.slice(0, 12)} />}
+              </div>
+              <BookIdList ids={fileInfo.bookIds} />
+              {canPinToBook && useTargetBook && targetBookId && fileInfo.bookIds && (
+                Object.keys(fileInfo.bookIds).length > 0 &&
+                !Object.values(fileInfo.bookIds).includes(targetBookId) && (
+                  <p className="text-[11px] text-amber-700">
+                    Id sách đang mở (#{targetBookId}) không có trong file — kiểm tra lại có đúng sách không, hoặc bỏ
+                    chọn "Gộp vào sách đang mở" để tự dò.
+                  </p>
+                )
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="block space-y-1.5">

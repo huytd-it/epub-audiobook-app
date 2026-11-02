@@ -9,8 +9,10 @@ from fastapi.testclient import TestClient
 from app import db, repository
 from app.book_text_bundle import (
     BUNDLE_FORMAT,
+    bundle_filename,
     export_book_text,
     import_book_text,
+    machine_id,
     validate_bundle,
 )
 from app.config import settings
@@ -189,6 +191,85 @@ def test_import_round_trip_merges_into_same_book():
         "SELECT text FROM chapter WHERE book_id=? AND chapter_index=2", (book_id,)
     ).fetchone()["text"]
     assert merged_text == "Bản sửa trên máy khác."
+
+
+def test_export_carries_explicit_book_and_machine_ids():
+    conn = _conn()
+    book_id = _seed(conn)
+    bundle = export_book_text(conn, book_id)
+    local = machine_id(conn)
+
+    assert bundle["book"]["id"] == book_id
+    assert bundle["source"] == {"machine_id": local, "book_id": book_id, "title": "Truyện thử"}
+    assert bundle["book_ids"] == {local: book_id}
+    assert bundle_filename(repository.get_book(conn, book_id)) == f"book-{book_id}-Truy-n-th.book-text.json"
+    # Stable across exports.
+    assert export_book_text(conn, book_id)["source"]["machine_id"] == local
+
+
+def test_round_trip_uses_book_ids_when_mapping_lost_and_title_changed():
+    origin = _conn()
+    _seed(origin, title="Sách khác")  # shift ids so local ids differ between machines
+    book_id = _seed(origin)
+    original = export_book_text(origin, book_id)
+
+    other = _conn()
+    imported = import_book_text(other, original)
+    assert imported["identity"]["source_book_id"] == book_id
+    other_id = imported["book_id"]
+    assert other_id != book_id
+
+    other.execute("UPDATE book SET title='Tên mới' WHERE id=?", (other_id,))
+    other.commit()
+    edited = export_book_text(other, other_id)
+    assert edited["source"]["book_id"] == other_id
+    assert edited["book_ids"] == {machine_id(origin): book_id, machine_id(other): other_id}
+
+    # Origin lost every bundle mapping (e.g. restored an old DB backup).
+    origin.execute("DELETE FROM app_state WHERE key LIKE 'book_text_bundle:book:%'")
+    origin.execute("DELETE FROM app_state WHERE key LIKE 'book_text_bundle:id:%'")
+    origin.commit()
+
+    back = import_book_text(origin, edited)
+    assert back["created"] is False
+    assert back["book_id"] == book_id
+    assert back["matched_by"] == "book_id"
+    assert repository.get_book(origin, book_id).title == "Tên mới"
+    assert origin.execute("SELECT COUNT(*) AS n FROM book").fetchone()["n"] == 2
+
+    # Copying again from the origin still lands in the same book on the other machine.
+    again = import_book_text(other, export_book_text(origin, book_id))
+    assert again["book_id"] == other_id
+    assert again["matched_by"] == "book_id"
+
+
+def test_book_id_is_not_trusted_for_an_unrelated_book():
+    origin = _conn()
+    book_id = _seed(origin)
+    bundle = export_book_text(origin, book_id)
+
+    other = _conn()
+    unrelated = _seed(other, title="Không liên quan")
+    other.execute("UPDATE book SET created_at='2000-01-01T00:00:00+00:00' WHERE id=?", (unrelated,))
+    other.commit()
+    forged = copy.deepcopy(bundle)
+    forged["book_ids"][machine_id(other)] = unrelated
+
+    summary = import_book_text(other, forged)
+    assert summary["created"] is True
+    assert summary["book_id"] != unrelated
+
+
+def test_pinned_target_warns_when_file_belongs_to_another_book():
+    conn = _conn()
+    first = _seed(conn, title="Sách A")
+    second = _seed(conn, title="Sách B")
+    bundle = export_book_text(conn, first)
+
+    summary = import_book_text(conn, bundle, target_book_id=second, dry_run=True)
+    assert summary["book_id"] == second
+    assert summary["matched_by"] == "target"
+    assert any(f"#{first}" in warning for warning in summary["warnings"])
 
 
 def test_merge_keeps_audio_and_resets_only_edited_patch():

@@ -16,6 +16,13 @@ another machine records the same origin. Importing a bundle back into the
 library therefore updates the *same* book instead of creating a duplicate; a
 fresh book is only created when no match exists (or ``mode="new"``).
 
+The file also spells the identity out explicitly so it can be copied back and
+forth by hand: ``book.id`` / ``source`` name the exporting machine
+(``machine_id``, a random id kept in ``app_state``) and its local book id, and
+``book_ids`` lists the local book id of this book on every machine it has
+travelled through. Importing on a machine listed in ``book_ids`` merges straight
+into that book, even when the ``app_state`` mapping was lost.
+
 Merge semantics
 ---------------
 Import never touches audio/video state: patch status, ``audio_path``, chunk
@@ -45,6 +52,7 @@ BUNDLE_VERSION = 1
 
 _BOOK_KEY = "book_text_bundle:book:{}"
 _ID_KEY = "book_text_bundle:id:{}"
+_MACHINE_KEY = "book_text_bundle:machine_id"
 
 # Columns whose values are text or text-processing configuration.
 _BOOK_TEXT_FIELDS = (
@@ -91,7 +99,50 @@ def _slug(value: str) -> str:
 
 
 def bundle_filename(book: Any) -> str:
-    return f"{_slug(getattr(book, 'title', '') or 'book')}.book-text.json"
+    """``book-<id>-<title>.book-text.json``: the local id makes copies easy to tell apart."""
+    title = _slug(getattr(book, "title", "") or "book")
+    book_id = getattr(book, "id", None)
+    prefix = f"book-{book_id}-" if book_id is not None else ""
+    return f"{prefix}{title}.book-text.json"
+
+
+def machine_id(conn: sqlite3.Connection) -> str:
+    """Stable random id of this library, created (and committed) on first use."""
+    value = repository.get_app_state(conn, _MACHINE_KEY)
+    if value:
+        return str(value)
+    value = uuid.uuid4().hex[:12]
+    conn.execute(
+        "INSERT OR IGNORE INTO app_state (key, value) VALUES (?, ?)", (_MACHINE_KEY, value)
+    )
+    conn.commit()
+    return str(repository.get_app_state(conn, _MACHINE_KEY) or value)
+
+
+def _clean_book_ids(value: Any) -> dict[str, int]:
+    """``{machine_id: book_id}`` with junk entries dropped."""
+    result: dict[str, int] = {}
+    if not isinstance(value, dict):
+        return result
+    for key, raw in value.items():
+        if not isinstance(key, str) or not key:
+            continue
+        try:
+            book_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if book_id > 0:
+            result[key] = book_id
+    return result
+
+
+def _bundle_book_ids(bundle: dict) -> dict[str, int]:
+    """Every ``machine -> book id`` pair the bundle knows, its source included."""
+    ids = _clean_book_ids(bundle.get("book_ids"))
+    source = bundle.get("source") if isinstance(bundle.get("source"), dict) else {}
+    if source.get("machine_id"):
+        ids.update(_clean_book_ids({source.get("machine_id"): source.get("book_id")}))
+    return ids
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +169,7 @@ def _origin_info(book: Any, mapping: dict | None) -> dict:
         "origin_created_at": (
             mapping.get("origin_created_at") or getattr(book, "created_at", "") or ""
         ),
+        "book_ids": _clean_book_ids(mapping.get("book_ids")),
     }
 
 
@@ -135,16 +187,40 @@ def _write_mapping(conn: sqlite3.Connection, book_id: int, origin: dict) -> None
     )
 
 
-def _find_import_target(conn: sqlite3.Connection, bundle: dict) -> Any | None:
-    """Locate the book this bundle belongs to on *this* machine."""
+def _belongs_to_bundle(conn: sqlite3.Connection, book: Any, bundle: dict) -> bool:
+    """Guard against a reused id: the local book must really be this bundle's book."""
+    origin = bundle.get("origin") if isinstance(bundle.get("origin"), dict) else {}
+    bundle_id = bundle.get("bundle_id") or origin.get("bundle_id")
+    mapping = _read_mapping(conn, book.id) or {}
+    if bundle_id and mapping.get("bundle_id") == bundle_id:
+        return True
+    created_at = (bundle.get("book") or {}).get("created_at") or ""
+    return bool(created_at) and (getattr(book, "created_at", "") or "") == created_at
+
+
+def _find_import_target(
+    conn: sqlite3.Connection, bundle: dict, local_machine: str | None = None
+) -> tuple[Any | None, str]:
+    """Locate the book this bundle belongs to on *this* machine.
+
+    Returns ``(book, matched_by)``; ``matched_by`` is empty when nothing matched.
+    """
+    # Explicit ids written in the file: the book id this machine had for it.
+    if local_machine:
+        local_id = _bundle_book_ids(bundle).get(local_machine)
+        if local_id is not None:
+            book = repository.get_book(conn, local_id)
+            if book is not None and _belongs_to_bundle(conn, book, bundle):
+                return book, "book_id"
+
     origin = bundle.get("origin") or {}
-    bundle_id = origin.get("bundle_id")
+    bundle_id = bundle.get("bundle_id") or origin.get("bundle_id")
     if bundle_id:
         raw = repository.get_app_state(conn, _ID_KEY.format(bundle_id))
         if raw and str(raw).isdigit():
             book = repository.get_book(conn, int(raw))
             if book is not None:
-                return book
+                return book, "bundle_id"
 
     # Mapping may exist per book while the id index was lost (DB merged by hand).
     origin_book_id = origin.get("origin_book_id")
@@ -166,7 +242,7 @@ def _find_import_target(conn: sqlite3.Connection, bundle: dict) -> Any | None:
                 continue
             book = repository.get_book(conn, int(row["key"].rsplit(":", 1)[-1]))
             if book is not None:
-                return book
+                return book, "origin"
 
     # Last resort: the original book row itself (mapping was never written).
     created_at = (bundle.get("book") or {}).get("created_at") or ""
@@ -177,8 +253,10 @@ def _find_import_target(conn: sqlite3.Connection, bundle: dict) -> Any | None:
             (created_at, title),
         ).fetchone()
         if row is not None:
-            return repository.get_book(conn, int(row["id"]))
-    return None
+            book = repository.get_book(conn, int(row["id"]))
+            if book is not None:
+                return book, "title"
+    return None, ""
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +273,9 @@ def export_book_text(conn: sqlite3.Connection, book_id: int) -> dict[str, Any]:
     if book is None:
         raise LookupError("book not found")
 
+    local_machine = machine_id(conn)
     origin = _origin_info(book, _read_mapping(conn, book_id))
+    origin["book_ids"][local_machine] = book_id
     _write_mapping(conn, book_id, origin)
     conn.commit()
 
@@ -203,7 +283,8 @@ def export_book_text(conn: sqlite3.Connection, book_id: int) -> dict[str, Any]:
     patches = repository.list_patches(conn, book_id)
     rules = repository.list_replace_rules(conn, book_id)
 
-    book_payload = {field: getattr(book, field, None) for field in _BOOK_TEXT_FIELDS}
+    book_payload = {"id": book_id}
+    book_payload.update({field: getattr(book, field, None) for field in _BOOK_TEXT_FIELDS})
     book_payload.update({field: int(getattr(book, field, 0) or 0) for field in _NORMALIZATION_FIELDS})
     audio_payload = {field: getattr(book, field, None) for field in _AUDIO_FIELDS}
 
@@ -266,7 +347,19 @@ def export_book_text(conn: sqlite3.Connection, book_id: int) -> dict[str, Any]:
         "version": BUNDLE_VERSION,
         "bundle_id": origin["bundle_id"],
         "exported_at": _now(),
-        "origin": origin,
+        # Explicit identity so the file can be copied back and forth by hand:
+        # who exported it, and the book's id on every machine it has been on.
+        "source": {
+            "machine_id": local_machine,
+            "book_id": book_id,
+            "title": book.title or "",
+        },
+        "book_ids": dict(origin["book_ids"]),
+        "origin": {
+            "bundle_id": origin["bundle_id"],
+            "origin_book_id": origin["origin_book_id"],
+            "origin_created_at": origin["origin_created_at"],
+        },
         "book": book_payload,
         "audio_settings": audio_payload,
         "toc": toc_payload,
@@ -316,6 +409,10 @@ def validate_bundle(data: Any) -> dict:
     book = data.get("book")
     if not isinstance(book, dict):
         raise ValueError("File thiếu phần thông tin sách.")
+    if data.get("source") is not None and not isinstance(data.get("source"), dict):
+        raise ValueError("Phần 'source' (máy/sách nguồn) không hợp lệ.")
+    if data.get("book_ids") is not None and not isinstance(data.get("book_ids"), dict):
+        raise ValueError("Phần 'book_ids' không hợp lệ.")
 
     chapters = data.get("chapters")
     if not isinstance(chapters, list) or not chapters:
@@ -708,8 +805,11 @@ def import_book_text(
     if mode not in ("merge", "new"):
         raise ValueError("mode must be 'merge' or 'new'")
     bundle = validate_bundle(data)
+    # Created (and committed) before the import transaction so a dry run or a
+    # failed import cannot roll the machine identity back.
+    local_machine = machine_id(conn)
     try:
-        return _import_validated(conn, bundle, mode, target_book_id, dry_run)
+        return _import_validated(conn, bundle, mode, target_book_id, dry_run, local_machine)
     except Exception:
         conn.rollback()
         raise
@@ -721,16 +821,36 @@ def _import_validated(
     mode: str,
     target_book_id: int | None,
     dry_run: bool,
+    local_machine: str,
 ) -> dict[str, Any]:
     existing = None
+    matched_by = ""
+    detected = None
     if mode == "merge":
+        detected, detected_by = _find_import_target(conn, bundle, local_machine)
         if target_book_id is not None:
             existing = repository.get_book(conn, target_book_id)
+            matched_by = "target" if existing is not None else ""
         if existing is None:
-            existing = _find_import_target(conn, bundle)
+            existing, matched_by = detected, detected_by
 
     origin = bundle.get("origin") if isinstance(bundle.get("origin"), dict) else {}
     bundle_id = bundle.get("bundle_id") or origin.get("bundle_id")
+    source = bundle.get("source") if isinstance(bundle.get("source"), dict) else {}
+    incoming_ids = _bundle_book_ids(bundle)
+    identity = {
+        "bundle_id": bundle_id,
+        "source_machine_id": source.get("machine_id"),
+        "source_book_id": source.get("book_id") or (bundle.get("book") or {}).get("id"),
+        "machine_id": local_machine,
+    }
+
+    def _merged_ids(book_id: int) -> dict[str, int]:
+        """Ids the bundle knows + ids already recorded here + this machine's id."""
+        ids = dict(incoming_ids)
+        ids.update(_clean_book_ids((_read_mapping(conn, book_id) or {}).get("book_ids")))
+        ids[local_machine] = book_id
+        return ids
 
     if existing is None:
         book_id = _create_book(conn, bundle)
@@ -747,6 +867,7 @@ def _import_validated(
                 "bundle_id": uuid.uuid4().hex,
                 "origin_book_id": book_id,
                 "origin_created_at": getattr(created_book, "created_at", "") or "",
+                "book_ids": {local_machine: book_id},
             }
         else:
             origin_info = _origin_info(
@@ -755,6 +876,7 @@ def _import_validated(
                     "bundle_id": bundle_id,
                     "origin_book_id": origin.get("origin_book_id"),
                     "origin_created_at": origin.get("origin_created_at"),
+                    "book_ids": _merged_ids(book_id),
                 },
             )
         summary = {
@@ -762,6 +884,8 @@ def _import_validated(
             "mode": mode,
             "dry_run": dry_run,
             "created": True,
+            "matched_by": "",
+            "identity": {**identity, "book_ids": origin_info["book_ids"]},
             "book_id": book_id,
             "title": (bundle.get("book") or {}).get("title") or "",
             "chapters": {"created": len(bundle["chapters"]), "updated": 0},
@@ -791,6 +915,10 @@ def _import_validated(
     conn.execute("UPDATE book SET updated_at = ? WHERE id = ?", (_now(), book_id))
 
     warnings: list[str] = []
+    if matched_by == "target" and detected is not None and detected.id != book_id:
+        warnings.append(
+            f"File này thuộc sách #{detected.id} trên máy này nhưng được gộp vào sách #{book_id} theo lựa chọn."
+        )
     if patch_skipped:
         warnings.append(f"{patch_skipped} patch nằm ngoài số chương hiện có và đã bị bỏ qua.")
     if missing_patches:
@@ -808,6 +936,7 @@ def _import_validated(
             "bundle_id": bundle_id,
             "origin_book_id": origin.get("origin_book_id"),
             "origin_created_at": origin.get("origin_created_at"),
+            "book_ids": _merged_ids(book_id),
         },
     )
     if dry_run:
@@ -821,6 +950,8 @@ def _import_validated(
         "mode": mode,
         "dry_run": dry_run,
         "created": False,
+        "matched_by": matched_by,
+        "identity": {**identity, "book_ids": origin_info["book_ids"]},
         "book_id": book_id,
         "title": (bundle.get("book") or {}).get("title") or existing.title,
         "chapters": {"created": chapter_created, "updated": chapter_updated},
@@ -838,5 +969,6 @@ __all__ = [
     "bundle_filename",
     "export_book_text",
     "import_book_text",
+    "machine_id",
     "validate_bundle",
 ]

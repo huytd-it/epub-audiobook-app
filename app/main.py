@@ -46,6 +46,16 @@ async def lifespan(app: FastAPI):
     if recovered_gameplay:
         logging.info("event=gameplay.reservations_recovered count=%s", recovered_gameplay)
     Path(settings.data_root, "preview_tmp").mkdir(parents=True, exist_ok=True)
+    try:  # voice packs pulled from git become usable without opening the model page
+        from app.tts_engine import zerotts_model_dir
+        from app.zerotts_voices import sync_repo_packs
+
+        synced = sync_repo_packs(zerotts_model_dir())
+        if synced["imported"] or synced["exported"]:
+            logging.info("event=zerotts.voice_packs_synced imported=%s exported=%s",
+                         len(synced["imported"]), len(synced["exported"]))
+    except Exception:
+        logging.exception("event=zerotts.voice_packs_sync_failed")
     requeued_patches = repository.requeue_stuck_processing_returning(conn)
     if requeued_patches:
         logging.info(
