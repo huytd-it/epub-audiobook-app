@@ -251,7 +251,8 @@ def _build_subtitle_filter(subtitle_path: Path, config: dict) -> str | None:
     """
     if not config.get("subtitle_enabled") or not subtitle_path.is_file():
         return None
-    font_size = config.get("subtitle_font_size", 46)
+    font_size = config.get("subtitle_font_size", 60)
+    font_family = str(config.get("subtitle_font_family") or subtitle_gen.DEFAULT_FONT_NAME)
     color = ass_bgr(config.get("subtitle_color", "#ffffff"))
     alignment = _SUBTITLE_ALIGNMENT_BY_POSITION.get(config.get("subtitle_position", "bottom"), 2)
     # WrapStyle=0 (smart wrap) + side margins: sidecars written before this
@@ -259,7 +260,7 @@ def _build_subtitle_filter(subtitle_path: Path, config: dict) -> str | None:
     # libass accepts WrapStyle as a force_style override of [Script Info].
     margin_x = round(subtitle_gen.PLAY_RES[0] * 0.06)
     force_style = (
-        f"WrapStyle=0,Fontsize={font_size},PrimaryColour={color},Alignment={alignment},"
+        f"WrapStyle=0,Fontname={font_family},Fontsize={font_size},PrimaryColour={color},Alignment={alignment},"
         f"MarginL={margin_x},MarginR={margin_x}"
     )
     if config.get("subtitle_background_enabled"):
@@ -269,7 +270,12 @@ def _build_subtitle_filter(subtitle_path: Path, config: dict) -> str | None:
         box = ass_bgr(config.get("subtitle_background_color", "#000000"))
         opacity = float(config.get("subtitle_background_opacity", 0.6))
         alpha = f"{round((1 - max(0.0, min(1.0, opacity))) * 255):02X}"
-        force_style += f",BorderStyle=4,BackColour=&H{alpha}{box[4:]},Outline=2,Shadow=0"
+        # With BorderStyle=4 libass grows the box by Outline + Shadow on every
+        # side (verified against a real render), and Shadow draws no offset
+        # copy of the text in this mode - so Shadow is the box padding while
+        # Outline stays a thin text outline.
+        padding = max(0, min(80, int(config.get("subtitle_background_padding", 16) or 0)))
+        force_style += f",BorderStyle=4,BackColour=&H{alpha}{box[4:]},Outline=2,Shadow={padding}"
     filename_arg = _escape_ffmpeg_filter_path(subtitle_path)
     fontsdir_arg = _escape_ffmpeg_filter_path(_SUBTITLE_FONTS_DIR)
     return f"subtitles=filename={filename_arg}:fontsdir={fontsdir_arg}:force_style='{force_style}'"

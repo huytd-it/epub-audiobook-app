@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 from app import repository
@@ -52,12 +53,15 @@ VIDEO_DEFAULTS = {
     "image_animation": "none",
     "fit_mode": "auto",
     "subtitle_enabled": False,
-    "subtitle_font_size": 46,
+    "subtitle_font_size": 60,
+    "subtitle_font_family": "Segoe UI",
     "subtitle_color": "#ffffff",
     "subtitle_position": "bottom",
-    "subtitle_background_enabled": False,
+    "subtitle_background_enabled": True,
     "subtitle_background_color": "#000000",
     "subtitle_background_opacity": 0.6,
+    # Khoảng đệm (đơn vị PlayRes 1920x1080) giữa chữ và mép khung nền.
+    "subtitle_background_padding": 16,
     # Tự động thêm text overlay tên giọng đọc + TTS model dưới mỗi khung hình.
     "narrator_credit_enabled": False,
 }
@@ -74,6 +78,28 @@ _ANIMATIONS = {"none", "static", "zoom-in", "zoom-out", "pan-left", "pan-right"}
 _FIT_MODES = {"auto", "contain", "cover", "blur"}
 _WAVEFORM_STYLES = {"line", "cline", "p2p", "point"}
 _SUBTITLE_POSITIONS = {"top", "center", "bottom"}
+# Tên font đi thẳng vào force_style của filter 'subtitles' (libass tìm theo tên
+# qua DirectWrite), nên chỉ nhận ký tự an toàn: ',', ':' hay dấu nháy sẽ phá cú
+# pháp filtergraph. Danh sách gợi ý nằm ở frontend; font lạ libass tự fallback.
+_FONT_FAMILY_RE = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
+SUBTITLE_PADDING_RANGE = (0, 80)
+
+
+def validate_subtitle_style(result: dict) -> None:
+    """Kiểm tra các trường kiểu phụ đề dùng chung cho video sách và short."""
+    if result["subtitle_position"] not in _SUBTITLE_POSITIONS:
+        raise ValueError("invalid subtitle position")
+    if not isinstance(result["subtitle_font_size"], int) or not 20 <= result["subtitle_font_size"] <= 96:
+        raise ValueError("subtitle font size must be 20-96")
+    family = result.get("subtitle_font_family")
+    if not isinstance(family, str) or not _FONT_FAMILY_RE.match(family.strip()):
+        raise ValueError("invalid subtitle font family")
+    result["subtitle_font_family"] = family.strip()
+    padding = result.get("subtitle_background_padding")
+    low, high = SUBTITLE_PADDING_RANGE
+    if isinstance(padding, bool) or not isinstance(padding, (int, float)) or not low <= padding <= high:
+        raise ValueError(f"subtitle background padding must be {low}-{high}")
+    result["subtitle_background_padding"] = int(padding)
 
 
 def _json_object(value) -> dict:
@@ -166,10 +192,7 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("invalid waveform position")
     if result["waveform_layout"] not in {"horizontal", "vertical", "circular"}:
         raise ValueError("invalid waveform layout")
-    if result["subtitle_position"] not in _SUBTITLE_POSITIONS:
-        raise ValueError("invalid subtitle position")
-    if not isinstance(result["subtitle_font_size"], int) or not 20 <= result["subtitle_font_size"] <= 96:
-        raise ValueError("subtitle font size must be 20-96")
+    validate_subtitle_style(result)
     if not isinstance(result["subtitle_background_opacity"], (int, float)) or not 0 <= result["subtitle_background_opacity"] <= 1:
         raise ValueError("subtitle background opacity must be 0-1")
     for field in ("waveform_color", "waveform_background_color", "subtitle_color", "subtitle_background_color"):
@@ -226,9 +249,14 @@ SHORT_DEFAULTS = {
     "resolution": "1080x1920",
     "fps": 30,
     "subtitle_enabled": True,
-    "subtitle_font_size": 54,  # chữ to hơn cho khung dọc
+    "subtitle_font_size": 60,
+    "subtitle_font_family": "Segoe UI",
     "subtitle_position": "bottom",
     "subtitle_color": "#ffffff",
+    "subtitle_background_enabled": True,
+    "subtitle_background_color": "#000000",
+    "subtitle_background_opacity": 0.6,
+    "subtitle_background_padding": 16,
     "fit_mode": "auto",  # auto->blur cho portrait, giữ pattern video_gen
 }
 
@@ -243,10 +271,7 @@ def validate_short_config(config: dict | None) -> dict:
     if fps not in VALID_FPS:
         raise ValueError("invalid fps")
     out = {**SHORT_DEFAULTS, **cfg, "resolution": resolution, "fps": fps}
-    if out["subtitle_position"] not in _SUBTITLE_POSITIONS:
-        raise ValueError("invalid subtitle position")
-    if not isinstance(out["subtitle_font_size"], int) or not 20 <= out["subtitle_font_size"] <= 96:
-        raise ValueError("subtitle font size must be 20-96")
+    validate_subtitle_style(out)
     if out["fit_mode"] not in _FIT_MODES:
         raise ValueError("invalid fit mode")
     return out

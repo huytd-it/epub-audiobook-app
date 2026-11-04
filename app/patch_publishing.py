@@ -306,6 +306,7 @@ def build_enqueue_snapshot(conn: sqlite3.Connection, book, patch, resolved: dict
             "waveform_background_color", "waveform_background_opacity",
             "subtitle_enabled", "subtitle_font_size", "subtitle_color", "subtitle_position",
             "subtitle_background_enabled", "subtitle_background_color", "subtitle_background_opacity",
+            "subtitle_font_family", "subtitle_background_padding",
         )},
     }
     media["render_snapshot"] = snapshot

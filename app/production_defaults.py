@@ -604,3 +604,106 @@ def resolve_effective_youtube_metadata(conn: sqlite3.Connection, book, patch, ov
         book, patch, override, context,
         config=get_effective_youtube_config(conn, book),
     )
+
+
+# ---------------------------------------------------------------------------
+# Bulk apply (many books at once)
+# ---------------------------------------------------------------------------
+
+# Những khóa YouTube gắn với kênh của từng sách (playlist thuộc về một kênh, auto
+# upload bắt buộc playlist hợp lệ) - áp hàng loạt dễ trỏ sai kênh nên bị bỏ qua.
+BULK_YOUTUBE_SKIPPED_KEYS = ("playlist", "auto_upload")
+
+
+def _effective_group(conn: sqlite3.Connection, book, group: str) -> dict:
+    if group == "audio":
+        return get_effective_audio_config(conn, book)
+    if group == "normalization":
+        return get_effective_normalization_config(conn, book)
+    if group == "video":
+        return get_effective_video_config(conn, book)
+    if group == "branding":
+        return get_effective_branding_config(conn, book)
+    return get_effective_youtube_config(conn, book)
+
+
+def _apply_values_to_book(conn: sqlite3.Connection, book, group: str, values: dict) -> None:
+    """Merge ``values`` over the book's effective ``group`` config and store the
+    result as that book's custom config. Effective (not stored) is the base so a
+    book that inherited keeps every other field exactly as it rendered before."""
+    base = copy.deepcopy(_effective_group(conn, book, group))
+    if group == "video":
+        from app.video_config import save_book_video_config
+        save_book_video_config(conn, book.id, {**base, **values})
+        return
+    if group == "audio":
+        audio = validate_audio_config({**base, **values})
+        conn.execute(
+            "UPDATE book SET tts_model=?, tts_voice_id=?, tts_max_chars=?, tts_with_effects=?, "
+            "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (audio["model_id"], audio["voice_id"] or None, audio["max_chars"] or None,
+             int(audio["with_effects"]), book.id),
+        )
+        save_book_audio_section(conn, book.id, chunk_pause_ms=audio["chunk_pause_ms"],
+                                chapter_pause_ms=audio["chapter_pause_ms"],
+                                tts_options=audio["tts_options"])
+        conn.commit()
+        set_book_group_mode_db(conn, book.id, "audio", "custom")
+        return
+    if group == "normalization":
+        from app import repository
+        normalization = validate_normalization_config({**base, **values})
+        repository.update_book_normalization(conn, book.id, **normalization)
+        set_book_group_mode_db(conn, book.id, "normalization", "custom")
+        return
+    if group == "youtube":
+        from app.youtube_metadata import save_book_youtube_config
+        clean = {k: v for k, v in values.items() if k not in BULK_YOUTUBE_SKIPPED_KEYS}
+        save_book_youtube_config(conn, book.id, {**base, **clean})
+        return
+    save_book_branding_config(conn, book.id, {**base, **values})
+    conn.commit()
+
+
+def bulk_apply_group(conn: sqlite3.Connection, group: str, book_ids: list[int], mode: str,
+                     values: dict | None = None) -> dict:
+    """Apply one group to many books.
+
+    ``mode="inherit"`` points every book back at the global defaults.
+    ``mode="values"`` merges ``values`` (a subset of the group's keys) over each
+    book's effective config and stores it as custom - fields not listed keep the
+    book's own value, so e.g. pushing a subtitle style never touches backgrounds.
+
+    Books are handled one by one; a book that fails validation is reported and
+    skipped instead of aborting the rest.
+    """
+    from app import repository
+
+    if group not in GROUPS:
+        raise ValueError("invalid group")
+    if mode not in ("inherit", "values"):
+        raise ValueError("invalid mode")
+    values = values or {}
+    if mode == "values":
+        if not isinstance(values, dict) or not values:
+            raise ValueError("no values to apply")
+        # Validate the payload once against the global block so a bad field is
+        # a single 400 instead of the same error repeated for every book.
+        _group_validator(group)({**_global_group(conn, group), **values})
+    updated: list[int] = []
+    failed: list[dict] = []
+    for book_id in dict.fromkeys(int(value) for value in book_ids):
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            failed.append({"book_id": book_id, "error": "book not found"})
+            continue
+        try:
+            if mode == "inherit":
+                set_book_group_mode_db(conn, book_id, group, "inherit")
+            else:
+                _apply_values_to_book(conn, book, group, values)
+            updated.append(book_id)
+        except ValueError as exc:
+            conn.rollback()
+            failed.append({"book_id": book_id, "title": book.title, "error": str(exc)})
+    return {"group": group, "mode": mode, "updated": updated, "failed": failed}

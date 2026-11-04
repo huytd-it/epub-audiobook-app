@@ -11,9 +11,14 @@ renders with exactly what this endpoint reports.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 
+from app import db as app_db
 from app import repository
+from app.config import settings
 from app.deps import locked_conn
 from app.production_defaults import (GROUPS, get_effective_audio_config,
                                      get_effective_branding_config,
@@ -23,9 +28,34 @@ from app.production_defaults import (GROUPS, get_effective_audio_config,
                                      get_global_production_defaults,
                                      get_group_mode, parse_book_config, set_book_group_mode_db,
                                      save_global_production_defaults,
+                                     bulk_apply_group,
                                      save_book_branding_config)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def invalidate_branding_artifacts(conn, book_id: int) -> list[int]:
+    """Delete cached thumbnails/podcast cover baked with the old branding and
+    mark those patches' thumbnails pending so the worker regenerates them.
+    Returns the purged patch ids. The caller commits."""
+    from app import image_overlay
+
+    purged_patch_ids = []
+    for patch in repository.list_patches(conn, book_id):
+        overlay_path = image_overlay.get_patch_overlay_path(book_id, patch.patch_index)
+        if overlay_path.exists():
+            overlay_path.unlink()
+            purged_patch_ids.append(patch.id)
+    cover_path = image_overlay.get_podcast_cover_path(book_id)
+    if cover_path.exists():
+        cover_path.unlink()
+    if purged_patch_ids:
+        conn.execute(
+            f"UPDATE patch_pipeline SET thumbnail_status='pending' WHERE patch_id IN ({','.join(['?'] * len(purged_patch_ids))})",
+            purged_patch_ids,
+        )
+    return purged_patch_ids
 
 
 def _book_effective(conn, book, group: str) -> dict:
@@ -116,7 +146,6 @@ async def save_book_branding(request: Request, book_id: int):
     if not isinstance(body, dict) or "branding" not in body:
         raise HTTPException(400, "branding payload is required")
     branding_input = body["branding"]
-    from app import image_overlay
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
         if book is None:
@@ -126,27 +155,7 @@ async def save_book_branding(request: Request, book_id: int):
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
-        # Invalidate cached thumbnails
-        patches = repository.list_patches(conn, book_id)
-        purged_patch_ids = []
-        for patch in patches:
-            overlay_path = image_overlay.get_patch_overlay_path(book_id, patch.patch_index)
-            if overlay_path.exists():
-                overlay_path.unlink()
-                purged_patch_ids.append(patch.id)
-
-        # Invalidate podcast cover
-        cover_path = image_overlay.get_podcast_cover_path(book_id)
-        if cover_path.exists():
-            cover_path.unlink()
-
-        # Mark thumbnail pipeline as pending so worker picks it up
-        if purged_patch_ids:
-            conn.execute(
-                f"UPDATE patch_pipeline SET thumbnail_status='pending' WHERE patch_id IN ({','.join(['?'] * len(purged_patch_ids))})",
-                purged_patch_ids,
-            )
-
+        purged_patch_ids = invalidate_branding_artifacts(conn, book_id)
         conn.commit()
         book = repository.get_book(conn, book_id)
 
@@ -156,3 +165,70 @@ async def save_book_branding(request: Request, book_id: int):
         "mode": "custom",
         "purged_patch_ids": purged_patch_ids,
     }
+
+
+@router.get("/production-settings/books")
+def list_books_production_modes(request: Request):
+    """Every book with its per-group mode, for the bulk-apply picker."""
+    with locked_conn(request) as conn:
+        rows = conn.execute("SELECT id FROM book ORDER BY id DESC").fetchall()
+        items = []
+        for row in rows:
+            book = repository.get_book(conn, row["id"])
+            if book is None:
+                continue
+            config = parse_book_config(book)
+            items.append({
+                "id": book.id,
+                "title": book.title,
+                "status": book.status,
+                "modes": {group: get_group_mode(config, group, book=book) for group in GROUPS},
+            })
+    return {"items": items}
+
+
+@router.post("/production-settings/bulk-apply")
+async def bulk_apply_production_settings(request: Request):
+    """Apply one settings group to many books at once.
+
+    Body: ``{"group": "video", "book_ids": [1, 2], "mode": "inherit" | "values",
+    "values": {...}}``. ``inherit`` points the books back at the global defaults;
+    ``values`` overwrites only the given fields on each book (stored as custom).
+    """
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "payload must be an object")
+    group = body.get("group")
+    mode = body.get("mode")
+    book_ids = body.get("book_ids")
+    values = body.get("values") or {}
+    if group not in GROUPS or mode not in {"inherit", "values"}:
+        raise HTTPException(400, "invalid group or mode")
+    if not isinstance(book_ids, list) or not book_ids or not all(
+        isinstance(value, int) and not isinstance(value, bool) for value in book_ids
+    ):
+        raise HTTPException(400, "book_ids must be a non-empty list of ids")
+    if not isinstance(values, dict):
+        raise HTTPException(400, "values must be an object")
+    try:
+        with locked_conn(request) as conn:
+            result = bulk_apply_group(conn, group, book_ids, mode, values)
+            if group == "branding":
+                for book_id in result["updated"]:
+                    invalidate_branding_artifacts(conn, book_id)
+                conn.commit()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if group == "video" and result["updated"]:
+        # Same as the per-book save: a now-valid video config lets waiting patches run.
+        def _reconcile():
+            from app.patch_publishing import reconcile_patch_automation
+            with app_db.connect(settings.db_path) as conn:
+                for book_id in result["updated"]:
+                    reconcile_patch_automation(conn, book_id=book_id)
+        try:
+            await asyncio.to_thread(_reconcile)
+        except Exception:
+            logger.exception("automation reconcile failed after bulk video-config apply")
+    return result

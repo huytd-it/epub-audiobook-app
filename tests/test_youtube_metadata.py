@@ -612,6 +612,17 @@ def test_generated_title_drops_genre_suffix_before_truncating_text():
     assert result["tags"] == ["kinh di", "huyen huyen"]
 
 
+def test_generated_title_keeps_leading_genres_that_fit():
+    """A long genre list loses its trailing genres, not the whole suffix."""
+    genres = "kinh di, huyen huyen, tien hiep, do thi, xuyen khong, he thong, sach noi, audiobook"
+    book = _long_book(genre_tags=genres, title_length=50)
+    result = resolve_patch_youtube_metadata(book, _long_patch(), None)
+    assert len(result["title"]) <= 100
+    assert result["title"].startswith("B" * 50 + " - PHẦN 1 | kinh di, huyen huyen")
+    assert "audiobook" not in result["title"]
+    assert result["tags"] == [g.strip() for g in genres.split(",")]
+
+
 def test_generated_title_keeps_genre_suffix_when_it_still_fits():
     result = resolve_patch_youtube_metadata(_book(), _patch(), None)
     assert result["title"].endswith("| kinh di, huyen huyen")

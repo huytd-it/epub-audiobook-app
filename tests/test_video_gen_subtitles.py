@@ -154,7 +154,8 @@ def test_segment_burns_subtitles_with_background_box_and_long_text(still, narrat
         waveform_config={
             "subtitle_enabled": True, "subtitle_font_size": 96,
             "subtitle_background_enabled": True, "subtitle_background_color": "#112233",
-            "subtitle_background_opacity": 0.5,
+            "subtitle_background_opacity": 0.5, "subtitle_background_padding": 40,
+            "subtitle_font_family": "Times New Roman",
         },
     )
     assert out.is_file() and _has_video_stream(out)
@@ -170,6 +171,13 @@ def test_subtitle_filter_forces_wrapping_and_background():
         "subtitle_background_color": "#112233", "subtitle_background_opacity": 0.5,
     })
     assert "BorderStyle=4" in boxed and "BackColour=&H80332211" in boxed
+    # Không truyền padding => mặc định 16, đi vào Shadow (padding của box).
+    assert "Shadow=16" in boxed
+    padded = video_gen._build_subtitle_filter(sidecar, {
+        "subtitle_enabled": True, "subtitle_background_enabled": True,
+        "subtitle_background_padding": 32, "subtitle_font_family": "Arial",
+    })
+    assert "Shadow=32" in padded and "Fontname=Arial," in padded
 
 
 # ---------------------------------------------------------------------------

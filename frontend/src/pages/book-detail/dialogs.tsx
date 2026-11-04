@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, AudioLines, Captions, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search, Square } from "lucide-react";
+import { AlertTriangle, AudioLines, CheckCircle2, Download, Eye, ListChecks, Play, Replace, Search, Square } from "lucide-react";
 import { api, Chapter, Patch, post, postJson, VoiceItem } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -34,6 +34,7 @@ import {
 } from "./types";
 import { CheckField, Field, TabBar, TtsOptionsFields, checkboxClass, fieldClass, selectClass } from "./parts";
 import { BackgroundPicker } from "./BackgroundPicker";
+import { SubtitleFields } from "./SubtitleFields";
 import { MusicMixFields } from "./MusicMixFields";
 import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
 import { AiContentGenerator, YouTubeConfigFields } from "./YouTubeFields";
@@ -1061,85 +1062,11 @@ export function ConfigDialog({
                 </div>
               </section>
 
-              <section className="space-y-3 rounded-md border border-border p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2 text-xs font-semibold">
-                      <Captions className="h-4 w-4 text-primary" /> Phụ đề tự động
-                    </div>
-                    <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
-                      Tạo trực tiếp từ văn bản gốc và thời lượng từng chunk TTS thật — không dùng nhận diện
-                      giọng nói nên không lệch chữ. Đổi cỡ chữ/màu/vị trí/nền không cần tạo lại audio. Câu dài tự xuống hàng trong khung.
-                    </p>
-                  </div>
-                  <CheckField
-                    checked={videoConfig.subtitle_enabled}
-                    onChange={(value) => setVideoConfig({ ...videoConfig, subtitle_enabled: value })}
-                    label="Bật"
-                  />
-                </div>
-
-                <div className={videoConfig.subtitle_enabled ? "grid gap-3 sm:grid-cols-3" : "pointer-events-none grid gap-3 opacity-45 sm:grid-cols-3"}>
-                  <Field label="Vị trí">
-                    <select
-                      className={selectClass}
-                      value={videoConfig.subtitle_position}
-                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_position: event.target.value as VideoConfig["subtitle_position"] })}
-                    >
-                      <option value="bottom">Dưới</option>
-                      <option value="center">Giữa</option>
-                      <option value="top">Trên</option>
-                    </select>
-                  </Field>
-                  <Field label={`Cỡ chữ: ${videoConfig.subtitle_font_size}`}>
-                    <input
-                      className="w-full accent-primary"
-                      type="range"
-                      min="20"
-                      max="96"
-                      step="2"
-                      value={videoConfig.subtitle_font_size}
-                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_font_size: Number(event.target.value) })}
-                    />
-                  </Field>
-                  <Field label="Màu chữ">
-                    <input
-                      className="h-9 w-full cursor-pointer rounded-md border border-border bg-background p-1"
-                      type="color"
-                      value={videoConfig.subtitle_color}
-                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_color: event.target.value })}
-                    />
-                  </Field>
-                  <Field label="Nền phụ đề">
-                    <CheckField
-                      checked={videoConfig.subtitle_background_enabled}
-                      onChange={(value) => setVideoConfig({ ...videoConfig, subtitle_background_enabled: value })}
-                      label="Hiện khung nền"
-                    />
-                  </Field>
-                  <Field label="Màu nền">
-                    <input
-                      className="h-9 w-full cursor-pointer rounded-md border border-border bg-background p-1 disabled:opacity-45"
-                      type="color"
-                      disabled={!videoConfig.subtitle_background_enabled}
-                      value={videoConfig.subtitle_background_color}
-                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_background_color: event.target.value })}
-                    />
-                  </Field>
-                  <Field label={`Độ đậm nền: ${Math.round(videoConfig.subtitle_background_opacity * 100)}%`}>
-                    <input
-                      className="w-full accent-primary disabled:opacity-45"
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      disabled={!videoConfig.subtitle_background_enabled}
-                      value={videoConfig.subtitle_background_opacity}
-                      onChange={(event) => setVideoConfig({ ...videoConfig, subtitle_background_opacity: Number(event.target.value) })}
-                    />
-                  </Field>
-                </div>
-              </section>
+              <SubtitleFields
+                config={videoConfig}
+                onChange={(patch) => setVideoConfig({ ...videoConfig, ...patch })}
+                description="Tạo trực tiếp từ văn bản gốc và thời lượng từng chunk TTS thật — không dùng nhận diện giọng nói nên không lệch chữ. Đổi font/cỡ chữ/màu/vị trí/nền không cần tạo lại audio. Câu dài tự xuống hàng trong khung."
+              />
 
             </div>
           ) : (

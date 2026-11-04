@@ -70,14 +70,20 @@ def test_video_config_rejects_invalid_waveform_values(field, value):
 def test_video_config_subtitle_defaults():
     config = validate_video_config({})
     assert config["subtitle_enabled"] is False
-    assert config["subtitle_font_size"] == 46
+    assert config["subtitle_font_size"] == 60
+    assert config["subtitle_font_family"] == "Segoe UI"
     assert config["subtitle_color"] == "#ffffff"
     assert config["subtitle_position"] == "bottom"
+    assert config["subtitle_background_enabled"] is True
+    assert config["subtitle_background_padding"] == 16
 
 
 @pytest.mark.parametrize("field,value", [
     ("subtitle_enabled", "yes"), ("subtitle_position", "middle"),
     ("subtitle_color", "white"), ("subtitle_font_size", 10), ("subtitle_font_size", 200),
+    ("subtitle_font_family", ""), ("subtitle_font_family", "Arial,Bold"),
+    ("subtitle_font_family", "Arial'"), ("subtitle_background_padding", -1),
+    ("subtitle_background_padding", 81), ("subtitle_background_padding", True),
 ])
 def test_video_config_rejects_invalid_subtitle_values(field, value):
     with pytest.raises(ValueError):

@@ -382,14 +382,21 @@ def _fit_title(title: str, genre_text: str, limit: int = YOUTUBE_TITLE_LIMIT) ->
 
     A Vietnamese book title plus a chapter name routinely runs past 100
     characters, so composing without a length budget made the whole patch
-    unpublishable. The genre suffix goes first - it is duplicated in `tags`
-    anyway - and only then is the remaining text cut short.
+    unpublishable. The genre suffix is shortened first - trailing genres are
+    dropped one by one (the full list is still in `tags`), keeping as many as
+    fit - and only when not even one genre fits is the remaining text cut short.
     """
     if len(title) <= limit:
         return title
     suffix = f" | {genre_text}"
     if genre_text and title.endswith(suffix):
         title = title[: -len(suffix)]
+        genres = split_tags(genre_text)
+        while genres:
+            candidate = f"{title} | {', '.join(genres)}"
+            if len(candidate) <= limit:
+                return candidate
+            genres.pop()
         if len(title) <= limit:
             return title
     return title[: limit - 1].rstrip(" -:|") + "…"

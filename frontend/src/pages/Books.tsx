@@ -14,6 +14,7 @@ import {
   Calendar,
   FileText,
   SlidersHorizontal,
+  Settings2,
   Upload,
 } from "lucide-react";
 import { api, Book } from "@/api";
@@ -263,6 +264,12 @@ export function Books() {
         subtitle={`Quản lý ${totalBooks} bản thảo · ${totalFiltered !== totalBooks ? `đang hiển thị ${totalFiltered} kết quả` : "kiểm tra trạng thái chia patch và tiến độ tổng hợp."}`}
         action={
           <>
+            <Button asChild variant="outline" title="Đổi cấu hình sản xuất cho nhiều ebook cùng lúc">
+              <Link to="/production-defaults?bulk=1">
+                <Settings2 className="h-4 w-4" />
+                Cấu hình hàng loạt
+              </Link>
+            </Button>
             <Button variant="outline" onClick={() => setTextImportOpen(true)}>
               <Upload className="h-4 w-4" />
               Nhập text

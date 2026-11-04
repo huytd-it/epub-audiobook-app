@@ -182,11 +182,14 @@ export type VideoConfig = {
   waveform_background_opacity: number;
   subtitle_enabled: boolean;
   subtitle_font_size: number;
+  subtitle_font_family: string;
   subtitle_color: string;
   subtitle_position: "top" | "center" | "bottom";
   subtitle_background_enabled: boolean;
   subtitle_background_color: string;
   subtitle_background_opacity: number;
+  /** Khoảng đệm chữ → mép khung nền phụ đề (px theo khung 1920x1080). */
+  subtitle_background_padding: number;
   /** Tự động thêm text overlay tên giọng đọc + TTS model dưới mỗi khung hình video. */
   narrator_credit_enabled: boolean;
 };

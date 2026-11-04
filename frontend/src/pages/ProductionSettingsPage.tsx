@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { AudioLines, Captions, Image, Save, Settings2, X } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
+import { AudioLines, Image, Layers, Save, Settings2, X } from "lucide-react";
 import { api, VoiceItem, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -22,6 +22,8 @@ import {
 } from "@/pages/book-detail/types";
 import { CheckField, Field, TabBar, TtsOptionsFields, fieldClass, selectClass } from "@/pages/book-detail/parts";
 import { BackgroundPicker } from "@/pages/book-detail/BackgroundPicker";
+import { SubtitleFields } from "@/pages/book-detail/SubtitleFields";
+import { BulkApplyDialog } from "@/pages/production/BulkApplyDialog";
 import { MusicPlacementFields } from "@/pages/book-detail/MusicMixFields";
 import { YouTubeConfigFields } from "@/pages/book-detail/YouTubeFields";
 import { MediaBrowser, MediaEntry } from "@/components/media-browser/MediaBrowser";
@@ -516,7 +518,21 @@ function BrandingTab({
 }
 
 export function ProductionSettingsPage() {
-  const [tab, setTab] = useState<ProductionGroup>("audio");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab = searchParams.get("tab");
+  const [tab, setTab] = useState<ProductionGroup>(
+    GROUPS.some((group) => group.key === initialTab) ? (initialTab as ProductionGroup) : "audio"
+  );
+  // ?bulk=1 (từ trang Thư viện sách) mở thẳng dialog áp dụng hàng loạt.
+  const [bulkOpen, setBulkOpenState] = useState(searchParams.get("bulk") === "1");
+  const setBulkOpen = (open: boolean) => {
+    setBulkOpenState(open);
+    if (!open && searchParams.has("bulk")) {
+      const next = new URLSearchParams(searchParams);
+      next.delete("bulk");
+      setSearchParams(next, { replace: true });
+    }
+  };
   const [saved, setSaved] = useState<Defaults>();
   const [draft, setDraft] = useState<Defaults>();
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
@@ -1023,86 +1039,7 @@ export function ProductionSettingsPage() {
                 </div>
               </section>
 
-              <section className="space-y-3 rounded-md border border-border p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-2 text-xs font-semibold">
-                    <Captions className="h-4 w-4 text-primary" /> Phụ đề tự động
-                  </div>
-                  <CheckField
-                    checked={video.subtitle_enabled}
-                    onChange={(value) => setVideo({ subtitle_enabled: value })}
-                    label="Bật"
-                  />
-                </div>
-                <div
-                  className={
-                    video.subtitle_enabled
-                      ? "grid gap-3 sm:grid-cols-3"
-                      : "pointer-events-none grid gap-3 opacity-45 sm:grid-cols-3"
-                  }
-                >
-                  <Field label="Vị trí">
-                    <select
-                      className={selectClass}
-                      value={video.subtitle_position}
-                      onChange={(event) =>
-                        setVideo({ subtitle_position: event.target.value as VideoConfig["subtitle_position"] })
-                      }
-                    >
-                      <option value="bottom">Dưới</option>
-                      <option value="center">Giữa</option>
-                      <option value="top">Trên</option>
-                    </select>
-                  </Field>
-                  <Field label={`Cỡ chữ: ${video.subtitle_font_size}`}>
-                    <input
-                      className="w-full accent-primary"
-                      type="range"
-                      min="20"
-                      max="96"
-                      step="2"
-                      value={video.subtitle_font_size}
-                      onChange={(event) => setVideo({ subtitle_font_size: Number(event.target.value) })}
-                    />
-                  </Field>
-                  <Field label="Màu chữ">
-                    <input
-                      className="h-9 w-full cursor-pointer rounded-md border border-border bg-background p-1"
-                      type="color"
-                      value={video.subtitle_color}
-                      onChange={(event) => setVideo({ subtitle_color: event.target.value })}
-                    />
-                  </Field>
-                  <Field label="Nền phụ đề">
-                    <CheckField
-                      checked={video.subtitle_background_enabled}
-                      onChange={(value) => setVideo({ subtitle_background_enabled: value })}
-                      label="Hiện khung nền"
-                    />
-                  </Field>
-                  <Field label="Màu nền">
-                    <input
-                      className="h-9 w-full cursor-pointer rounded-md border border-border bg-background p-1 disabled:opacity-45"
-                      type="color"
-                      disabled={!video.subtitle_background_enabled}
-                      value={video.subtitle_background_color}
-                      onChange={(event) => setVideo({ subtitle_background_color: event.target.value })}
-                    />
-                  </Field>
-                  <Field label={`Độ đậm nền: ${Math.round(video.subtitle_background_opacity * 100)}%`}>
-                    <input
-                      className="w-full accent-primary disabled:opacity-45"
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      disabled={!video.subtitle_background_enabled}
-                      value={video.subtitle_background_opacity}
-                      onChange={(event) => setVideo({ subtitle_background_opacity: Number(event.target.value) })}
-                    />
-                  </Field>
-                </div>
-              </section>
+              <SubtitleFields config={video} onChange={setVideo} />
             </div>
           )}
 
@@ -1145,6 +1082,10 @@ export function ProductionSettingsPage() {
             >
               Hoàn tác
             </Button>
+            <Button variant="outline" onClick={() => setBulkOpen(true)} title="Áp dụng nhóm cấu hình này cho nhiều ebook">
+              <Layers className="h-4 w-4" />
+              Áp dụng cho ebook…
+            </Button>
             <Button onClick={() => save(tab)} disabled={saving === tab}>
               <Save className="h-4 w-4" />
               {saving === tab ? "Đang lưu..." : `Lưu mặc định ${GROUPS.find((g) => g.key === tab)?.label.toLowerCase()}`}
@@ -1152,6 +1093,15 @@ export function ProductionSettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <BulkApplyDialog
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        group={tab}
+        groupLabel={GROUPS.find((g) => g.key === tab)?.label || tab}
+        draft={draft[tab] as unknown as Record<string, unknown>}
+        saved={saved[tab] as unknown as Record<string, unknown>}
+      />
     </div>
   );
 }
