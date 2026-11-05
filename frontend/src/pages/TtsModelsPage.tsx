@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Cloud, Cpu, Download, ExternalLink, FlaskConical, FolderDown, Gauge, Loader2, Pencil, Play, Plus, RefreshCw, Save, SlidersHorizontal, Trash2, TriangleAlert, Volume2 } from "lucide-react";
+import { CheckCircle2, Cloud, Cpu, Download, ExternalLink, FlaskConical, FolderDown, Gauge, Loader2, Pencil, Play, Plus, RefreshCw, Save, Search, SlidersHorizontal, Trash2, TriangleAlert, Volume2 } from "lucide-react";
 import { api, del, postJson, put } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -89,6 +89,13 @@ export function TtsModelsPage() {
   const [playError, setPlayError] = useState("");
   const [importingVoice, setImportingVoice] = useState(false);
   const [voiceImportMessage, setVoiceImportMessage] = useState("");
+  const [editingZeroVoice, setEditingZeroVoice] = useState<ZeroVoice | null>(null);
+  const [zeroVoiceLabel, setZeroVoiceLabel] = useState("");
+  const [zeroVoiceLanguage, setZeroVoiceLanguage] = useState("vi");
+  const [savingZeroVoice, setSavingZeroVoice] = useState(false);
+  const [deletingZeroVoice, setDeletingZeroVoice] = useState("");
+  const [zeroVoiceDialogOpen, setZeroVoiceDialogOpen] = useState(false);
+  const [zeroVoiceSearch, setZeroVoiceSearch] = useState("");
   const [zeroVoices, setZeroVoices] = useState<ZeroVoice[]>([]);
   const [zeroRepoDir, setZeroRepoDir] = useState("");
   const [zeroRuntime, setZeroRuntime] = useState<ZeroRuntime | null>(null);
@@ -332,6 +339,56 @@ export function TtsModelsPage() {
     } finally { setImportingVoice(false); }
   };
 
+  const filteredZeroVoices = zeroVoices.filter((voice) =>
+    `${voice.label} ${voice.language} ${voice.id}`.toLowerCase().includes(zeroVoiceSearch.trim().toLowerCase())
+  );
+
+  const openZeroVoiceManager = () => {
+    setZeroVoiceSearch("");
+    setZeroVoiceDialogOpen(true);
+  };
+
+  const openEditZeroVoice = (voice: ZeroVoice) => {
+    setEditingZeroVoice(voice);
+    setZeroVoiceLabel(voice.label);
+    setZeroVoiceLanguage(voice.language || "vi");
+  };
+
+  const saveZeroVoice = async () => {
+    if (!editingZeroVoice) return;
+    setSavingZeroVoice(true);
+    setVoiceImportMessage("");
+    try {
+      const res = await put<{ voice: ZeroVoice }>(`/tts-models/zerotts/voices/${editingZeroVoice.id}`, {
+        label: zeroVoiceLabel,
+        language: zeroVoiceLanguage,
+      });
+      setVoiceImportMessage(`Đã cập nhật thông tin giọng "${res.voice.label}".`);
+      setEditingZeroVoice(null);
+      await load();
+    } catch (error) {
+      setVoiceImportMessage(error instanceof Error ? error.message : "Không thể cập nhật giọng ZeroTTS.");
+    } finally {
+      setSavingZeroVoice(false);
+    }
+  };
+
+  const removeZeroVoice = async (voice: ZeroVoice) => {
+    if (!window.confirm(`Xóa giọng ZeroTTS "${voice.label}"? Gói giọng sẽ bị xóa khỏi máy và thư mục voice_packs.`)) return;
+    setDeletingZeroVoice(voice.id);
+    setVoiceImportMessage("");
+    try {
+      await del(`/tts-models/zerotts/voices/${voice.id}`);
+      setVoiceImportMessage(`Đã xóa giọng "${voice.label}".`);
+      if (playVoice === voice.id) setPlayVoice("");
+      await load();
+    } catch (error) {
+      setVoiceImportMessage(error instanceof Error ? error.message : "Không thể xóa giọng ZeroTTS.");
+    } finally {
+      setDeletingZeroVoice("");
+    }
+  };
+
   const useSampleForPlayground = (modelId: string, voiceId: string) => {
     choosePlayModel(modelId);
     setPlayVoice(voiceId);
@@ -472,30 +529,26 @@ export function TtsModelsPage() {
 
     {message && <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{message}</div>}
     <section className="space-y-3 rounded-xl border bg-card p-5" aria-label="Nhập giọng clone ZeroTTS">
-      <h2 className="text-lg font-semibold">Giọng của bạn · ZeroTTS</h2>
-      <p className="text-sm text-muted-foreground">Clone giọng tại <a className="underline" href="https://platform.zeroweight.ai/audio" target="_blank" rel="noreferrer">ZeroWeight</a>, tải gói .zip trong thư viện giọng, rồi nhập vào đây để đọc offline. Cần tải model ZeroTTS trước. ZeroTTS hiện chưa hỗ trợ clone trực tiếp từ WAV trên máy.</p>
-      <label className="block space-y-2 text-sm font-medium">
-        <span>{importingVoice ? "Đang nhập giọng…" : "Nhập gói giọng .zip (tối đa 20 MB)"}</span>
-        <input type="file" accept=".zip,application/zip" disabled={importingVoice} className="block w-full text-sm" onChange={(event) => {
-          const file = event.currentTarget.files?.[0];
-          event.currentTarget.value = "";
-          if (file) void importZeroVoice(file);
-        }} />
-      </label>
-      {voiceImportMessage && <p role="status" className="text-sm">{voiceImportMessage}</p>}
-      {zeroVoices.length > 0 && <div className="space-y-1.5 border-t pt-3">
-        <p className="text-xs font-semibold">Giọng đã nhập · {zeroVoices.length}</p>
-        <p className="text-xs text-muted-foreground">Mỗi gói .zip (~1 MB) được lưu thêm vào thư mục trong repo{zeroRepoDir ? <> <span className="break-all font-mono">{zeroRepoDir}</span></> : ""} — commit và push lên GitHub; máy khác pull về là giọng tự được nhập.</p>
-        <ul className="divide-y rounded-md border text-sm">
-          {zeroVoices.map((voice) => <li key={voice.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
-            <div className="min-w-0"><p className="truncate font-medium">{voice.label}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{voice.id.slice(0, 19)}… · {voice.language}</p></div>
-            <div className="flex shrink-0 gap-2">
-              <Button size="sm" variant="outline" onClick={() => { setPlayModelId("zerotts"); setPlayVoice(voice.id); setPlayResult(undefined); setPlayError(""); document.getElementById("tts-playground")?.scrollIntoView({ behavior: "smooth" }); }}><Play className="h-3.5 w-3.5" /> Nghe thử</Button>
-              <Button size="sm" variant="outline" onClick={() => void downloadZeroPack(voice)}><Download className="h-3.5 w-3.5" /> Tải .zip</Button>
-            </div>
-          </li>)}
-        </ul>
-      </div>}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">Giọng của bạn · ZeroTTS</h2>
+          <p className="text-sm text-muted-foreground">Clone giọng tại <a className="underline" href="https://platform.zeroweight.ai/audio" target="_blank" rel="noreferrer">ZeroWeight</a>, tải gói .zip trong thư viện giọng, rồi nhập vào đây để đọc offline.{zeroVoices.length > 0 && <> · <span className="font-medium text-foreground">{zeroVoices.length} giọng</span> đã nhập</>}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {zeroVoices.length > 0 && <Button variant="outline" onClick={openZeroVoiceManager}><SlidersHorizontal className="h-4 w-4" /> Quản lý giọng</Button>}
+          <label className="cursor-pointer">
+            <Button asChild variant="default" disabled={importingVoice}>
+              <span>{importingVoice ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{importingVoice ? "Đang nhập…" : "Nhập giọng .zip"}</span>
+            </Button>
+            <input type="file" accept=".zip,application/zip" disabled={importingVoice} className="sr-only" onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (file) void importZeroVoice(file);
+            }} />
+          </label>
+        </div>
+      </div>
+      {voiceImportMessage && <p role="status" className="rounded-md border px-3 py-2 text-sm text-muted-foreground">{voiceImportMessage}</p>}
     </section>
     <section id="tts-playground" className="grid gap-5 scroll-mt-4 rounded-xl border bg-card p-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(300px,.75fr)]">
       <div className="space-y-4">
@@ -598,6 +651,7 @@ export function TtsModelsPage() {
             {isFixedCast && <div className="flex flex-wrap items-center gap-2 border-t pt-2">
               <Button size="sm" variant="outline" onClick={() => downloadModelSamples(model)} disabled={cardBusy[`${model.id}:samples`]}>{cardBusy[`${model.id}:samples`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Tải giọng mẫu</Button>
               <Button size="sm" variant="outline" onClick={() => moveModelOffline(model)} disabled={cardBusy[`${model.id}:offline`]}>{cardBusy[`${model.id}:offline`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderDown className="h-3.5 w-3.5" />} Chuyển sang offline</Button>
+              {model.id === "zerotts" && zeroVoices.length > 0 && <Button size="sm" variant="outline" onClick={openZeroVoiceManager}><SlidersHorizontal className="h-3.5 w-3.5" /> Quản lý giọng</Button>}
             </div>}
             {!isApi(model) && <div className="flex flex-wrap items-center gap-2">
               <Button size="sm" variant="outline" onClick={() => openAdvanced(model)}><SlidersHorizontal className="h-3.5 w-3.5" /> Cấu hình nâng cao</Button>
@@ -740,6 +794,53 @@ export function TtsModelsPage() {
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={testProvider} disabled={testing || saving}>{testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FlaskConical className="h-4 w-4" />}{testing ? "Đang test..." : "Test trước khi lưu"}</Button>
           <Button onClick={saveProvider} disabled={saving}>{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}{editingId ? "Lưu thay đổi" : "Thêm provider"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={zeroVoiceDialogOpen} onOpenChange={setZeroVoiceDialogOpen}>
+      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Quản lý giọng ZeroTTS · {zeroVoices.length}</DialogTitle>
+          <DialogDescription>Quản lý thông tin, nghe thử, tải gói hoặc xóa giọng đã nhập. Gói được lưu trong {zeroRepoDir || "voice_packs/zerotts"} để đồng bộ giữa các máy.</DialogDescription>
+        </DialogHeader>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input className={`${inputClass} pl-9`} value={zeroVoiceSearch} onChange={(event) => setZeroVoiceSearch(event.target.value)} placeholder="Tìm theo tên, ngôn ngữ hoặc ID..." />
+        </div>
+        <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+          {filteredZeroVoices.length === 0 && <EmptyState text={zeroVoices.length ? "Không tìm thấy giọng phù hợp." : "Chưa có giọng nào được nhập."} />}
+          {filteredZeroVoices.map((voice) => <div key={voice.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 p-3">
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-medium">{voice.label} <span className="ml-1 text-xs font-normal text-muted-foreground">{voice.language}</span></p>
+              <p className="truncate font-mono text-[10px] text-muted-foreground">{voice.id}</p>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => { setPlayModelId("zerotts"); setPlayVoice(voice.id); setPlayResult(undefined); setPlayError(""); setZeroVoiceDialogOpen(false); document.getElementById("tts-playground")?.scrollIntoView({ behavior: "smooth" }); }}><Play className="h-3.5 w-3.5" /> Nghe thử</Button>
+              <Button size="sm" variant="outline" onClick={() => void downloadZeroPack(voice)}><Download className="h-3.5 w-3.5" /> .zip</Button>
+              <Button size="sm" variant="outline" onClick={() => openEditZeroVoice(voice)}><Pencil className="h-3.5 w-3.5" /> Sửa</Button>
+              <Button size="sm" variant="outline" onClick={() => void removeZeroVoice(voice)} disabled={deletingZeroVoice === voice.id}>{deletingZeroVoice === voice.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Xóa</Button>
+            </div>
+          </div>)}
+        </div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={editingZeroVoice !== null} onOpenChange={(open) => { if (!open) setEditingZeroVoice(null); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Sửa thông tin giọng ZeroTTS</DialogTitle>
+          <DialogDescription>Cập nhật tên hiển thị và ngôn ngữ cho giọng clone. Voice ID không thể thay đổi.</DialogDescription>
+        </DialogHeader>
+        {editingZeroVoice && <div className="space-y-3">
+          <div className="rounded-md bg-muted/30 px-3 py-2 font-mono text-[11px] text-muted-foreground">{editingZeroVoice.id}</div>
+          <label className="block space-y-1.5 text-xs font-medium">Tên hiển thị
+            <input className={inputClass} value={zeroVoiceLabel} onChange={(e) => setZeroVoiceLabel(e.target.value)} placeholder="vd: Giọng Lan Anh" />
+          </label>
+          <label className="block space-y-1.5 text-xs font-medium">Ngôn ngữ
+            <input className={inputClass} value={zeroVoiceLanguage} onChange={(e) => setZeroVoiceLanguage(e.target.value)} placeholder="vi" />
+          </label>
+        </div>}
+        <DialogFooter>
+          <Button onClick={saveZeroVoice} disabled={savingZeroVoice || !zeroVoiceLabel.trim()}>{savingZeroVoice ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Lưu thay đổi</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

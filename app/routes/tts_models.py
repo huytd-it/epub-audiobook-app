@@ -41,6 +41,35 @@ def list_zerotts_custom_voices():
     return {"voices": list_voices(), "repo_dir": str(repo_packs_dir()), "sync": sync}
 
 
+@router.put("/zerotts/voices/{voice_id}")
+async def update_zerotts_voice(voice_id: str, request: Request):
+    from app.zerotts_voices import update_voice
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "payload must be an object")
+    label = str(body.get("label") or "").strip()
+    language = str(body.get("language") or "vi").strip()
+    try:
+        voice = update_voice(voice_id, label=label, language=language)
+    except FileNotFoundError:
+        raise HTTPException(404, "Không tìm thấy giọng ZeroTTS này")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"voice": voice}
+
+
+@router.delete("/zerotts/voices/{voice_id}")
+def delete_zerotts_voice(voice_id: str):
+    from app.zerotts_voices import delete_voice
+
+    try:
+        delete_voice(voice_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Không tìm thấy giọng ZeroTTS này")
+    return {"status": "ok", "id": voice_id}
+
+
 @router.get("/zerotts/voices/{voice_id}/pack")
 def download_zerotts_voice_pack(voice_id: str):
     """Gói .zip của giọng clone đã nhập (bản gốc nếu còn, không thì dựng lại)."""

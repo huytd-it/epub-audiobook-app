@@ -131,6 +131,37 @@ def voice_path(voice_id: str) -> Path | None:
     return voices_dir() / voice_id / "voice.npz"
 
 
+def update_voice(voice_id: str, *, label: str, language: str) -> dict:
+    npz = voice_path(voice_id)
+    if npz is None or not npz.is_file():
+        raise FileNotFoundError(voice_id)
+    label = str(label).strip()[:120]
+    language = str(language).strip()[:20] or "vi"
+    if not label:
+        raise ValueError("Tên giọng không được để trống.")
+    meta_path = npz.parent / "meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    meta.update({"display_name": label, "language": language})
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return {"id": voice_id, "label": label, "language": language}
+
+
+def delete_voice(voice_id: str) -> None:
+    npz = voice_path(voice_id)
+    if npz is None or not npz.is_file():
+        raise FileNotFoundError(voice_id)
+    import shutil
+
+    shutil.rmtree(npz.parent)
+    folder = repo_packs_dir()
+    if folder.is_dir():
+        for pack in folder.glob(f"*.{_short(voice_id)}.zip"):
+            pack.unlink(missing_ok=True)
+
+
 def list_voices() -> list[dict]:
     result = []
     for path in sorted(voices_dir().glob("custom_*/meta.json")):

@@ -23,6 +23,7 @@ const WORKER_TYPES = [
   ["standalone_video", "Video độc lập"], ["youtube_upload", "YouTube upload"],
   ["youtube_metadata_gen", "Sinh nội dung YouTube"],
   ["background_gen", "Tạo ảnh nền"], ["gameplay_clip", "Gameplay clip"],
+  ["short_render", "Short render"], ["short_upload", "Short upload"],
 ] as const;
 type WorkerType = typeof WORKER_TYPES[number][0];
 type WorkerSettings = { concurrency: Record<WorkerType, number>; min: number; max: number; requires_restart: boolean };
