@@ -278,6 +278,8 @@ export type ProductionSettings = {
     audio: {
       model_id: string;
       voice_id: string;
+      /** Giọng thứ hai cho chunk hội thoại; trống = đọc chung voice_id. */
+      dialogue_voice_id?: string;
       max_chars: number;
       with_effects: boolean;
       tts_options: Record<string, string | number>;
@@ -705,6 +707,8 @@ export type TitleNormalizePreview = {
 export type AudioSettings = {
   modelId: string;
   voiceId: string;
+  /** Giọng thứ hai cho các chunk hội thoại; trống = đọc chung giọng voiceId. */
+  dialogueVoiceId?: string;
   maxChars: string;
   withEffects: boolean;
   ttsOptions: Record<string, string | number>;

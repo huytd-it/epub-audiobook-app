@@ -38,6 +38,9 @@ GROUPS = ("audio", "normalization", "video", "youtube", "branding")
 DEFAULT_AUDIO_CONFIG = {
     "model_id": settings.tts_engine,
     "voice_id": "",
+    # Giọng thứ hai, chỉ dùng cho các chunk hội thoại. Trống = đọc toàn bộ bằng
+    # voice_id như trước (xem app/chunker.py, kind="dialogue").
+    "dialogue_voice_id": "",
     "max_chars": settings.tts_max_chars,
     "with_effects": False,
     "tts_options": {},
@@ -155,6 +158,7 @@ def validate_audio_config(config) -> dict:
         raise ValueError("audio config must be an object")
     model_id = str(config.get("model_id") or settings.tts_engine).strip()
     voice_id = str(config.get("voice_id") or "").strip()
+    dialogue_voice_id = str(config.get("dialogue_voice_id") or "").strip()
     raw_max = config.get("max_chars", settings.tts_max_chars)
     try:
         max_chars = max(0, int(raw_max))
@@ -168,6 +172,7 @@ def validate_audio_config(config) -> dict:
     return {
         "model_id": model_id,
         "voice_id": voice_id,
+        "dialogue_voice_id": dialogue_voice_id,
         "max_chars": max_chars,
         "with_effects": _flag(config.get("with_effects", False), False),
         "tts_options": normalize_tts_options(model_id, config.get("tts_options")),
@@ -536,6 +541,9 @@ def get_effective_audio_config(conn: sqlite3.Connection, book) -> dict:
     return {
         "model_id": model_id,
         "voice_id": getattr(book, "tts_voice_id", None) or "",
+        # Không có cột riêng: giọng hội thoại nằm trong automation_config["audio"]
+        # để không phải migration (giống chunk_pause_ms/chapter_pause_ms).
+        "dialogue_voice_id": str(stored.get("dialogue_voice_id") or ""),
         "max_chars": getattr(book, "tts_max_chars", None) or settings.tts_max_chars,
         "with_effects": bool(getattr(book, "tts_with_effects", 0)),
         "tts_options": normalize_tts_options(model_id, stored.get("tts_options")),
@@ -646,7 +654,8 @@ def _apply_values_to_book(conn: sqlite3.Connection, book, group: str, values: di
         )
         save_book_audio_section(conn, book.id, chunk_pause_ms=audio["chunk_pause_ms"],
                                 chapter_pause_ms=audio["chapter_pause_ms"],
-                                tts_options=audio["tts_options"])
+                                tts_options=audio["tts_options"],
+                                dialogue_voice_id=audio["dialogue_voice_id"])
         conn.commit()
         set_book_group_mode_db(conn, book.id, "audio", "custom")
         return

@@ -246,6 +246,7 @@ export function BookDetail() {
   const [settings, setSettings] = useState<AudioSettings>({
     modelId: "edge-tts",
     voiceId: "",
+    dialogueVoiceId: "",
     maxChars: "400",
     withEffects: false,
     ttsOptions: {},
@@ -290,7 +291,8 @@ export function BookDetail() {
     if (!data) return;
     let cancelled = false;
     api<{
-      model_id: string; voice_id: string; max_chars: number; with_effects: boolean; tts_options: Record<string, string | number>;
+      model_id: string; voice_id: string; dialogue_voice_id?: string; max_chars: number;
+      with_effects: boolean; tts_options: Record<string, string | number>;
       chunk_pause_ms: number; chapter_pause_ms: number;
     }>(`/books/${bookId}/audio-settings`)
       .then((saved) => {
@@ -298,6 +300,7 @@ export function BookDetail() {
         setSettings({
           modelId: saved.model_id,
           voiceId: saved.voice_id || "",
+          dialogueVoiceId: saved.dialogue_voice_id || "",
           maxChars: saved.max_chars ? String(saved.max_chars) : "",
           withEffects: saved.with_effects,
           ttsOptions: saved.tts_options || {},
@@ -577,6 +580,7 @@ export function BookDetail() {
         patch_ids: targets,
         model_id: settings.modelId,
         voice_id: settings.voiceId || undefined,
+        dialogue_voice_id: settings.dialogueVoiceId || undefined,
         max_chars: settings.maxChars ? Number(settings.maxChars) : undefined,
         with_effects: settings.withEffects,
         tts_options: settings.ttsOptions,

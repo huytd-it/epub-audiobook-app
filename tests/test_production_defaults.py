@@ -341,7 +341,8 @@ def test_audio_settings_save_marks_mode_custom(tmp_path, monkeypatch):
         conn = client.app.state.conn
         got = client.get("/books/1/audio-settings")
     assert got.json() == {
-        "model_id": "omnivoice", "voice_id": "", "max_chars": 500, "with_effects": True,
+        "model_id": "omnivoice", "voice_id": "", "dialogue_voice_id": "",
+        "max_chars": 500, "with_effects": True,
         "chunk_pause_ms": 300, "chapter_pause_ms": 1500,
         "tts_options": {},
     }

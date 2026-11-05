@@ -50,6 +50,7 @@ def handle(ctx) -> dict:
     book_id = patch.book_id
     backend = payload["tts_engine"]
     voice = payload.get("voice") or settings.light_tts_voice
+    dialogue_voice = payload.get("dialogue_voice") or None
     max_chars = payload["max_chars"]
     with_effects = payload["with_effects"]
     effective_max_chars = max_chars if max_chars > 0 else (patch.max_chars or settings.tts_max_chars)
@@ -65,11 +66,16 @@ def handle(ctx) -> dict:
     # chunk của hai bên, nên chunk lệch key được tổng hợp lại thay vì dùng nhầm.
     patch_dir = repository.get_patch_chunk_dir(book_id, patch.patch_index)
     targets = chunk_store.resolve_plan_chunks(book_id, patch_dir, plan)
-    model_cfg = f"light:{backend}:{voice or ''}"
     if max_chars == 0 and patch.chunk_count != total:
         repository.update_patch_chunk_count(ctx.conn, patch_id, total)
     try:
         engine = _build_engine(backend, voice)
+        # Giọng hội thoại chỉ là engine thứ hai cùng backend; chunk key đã gồm
+        # voice nên chỉ các chunk thoại phải tổng hợp lại khi đổi giọng này.
+        dialogue_engine = (
+            _build_engine(backend, dialogue_voice)
+            if dialogue_voice and dialogue_voice != voice else None
+        )
     except RuntimeError as exc:
         ctx.emit({"type": "error", "message": str(exc)})
         raise JobFatalError(str(exc))
@@ -84,6 +90,9 @@ def handle(ctx) -> dict:
         if ctx.should_cancel():
             raise asyncio.CancelledError()
         cache, local = targets[index]
+        chunk_engine = dialogue_engine if (dialogue_engine is not None and item.get("kind") == "dialogue") else engine
+        chunk_voice = dialogue_voice if chunk_engine is dialogue_engine else voice
+        model_cfg = f"light:{backend}:{chunk_voice or ''}"
         key = chunk_store.chunk_key(backend, model_cfg, item["text"])
         chunk_url = f"{chunk_store.chunk_audio_url(book_id, patch_id, item.get('chapter_index'), local)}?v={cache_bust}"
         present = False
@@ -92,7 +101,7 @@ def handle(ctx) -> dict:
             ctx.emit({"type": "chunk", "index": index, "total": total, "url": chunk_url, "reused": True})
         else:
             try:
-                wav_bytes = _synth_with_retries(engine, item["text"], voice or None)
+                wav_bytes = _synth_with_retries(chunk_engine, item["text"], chunk_voice or None)
             except Exception as exc:  # noqa: BLE001
                 fail_count += 1
                 ctx.log(f"chunk {index} lỗi: {exc}", level=logging.WARNING)
@@ -102,7 +111,7 @@ def handle(ctx) -> dict:
                 cache.path(local).write_bytes(wav_bytes)
                 info = sf.info(str(cache.path(local)))
                 cache.record(local, key=key, text=item["text"], frames=info.frames, sample_rate=info.samplerate,
-                             engine=backend, voice=voice or None, max_chars=effective_max_chars)
+                             engine=backend, voice=chunk_voice or None, max_chars=effective_max_chars)
                 ok_count += 1; present = True
                 ctx.emit({"type": "chunk", "index": index, "total": total, "url": chunk_url})
         # Đánh dấu chương đủ chunk (cho bảng patch đếm chương sẵn sàng) chỉ khi mọi

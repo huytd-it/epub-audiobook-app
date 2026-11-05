@@ -60,6 +60,7 @@ def test_saved_export_audio_settings_do_not_change_local_config(tmp_path, monkey
     assert local_response.json() == {
         "model_id": "edge-tts",
         "voice_id": "vi-VN-HoaiMyNeural",
+        "dialogue_voice_id": "",
         "max_chars": 300,
         "with_effects": True,
         "chunk_pause_ms": 300,

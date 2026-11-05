@@ -384,6 +384,7 @@ def completed_chunks_preview(request: Request, book_id: int, patch_id: int):
         tts_request = {
             "tts_engine": audio_config.get("model_id"),
             "voice": audio_config.get("voice_id"),
+            "dialogue_voice": audio_config.get("dialogue_voice_id") or None,
             "source": "book_settings",
         }
     # Tách lại đúng như lần chạy TTS gần nhất, nếu không index chunk sẽ lệch.
@@ -521,6 +522,7 @@ async def generate_selected_tts(request: Request, book_id: int):
     payload = normalize_tt_payload({
         "tts_engine": body.get("model_id"),
         "voice": body.get("voice_id"),
+        "dialogue_voice": body.get("dialogue_voice_id"),
         "max_chars": body.get("max_chars"),
         "with_effects": body.get("with_effects"),
         "tts_options": body.get("tts_options"),
@@ -562,6 +564,7 @@ async def generate_selected_tts(request: Request, book_id: int):
                     detail=f"patch #{patch.patch_index + 1} cần chọn voice cho model {eff_engine}")
         queued = enqueue_pending_patch_jobs(
             conn, book_id, payload["tts_engine"], voice=payload["voice"],
+            dialogue_voice=payload.get("dialogue_voice"),
             max_chars=payload["max_chars"], with_effects=payload["with_effects"],
             tts_options=payload["tts_options"],
             patch_ids=patch_ids, auto_create_video=auto_create_video,

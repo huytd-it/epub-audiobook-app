@@ -93,7 +93,8 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
 
 def enqueue_pending_patch_jobs(
     conn: sqlite3.Connection, book_id: int | None = None, tts_engine: str | None = None,
-    *, voice: str | None = None, max_chars: int = 0, with_effects: bool = False,
+    *, voice: str | None = None, dialogue_voice: str | None = None,
+    max_chars: int = 0, with_effects: bool = False,
     tts_options: dict | None = None,
     patch_ids: list[int] | None = None, auto_create_video: bool | None = None,
     auto_upload_youtube: bool | None = None, retry_count: int = 2,
@@ -165,6 +166,7 @@ def enqueue_pending_patch_jobs(
             request = {
                 "tts_engine": patch_engine or audio.get("model_id") or settings.tts_engine,
                 "voice": patch_voice if patch_voice is not None else (voice or audio.get("voice_id")),
+                "dialogue_voice": audio.get("dialogue_voice_id") or None,
                 "max_chars": audio.get("max_chars") or 0,
                 "with_effects": bool(audio.get("with_effects", False)), "tts_options": audio.get("tts_options"),
                 "chunk_pause_ms": audio.get("chunk_pause_ms"),
@@ -177,6 +179,7 @@ def enqueue_pending_patch_jobs(
             request = {
                 "tts_engine": patch_engine or engine_id,
                 "voice": patch_voice if patch_voice is not None else voice,
+                "dialogue_voice": dialogue_voice or audio.get("dialogue_voice_id") or None,
                 "max_chars": max_chars,
                 "with_effects": with_effects, "tts_options": tts_options or {},
                 "chunk_pause_ms": audio.get("chunk_pause_ms"),

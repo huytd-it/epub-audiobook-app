@@ -439,6 +439,7 @@ export function ConfigDialog({
       await postJson(`/books/${bookId}/audio-settings`, {
         model_id: settings.modelId,
         voice_id: settings.voiceId,
+        dialogue_voice_id: settings.dialogueVoiceId || "",
         max_chars: settings.maxChars ? Number(settings.maxChars) : 0,
         with_effects: settings.withEffects,
         tts_options: settings.ttsOptions,
@@ -636,6 +637,32 @@ export function ConfigDialog({
                   <VoicePreviewButton
                     modelId={settings.modelId}
                     voiceId={settings.voiceId}
+                    ttsOptions={settings.ttsOptions}
+                  />
+                </div>
+              </Field>
+              <Field label="Giọng hội thoại" hint="Đọc các câu trong ngoặc kép / dòng “- ...”; để trống = đọc chung giọng trên">
+                <div className="flex items-center gap-1">
+                  <Combobox
+                    className="min-w-0 flex-1"
+                    value={settings.dialogueVoiceId || ""}
+                    options={voiceOptions.map((option) => ({ ...option, description: option.value }))}
+                    onChange={(dialogueVoiceId) => onSettingsChange({ dialogueVoiceId })}
+                    placeholder="Tìm hoặc chọn voice cho hội thoại..."
+                    aria-label="Giọng hội thoại"
+                  />
+                  {settings.dialogueVoiceId ? (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => onSettingsChange({ dialogueVoiceId: "" })}
+                    >
+                      Bỏ
+                    </button>
+                  ) : null}
+                  <VoicePreviewButton
+                    modelId={settings.modelId}
+                    voiceId={settings.dialogueVoiceId || ""}
                     ttsOptions={settings.ttsOptions}
                   />
                 </div>

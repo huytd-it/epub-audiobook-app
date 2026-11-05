@@ -531,8 +531,12 @@ def create_tts_engine(engine_id: str = "voxcpm2", **options) -> TTSEngine:
 def normalize_tt_payload(payload: dict | None, *, default_engine: str | None = None) -> dict:
     """The one canonical TTS job payload used by every engine and entry point:
 
-        {"patch_id", "tts_engine", "voice", "max_chars", "with_effects", "tts_options",
-         "chunk_pause_ms", "chapter_pause_ms"}
+        {"patch_id", "tts_engine", "voice", "dialogue_voice", "max_chars",
+         "with_effects", "tts_options", "chunk_pause_ms", "chapter_pause_ms"}
+
+    ``voice`` là giọng người dẫn; ``dialogue_voice`` (tùy chọn) là giọng thứ hai
+    chỉ dùng cho các chunk hội thoại. Bỏ trống thì cả patch đọc một giọng như
+    trước.
 
     Accepts the legacy shapes unchanged: voxcpm's bare {"patch_id"} and light_tts's
     {"patch_id", "backend", "voice", ...} (``backend`` is kept as an alias for
@@ -545,6 +549,7 @@ def normalize_tt_payload(payload: dict | None, *, default_engine: str | None = N
     engine = resolve_engine_id(engine)
     p["tts_engine"] = engine
     p["voice"] = p.get("voice") or None
+    p["dialogue_voice"] = p.get("dialogue_voice") or None
     p["max_chars"] = int(p.get("max_chars") or 0)
     p["with_effects"] = bool(p.get("with_effects"))
     p["tts_options"] = normalize_tts_options(engine, p.get("tts_options"))

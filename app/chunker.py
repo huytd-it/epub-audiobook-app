@@ -10,8 +10,35 @@ _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?…])\s+")
 _SINGLE_NEWLINE_BOUNDARY_RE = re.compile(r"(?<=[.!?…])\s+|\s*\n\s*")
 
 # Dấu câu đọc lên đã có nhịp nghỉ — dòng kết thúc bằng chúng thì không cần
-# thêm phẩy trước xuống dòng.
-_LINE_END_PAUSE_CHARS = frozenset(".!?…,:;")
+# thêm phẩy trước xuống dòng. Ngoặc đóng của lời thoại nằm ở đây vì câu bên
+# trong nó đã mang dấu câu ("Cậu là...?"), thêm phẩy thành "?",.
+_LINE_END_PAUSE_CHARS = frozenset(".!?…,:;\"”»")
+
+# Ngoặc kép dùng cho lời thoại: sách dịch dùng cả ngoặc thẳng (") lẫn cong
+# (“ ”) và guillemet (« »). Mọi dạng đều là ranh giới lượt nói.
+_DIALOGUE_OPENERS = "\"\u201c\u00ab"
+_DIALOGUE_CLOSERS = "\"\u201d\u00bb"
+
+# Hai lượt thoại đứng cạnh nhau ("..." "...") khiến TTS đọc liền một hơi, mất
+# ranh giới người nói: tách dòng để bước tách câu bên dưới cắt ra.
+_ADJACENT_TURNS_RE = re.compile(
+    rf"(?<=[{re.escape(_DIALOGUE_CLOSERS)}])[ \t]+(?=[{re.escape(_DIALOGUE_OPENERS)}])"
+)
+
+# Đóng thoại ở cuối câu rồi tới chữ khác: câu kể nối tiếp phải đứng riêng.
+_AFTER_SENTENCE_DIALOGUE_RE = re.compile(
+    rf"(?<=[.!?\u2026][{re.escape(_DIALOGUE_CLOSERS)}])[ \t]+(?=\S)"
+)
+
+# Mở thoại ngay sau dấu câu dẫn ("hỏi: \"...\"") hoặc sau câu kết thúc
+# ("... lắm. \"Xin lỗi"): câu dẫn và lời thoại thành hai piece riêng, mỗi
+# piece một chunk. Sau ":" / ";" không cần khoảng trắng ("hỏi:\"...\""), còn
+# sau dấu kết câu bắt buộc có — nếu không, dấu đóng thoại ("Cậu là...?")
+# cũng khớp và bị tách thành chunk chỉ có một dấu ngoặc.
+_BEFORE_DIALOGUE_RE = re.compile(
+    rf"(?<=[:;])[ \t]*(?=[{re.escape(_DIALOGUE_OPENERS)}])"
+    rf"|(?<=[,.!?\u2026])[ \t]+(?=[{re.escape(_DIALOGUE_OPENERS)}])"
+)
 
 # Các mục "[...]" kề nhau, cách nhau bằng khoảng trắng ("[Trò chơi
 # mới] [Tiếp tục trò chơi] [Thoát]") khiến TTS đọc liền không nghỉ. Chấm tạo
@@ -67,8 +94,63 @@ def group_into_patches(chapter_count: int, patch_size: int = 10) -> list[tuple[i
     return ranges
 
 
+def split_dialogue_turns(text: str) -> str:
+    """Tách mỗi lượt thoại ra một dòng riêng.
+
+    Chỉ *thêm xuống dòng*, không đổi mặt chữ: xuống dòng đơn vốn đã là ranh
+    giới câu của chunker (`_SINGLE_NEWLINE_BOUNDARY_RE`), nên sau bước này
+    mỗi lời thoại thành một piece độc lập và được đánh dấu standalone — đúng
+    cơ chế đang dùng cho mục "[...]". Idempotent: chạy lần hai không còn
+    khoảng trắng để thay.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not any(ch in text for ch in _DIALOGUE_OPENERS):
+        return text
+    text = _ADJACENT_TURNS_RE.sub("\n", text)
+    text = _AFTER_SENTENCE_DIALOGUE_RE.sub("\n", text)
+    return _BEFORE_DIALOGUE_RE.sub("\n", text)
+
+
+def mask_dialogue_spans(text: str) -> str:
+    """Che dấu câu *bên trong* lời thoại, giữ nguyên độ dài chuỗi.
+
+    Câu "Tôi không biết... Anh ấy đi rồi." phải là một câu: nếu bước tách câu
+    thấy dấu "..." ở giữa, nó cắt đôi lượt nói và mảnh sau mất ngoặc mở (nên
+    bị xếp nhầm thành tường thuật). Mỗi dòng xử lý riêng vì sau
+    split_dialogue_turns một lượt thoại luôn nằm trọn trên một dòng — ngoặc
+    thiếu dấu đóng chỉ che tới hết dòng, không nuốt phần còn lại của đoạn.
+    """
+    if not any(ch in text for ch in _DIALOGUE_OPENERS):
+        return text
+    masked = list(text)
+    offset = 0
+    for line in text.split("\n"):
+        start, end = offset, offset + len(line)
+        offset = end + 1
+        i = start
+        while i < end:
+            if text[i] not in _DIALOGUE_OPENERS:
+                i += 1
+                continue
+            closer = next((j for j in range(i + 1, end) if text[j] in _DIALOGUE_CLOSERS), -1)
+            stop = closer if closer != -1 else end
+            for k in range(i, stop):
+                if masked[k] in ".!?\u2026\n":
+                    masked[k] = "x"
+            i = stop + 1
+    return "".join(masked)
+
+
+def _has_dialogue_marker(text: str) -> bool:
+    """Đoạn có lời thoại (ngoặc kép) hoặc dòng thoại kiểu gạch ngang đầu dòng."""
+    if any(ch in text for ch in _DIALOGUE_OPENERS):
+        return True
+    return any(line.lstrip()[:1] in {"-", "\u2013", "\u2014"} and line.lstrip()[1:2].isspace()
+               for line in text.split("\n") if line.strip())
+
+
 def _split_paragraph_into_sentences(paragraph: str) -> list[str]:
-    masked = mask_protected_spans(paragraph)
+    masked = mask_dialogue_spans(mask_protected_spans(paragraph))
     sentences: list[str] = []
     last = 0
     for m in _SINGLE_NEWLINE_BOUNDARY_RE.finditer(masked):
@@ -107,6 +189,23 @@ def _add_sentence_break_between_brackets(text: str) -> str:
     return _BRACKET_PAIR_RE.sub("]. [", text)
 
 
+def _is_dialogue_item(piece: str, *, in_bracket_block: bool = False) -> bool:
+    """Piece là một lượt thoại: mở đầu bằng ngoặc kép, hoặc bằng gạch ngang
+    đầu dòng kiểu "- Cậu là...?".
+
+    Dòng gạch ngang bên trong khối "[...]" (bảng stat, danh sách kỹ năng) là
+    mục liệt kê chứ không phải thoại, nên bị loại bằng ``in_bracket_block``.
+    """
+    stripped = piece.lstrip()
+    if not stripped:
+        return False
+    if stripped[0] in _DIALOGUE_OPENERS:
+        return True
+    if in_bracket_block:
+        return False
+    return stripped[0] in {"-", "\u2013", "\u2014"} and stripped[1:2].isspace()
+
+
 def _is_bracket_item(piece: str) -> bool:
     """Câu/đoạn mở đầu bằng "[" (lựa chọn game, dòng stat, câu dẫn trong ngoặc).
 
@@ -116,6 +215,15 @@ def _is_bracket_item(piece: str) -> bool:
     đã thử: maichi, kimoanh, huuduc).
     """
     return piece.lstrip().startswith("[")
+
+
+def _is_standalone_item(piece: str, *, in_bracket_block: bool = False) -> bool:
+    return _is_bracket_item(piece) or _is_dialogue_item(piece, in_bracket_block=in_bracket_block)
+
+
+def _kind_for(piece: str, *, in_bracket_block: bool = False) -> str:
+    """Nhãn giọng đọc của một chunk: "dialogue" cho lời thoại, còn lại "narration"."""
+    return "dialogue" if _is_dialogue_item(piece, in_bracket_block=in_bracket_block) else "narration"
 
 
 def _hard_split(piece: str, max_chars: int) -> list[str]:
@@ -144,6 +252,62 @@ def _hard_split(piece: str, max_chars: int) -> list[str]:
     return parts
 
 
+def split_into_tts_chunk_items(text: str, max_chars: int = 400) -> list[dict]:
+    """Như :func:`split_into_tts_chunks` nhưng trả kèm nhãn giọng đọc.
+
+    Mỗi item là ``{"text", "kind"}`` với ``kind`` = "dialogue" (lời thoại trong
+    ngoặc kép / dòng gạch ngang) hoặc "narration" (mọi thứ còn lại). Người gọi
+    cần một giọng khác cho hội thoại dùng nhãn này để chọn engine theo chunk.
+    """
+    text = split_dialogue_turns(text)
+    text = _add_sentence_break_between_brackets(text)
+    text = _add_pause_comma_before_linebreaks(text)
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+    pieces: list[tuple[str, bool, str]] = []
+    for paragraph in paragraphs:
+        # Mục ngoặc vuông và lời thoại có thể nằm sau câu dẫn, không chỉ ở đầu
+        # đoạn. Cho đoạn đó đi qua bước tách câu để giữ cờ standalone của từng
+        # mục. Khối "[...]" nhiều dòng là bảng stat: dấu "-" bên trong nó là
+        # gạch đầu dòng, không phải lượt thoại.
+        in_bracket_block = paragraph.lstrip().startswith("[")
+        if (len(paragraph) <= max_chars and "[" not in paragraph
+                and not _has_dialogue_marker(paragraph)):
+            pieces.append((paragraph, False, "narration"))
+            continue
+        for sentence in _split_paragraph_into_sentences(paragraph):
+            standalone = _is_standalone_item(sentence, in_bracket_block=in_bracket_block)
+            kind = _kind_for(sentence, in_bracket_block=in_bracket_block)
+            if len(sentence) <= max_chars:
+                pieces.append((sentence, standalone, kind))
+            else:
+                # Mảnh cắt cứng từ một mục "[" (hoặc một lượt thoại dài) vẫn
+                # đứng riêng — mảnh sau mất dấu mở đầu nên phải giữ cờ và nhãn
+                # theo thay vì nhìn mặt chữ.
+                pieces.extend((part, standalone, kind) for part in _hard_split(sentence, max_chars))
+
+    chunks: list[tuple[str, str]] = []
+    buffer = ""
+    for piece, standalone, kind in pieces:
+        if standalone:
+            if buffer:
+                chunks.append((buffer, "narration"))
+                buffer = ""
+            chunks.append((piece, kind))
+            continue
+        if not buffer:
+            buffer = piece
+        elif len(buffer) + 1 + len(piece) <= max_chars:
+            buffer = f"{buffer} {piece}"
+        else:
+            chunks.append((buffer, "narration"))
+            buffer = piece
+    if buffer:
+        chunks.append((buffer, "narration"))
+
+    return [{"text": chunk, "kind": kind} for chunk, kind in chunks]
+
+
 def split_into_tts_chunks(text: str, max_chars: int = 400) -> list[str]:
     """Greedily pack paragraphs/sentences into chunks no longer than max_chars,
     never splitting mid-sentence.
@@ -151,46 +315,8 @@ def split_into_tts_chunks(text: str, max_chars: int = 400) -> list[str]:
     Xuống dòng đơn cũng là điểm tách (khối stat nhiều dòng "[...]" không có
     dấu kết câu) và dòng chưa có nhịp nghỉ được thêm phẩy để TTS ngắt hơi.
     Các mục "[...]" kề nhau trên cùng một dòng được chèn dấu chấm ngắt câu.
-    Mọi câu/đoạn mở đầu bằng "[" luôn đứng chunk riêng để khoảng lặng
-    chunk_pause_ms chen giữa các mục khi ghép audio.
+    Mọi câu/đoạn mở đầu bằng "[" hoặc một lượt thoại ("...", "- ...") luôn
+    đứng chunk riêng để khoảng lặng chunk_pause_ms chen giữa các mục khi ghép
+    audio.
     """
-    text = _add_sentence_break_between_brackets(text)
-    text = _add_pause_comma_before_linebreaks(text)
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-
-    pieces: list[tuple[str, bool]] = []
-    for paragraph in paragraphs:
-        # Mục ngoặc vuông có thể nằm sau câu dẫn, không chỉ ở đầu đoạn.
-        # Cho đoạn đó đi qua bước tách câu để giữ cờ standalone của từng mục.
-        if len(paragraph) <= max_chars and "[" not in paragraph:
-            pieces.append((paragraph, False))
-            continue
-        for sentence in _split_paragraph_into_sentences(paragraph):
-            standalone = _is_bracket_item(sentence)
-            if len(sentence) <= max_chars:
-                pieces.append((sentence, standalone))
-            else:
-                # Mảnh cắt cứng từ một mục "[" vẫn đứng riêng — mảnh sau mất
-                # dấu "[" mở đầu nên phải giữ cờ theo thay vì nhìn mặt chữ.
-                pieces.extend((part, standalone) for part in _hard_split(sentence, max_chars))
-
-    chunks: list[str] = []
-    buffer = ""
-    for piece, standalone in pieces:
-        if standalone:
-            if buffer:
-                chunks.append(buffer)
-                buffer = ""
-            chunks.append(piece)
-            continue
-        if not buffer:
-            buffer = piece
-        elif len(buffer) + 1 + len(piece) <= max_chars:
-            buffer = f"{buffer} {piece}"
-        else:
-            chunks.append(buffer)
-            buffer = piece
-    if buffer:
-        chunks.append(buffer)
-
-    return chunks
+    return [item["text"] for item in split_into_tts_chunk_items(text, max_chars)]

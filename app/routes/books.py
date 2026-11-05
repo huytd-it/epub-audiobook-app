@@ -604,6 +604,7 @@ async def save_audio_settings(request: Request, book_id: int):
     data = await request.json()
     model_id = str(data.get("model_id") or settings.tts_engine).strip()
     voice_id = str(data.get("voice_id") or "").strip()
+    dialogue_voice_id = str(data.get("dialogue_voice_id") or "").strip()
     try:
         max_chars = max(0, int(data.get("max_chars") or 0))
     except (TypeError, ValueError) as exc:
@@ -622,12 +623,15 @@ async def save_audio_settings(request: Request, book_id: int):
             raise HTTPException(404, "book not found")
         conn.execute("UPDATE book SET tts_model=?, tts_voice_id=?, tts_max_chars=?, tts_with_effects=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (model_id, voice_id or None, max_chars or None, int(with_effects), book_id))
         # The pauses have no columns of their own; they live in the book's
-        # automation_config alongside the other per-group sections.
+        # automation_config alongside the other per-group sections. Same for the
+        # dialogue voice, which only matters to the chunker's "dialogue" chunks.
         save_book_audio_section(conn, book_id, chunk_pause_ms=chunk_pause_ms,
-                                chapter_pause_ms=chapter_pause_ms, tts_options=tts_options)
+                                chapter_pause_ms=chapter_pause_ms, tts_options=tts_options,
+                                dialogue_voice_id=dialogue_voice_id)
         conn.commit()
         set_book_group_mode_db(conn, book_id, "audio", "custom")
     return {"model_id": model_id, "voice_id": voice_id, "max_chars": max_chars,
+            "dialogue_voice_id": dialogue_voice_id,
             "with_effects": with_effects, "chunk_pause_ms": chunk_pause_ms,
             "chapter_pause_ms": chapter_pause_ms, "tts_options": tts_options}
 

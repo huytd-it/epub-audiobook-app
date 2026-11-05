@@ -681,6 +681,26 @@ export function ProductionSettingsPage() {
                   />
                 </div>
               </Field>
+              <Field label="Giọng hội thoại" hint="Đọc các câu trong ngoặc kép / dòng “- ...”; bỏ trống = đọc chung giọng trên">
+                <div className="flex items-center gap-1">
+                  <Combobox
+                    className="min-w-0 flex-1"
+                    value={draft.audio.dialogue_voice_id || ""}
+                    options={[
+                      { value: "", label: "Đọc chung giọng trên" },
+                      ...voiceOptions.map((option) => ({ ...option, description: option.value })),
+                    ]}
+                    onChange={(dialogueVoiceId) => patchGroup("audio", { dialogue_voice_id: dialogueVoiceId })}
+                    placeholder="Tìm hoặc chọn voice cho hội thoại..."
+                    aria-label="Giọng hội thoại"
+                  />
+                  <VoicePreviewButton
+                    modelId={draft.audio.model_id}
+                    voiceId={draft.audio.dialogue_voice_id || ""}
+                    ttsOptions={draft.audio.tts_options}
+                  />
+                </div>
+              </Field>
               <Field label="Max chars" hint="0 = mặc định">
                 <input
                   className={fieldClass}

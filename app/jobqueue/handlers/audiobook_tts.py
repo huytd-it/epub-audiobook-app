@@ -45,6 +45,7 @@ def handle(ctx) -> dict:
 
     engine_id = payload["tts_engine"]
     voice = payload.get("voice") or None
+    dialogue_voice = payload.get("dialogue_voice") or None
     max_chars = int(payload.get("max_chars") or 0)
     with_effects = bool(payload.get("with_effects"))
     tts_options = payload.get("tts_options") or {}
@@ -71,7 +72,8 @@ def handle(ctx) -> dict:
         snapshot_dir = repository.get_patch_chunk_dir(patch.book_id, patch.patch_index)
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         (snapshot_dir / ".tts_request.json").write_text(json.dumps({
-            "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
+            "tts_engine": engine_id, "voice": voice, "dialogue_voice": dialogue_voice,
+            "max_chars": max_chars,
             "with_effects": with_effects, "tts_options": tts_options,
             "chunk_pause_ms": pause_config[0], "chapter_pause_ms": pause_config[1],
         }), encoding="utf-8")
@@ -79,11 +81,17 @@ def handle(ctx) -> dict:
     ctx.log(f"synthesize patch {patch_id} (book {patch.book_id}) engine={engine_id}")
     try:
         engine = get_engine(engine_id, voice, tts_options)
+        # Giọng hội thoại chỉ là một engine thứ hai cùng model: cùng engine để
+        # sample rate không lệch (audio_merge ghép theo một rate duy nhất).
+        dialogue_engine = None
+        if dialogue_voice and dialogue_voice != voice:
+            dialogue_engine = get_engine(engine_id, dialogue_voice, tts_options)
         audio_path, chunk_count = synthesize_patch(
             ctx, patch, engine, Path(settings.data_root),
             engine_id=engine_id,
             effective_max_chars=max_chars if max_chars > 0 else None,
             with_effects=with_effects, pause_config=pause_config,
+            dialogue_engine=dialogue_engine,
         )
     except asyncio.CancelledError:
         raise
@@ -126,11 +134,35 @@ def _finish_audio_result(ctx, patch, audio_path: str, payload: dict, *,
             "automation": outcome["state"]}
 
 
+def _chunk_engine(item: dict, engine, dialogue_engine):
+    """Engine đọc một chunk: giọng hội thoại cho lời thoại, giọng dẫn cho phần còn lại."""
+    if dialogue_engine is not None and item.get("kind") == "dialogue":
+        return dialogue_engine
+    return engine
+
+
+def _engine_fingerprint(engine, engine_id: str) -> str:
+    return getattr(engine, "config_fingerprint", lambda: engine_id)()
+
+
+def _engine_voice(engine) -> str | None:
+    voice = getattr(engine, "voice", None)
+    return voice if isinstance(voice, str) else None
+
+
 def synthesize_patch(
     ctx, patch, engine, data_root: Path, *,
     engine_id: str, effective_max_chars: int | None, with_effects: bool,
     pause_config: tuple[int, int] | None = None,
+    dialogue_engine=None,
 ) -> tuple[str, int]:
+    """Tổng hợp một patch thành WAV.
+
+    ``dialogue_engine`` (tùy chọn) là engine thứ hai cùng model, chỉ dùng cho
+    các chunk có ``kind == "dialogue"`` — hội thoại đọc bằng một giọng khác
+    người dẫn để người nghe phân biệt được lượt nói. Không truyền thì mọi
+    chunk dùng ``engine`` như trước.
+    """
     plan_inputs = repository.fetch_patch_chunk_inputs(ctx.conn, patch, max_chars=effective_max_chars)
     book = repository.get_book(ctx.conn, patch.book_id)
     plan = repository.build_chunk_plan_from_inputs(plan_inputs)
@@ -155,22 +187,30 @@ def synthesize_patch(
 
     if not settings.tts_write_chunk_files:
         wavs = []
+        rates: set[int] = set()
         for index, item in enumerate(plan):
             if ctx.should_cancel():
                 raise asyncio.CancelledError()
+            chunk_engine = _chunk_engine(item, engine, dialogue_engine)
             ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
-            arr = engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+            arr = chunk_engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
             arr = level_chunk_loudness(arr)
-            ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / engine.sample_rate:.1f}s audio")
+            rates.add(chunk_engine.sample_rate)
+            ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / chunk_engine.sample_rate:.1f}s audio")
             wavs.append(arr)
             ctx.progress(index + 1, total)
+        if len(rates) != 1:
+            raise RuntimeError(
+                f"hai giọng đọc có sample rate lệch nhau {sorted(rates)}; "
+                "chọn hai giọng cùng model/rate rồi tạo lại")
+        sample_rate = rates.pop()
         frame_counts = [len(a) for a in wavs]
-        chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, engine.sample_rate, pauses)
-        audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_chunks_to_wav(wavs, engine.sample_rate, p, pause_ms=pauses))
+        chapters, _ = audio_merge.build_chapter_marks(plan, frame_counts, sample_rate, pauses)
+        audio_merge.atomic_write_wav(audio_path, lambda p: audio_merge.concat_chunks_to_wav(wavs, sample_rate, p, pause_ms=pauses))
         _apply_effects(ctx.conn, with_effects, audio_path, plan)
         normalize_wav_in_place(audio_path)
-        audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
-        subtitle_gen.try_generate(subtitle_path, plan, frame_counts, engine.sample_rate, pauses)
+        audio_merge.try_write_timeline(timeline_path, sample_rate, chapters, sf.info(audio_path).frames)
+        subtitle_gen.try_generate(subtitle_path, plan, frame_counts, sample_rate, pauses)
         ctx.progress(total, total, phase="synthesizing")
         return audio_path, total
 
@@ -181,14 +221,20 @@ def synthesize_patch(
     # phải tổng hợp những chunk thiếu/lệch key — phần còn lại được ghép lại nguyên trạng.
     patch_dir = repository.get_patch_chunk_dir(patch.book_id, patch.patch_index)
     targets = chunk_store.resolve_plan_chunks(patch.book_id, patch_dir, plan)
-    model_cfg = getattr(engine, "config_fingerprint", lambda: engine_id)()
-    voice = getattr(engine, "voice", None)
-    voice = voice if isinstance(voice, str) else None
+    # Fingerprint/voice tính theo engine của từng chunk: key chunk đã gồm voice
+    # (chunk_store.chunk_key), nên đổi giọng hội thoại chỉ làm lệch key của các
+    # chunk thoại — phần tường thuật vẫn được dùng lại.
+    fingerprints: dict[int, tuple[str, str | None]] = {
+        id(e): (_engine_fingerprint(e, engine_id), _engine_voice(e))
+        for e in ([engine] if dialogue_engine is None else [engine, dialogue_engine])
+    }
     frame_counts: list[int] = []
     sample_rates: set[int] = set()
     reused = 0
     chapters_by_index = {c.chapter_index: c for c in plan_inputs.get("chapters") or []}
     for index, (item, (cache, local)) in enumerate(zip(plan, targets)):
+        chunk_engine = _chunk_engine(item, engine, dialogue_engine)
+        model_cfg, voice = fingerprints[id(chunk_engine)]
         key = chunk_store.chunk_key(engine_id, model_cfg, item["text"])
         if cache.is_valid(local, key):
             entry = cache.entry(local) or {}
@@ -202,9 +248,9 @@ def synthesize_patch(
             if ctx.should_cancel():
                 raise asyncio.CancelledError()
             ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
-            arr = engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+            arr = chunk_engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
             arr = level_chunk_loudness(arr)
-            rate = engine.sample_rate
+            rate = chunk_engine.sample_rate
             ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / rate:.1f}s audio")
             cache.dir.mkdir(parents=True, exist_ok=True)
             # Ghi qua file tạm: chunk ghi dở do crash không bao giờ mang key hợp lệ.

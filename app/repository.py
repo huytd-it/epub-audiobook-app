@@ -18,7 +18,7 @@ from app.audio_merge import cleanup_chunk_dir
 from app.chunk_store import (
     ChunkStore, get_book_chapters_dir, get_chapter_chunk_dir, remap_chapter_stores, resolve_plan_chunks,
 )
-from app.chunker import group_into_patches, split_into_tts_chunks
+from app.chunker import group_into_patches, split_into_tts_chunk_items
 from app.config import settings
 from app.epub_parser import ParsedChapter
 from app.models import Book, BookJob, Chapter, Music, Patch, PatchExport, TextReplaceRule
@@ -1661,13 +1661,17 @@ def _normalize_chapter_title_for_plan(
 
 
 def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
-    """Pure-CPU half of build_patch_chunk_plan: touches no database."""
+    """Pure-CPU half of build_patch_chunk_plan: touches no database.
+
+    Mỗi item mang thêm ``kind`` ("narration" | "dialogue") để bước tổng hợp chọn
+    giọng đọc theo từng chunk (xem app/chunker.split_into_tts_chunk_items)."""
     limit = inputs["limit"]
     if inputs["clean_text"]:
         return [
-            {"text": chunk, "chapter_index": None, "chapter_title": None, "is_chapter_start": False}
-            for chunk in split_into_tts_chunks(inputs["clean_text"], max_chars=limit)
-            if has_speakable_text(chunk)
+            {"text": item["text"], "kind": item["kind"], "chapter_index": None,
+             "chapter_title": None, "is_chapter_start": False}
+            for item in split_into_tts_chunk_items(inputs["clean_text"], max_chars=limit)
+            if has_speakable_text(item["text"])
         ]
     chapters, rules, opts = inputs["chapters"], inputs["rules"], inputs["opts"]
     plan = []
@@ -1677,11 +1681,13 @@ def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
         text = prepare_chapter_tts_text(chapter, opts, rules)
         if not has_speakable_text(text):
             continue
-        chunks = [c for c in split_into_tts_chunks(text, max_chars=limit) if has_speakable_text(c)]
+        chunks = [item for item in split_into_tts_chunk_items(text, max_chars=limit)
+                  if has_speakable_text(item["text"])]
         normalized_title = _normalize_chapter_title_for_plan(chapter.title, opts, rules, getattr(chapter, "chapter_no", None))
         for i, chunk in enumerate(chunks):
             plan.append({
-                "text": chunk,
+                "text": chunk["text"],
+                "kind": chunk["kind"],
                 "chapter_index": chapter.chapter_index,
                 "chapter_title": normalized_title,
                 "is_chapter_start": i == 0,

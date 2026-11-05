@@ -183,7 +183,7 @@ def test_build_patch_chunk_plan_keeps_chapters_separate_and_marks_starts():
     conn.execute("UPDATE patch SET chapter_end = 1 WHERE id = ?", (pid,))
     conn.commit()
     plan = repository.build_patch_chunk_plan(conn, repository.get_patch(conn, pid))
-    assert all(set(item) == {"text", "chapter_index", "chapter_title", "is_chapter_start"} for item in plan)
+    assert all(set(item) == {"text", "kind", "chapter_index", "chapter_title", "is_chapter_start"} for item in plan)
     assert [item["chapter_index"] for item in plan] == [0, 1]
     assert [item["is_chapter_start"] for item in plan] == [True, True]
 
