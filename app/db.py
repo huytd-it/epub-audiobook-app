@@ -690,6 +690,36 @@ CREATE TABLE IF NOT EXISTS egress_endpoint (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+-- Background video pool theo keyword (ingestion: Pexels + DTK v5 sidecar).
+-- Mỗi clip thô lưu tại data/backgrounds/<keyword>/<clip_id>.mp4; variation chống
+-- trùng lặp/bản quyền/khó chịu xử lý ở FFmpeg/Remotion khi render (xem
+-- app/services/background_video/keywords.py và app/video_gen.py).
+CREATE TABLE IF NOT EXISTS background_clip (
+    id              TEXT PRIMARY KEY,
+    keyword         TEXT NOT NULL DEFAULT '',
+    platform        TEXT NOT NULL DEFAULT '',
+    source_url      TEXT NOT NULL DEFAULT '',
+    author          TEXT NOT NULL DEFAULT '',
+    title           TEXT NOT NULL DEFAULT '',
+    path            TEXT NOT NULL,
+    duration_seconds REAL DEFAULT 0,
+    width           INTEGER DEFAULT 0,
+    height          INTEGER DEFAULT 0,
+    fps             INTEGER DEFAULT 0,
+    p_hash          TEXT NOT NULL DEFAULT '',
+    usage_count     INTEGER NOT NULL DEFAULT 0,
+    last_used_at    TEXT,
+    tags_json       TEXT NOT NULL DEFAULT '[]',
+    license_note    TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'available',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_background_clip_keyword ON background_clip(keyword, status, usage_count);
+CREATE INDEX IF NOT EXISTS idx_background_clip_platform ON background_clip(platform, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_background_clip_source
+    ON background_clip(source_url) WHERE source_url <> '';
 """
 
 

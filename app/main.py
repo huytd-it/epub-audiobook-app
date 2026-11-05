@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import db, egress, repository
 from app.config import settings
-from app.routes import (ai, book_text, books, chapter_audio, database_io, downloads, drive, effects, gameplay, kaggle, local_bridge, logs, media_browser, music,
+from app.routes import (ai, background_videos, book_text, books, chapter_audio, database_io, downloads, drive, effects, gameplay, kaggle, local_bridge, logs, media_browser, music,
     patches, photos, production_settings, queue, shorts, socials, text_studio, tts_models, ui_api, validation, video, video_api, voices, youtube)
 import asyncio
 
@@ -180,6 +180,7 @@ app.include_router(gameplay.router)
 app.include_router(media_browser.router)
 app.include_router(shorts.router)
 app.include_router(socials.router)
+app.include_router(background_videos.router)
 
 
 SPA_DIR = Path("app/spa_dist")

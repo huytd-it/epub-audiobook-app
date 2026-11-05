@@ -13,6 +13,24 @@ class Settings(BaseSettings):
     # take the whole app (and the test suite) down at import time.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # ------------------------------------------------------------------
+    # Background video ingestion (keyword-driven: Pexels + DTK v5 sidecar)
+    # ------------------------------------------------------------------
+    bg_video_root: str = ""  # empty => "<data_root>/backgrounds"; set to absolute path to override
+    bg_video_default_keyword: str = "thien-nhien"
+    bg_video_max_clip_seconds: float = 45.0
+    bg_video_target_seconds: int = 3600
+    pexels_api_key: str = ""
+    pixabay_api_key: str = ""
+    pexels_per_page: int = 20
+    # Douyin_TikTok_Download_API v5 sidecar (self-hosted). See docker/compose.dtk.yml.
+    dtk_base_url: str = "http://127.0.0.1:8000"
+    dtk_api_key: str = ""
+    dtk_timeout_seconds: float = 60.0
+    dtk_poll_interval_seconds: float = 2.0
+    dtk_poll_timeout_seconds: float = 120.0
+    bg_video_variation_enabled: bool = True
+
     data_root: str = str(_APP_ROOT / "data")
     db_path: str = str(_APP_ROOT / "data" / "app.db")
     log_path: str = str(_APP_ROOT / "data" / "app.log")
