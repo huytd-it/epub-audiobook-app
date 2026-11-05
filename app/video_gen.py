@@ -671,6 +671,39 @@ def generate_segment(
         # 25fps and a video background inherits its own rate. Segments that
         # disagree get time-stretched by concat_segments' stream copy.
         base_vf = f"{_build_fit_filter(width, height, fit_mode)},fps={fps}{_LIMITED_RANGE_SUFFIX}"
+        # Variation pass for video backgrounds (kỹ thuật ghép nối mới): apply
+        # seeded hflip/crop/color/zoompan/vignette/grain so each chapter's
+        # background differs from the raw clip. Only when bg_video_variation_enabled.
+        if is_video_bg and getattr(settings, "bg_video_variation_enabled", True):
+            seed = int.from_bytes(str(image_path).encode("utf-8")[:8], "little") % 100000
+            parts = []
+            # Deterministic pseudo-random per seed (same clip+seed -> same variation).
+            flip = bool((seed % 2) == 0)
+            hue_shift = ((seed % 7) - 3) * 4  # -12..+12 deg-ish
+            sat = 1.18 + (seed % 5) * 0.03   # 1.18..1.30
+            contrast = 1.05 + (seed % 4) * 0.02  # 1.05..1.11
+            if flip:
+                parts.append("hflip")
+            parts.append(f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase")
+            crop_w, crop_h = width * 2 - (seed % 40), height * 2 - (seed % 40)
+            crop_x = (seed % 20)
+            crop_y = (seed % 20)
+            parts.append(f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}")
+            parts.append(f"scale={width}:{height}")
+            parts.append(f"eq=contrast={contrast:.2f}:saturation={sat:.2f}:brightness=0.015")
+            if hue_shift:
+                parts.append(f"hue=h={hue_shift}")
+            # NOTE: the old time-varying zoom-pan crop expression
+            # (w='iw*(1-0.06*t/180)':...) is removed — ffmpeg evaluates crop
+            # w/h at filter init, where 't' is undefined, and aborts with
+            # EINVAL (-22) before a single frame is encoded. The seeded
+            # hflip/scale/crop/eq/hue/vignette/noise variation above remains.
+            parts.append("vignette=PI/4")
+            parts.append("noise=alls=5:allf=t")
+            # xfade seam: blend last 0.5s of loop into its start is handled by
+            # stream_loop itself; here we add a 0.2s fade in/out at scene cuts.
+            parts.append("fade=t=in:st=0:d=0.2,fade=t=out:st=9.8:d=0.2")
+            base_vf += "," + ",".join(parts)
     else:
         zp_filter = _build_zoompan_filter(
             image_type, width, height, fps, narration_seconds or 10.0
@@ -1101,6 +1134,25 @@ def generate_background_sequence(
             else:
                 inputs = [settings.get_ffmpeg_path(), "-y", "-loop", "1", "-i", background]
             filters = _build_fit_filter(width, height, fit_mode)
+            if is_video_background(background) and getattr(settings, "bg_video_variation_enabled", True):
+                # Variation pass per piece (seeded): hflip/crop/color/zoompan/vignette/grain.
+                seed_str = f"{seed}:{background}:{index}" if seed else background
+                s = int.from_bytes(seed_str.encode("utf-8")[:8], "little") % 100000
+                parts = []
+                if s % 2 == 0:
+                    parts.append("hflip")
+                parts.append(f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase")
+                parts.append(f"crop={width*2-(s%40)}:{height*2-(s%40)}:{s%20}:{s%20}")
+                parts.append(f"scale={width}:{height}")
+                parts.append(f"eq=contrast={1.05+(s%4)*0.02:.2f}:saturation={1.18+(s%5)*0.03:.2f}:brightness=0.015")
+                if (s % 7) - 3:
+                    parts.append(f"hue=h={(s%7)-3}")
+                # NOTE: removed the old zoom-pan crop using t in w/h — ffmpeg
+                # evaluates crop w/h at filter init, where 't' is undefined,
+                # and aborts with EINVAL (-22) before encoding any frame.
+                parts.append("vignette=PI/4")
+                parts.append("noise=alls=5:allf=t")
+                filters += "," + ",".join(parts)
             if ken_burns and not is_video_background(background):
                 filters += f",zoompan=z='min(zoom+0.0005,1.15)':d={max(1, int(length * fps))}:s={width}x{height}:fps={fps}"
             if progress_bar:
