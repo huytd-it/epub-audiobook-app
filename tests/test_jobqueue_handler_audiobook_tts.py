@@ -165,7 +165,7 @@ def test_job_log_carries_each_chunks_text_and_synthesized_duration(tmp_path, mon
     ctx.close()
 
     log_text = joblog.tail(job_id)
-    assert "văn bản: Câu một. Câu hai. Câu ba." in log_text
+    assert "Câu một. Câu hai. Câu ba." in log_text
     assert "xong: 0.1s audio" in log_text
 
 
@@ -180,7 +180,7 @@ def test_job_log_carries_chunk_text_in_the_write_chunk_files_branch(tmp_path, mo
     ctx.close()
 
     log_text = joblog.tail(job_id)
-    assert "văn bản: Câu một. Câu hai. Câu ba." in log_text
+    assert "Câu một. Câu hai. Câu ba." in log_text
     assert "xong: 0.1s audio" in log_text
 
 
@@ -190,9 +190,10 @@ def test_next_chunk_index_is_persisted_so_a_rerun_resumes(tmp_path, monkeypatch)
     patch_id = _book_with_patch(conn)
     engine = _FakeEngine()
     monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: engine)
-    ctx, _ = _ctx(conn, patch_id=patch_id)
+    ctx, job_id = _ctx(conn, patch_id=patch_id)
     audiobook_tts.handle(ctx)
     first_calls = len(engine.calls)
+    store.finish(conn, job_id, result={})
     repository._update_status(conn, "patch", patch_id, status="pending")
     ctx2, _ = _ctx(conn, patch_id=patch_id)
     audiobook_tts.handle(ctx2)
@@ -208,15 +209,17 @@ def test_model_config_change_invalidates_chunks_and_restarts_at_zero(tmp_path, m
     engine.config_fingerprint = lambda: state["cfg"]
     monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: engine)
 
-    ctx, _ = _ctx(conn, patch_id=patch_id)
+    ctx, job_id = _ctx(conn, patch_id=patch_id)
     audiobook_tts.handle(ctx)
     first_calls = len(engine.calls)
+    store.finish(conn, job_id, result={})
 
     # Same model/config + text => resume, nothing regenerated.
     repository._update_status(conn, "patch", patch_id, status="pending")
-    ctx2, _ = _ctx(conn, patch_id=patch_id)
+    ctx2, job_id2 = _ctx(conn, patch_id=patch_id)
     audiobook_tts.handle(ctx2)
     assert len(engine.calls) == first_calls
+    store.finish(conn, job_id2, result={})
 
     # Model/config fingerprint changed => stale chunks wiped, restart at zero.
     state["cfg"] = "b"
@@ -355,3 +358,58 @@ def test_regenerating_a_patch_only_resynthesizes_the_changed_chapter(tmp_path, m
     audiobook_tts.handle(ctx)
     assert seen == ["Chương hai đã sửa."]
     assert sf.info(str(first_audio)).frames == first_frames
+
+
+def test_zerotts_runs_parallel_chunk_synthesis_with_isolated_worker_engines(tmp_path, monkeypatch):
+    import time
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn, text="Đoạn 1. Đoạn 2. Đoạn 3. Đoạn 4.")
+
+    engines_created = []
+
+    class _ZeroTTSFakeEngine(_FakeEngine):
+        active_providers = ["CPUExecutionProvider"]
+
+        def __init__(self):
+            super().__init__()
+            engines_created.append(self)
+
+        def synthesize_chunk(self, text, **kwargs):
+            time.sleep(0.02)
+            return super().synthesize_chunk(text, **kwargs)
+
+    monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: _ZeroTTSFakeEngine())
+    monkeypatch.setattr(audiobook_tts, "get_worker_engine", lambda *a, **k: _ZeroTTSFakeEngine())
+    monkeypatch.setattr(settings, "tts_write_chunk_files", True)
+
+    ctx, job_id = _ctx(conn, patch_id=patch_id, tts_engine="zerotts", chunk_concurrency=3)
+    result = audiobook_tts.handle(ctx)
+    patch = repository.get_patch(conn, patch_id)
+    assert patch.status == "done"
+    assert sf.info(result["audio_path"]).frames > 0
+    # Multiple isolated worker engines were instantiated for parallel synthesis
+    assert len(engines_created) >= 2
+
+
+def test_local_non_zerotts_engine_stays_strictly_sequential_even_with_high_concurrency(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn, text="Đoạn 1. Đoạn 2. Đoạn 3.")
+
+    worker_engine_called = []
+
+    class _VoxEngine(_FakeEngine):
+        pass
+
+    vox = _VoxEngine()
+    monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: vox)
+    monkeypatch.setattr(audiobook_tts, "get_worker_engine", lambda *a, **k: worker_engine_called.append(True) or vox)
+    monkeypatch.setattr(settings, "tts_write_chunk_files", True)
+
+    # Even if chunk_concurrency is 5, voxcpm2 must run sequential (parallelism = 1)
+    ctx, job_id = _ctx(conn, patch_id=patch_id, tts_engine="voxcpm2", chunk_concurrency=5)
+    result = audiobook_tts.handle(ctx)
+    assert repository.get_patch(conn, patch_id).status == "done"
+    # worker_engine was NOT called because parallelism was forced to 1
+    assert len(worker_engine_called) == 0

@@ -674,7 +674,12 @@ def generate_segment(
         # Variation pass for video backgrounds (kỹ thuật ghép nối mới): apply
         # seeded hflip/crop/color/zoompan/vignette/grain so each chapter's
         # background differs from the raw clip. Only when bg_video_variation_enabled.
-        if is_video_bg and getattr(settings, "bg_video_variation_enabled", True):
+        enable_variation = (
+            waveform_config.get("bg_video_variation_enabled")
+            if waveform_config and "bg_video_variation_enabled" in waveform_config
+            else getattr(settings, "bg_video_variation_enabled", False)
+        )
+        if is_video_bg and enable_variation:
             seed = int.from_bytes(str(image_path).encode("utf-8")[:8], "little") % 100000
             parts = []
             # Deterministic pseudo-random per seed (same clip+seed -> same variation).
@@ -1134,7 +1139,12 @@ def generate_background_sequence(
             else:
                 inputs = [settings.get_ffmpeg_path(), "-y", "-loop", "1", "-i", background]
             filters = _build_fit_filter(width, height, fit_mode)
-            if is_video_background(background) and getattr(settings, "bg_video_variation_enabled", True):
+            enable_variation = (
+                waveform_config.get("bg_video_variation_enabled")
+                if waveform_config and "bg_video_variation_enabled" in waveform_config
+                else getattr(settings, "bg_video_variation_enabled", False)
+            )
+            if is_video_background(background) and enable_variation:
                 # Variation pass per piece (seeded): hflip/crop/color/zoompan/vignette/grain.
                 seed_str = f"{seed}:{background}:{index}" if seed else background
                 s = int.from_bytes(seed_str.encode("utf-8")[:8], "little") % 100000
@@ -1278,13 +1288,21 @@ def resolve_configured_patch_image(patch, config: dict | None, fallback: str) ->
     return fallback if fallback and Path(fallback).exists() else None
 
 
+class UnusableBackground(Exception):
+    """A video background ffprobe cannot decode - a truncated or corrupt file
+    (e.g. a download that only carries an ftyp header, with no moov atom).
+    Handing it to ffmpeg aborts the whole piece with AVERROR_INVALIDDATA, so
+    the planner drops it instead of failing the render."""
+
+
 def _video_background_duration_probe() -> Callable[[str], float | None]:
     """Lookup for the real length of a video background, so a clip plays
     through instead of being cut at the still-image duration.
 
     Probes lazily and caches: a folder may hold thousands of clips while one
-    render only reaches the first few. None (stills, unreadable clips) means
-    "use the still-image duration"."""
+    render only reaches the first few. None means a still image (use the
+    still-image duration); an unreadable *video* raises UnusableBackground so
+    the caller can leave it out rather than feed ffmpeg a file it will reject."""
     cache: dict[str, float | None] = {}
 
     def lookup(path: str) -> float | None:
@@ -1294,9 +1312,12 @@ def _video_background_duration_probe() -> Callable[[str], float | None]:
             try:
                 cache[path] = _probe_duration(path)
             except (OSError, ValueError, subprocess.SubprocessError):
-                logger.warning("could not probe background video duration: %s", path)
+                logger.warning("skipping unreadable background video: %s", path)
                 cache[path] = None
-        return cache[path]
+        duration = cache[path]
+        if duration is None:
+            raise UnusableBackground(path)
+        return duration
 
     return lookup
 
@@ -1305,7 +1326,9 @@ def plan_background_segments(backgrounds: list[str], duration: float, image_dura
     """Return timed background segments whose total duration equals duration.
 
     A background clip_duration returns a length for (a video) lasts that long;
-    every other one lasts image_duration."""
+    every other one lasts image_duration. A background whose clip_duration
+    raises UnusableBackground (a corrupt video) is skipped, so one bad clip
+    cannot fail a render that could cover the audio with the others."""
     if duration <= 0 or image_duration <= 0 or not backgrounds:
         return []
     ordered = list(backgrounds)
@@ -1314,9 +1337,18 @@ def plan_background_segments(backgrounds: list[str], duration: float, image_dura
     result = []
     remaining = float(duration)
     index = start_index
-    while remaining > 0:
+    skipped = 0
+    # Stop after a full cycle with no usable background: every remaining clip
+    # is unreadable, so there is nothing to plan.
+    while remaining > 0 and skipped < len(ordered):
         background = ordered[index % len(ordered)]
-        own = clip_duration(background) if clip_duration else None
+        try:
+            own = clip_duration(background) if clip_duration else None
+        except UnusableBackground:
+            skipped += 1
+            index += 1
+            continue
+        skipped = 0
         length = min(float(own or image_duration), remaining)
         result.append((background, length))
         remaining -= length

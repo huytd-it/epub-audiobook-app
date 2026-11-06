@@ -22,12 +22,14 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 
 from app.config import settings
 
 MANIFEST = "chunks.json"
+_manifest_lock = threading.Lock()
 
 
 def get_book_chapters_dir(book_id: int) -> Path:
@@ -88,29 +90,31 @@ class ChunkStore:
 
     def record(self, index: int, *, key: str, text: str, frames: int, sample_rate: int,
                engine: str | None = None, voice: str | None = None, max_chars: int | None = None) -> None:
-        data = self.manifest()
-        data["chunks"][str(index)] = {
-            "key": key, "text": text, "frames": int(frames), "sample_rate": int(sample_rate),
-        }
-        if engine is not None:
-            data["engine"] = engine
-        if voice is not None:
-            data["voice"] = voice
-        if max_chars:
-            data["max_chars"] = int(max_chars)
-        data["sample_rate"] = int(sample_rate)
-        # Một chunk vừa được (tổng hợp) lại: chương chỉ "đủ" trở lại khi cả lượt chạy
-        # đi hết chương và đánh dấu lại bằng mark_complete.
-        data.pop("complete", None)
-        self._write_manifest(data)
+        with _manifest_lock:
+            data = self.manifest()
+            data["chunks"][str(index)] = {
+                "key": key, "text": text, "frames": int(frames), "sample_rate": int(sample_rate),
+            }
+            if engine is not None:
+                data["engine"] = engine
+            if voice is not None:
+                data["voice"] = voice
+            if max_chars:
+                data["max_chars"] = int(max_chars)
+            data["sample_rate"] = int(sample_rate)
+            # Một chunk vừa được (tổng hợp) lại: chương chỉ "đủ" trở lại khi cả lượt chạy
+            # đi hết chương và đánh dấu lại bằng mark_complete.
+            data.pop("complete", None)
+            self._write_manifest(data)
 
     def mark_complete(self, source: str, count: int) -> None:
         """Ghi nhận chương đã có đủ ``count`` chunk cho đúng nguồn ``source`` (xem
         repository.chapter_tts_source_key) — để bảng patch đếm chương sẵn sàng mà không
         phải chuẩn hoá lại văn bản."""
-        data = self.manifest()
-        data["complete"] = {"source": source, "count": int(count)}
-        self._write_manifest(data)
+        with _manifest_lock:
+            data = self.manifest()
+            data["complete"] = {"source": source, "count": int(count)}
+            self._write_manifest(data)
 
     def is_complete(self, source: str, data: dict | None = None) -> bool:
         data = data if data is not None else self.manifest()
@@ -122,38 +126,41 @@ class ChunkStore:
             str(i) in data["chunks"] and self.path(i).is_file() for i in range(count))
 
     def delete(self, index: int) -> bool:
-        existed = self.path(index).is_file()
-        self.path(index).unlink(missing_ok=True)
-        data = self.manifest()
-        removed = data["chunks"].pop(str(index), None) is not None
-        if removed or "complete" in data:
-            existed = existed or removed
-            data.pop("complete", None)
-            self._write_manifest(data)
-        return existed
+        with _manifest_lock:
+            existed = self.path(index).is_file()
+            self.path(index).unlink(missing_ok=True)
+            data = self.manifest()
+            removed = data["chunks"].pop(str(index), None) is not None
+            if removed or "complete" in data:
+                existed = existed or removed
+                data.pop("complete", None)
+                self._write_manifest(data)
+            return existed
 
     def clear(self) -> int:
-        count = len(list(self.dir.glob("chunk_*.wav"))) if self.dir.is_dir() else 0
-        shutil.rmtree(self.dir, ignore_errors=True)
-        return count
+        with _manifest_lock:
+            count = len(list(self.dir.glob("chunk_*.wav"))) if self.dir.is_dir() else 0
+            shutil.rmtree(self.dir, ignore_errors=True)
+            return count
 
     def prune(self, count: int) -> None:
         """Drop chunks at index >= count: the chapter was re-split into fewer chunks."""
         if not self.dir.is_dir():
             return
-        for path in self.dir.glob("chunk_*.wav"):
-            try:
-                index = int(path.stem.split("_", 1)[1])
-            except (IndexError, ValueError):
-                continue
-            if index >= count:
-                path.unlink(missing_ok=True)
-        data = self.manifest()
-        stale = [k for k in data["chunks"] if not k.isdigit() or int(k) >= count]
-        if stale:
-            for k in stale:
-                data["chunks"].pop(k, None)
-            self._write_manifest(data)
+        with _manifest_lock:
+            for path in self.dir.glob("chunk_*.wav"):
+                try:
+                    index = int(path.stem.split("_", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                if index >= count:
+                    path.unlink(missing_ok=True)
+            data = self.manifest()
+            stale = [k for k in data["chunks"] if not k.isdigit() or int(k) >= count]
+            if stale:
+                for k in stale:
+                    data["chunks"].pop(k, None)
+                self._write_manifest(data)
 
     def summary(self) -> dict:
         """Cheap on-disk state (no chunk plan): what the chapter column shows."""

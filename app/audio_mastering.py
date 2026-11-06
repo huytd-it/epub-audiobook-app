@@ -116,6 +116,8 @@ def measure_loudness(path: str | Path) -> LoudnessMeasurement:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
     return _measurement_from_stderr(result.stderr)
@@ -225,6 +227,8 @@ def normalize_wav_in_place(path: str | Path) -> LoudnessMeasurement | None:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         mastered = sf.info(str(temp_path))

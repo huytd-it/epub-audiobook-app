@@ -1001,6 +1001,11 @@ export function ConfigDialog({
                   onChange={(value) => setVideoConfig({ ...videoConfig, narrator_credit_enabled: value })}
                   label="Hiện tên giọng đọc + TTS model"
                 />
+                <CheckField
+                  checked={videoConfig.bg_video_variation_enabled || false}
+                  onChange={(value) => setVideoConfig({ ...videoConfig, bg_video_variation_enabled: value })}
+                  label="Biến thể video nền (chống trùng lặp, render chậm hơn)"
+                />
               </div>
               {videoConfig.narrator_credit_enabled && (
                 <p className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs">

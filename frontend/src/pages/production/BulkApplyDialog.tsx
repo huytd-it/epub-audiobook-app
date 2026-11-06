@@ -47,7 +47,7 @@ const SECTION_DEFS: Partial<Record<ProductionGroup, { label: string; match: (key
     { label: "Nhạc nền & intro/outro", match: (k) => k.startsWith("music_") || k === "intro_voice" || k === "outro_voice" },
     {
       label: "Hiệu ứng (crossfade, Ken Burns, thanh tiến độ, credit giọng đọc)",
-      match: (k) => k.startsWith("crossfade") || ["ken_burns_enabled", "progress_bar_enabled", "narrator_credit_enabled"].includes(k),
+      match: (k) => k.startsWith("crossfade") || ["ken_burns_enabled", "progress_bar_enabled", "narrator_credit_enabled", "bg_video_variation_enabled"].includes(k),
     },
   ],
   audio: [

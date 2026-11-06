@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TextIO
@@ -50,6 +51,7 @@ class JobLogger:
         self.job_id = job_id
         self.job_type = job_type
         self._fh: TextIO | None = None
+        self._lock = threading.Lock()
 
     def _handle(self) -> TextIO:
         if self._fh is None:
@@ -59,9 +61,10 @@ class JobLogger:
         return self._fh
 
     def _write(self, line: str) -> None:
-        fh = self._handle()
-        fh.write(line + "\n")
-        fh.flush()   # cầu SSE tail file này realtime; buffer sẽ làm tiến độ đứng hình
+        with self._lock:
+            fh = self._handle()
+            fh.write(line + "\n")
+            fh.flush()   # cầu SSE tail file này realtime; buffer sẽ làm tiến độ đứng hình
 
     def log(self, message: str, level: int = logging.INFO, phase: str | None = None) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

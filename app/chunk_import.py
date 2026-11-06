@@ -142,10 +142,13 @@ def assemble_patch_from_chunks(
     options = tts.get("options") if isinstance(tts.get("options"), dict) else {}
     with_effects = bool(options.get("with_effects"))
     max_chars = int(manifest.get("max_chars") or 0)
+    dialogue_aware = bool(manifest.get("dialogue_aware", True))
 
     with db() as conn:
         book = repository.get_book(conn, patch.book_id)
-        plan_inputs = repository.fetch_patch_chunk_inputs(conn, patch, max_chars=max_chars or None)
+        plan_inputs = repository.fetch_patch_chunk_inputs(
+            conn, patch, max_chars=max_chars or None, dialogue_aware=dialogue_aware
+        )
         audio_config = get_effective_audio_config(conn, book)
     plan = repository.build_chunk_plan_from_inputs(plan_inputs)
     if not plan:

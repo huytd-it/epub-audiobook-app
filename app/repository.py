@@ -1605,7 +1605,8 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
 
 
 def fetch_patch_chunk_inputs(
-    conn: sqlite3.Connection, patch: Patch, max_chars: int | None = None
+    conn: sqlite3.Connection, patch: Patch, max_chars: int | None = None,
+    dialogue_aware: bool = True,
 ) -> dict:
     """Read everything build_chunk_plan_from_inputs needs, and nothing else.
 
@@ -1615,11 +1616,12 @@ def fetch_patch_chunk_inputs(
     """
     limit = max_chars or patch.max_chars or _TTS_MAX_CHARS
     if patch.clean_text:
-        return {"limit": limit, "clean_text": patch.clean_text}
+        return {"limit": limit, "clean_text": patch.clean_text, "dialogue_aware": dialogue_aware}
     book = get_book(conn, patch.book_id)
     return {
         "limit": limit,
         "clean_text": None,
+        "dialogue_aware": dialogue_aware,
         "chapters": get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end),
         "rules": list_replace_rules(conn, patch.book_id),
         "opts": get_effective_normalization_options(conn, book) if book else NormalizationOptions(),
@@ -1666,11 +1668,14 @@ def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
     Mỗi item mang thêm ``kind`` ("narration" | "dialogue") để bước tổng hợp chọn
     giọng đọc theo từng chunk (xem app/chunker.split_into_tts_chunk_items)."""
     limit = inputs["limit"]
+    dialogue_aware = inputs.get("dialogue_aware", True)
     if inputs["clean_text"]:
         return [
             {"text": item["text"], "kind": item["kind"], "chapter_index": None,
              "chapter_title": None, "is_chapter_start": False}
-            for item in split_into_tts_chunk_items(inputs["clean_text"], max_chars=limit)
+            for item in split_into_tts_chunk_items(
+                inputs["clean_text"], max_chars=limit, dialogue_aware=dialogue_aware
+            )
             if has_speakable_text(item["text"])
         ]
     chapters, rules, opts = inputs["chapters"], inputs["rules"], inputs["opts"]
@@ -1681,8 +1686,9 @@ def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
         text = prepare_chapter_tts_text(chapter, opts, rules)
         if not has_speakable_text(text):
             continue
-        chunks = [item for item in split_into_tts_chunk_items(text, max_chars=limit)
-                  if has_speakable_text(item["text"])]
+        chunks = [item for item in split_into_tts_chunk_items(
+            text, max_chars=limit, dialogue_aware=dialogue_aware
+        ) if has_speakable_text(item["text"])]
         normalized_title = _normalize_chapter_title_for_plan(chapter.title, opts, rules, getattr(chapter, "chapter_no", None))
         for i, chunk in enumerate(chunks):
             plan.append({
@@ -1696,7 +1702,8 @@ def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
 
 
 def build_patch_chunk_plan(
-    conn: sqlite3.Connection, patch: Patch, max_chars: int | None = None
+    conn: sqlite3.Connection, patch: Patch, max_chars: int | None = None,
+    dialogue_aware: bool = True,
 ) -> list[dict]:
     """Build independently split TTS chunks for each included chapter.
 
@@ -1709,7 +1716,9 @@ def build_patch_chunk_plan(
     Callers holding db_lock should prefer fetch_patch_chunk_inputs +
     build_chunk_plan_from_inputs so the normalization pass runs off the lock.
     """
-    return build_chunk_plan_from_inputs(fetch_patch_chunk_inputs(conn, patch, max_chars))
+    return build_chunk_plan_from_inputs(
+        fetch_patch_chunk_inputs(conn, patch, max_chars, dialogue_aware=dialogue_aware)
+    )
 
 
 # ---------------------------------------------------------------------------

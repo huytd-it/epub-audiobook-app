@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     dtk_timeout_seconds: float = 60.0
     dtk_poll_interval_seconds: float = 2.0
     dtk_poll_timeout_seconds: float = 120.0
-    bg_video_variation_enabled: bool = True
+    bg_video_variation_enabled: bool = False
 
     data_root: str = str(_APP_ROOT / "data")
     db_path: str = str(_APP_ROOT / "data" / "app.db")
@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     worker_shutdown_timeout_seconds: float = 300.0
     enable_worker: bool = True  # set ENABLE_WORKER=false in dev to suppress the background loop
     tts_write_chunk_files: bool = True  # set TTS_WRITE_CHUNK_FILES=false to skip per-chunk WAV files
+    tts_chunk_concurrency: int = 1  # parallel TTS chunks per patch; keep local/GPU engines at 1 by default
     ffmpeg_path: str = str(_APP_ROOT / "assets" / "bin" / "ffmpeg.exe")
     reset_all_jobs_on_startup: bool = False  # dev-only: reset every patch + book_job → pending on boot
     # Khởi động sạch: xoá toàn bộ hàng đợi job còn sót của lần chạy trước và KHÔNG tự

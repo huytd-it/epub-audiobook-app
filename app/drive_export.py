@@ -225,7 +225,9 @@ def _write_patch_files(
     """Write manifest.json (with chunk text inlined) for one patch into dest_dir and
     return the manifest dict. The manifest is the only file a patch folder needs: the
     notebook synthesizes audio from it, and video is rendered back in the app."""
-    plan = repository.build_patch_chunk_plan(conn, patch, max_chars=max_chars or None)
+    plan = repository.build_patch_chunk_plan(
+        conn, patch, max_chars=max_chars or None, dialogue_aware=False
+    )
     if not plan:
         raise ValueError(f"patch {patch.id} has no text to export")
 
@@ -257,6 +259,7 @@ def _write_patch_files(
         "chapter_start": patch.chapter_start,
         "chapter_end": patch.chapter_end,
         "max_chars": max_chars or patch.max_chars or settings.tts_max_chars,
+        "dialogue_aware": False,
         "chunk_count": len(plan),
         "chapter_titles": chapter_titles,
         "chunk_metadata": chunk_metadata,

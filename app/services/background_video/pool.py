@@ -87,7 +87,17 @@ def save_clip(conn: sqlite3.Connection, clip: ClipCandidate) -> dict:
     else:
         raise ValueError("no bytes to save (file_bytes or download_to required)")
 
-    duration = clip.duration_seconds or _probe_duration(str(dest))
+    # A source can "succeed" while returning something that is not a video at
+    # all (an HTML error page, or a stub/truncated file with only an ftyp
+    # header). Keeping it hands ffmpeg an input it aborts on with
+    # AVERROR_INVALIDDATA during a later render, so reject it here instead -
+    # always, even when the caller already reports a duration.
+    probed = _probe_duration(str(dest))
+    if probed <= 0:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(f"downloaded file is not a decodable video: {clip.source_url}")
+
+    duration = clip.duration_seconds or probed
     now = _now()
     conn.execute(
         """INSERT INTO background_clip

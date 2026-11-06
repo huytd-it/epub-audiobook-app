@@ -1,5 +1,7 @@
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from app import image_overlay, video_gen
 
@@ -248,3 +250,75 @@ def test_background_sequence_crossfade_still_covers_the_narration(tmp_path, monk
     assert len(lengths) == 3
     fade = 1.0
     assert sum(lengths) - fade * (len(lengths) - 1) == 45
+
+
+def test_probe_raises_for_unreadable_video_background(monkeypatch):
+    """A truncated clip (ftyp header, no moov atom) must not be mistaken for a
+    still image: ffprobe fails, so the probe marks it unusable."""
+    def boom(path):
+        raise ValueError("moov atom not found")
+
+    monkeypatch.setattr(video_gen, "_probe_duration", boom)
+    probe = video_gen._video_background_duration_probe()
+
+    assert probe("still.jpg") is None  # images are never probed
+    for _ in range(2):  # failure is cached, not re-probed and swallowed
+        with pytest.raises(video_gen.UnusableBackground):
+            probe("clip.mp4")
+
+
+def test_background_segments_skip_unreadable_video_clips():
+    def clip_duration(path):
+        if path == "corrupt.mp4":
+            raise video_gen.UnusableBackground(path)
+        return 30.0
+
+    plan = video_gen.plan_background_segments(
+        ["corrupt.mp4", "good.mp4"], 50, 15, clip_duration=clip_duration)
+
+    assert plan == [("good.mp4", 30.0), ("good.mp4", 20.0)]
+
+
+def test_background_segments_all_unreadable_is_empty():
+    def clip_duration(path):
+        raise video_gen.UnusableBackground(path)
+
+    assert video_gen.plan_background_segments(
+        ["a.mp4", "b.mp4"], 30, 15, clip_duration=clip_duration) == []
+
+
+def test_background_sequence_skips_a_corrupt_video_background(tmp_path, monkeypatch):
+    """One corrupt clip used to abort the whole piece with AVERROR_INVALIDDATA;
+    it is now dropped and the still image covers the narration."""
+    still = tmp_path / "bg.jpg"
+    still.write_bytes(b"bg")
+    corrupt = tmp_path / "corrupt.mp4"
+    corrupt.write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    commands = []
+
+    def fake_probe(path):
+        if str(path) == str(corrupt):
+            raise ValueError("moov atom not found")
+        return 15.0
+
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        class Result:
+            stdout = "15"
+        return Result()
+
+    monkeypatch.setattr(video_gen, "_probe_duration", fake_probe)
+    monkeypatch.setattr(video_gen.subprocess, "run", run)
+    monkeypatch.setattr(video_gen, "concat_segments", lambda *args, **kwargs: None)
+
+    video_gen.generate_background_sequence(
+        [str(corrupt), str(still)], str(audio), str(tmp_path / "out.mp4"),
+        resolution=(1280, 720), fps=30, image_duration=15,
+    )
+
+    argv = [arg for cmd in commands for arg in cmd]
+    assert str(corrupt) not in argv
+    assert argv, "no ffmpeg command was built"
+    assert str(still) in argv

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import soundfile as sf
@@ -19,6 +21,7 @@ from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
 
 _engines = {}
+_thread_local = threading.local()
 
 
 def get_engine(engine_id: str | None = None, voice: str | None = None, tts_options: dict | None = None):
@@ -30,6 +33,26 @@ def get_engine(engine_id: str | None = None, voice: str | None = None, tts_optio
     if key not in _engines:
         _engines[key] = create_tts_engine(engine_id, voice=voice, **tts_options)
     return _engines[key]
+
+
+_ORIGINAL_GET_ENGINE = get_engine
+
+
+def get_worker_engine(engine_id: str | None = None, voice: str | None = None, tts_options: dict | None = None):
+    """Mỗi worker thread sở hữu một instance engine riêng để tránh race condition trên runtime."""
+    if get_engine is not _ORIGINAL_GET_ENGINE:
+        return get_engine(engine_id, voice, tts_options)
+    from app.tts_engine import create_tts_engine
+
+    engine_id = engine_id or settings.tts_engine
+    tts_options = tts_options or {}
+    key = (engine_id, voice, json.dumps(tts_options, sort_keys=True))
+    engines = getattr(_thread_local, "engines", None)
+    if engines is None:
+        engines = _thread_local.engines = {}
+    if key not in engines:
+        engines[key] = create_tts_engine(engine_id, voice=voice, **tts_options)
+    return engines[key]
 
 
 def handle(ctx) -> dict:
@@ -86,12 +109,17 @@ def handle(ctx) -> dict:
         dialogue_engine = None
         if dialogue_voice and dialogue_voice != voice:
             dialogue_engine = get_engine(engine_id, dialogue_voice, tts_options)
+        chunk_concurrency = int(payload.get("chunk_concurrency") or settings.tts_chunk_concurrency or 1)
         audio_path, chunk_count = synthesize_patch(
             ctx, patch, engine, Path(settings.data_root),
             engine_id=engine_id,
             effective_max_chars=max_chars if max_chars > 0 else None,
             with_effects=with_effects, pause_config=pause_config,
             dialogue_engine=dialogue_engine,
+            chunk_concurrency=chunk_concurrency,
+            tts_options=tts_options,
+            voice=voice,
+            dialogue_voice=dialogue_voice,
         )
     except asyncio.CancelledError:
         raise
@@ -155,6 +183,10 @@ def synthesize_patch(
     engine_id: str, effective_max_chars: int | None, with_effects: bool,
     pause_config: tuple[int, int] | None = None,
     dialogue_engine=None,
+    chunk_concurrency: int | None = None,
+    tts_options: dict | None = None,
+    voice: str | None = None,
+    dialogue_voice: str | None = None,
 ) -> tuple[str, int]:
     """Tổng hợp một patch thành WAV.
 
@@ -184,21 +216,53 @@ def synthesize_patch(
     subtitle_path = Path(audio_path).with_suffix(".ass")
     total = len(plan)
     ctx.progress(patch.next_chunk_index, total, phase="synthesizing")
+    from app.tts_api_providers import is_api_engine
+    allow_parallel = (engine_id == "zerotts" or is_api_engine(engine_id))
+    parallelism = max(1, min(int(chunk_concurrency or settings.tts_chunk_concurrency or 1), 16)) if allow_parallel else 1
 
     if not settings.tts_write_chunk_files:
         wavs = []
         rates: set[int] = set()
-        for index, item in enumerate(plan):
-            if ctx.should_cancel():
-                raise asyncio.CancelledError()
-            chunk_engine = _chunk_engine(item, engine, dialogue_engine)
-            ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
-            arr = chunk_engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
-            arr = level_chunk_loudness(arr)
-            rates.add(chunk_engine.sample_rate)
-            ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / chunk_engine.sample_rate:.1f}s audio")
-            wavs.append(arr)
-            ctx.progress(index + 1, total)
+        if parallelism > 1:
+            def synthesize_in_worker(index, item):
+                if ctx.should_cancel():
+                    raise asyncio.CancelledError()
+                selected_voice = dialogue_voice if dialogue_engine is not None and item.get("kind") == "dialogue" else voice
+                worker_engine = get_worker_engine(engine_id, selected_voice, tts_options)
+                ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
+                arr = level_chunk_loudness(worker_engine.synthesize_chunk(
+                    item["text"], reference_wav_path=ref_wav, prompt_text=ref_text))
+                return index, arr, worker_engine.sample_rate
+
+            results = {}
+            with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix="zerotts-chunk") as pool:
+                futures = [pool.submit(synthesize_in_worker, i, item) for i, item in enumerate(plan)]
+                for future in as_completed(futures):
+                    index, arr, rate = future.result()
+                    results[index] = (arr, rate)
+                    ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / rate:.1f}s audio")
+                    # Progress reflects completed work; persisted resume cursor remains contiguous.
+                    ctx.progress(len(results), total)
+                    if ctx.should_cancel():
+                        for pending in futures:
+                            pending.cancel()
+                        raise asyncio.CancelledError()
+            for index in range(total):
+                arr, rate = results[index]
+                wavs.append(arr)
+                rates.add(rate)
+        else:
+            for index, item in enumerate(plan):
+                if ctx.should_cancel():
+                    raise asyncio.CancelledError()
+                chunk_engine = _chunk_engine(item, engine, dialogue_engine)
+                ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
+                arr = chunk_engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+                arr = level_chunk_loudness(arr)
+                rates.add(chunk_engine.sample_rate)
+                ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / chunk_engine.sample_rate:.1f}s audio")
+                wavs.append(arr)
+                ctx.progress(index + 1, total)
         if len(rates) != 1:
             raise RuntimeError(
                 f"hai giọng đọc có sample rate lệch nhau {sorted(rates)}; "
@@ -232,35 +296,67 @@ def synthesize_patch(
     sample_rates: set[int] = set()
     reused = 0
     chapters_by_index = {c.chapter_index: c for c in plan_inputs.get("chapters") or []}
+    tasks = []
     for index, (item, (cache, local)) in enumerate(zip(plan, targets)):
         chunk_engine = _chunk_engine(item, engine, dialogue_engine)
+        chunk_voice = _engine_voice(chunk_engine)
         model_cfg, voice = fingerprints[id(chunk_engine)]
         key = chunk_store.chunk_key(engine_id, model_cfg, item["text"])
         if cache.is_valid(local, key):
             entry = cache.entry(local) or {}
-            frames = int(entry.get("frames") or 0)
-            rate = int(entry.get("sample_rate") or 0)
+            frames, rate = int(entry.get("frames") or 0), int(entry.get("sample_rate") or 0)
             if not frames or not rate:
                 info = sf.info(str(cache.path(local)))
                 frames, rate = info.frames, info.samplerate
+            sample_rates.add(rate)
+            frame_counts.append(frames)
             reused += 1
+            continue
+        tasks.append((index, item, cache, local, key, voice))
+        frame_counts.append(0)
+
+    def synthesize_and_save(task):
+        index, item, cache, local, key, chunk_voice = task
+        if ctx.should_cancel():
+            raise asyncio.CancelledError()
+        worker_engine = get_worker_engine(engine_id, chunk_voice, tts_options) if parallelism > 1 else _chunk_engine(item, engine, dialogue_engine)
+        ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
+        arr = level_chunk_loudness(worker_engine.synthesize_chunk(
+            item["text"], reference_wav_path=ref_wav, prompt_text=ref_text))
+        rate = worker_engine.sample_rate
+        cache.dir.mkdir(parents=True, exist_ok=True)
+        audio_merge.atomic_write_wav(str(cache.path(local)), lambda p, a=arr, r=rate: sf.write(p, a, r, format="WAV"))
+        cache.record(local, key=key, text=item["text"], frames=len(arr), sample_rate=rate,
+                     engine=engine_id, voice=chunk_voice, max_chars=plan_inputs["limit"])
+        ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / rate:.1f}s audio")
+        return index, len(arr), rate
+
+    completed = {}
+    if parallelism > 1 and tasks:
+        with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix="zerotts-chunk") as pool:
+            futures = [pool.submit(synthesize_and_save, task) for task in tasks]
+            for future in as_completed(futures):
+                index, frames, rate = future.result()
+                completed[index] = (frames, rate)
+                ctx.progress(reused + len(completed), total)
+                if ctx.should_cancel():
+                    for pending in futures:
+                        pending.cancel()
+                    raise asyncio.CancelledError()
+    else:
+        for task in tasks:
+            index, frames, rate = synthesize_and_save(task)
+            completed[index] = (frames, rate)
+    contiguous = 0
+    for index, ((item, (cache, local)), frames_rate) in enumerate(zip(zip(plan, targets), frame_counts)):
+        if index in completed:
+            frame_counts[index], rate = completed[index]
+            sample_rates.add(rate)
         else:
-            if ctx.should_cancel():
-                raise asyncio.CancelledError()
-            ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
-            arr = chunk_engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
-            arr = level_chunk_loudness(arr)
-            rate = chunk_engine.sample_rate
-            ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / rate:.1f}s audio")
-            cache.dir.mkdir(parents=True, exist_ok=True)
-            # Ghi qua file tạm: chunk ghi dở do crash không bao giờ mang key hợp lệ.
-            audio_merge.atomic_write_wav(str(cache.path(local)), lambda p, a=arr, r=rate: sf.write(p, a, r, format="WAV"))
-            frames = len(arr)
-            cache.record(local, key=key, text=item["text"], frames=frames, sample_rate=rate,
-                         engine=engine_id, voice=voice, max_chars=plan_inputs["limit"])
-        frame_counts.append(frames)
-        sample_rates.add(rate)
-        repository.update_patch_chunk_progress(ctx.conn, patch.id, index + 1)
+            rate = int((cache.entry(local) or {}).get("sample_rate") or 0)
+        if index == contiguous and (frames_rate or index in completed):
+            contiguous += 1
+        repository.update_patch_chunk_progress(ctx.conn, patch.id, contiguous)
         ctx.progress(index + 1, total)
         last_of_store = index + 1 == total or targets[index + 1][0] is not cache
         chapter = chapters_by_index.get(item.get("chapter_index"))
@@ -268,6 +364,7 @@ def synthesize_patch(
             cache.prune(local + 1)
             cache.mark_complete(repository.chapter_tts_source_key(
                 chapter, plan_inputs["opts"], plan_inputs["rules"], plan_inputs["limit"]), local + 1)
+
     if reused:
         ctx.log(f"dùng lại {reused}/{total} chunk đã có")
     if len(sample_rates) != 1:

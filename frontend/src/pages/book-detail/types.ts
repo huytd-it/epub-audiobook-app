@@ -192,6 +192,7 @@ export type VideoConfig = {
   subtitle_background_padding: number;
   /** Tự động thêm text overlay tên giọng đọc + TTS model dưới mỗi khung hình video. */
   narrator_credit_enabled: boolean;
+  bg_video_variation_enabled: boolean;
 };
 
 /** Khối nội dung mở rộng nối vào cuối description (bản quyền, miễn trừ AI,

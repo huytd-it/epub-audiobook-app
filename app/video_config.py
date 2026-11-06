@@ -64,6 +64,8 @@ VIDEO_DEFAULTS = {
     "subtitle_background_padding": 16,
     # Tự động thêm text overlay tên giọng đọc + TTS model dưới mỗi khung hình.
     "narrator_credit_enabled": False,
+    # Áp dụng bộ lọc biến thể (crop, color, noise) cho video nền.
+    "bg_video_variation_enabled": False,
 }
 
 _LEGACY_MUSIC_KEYS = ("music_gap_only", "music_gap_min_ms", "music_gap_fade_ms")
@@ -179,7 +181,7 @@ def validate_video_config(config: dict | None) -> dict:
         raise ValueError("quality must be 18-28")
     if not isinstance(result["concurrency"], int) or result["concurrency"] not in {1, 2, 3, 4, 6, 8}:
         raise ValueError("invalid concurrency")
-    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool) or not isinstance(result["waveform_enabled"], bool) or not isinstance(result["subtitle_enabled"], bool) or not isinstance(result["narrator_credit_enabled"], bool) or not isinstance(result["subtitle_background_enabled"], bool):
+    if not isinstance(result["crossfade_enabled"], bool) or not isinstance(result["ken_burns_enabled"], bool) or not isinstance(result["progress_bar_enabled"], bool) or not isinstance(result["waveform_enabled"], bool) or not isinstance(result["subtitle_enabled"], bool) or not isinstance(result["narrator_credit_enabled"], bool) or not isinstance(result["subtitle_background_enabled"], bool) or not isinstance(result["bg_video_variation_enabled"], bool):
         raise ValueError("enhancement flags must be boolean")
     if not isinstance(result["crossfade_seconds"], (int, float)) or not 0 <= result["crossfade_seconds"] <= 3:
         raise ValueError("crossfade must be 0-3 seconds")

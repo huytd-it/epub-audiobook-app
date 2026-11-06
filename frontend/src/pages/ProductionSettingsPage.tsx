@@ -944,6 +944,11 @@ export function ProductionSettingsPage() {
                   onChange={(value) => setVideo({ narrator_credit_enabled: value })}
                   label="Hiện tên giọng đọc + TTS model"
                 />
+                <CheckField
+                  checked={video.bg_video_variation_enabled || false}
+                  onChange={(value) => setVideo({ bg_video_variation_enabled: value })}
+                  label="Biến thể video nền (chống trùng lặp, render chậm hơn)"
+                />
               </div>
 
               <section className="space-y-3 rounded-md border border-border p-3">

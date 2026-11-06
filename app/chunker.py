@@ -252,39 +252,53 @@ def _hard_split(piece: str, max_chars: int) -> list[str]:
     return parts
 
 
-def split_into_tts_chunk_items(text: str, max_chars: int = 400) -> list[dict]:
+def split_into_tts_chunk_items(text: str, max_chars: int = 400,
+                               dialogue_aware: bool = True) -> list[dict]:
     """Như :func:`split_into_tts_chunks` nhưng trả kèm nhãn giọng đọc.
 
     Mỗi item là ``{"text", "kind"}`` với ``kind`` = "dialogue" (lời thoại trong
     ngoặc kép / dòng gạch ngang) hoặc "narration" (mọi thứ còn lại). Người gọi
     cần một giọng khác cho hội thoại dùng nhãn này để chọn engine theo chunk.
+
+    ``dialogue_aware=False`` bỏ nhận diện hội thoại và mục ngoặc vuông:
+    mọi chunk đều là "narration", không tách riêng lượt thoại, chỉ tham chiếu
+    số chữ (chars) để gộp các câu — dùng khi tổng hợp trên Colab/Kaggle.
     """
-    text = split_dialogue_turns(text)
+    if dialogue_aware:
+        text = split_dialogue_turns(text)
     text = _add_sentence_break_between_brackets(text)
     text = _add_pause_comma_before_linebreaks(text)
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
 
     pieces: list[tuple[str, bool, str]] = []
     for paragraph in paragraphs:
-        # Mục ngoặc vuông và lời thoại có thể nằm sau câu dẫn, không chỉ ở đầu
-        # đoạn. Cho đoạn đó đi qua bước tách câu để giữ cờ standalone của từng
-        # mục. Khối "[...]" nhiều dòng là bảng stat: dấu "-" bên trong nó là
-        # gạch đầu dòng, không phải lượt thoại.
-        in_bracket_block = paragraph.lstrip().startswith("[")
-        if (len(paragraph) <= max_chars and "[" not in paragraph
-                and not _has_dialogue_marker(paragraph)):
-            pieces.append((paragraph, False, "narration"))
-            continue
-        for sentence in _split_paragraph_into_sentences(paragraph):
-            standalone = _is_standalone_item(sentence, in_bracket_block=in_bracket_block)
-            kind = _kind_for(sentence, in_bracket_block=in_bracket_block)
-            if len(sentence) <= max_chars:
-                pieces.append((sentence, standalone, kind))
-            else:
-                # Mảnh cắt cứng từ một mục "[" (hoặc một lượt thoại dài) vẫn
-                # đứng riêng — mảnh sau mất dấu mở đầu nên phải giữ cờ và nhãn
-                # theo thay vì nhìn mặt chữ.
-                pieces.extend((part, standalone, kind) for part in _hard_split(sentence, max_chars))
+        if dialogue_aware:
+            # Mục ngoặc vuông và lời thoại có thể nằm sau câu dẫn, không chỉ ở đầu
+            # đoạn. Cho đoạn đó đi qua bước tách câu để giữ cờ standalone của từng
+            # mục. Khối "[...]" nhiều dòng là bảng stat: dấu "-" bên trong nó là
+            # gạch đầu dòng, không phải lượt thoại.
+            in_bracket_block = paragraph.lstrip().startswith("[")
+            if (len(paragraph) <= max_chars and "[" not in paragraph
+                    and not _has_dialogue_marker(paragraph)):
+                pieces.append((paragraph, False, "narration"))
+                continue
+            for sentence in _split_paragraph_into_sentences(paragraph):
+                standalone = _is_standalone_item(sentence, in_bracket_block=in_bracket_block)
+                kind = _kind_for(sentence, in_bracket_block=in_bracket_block)
+                if len(sentence) <= max_chars:
+                    pieces.append((sentence, standalone, kind))
+                else:
+                    # Mảnh cắt cứng từ một mục "[" (hoặc một lượt thoại dài) vẫn
+                    # đứng riêng — mảnh sau mất dấu mở đầu nên phải giữ cờ và nhãn
+                    # theo thay vì nhìn mặt chữ.
+                    pieces.extend((part, standalone, kind) for part in _hard_split(sentence, max_chars))
+        else:
+            # Không xử lý hội thoại: chỉ tách câu rồi gộp theo số chữ (chars)
+            for sentence in _split_paragraph_into_sentences(paragraph):
+                if len(sentence) <= max_chars:
+                    pieces.append((sentence, False, "narration"))
+                else:
+                    pieces.extend((part, False, "narration") for part in _hard_split(sentence, max_chars))
 
     chunks: list[tuple[str, str]] = []
     buffer = ""
