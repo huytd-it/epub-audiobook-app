@@ -4,20 +4,25 @@ import { Header, LoadingState } from "@/components/common/Header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Crown, Gamepad2, Plus, Shield, Sparkles } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Crown, FolderOpen, Gamepad2, Plus, Shield, Sparkles, X } from "lucide-react";
 
 type PoolRow = { profile_key: string; game_id?: string | null; status: string; clip_count: number; duration_seconds: number };
 type Fighter = { id: number; name: string; class_name: string; matches: number; wins: number; eliminations: number };
 type Game = { id: string; name: string; family: "retro" | "procedural"; waveform_policy: string; description: string; enabled: boolean; sprite_roles?: string[] };
 type Entry = { position: number; game_id: string; player_tag: string; score: number; rating: number; rank_tier: string; level: number; games: number; deaths: number; rendered: number; duration_seconds: number; metrics: Record<string, number> };
 type Standing = { game_id: string; runs: number; best: number; average: number; rendered: number; deaths: number; top_level: number; champion: string; last_run_at?: string };
-type Status = { catalog?: Game[]; pool: PoolRow[]; target_seconds: number; fighters: Fighter[]; leaderboard?: Entry[]; standings?: Standing[]; stat_labels?: Record<string, [string, string][]>; health?: { failed_clips: number; oldest_lease_at?: string | null } };
+type StorageFolder = { name: string; count: number };
+type Storage = { root: string; folders: StorageFolder[] };
+type BatchResult = { requested: number; queued: number; game_ids: string[]; per_game: Record<string, number>; job_id: number | null; dest_path: string | null; offset: number };
+type Status = { catalog?: Game[]; pool: PoolRow[]; target_seconds: number; fighters: Fighter[]; leaderboard?: Entry[]; standings?: Standing[]; stat_labels?: Record<string, [string, string][]>; health?: { failed_clips: number; oldest_lease_at?: string | null }; storage?: Storage; batch_limit?: number };
 
 const gameplayPreview = (gameId: string) => ({
   video: `/gameplay/${gameId}.mp4`,
   poster: `/gameplay/${gameId}.jpg`,
 });
 const TIER_STYLE: Record<string, string> = { S: "bg-amber-400/20 text-amber-300 border-amber-400/40", A: "bg-emerald-400/20 text-emerald-300 border-emerald-400/40", B: "bg-sky-400/15 text-sky-300 border-sky-400/30" };
+const COUNT_PRESETS = [10, 50, 100, 500, 1000];
 
 const fallbackCatalog: Game[] = [
   { id: "snake_arena", name: "Rắn Săn Mồi", family: "retro", waveform_policy: "allowed_with_safe_area", description: "Con rắn tự săn mồi, dài ra và tăng tốc theo từng cấp.", enabled: true },
@@ -40,80 +45,224 @@ const fallbackCatalog: Game[] = [
 ];
 
 const formatScore = (value: number) => value.toLocaleString("vi-VN");
+const DEFAULT_GAME = "snake_arena";
 
 export function GameplayPage() {
   const [data, setData] = useState<Status | null>(null);
   const [board, setBoard] = useState<Entry[]>([]);
-  const [gameId, setGameId] = useState("snake_arena");
+  const [boardGameId, setBoardGameId] = useState(DEFAULT_GAME);
+  const [selectedIds, setSelectedIds] = useState<string[]>([DEFAULT_GAME]);
   const [fps, setFps] = useState(30);
   const [resolution, setResolution] = useState("1920x1080");
-  const [count, setCount] = useState(1);
+  const [count, setCount] = useState(10);
+  const [destFolder, setDestFolder] = useState("");
+  const [newFolder, setNewFolder] = useState("");
+  const [lastBatch, setLastBatch] = useState<BatchResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [previewGameId, setPreviewGameId] = useState("");
   const [previewVersion, setPreviewVersion] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
+
   const load = () => api<Status>("/gameplay/status").then(setData).catch((e) => setError(String(e)));
   useEffect(() => { load(); }, []);
   useEffect(() => {
-    api<{ entries: Entry[] }>(`/gameplay/leaderboard?game_id=${gameId}&limit=10`)
+    api<{ entries: Entry[] }>(`/gameplay/leaderboard?game_id=${boardGameId}&limit=10`)
       .then((payload) => setBoard(payload.entries)).catch(() => setBoard([]));
-  }, [gameId, data]);
+  }, [boardGameId, data]);
+
   const catalog = data?.catalog?.length ? data.catalog : fallbackCatalog;
+  const batchLimit = data?.batch_limit ?? 1000;
   const names = useMemo(() => Object.fromEntries(catalog.map((game) => [game.id, game.name])), [catalog]);
-  const profilePool = useMemo(() => (data?.pool || []).filter((row) => row.game_id === gameId), [data, gameId]);
+  const enabledIds = useMemo(() => catalog.filter((game) => game.enabled).map((game) => game.id), [catalog]);
+
+  // Drop games from the selection as soon as they disappear or get disabled.
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const next = current.filter((id) => enabledIds.includes(id));
+      if (next.length) return next.length === current.length ? current : next;
+      return enabledIds.includes(DEFAULT_GAME) ? [DEFAULT_GAME] : enabledIds.slice(0, 1);
+    });
+  }, [enabledIds]);
+
+  const toggleSelect = (id: string) =>
+    setSelectedIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
+  const selectAll = () => setSelectedIds(enabledIds);
+  const clearSelection = () => setSelectedIds([]);
+
+  const profilePool = useMemo(
+    () => (data?.pool || []).filter((row) => row.game_id && selectedIds.includes(row.game_id)),
+    [data, selectedIds]);
+  const available = profilePool.filter((row) => row.status === "available").reduce((sum, row) => sum + row.duration_seconds, 0);
+
+  const storage = data?.storage;
+  const storageRoot = storage?.root || "data/backgrounds";
+  const storageFolders = storage?.folders || [];
+  const destName = newFolder.trim() || destFolder;
+  const destPreview = destName ? `${storageRoot} / ${destName}` : storageRoot;
+
   const generate = async () => {
-    setBusy(true); setError("");
+    if (!selectedIds.length) { setError("Chọn ít nhất một game để tạo hàng loạt."); return; }
+    setBusy(true); setError(""); setLastBatch(null);
     const [width, height] = resolution.split("x");
     const form = new FormData();
-    form.append("game_id", gameId); form.append("width", width); form.append("height", height);
+    form.append("game_ids", selectedIds.join(","));
+    form.append("game_id", selectedIds[0]);
+    form.append("width", width); form.append("height", height);
     form.append("fps", String(fps)); form.append("count", String(count));
-    try { await postForm("/gameplay/generate", form); await load(); } catch (e) { setError(String(e)); } finally { setBusy(false); }
+    form.append("dest_folder", newFolder.trim() || destFolder || "");
+    try {
+      const result = await postForm<BatchResult>("/gameplay/generate", form);
+      setLastBatch(result);
+      if (newFolder.trim()) { setDestFolder(newFolder.trim()); setNewFolder(""); }
+      await load();
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   const toggleGame = async (game: Game) => {
-    setBusy(true); setError(""); const form = new FormData(); form.append("enabled", String(!game.enabled));
-    try { await postForm(`/gameplay/games/${game.id}/toggle`, form); await load(); } catch (e) { setError(String(e)); } finally { setBusy(false); }
+    setBusy(true); setError("");
+    const form = new FormData(); form.append("enabled", String(!game.enabled));
+    try {
+      await postForm(`/gameplay/games/${game.id}/toggle`, form);
+      if (game.enabled) setSelectedIds((current) => current.filter((id) => id !== game.id));
+      await load();
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   const generatePreview = async (id: string) => {
     setPreviewGameId(id); setError("");
     try { await postForm(`/gameplay/previews/${id}`, new FormData()); setPreviewVersion((current) => ({ ...current, [id]: Date.now() })); }
     catch (e) { setError(String(e)); } finally { setPreviewGameId(""); }
   };
+  const clampCount = (value: number) => Math.max(1, Math.min(batchLimit, Math.round(value) || 1));
+
   if (!data) return <><Header title="Gameplay" subtitle="Catalog nền deterministic cho audiobook" />{error ? <p className="text-destructive">{error}</p> : <LoadingState />}</>;
-  const available = profilePool.filter((p) => p.status === "available").reduce((sum, p) => sum + p.duration_seconds, 0);
-  const statLabels = data.stat_labels?.[gameId] || [];
+  const statLabels = data.stat_labels?.[boardGameId] || [];
   const standings = data.standings || [];
   const tier = (value: string) => <Badge variant="outline" className={TIER_STYLE[value] || ""}>{value}</Badge>;
   return <div className="space-y-6">
-    <Header title="Gameplay" subtitle="Game console cầm tay · khung 16:9 · không cần asset · replay deterministic" />
+    <Header title="Gameplay" subtitle="Game console cầm tay · khung 16:9 · không cần asset · tạo hàng loạt tới 1000 video vào thư viện background" />
     {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
+
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" onClick={selectAll}>Chọn tất cả</Button>
+        <Button size="sm" variant="ghost" onClick={clearSelection}>Bỏ chọn</Button>
+      </div>
+      <span className="text-xs text-muted-foreground">Đã chọn <b>{selectedIds.length}</b>/{catalog.length} game · tối đa {batchLimit} video mỗi lần tạo</span>
+    </div>
+
     <section className="grid gap-4 md:grid-cols-3">
-      {catalog.map((game) => <Card key={game.id} className={game.id === gameId ? "overflow-hidden border-primary" : "overflow-hidden"}>
-        <video
-          className="aspect-video w-full bg-muted object-cover"
-          src={`${gameplayPreview(game.id).video}?v=${previewVersion[game.id] || 0}`}
-          poster={`${gameplayPreview(game.id).poster}?v=${previewVersion[game.id] || 0}`}
-          muted
-          loop
-          playsInline
-          autoPlay
-          preload="metadata"
-          aria-label={`Preview ${game.name}`}
-        />
-        <CardHeader><CardTitle className="flex items-center justify-between gap-2"><span>{game.name}</span><Badge variant="outline">{game.family}</Badge></CardTitle></CardHeader>
-        <CardContent className="space-y-3"><p className="min-h-10 text-xs text-muted-foreground">{game.description}</p><div className="flex flex-wrap gap-2 text-[11px]"><Badge variant="secondary">3–5 phút</Badge><Badge variant="secondary">{game.waveform_policy}</Badge>{standings.find((row) => row.game_id === game.id) && <Badge variant="secondary">HI {formatScore(standings.find((row) => row.game_id === game.id)!.best)}</Badge>}</div>{game.family === "retro" && <p className="text-[10px] text-muted-foreground">Máy chơi game cầm tay: bàn cờ ô vuông nhiều màu, HUD điểm số — không dùng ảnh hay theme pack.</p>}{game.family === "procedural" && <p className="text-[10px] text-muted-foreground">Không cần asset — render bằng palette LUT, sóng giải tích và glow cộng dồn.</p>}<div className="flex flex-wrap gap-2"><Button size="sm" variant={game.id === gameId ? "default" : "outline"} onClick={() => setGameId(game.id)} disabled={!game.enabled}>Chọn</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => toggleGame(game)}>{game.enabled ? "Tắt" : "Bật"}</Button><Button size="sm" variant="outline" disabled={!!previewGameId} onClick={() => generatePreview(game.id)}>{previewGameId === game.id ? "Đang tạo..." : "Tạo video preview"}</Button></div></CardContent>
-      </Card>)}
+      {catalog.map((game) => {
+        const selected = selectedIds.includes(game.id);
+        return <Card key={game.id} className={selected ? "overflow-hidden border-primary ring-1 ring-primary/40" : "overflow-hidden"}>
+          <video
+            className="aspect-video w-full bg-muted object-cover"
+            src={`${gameplayPreview(game.id).video}?v=${previewVersion[game.id] || 0}`}
+            poster={`${gameplayPreview(game.id).poster}?v=${previewVersion[game.id] || 0}`}
+            muted
+            loop
+            playsInline
+            autoPlay
+            preload="metadata"
+            aria-label={`Preview ${game.name}`}
+          />
+          <CardHeader><CardTitle className="flex items-center justify-between gap-2">
+            <label className="flex items-center gap-2 min-w-0 cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-4 w-4 shrink-0 accent-primary"
+                checked={selected}
+                disabled={!game.enabled}
+                onChange={() => toggleSelect(game.id)}
+                aria-label={`Chọn ${game.name} để tạo hàng loạt`}
+              />
+              <span className="truncate">{game.name}</span>
+            </label>
+            <Badge variant="outline">{game.family}</Badge>
+          </CardTitle></CardHeader>
+          <CardContent className="space-y-3"><p className="min-h-10 text-xs text-muted-foreground">{game.description}</p><div className="flex flex-wrap gap-2 text-[11px]"><Badge variant="secondary">3–5 phút</Badge><Badge variant="secondary">{game.waveform_policy}</Badge>{standings.find((row) => row.game_id === game.id) && <Badge variant="secondary">HI {formatScore(standings.find((row) => row.game_id === game.id)!.best)}</Badge>}{!game.enabled && <Badge variant="secondary" className="text-destructive">Đang tắt</Badge>}</div>{game.family === "retro" && <p className="text-[10px] text-muted-foreground">Máy chơi game cầm tay: bàn cờ ô vuông nhiều màu, HUD điểm số — không dùng ảnh hay theme pack.</p>}{game.family === "procedural" && <p className="text-[10px] text-muted-foreground">Không cần asset — render bằng palette LUT, sóng giải tích và glow cộng dồn.</p>}<div className="flex flex-wrap gap-2">
+            <Button size="sm" variant={boardGameId === game.id ? "default" : "outline"} onClick={() => setBoardGameId(game.id)}>Xem BXH</Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => toggleGame(game)}>{game.enabled ? "Tắt" : "Bật"}</Button>
+            <Button size="sm" variant="outline" disabled={!!previewGameId} onClick={() => generatePreview(game.id)}>{previewGameId === game.id ? "Đang tạo..." : "Tạo video preview"}</Button>
+          </div></CardContent>
+        </Card>;
+      })}
     </section>
+
     <section className="grid gap-4 lg:grid-cols-3">
-      <Card><CardHeader><CardTitle className="flex items-center gap-2"><Sparkles className="h-5 w-5" />Tạo clip</CardTitle></CardHeader><CardContent className="space-y-3">
-        <select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={resolution} onChange={(e) => setResolution(e.target.value)}>{["1920x1080", "1280x720", "854x480", "1080x1920", "1080x1080"].map((v) => <option key={v}>{v}</option>)}</select>
-        <div className="grid grid-cols-2 gap-2"><select className="h-9 rounded-md border bg-background px-2 text-sm" value={fps} onChange={(e) => setFps(Number(e.target.value))}>{[24,30,60].map((v) => <option key={v} value={v}>{v} FPS</option>)}</select><input className="h-9 rounded-md border bg-background px-3 text-sm" type="number" min={1} max={10} value={count} onChange={(e) => setCount(Math.max(1, Math.min(10, Number(e.target.value))))} /></div>
-        <Button className="w-full" onClick={generate} disabled={busy}><Plus className="mr-2 h-4 w-4" />Tạo / lấp pool</Button>
+      <Card className="lg:col-span-2"><CardHeader><CardTitle className="flex items-center gap-2"><Sparkles className="h-5 w-5" />Tạo hàng loạt</CardTitle></CardHeader><CardContent className="space-y-4">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase text-muted-foreground">Game đã chọn</span>
+            <span className="text-[11px] text-muted-foreground">Mỗi video lấy seed ngẫu nhiên, chia đều theo game đã chọn.</span>
+          </div>
+          {selectedIds.length ? <div className="flex flex-wrap gap-2">{selectedIds.map((id) => <span key={id} className="inline-flex items-center gap-1 rounded-full border bg-secondary/50 px-2 py-1 text-xs">
+            {names[id] || id}
+            <button type="button" className="text-muted-foreground transition-colors hover:text-foreground" onClick={() => toggleSelect(id)} aria-label={`Bỏ chọn ${names[id] || id}`}><X className="h-3 w-3" /></button>
+          </span>)}</div> : <p className="text-xs text-destructive">Chưa chọn game nào — tích vào thẻ game phía trên để bắt đầu.</p>}
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="space-y-1 text-xs font-semibold uppercase text-muted-foreground">
+            Độ phân giải
+            <select className="h-9 w-full rounded-md border bg-background px-3 text-sm font-normal normal-case" value={resolution} onChange={(e) => setResolution(e.target.value)}>{["1920x1080", "1280x720", "854x480", "1080x1920", "1080x1080"].map((v) => <option key={v}>{v}</option>)}</select>
+          </label>
+          <label className="space-y-1 text-xs font-semibold uppercase text-muted-foreground">
+            Khung hình
+            <select className="h-9 w-full rounded-md border bg-background px-3 text-sm font-normal normal-case" value={fps} onChange={(e) => setFps(Number(e.target.value))}>{[24, 30, 60].map((v) => <option key={v} value={v}>{v} FPS</option>)}</select>
+          </label>
+        </div>
+
+        <div className="space-y-2">
+          <label className="space-y-1 text-xs font-semibold uppercase text-muted-foreground block">
+            Số video cần tạo
+            <Input type="number" min={1} max={batchLimit} value={count} onChange={(e) => setCount(clampCount(Number(e.target.value)))} className="font-mono" />
+          </label>
+          <div className="flex flex-wrap gap-2">{COUNT_PRESETS.map((preset) => <Button key={preset} size="sm" variant={count === preset ? "default" : "outline"} onClick={() => setCount(clampCount(preset))}>{preset}</Button>)}</div>
+        </div>
+
+        <div className="space-y-3 rounded-md border p-3">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground"><FolderOpen className="h-4 w-4" />Nơi lưu trữ</div>
+          <label className="space-y-1 text-xs text-muted-foreground block">
+            Thư mục trong data/backgrounds
+            <select className="h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground" value={destFolder} onChange={(e) => setDestFolder(e.target.value)}>
+              <option value="">(gốc thư viện background)</option>
+              {storageFolders.map((folder) => <option key={folder.name} value={folder.name}>{folder.name} · {folder.count} file</option>)}
+            </select>
+          </label>
+          <label className="space-y-1 text-xs text-muted-foreground block">
+            Hoặc tạo / dùng thư mục mới
+            <Input placeholder="vd: gameplay-bg" value={newFolder} onChange={(e) => setNewFolder(e.target.value)} />
+          </label>
+          <p className="text-[11px] text-muted-foreground">Video lưu vào: <code className="break-all">{destPreview}</code></p>
+        </div>
+
+        <Button className="w-full" onClick={generate} disabled={busy || !selectedIds.length}>
+          <Plus className="mr-2 h-4 w-4" />{busy ? "Đang xếp hàng..." : `Tạo ${count} video${selectedIds.length > 1 ? ` từ ${selectedIds.length} game` : ""}`}
+        </Button>
+
+        {lastBatch && <div className="rounded-md border border-emerald-400/40 bg-emerald-400/10 p-3 text-xs text-emerald-200">
+          Đã lên lịch <b>{lastBatch.queued}</b>/{lastBatch.requested} video{lastBatch.job_id != null ? <> · job #{lastBatch.job_id}</> : null}{lastBatch.dest_path ? <> · lưu tại <code className="break-all">{lastBatch.dest_path}</code></> : null}.
+          {Object.keys(lastBatch.per_game).length > 1 && <> Phân bổ: {Object.entries(lastBatch.per_game).map(([id, total]) => `${names[id] || id}: ${total}`).join(", ")}.</>}
+          <span className="block text-[11px] opacity-80">Replay + render chạy nền theo hàng đợi; theo dõi ở trang Queue.</span>
+        </div>}
       </CardContent></Card>
-      <Card><CardHeader><CardTitle>Pool của game</CardTitle></CardHeader><CardContent><div className="font-mono text-3xl font-black">{(available / 60).toFixed(1)} phút</div><p className="mt-2 text-xs text-muted-foreground">Mục tiêu {(data.target_seconds / 60).toFixed(0)} phút / profile</p><div className="mt-4 space-y-2">{profilePool.length ? profilePool.map((row) => <div key={`${row.profile_key}-${row.status}`} className="flex justify-between text-xs"><Badge variant="secondary">{row.status}</Badge><span className="font-mono">{row.clip_count} · {(row.duration_seconds/60).toFixed(1)}m</span></div>) : <p className="text-xs text-muted-foreground">Chưa có clip cho game/profile này.</p>}</div></CardContent></Card>
-      <Card><CardHeader><CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" />Renderer</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">CPU / Pillow / NumPy / raw RGB / libx264<br />Replay trước, render sau · video-only<br />Resolution và FPS theo cấu hình sách{data.health && <><br />Failed clips: {data.health.failed_clips}{data.health.oldest_lease_at && <> · lease cũ nhất: {data.health.oldest_lease_at}</>}</>}</CardContent></Card>
+
+      <div className="space-y-4">
+        <Card><CardHeader><CardTitle>Pool đã tạo</CardTitle></CardHeader><CardContent>
+          <div className="font-mono text-3xl font-black">{(available / 60).toFixed(1)} phút</div>
+          <p className="mt-2 text-xs text-muted-foreground">Mục tiêu {(data.target_seconds / 60).toFixed(0)} phút / profile</p>
+          <div className="mt-4 space-y-2">{profilePool.length ? profilePool.map((row) => <div key={`${row.profile_key}-${row.status}`} className="flex items-center justify-between gap-2 text-xs">
+            <span className="flex min-w-0 items-center gap-2"><Badge variant="secondary">{row.status}</Badge><span className="truncate text-muted-foreground">{names[row.game_id || ""] || row.game_id}</span></span>
+            <span className="shrink-0 font-mono">{row.clip_count} · {(row.duration_seconds / 60).toFixed(1)}m</span>
+          </div>) : <p className="text-xs text-muted-foreground">Chưa có clip cho game đã chọn.</p>}</div>
+        </CardContent></Card>
+        <Card><CardHeader><CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" />Renderer</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">CPU / Pillow / NumPy / raw RGB / libx264<br />Replay trước, render sau · video-only<br />Resolution và FPS theo cấu hình sách{data.health && <><br />Failed clips: {data.health.failed_clips}{data.health.oldest_lease_at && <> · lease cũ nhất: {data.health.oldest_lease_at}</>}</>}</CardContent></Card>
+      </div>
     </section>
+
     <section className="grid gap-4 lg:grid-cols-2">
-      <Card><CardHeader><CardTitle className="flex items-center gap-2"><Gamepad2 className="h-5 w-5" />Bảng xếp hạng · {names[gameId] || gameId}</CardTitle></CardHeader><CardContent>
+      <Card><CardHeader><CardTitle className="flex items-center justify-between gap-2"><span className="flex items-center gap-2"><Gamepad2 className="h-5 w-5" />Bảng xếp hạng</span>
+        <select className="h-8 rounded-md border bg-background px-2 text-xs font-normal" value={boardGameId} onChange={(e) => setBoardGameId(e.target.value)}>{catalog.map((game) => <option key={game.id} value={game.id}>{game.name}</option>)}</select>
+      </CardTitle></CardHeader><CardContent>
         {board.length ? <div className="overflow-x-auto"><table className="w-full text-sm"><thead className="text-left text-xs uppercase text-muted-foreground"><tr><th className="py-2">#</th><th>Người chơi</th><th className="text-right">Điểm</th><th>Hạng</th><th className="text-right">Cấp</th><th className="text-right">Chết</th>{statLabels.map(([key, label]) => <th key={key} className="text-right">{label}</th>)}</tr></thead>
           <tbody>{board.map((entry) => <tr key={`${entry.position}-${entry.player_tag}`} className="border-t"><td className="py-2 font-mono">{entry.position}</td><td className="font-mono font-semibold">{entry.player_tag}{entry.rendered ? "" : " *"}</td><td className="text-right font-mono font-bold">{formatScore(entry.score)}</td><td>{tier(entry.rank_tier)}</td><td className="text-right font-mono">{entry.level}</td><td className="text-right font-mono">{entry.deaths}</td>{statLabels.map(([key]) => <td key={key} className="text-right font-mono">{entry.metrics?.[key] ?? 0}</td>)}</tr>)}</tbody></table>
           <p className="mt-2 text-[11px] text-muted-foreground">Dấu * là lượt chơi đã mô phỏng nhưng clip chưa render xong. Hạng S nghĩa là phá kỷ lục đang giữ khi trận bắt đầu.</p></div>

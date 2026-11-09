@@ -331,3 +331,118 @@ def test_patch_coverage_replaces_clips_when_render_profile_changes(tmp_path):
     old_row = conn.execute("SELECT status,reserved_patch_id FROM gameplay_clip WHERE id=?",
                            (old[0]["id"],)).fetchone()
     assert (old_row["status"], old_row["reserved_patch_id"]) == ("available", None)
+
+
+def test_gameplay_batch_generate_spreads_games_and_caps_count(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import settings as app_settings
+    from app.main import app
+    from app.routes import gameplay
+
+    monkeypatch.setattr(app_settings, "db_path", str(tmp_path / "batch.db"))
+    monkeypatch.setattr(app_settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(app_settings, "enable_worker", False)
+    captured: dict = {}
+
+    def fake_enqueue(conn, **kwargs):
+        captured.update(kwargs)
+        return {"requested": kwargs["count"], "enqueued": kwargs["count"],
+                "game_ids": kwargs["game_ids"], "per_game": {}, "job_ids": [],
+                "dest_path": str(kwargs["dest_dir"])}
+
+    monkeypatch.setattr(gameplay, "enqueue_batch", fake_enqueue)
+    with TestClient(app) as client:
+        response = client.post("/gameplay/generate", data={
+            "game_ids": "snake_arena,aurora_veil", "count": 5000, "fps": 30,
+            "width": 1280, "height": 720, "dest_folder": "gameplay-bg"})
+        assert response.status_code == 200, response.text
+        # 5000 is clamped to the batch ceiling and the folder is created.
+        assert captured["count"] == 1000
+        assert captured["game_ids"] == ["snake_arena", "aurora_veil"]
+        assert captured["dest_dir"] == tmp_path / "backgrounds" / "gameplay-bg"
+        assert (tmp_path / "backgrounds" / "gameplay-bg").is_dir()
+
+        status = client.get("/gameplay/status").json()
+        assert status["batch_limit"] == 1000
+        assert status["storage"]["root"] == str(tmp_path / "backgrounds")
+
+        assert client.post("/gameplay/games/aurora_veil/toggle", data={"enabled": "false"}).status_code == 200
+        assert client.post("/gameplay/generate", data={"game_ids": "aurora_veil", "count": 1}).status_code == 409
+
+
+def test_gameplay_batch_handler_expands_clips_under_chosen_folder(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import settings as app_settings
+    from app.main import app
+    from app.jobqueue import store
+    from app.jobqueue.context import JobContext
+    from app.jobqueue.handlers import gameplay_batch
+    from app.jobqueue.joblog import JobLogger
+
+    monkeypatch.setattr(app_settings, "db_path", str(tmp_path / "batch2.db"))
+    monkeypatch.setattr(app_settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(app_settings, "enable_worker", False)
+    with TestClient(app) as client:
+        response = client.post("/gameplay/generate", data={
+            "game_ids": "snake_arena,aurora_veil", "count": 4, "fps": 24,
+            "width": 854, "height": 480, "dest_folder": "batch-bg"})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        # The API only plans the batch; expansion happens in the handler.
+        assert body["queued"] == 4
+        assert set(body["per_game"]) == {"snake_arena", "aurora_veil"}
+        assert sum(body["per_game"].values()) == 4
+        assert body["dest_path"] == str(tmp_path / "backgrounds" / "batch-bg")
+
+        conn = app.state.conn
+        job = store.list_jobs(conn, job_type="gameplay_batch")[0]
+        ctx = JobContext(job, conn, JobLogger(job.id, "gameplay_batch"), lambda: False)
+        result = gameplay_batch.handle(ctx)
+
+        assert result["expanded"] == 4 and result["remaining"] == 0
+
+        rows = conn.execute("SELECT game_id, file_path FROM gameplay_clip").fetchall()
+        assert len(rows) == 4
+        dest = str(tmp_path / "backgrounds" / "batch-bg")
+        assert all(str(row["file_path"]).startswith(dest) for row in rows)
+        assert {row["game_id"] for row in rows} == {"snake_arena", "aurora_veil"}
+        # Every expanded clip queues exactly one render job.
+        assert len(store.list_jobs(conn, job_type="gameplay_clip")) == 4
+
+
+def test_gameplay_batch_handler_requeues_the_next_slice(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import settings as app_settings
+    from app.main import app
+    from app.jobqueue import store
+    from app.jobqueue.context import JobContext
+    from app.jobqueue.handlers import gameplay_batch
+    from app.jobqueue.joblog import JobLogger
+
+    monkeypatch.setattr(app_settings, "db_path", str(tmp_path / "batch3.db"))
+    monkeypatch.setattr(app_settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(app_settings, "enable_worker", False)
+    monkeypatch.setattr(gameplay_batch, "CHUNK", 2)
+
+    with TestClient(app) as client:
+        assert client.post("/gameplay/generate", data={
+            "game_ids": "snake_arena,aurora_veil", "count": 5, "width": 854, "height": 480,
+        }).status_code == 200
+        conn = app.state.conn
+
+        def run(offset: int) -> dict:
+            job = next(j for j in store.list_jobs(conn, job_type="gameplay_batch")
+                       if j.payload.get("offset") == offset)
+            return gameplay_batch.handle(
+                JobContext(job, conn, JobLogger(job.id, "gameplay_batch"), lambda: False))
+
+        assert run(0)["next_offset"] == 2
+        assert run(2)["next_offset"] == 4
+        final = run(4)
+        assert final["remaining"] == 0 and final["expanded"] == 1
+        assert conn.execute("SELECT COUNT(*) FROM gameplay_clip").fetchone()[0] == 5
+        # No slice beyond the end was queued.
+        assert max(j.payload["offset"] for j in store.list_jobs(conn, job_type="gameplay_batch")) == 4

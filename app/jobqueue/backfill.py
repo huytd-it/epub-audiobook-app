@@ -9,15 +9,15 @@ from typing import Callable
 
 from app.config import settings
 from app.jobqueue import store
-from app.jobqueue.handlers import background_gen, gameplay_clip, kaggle_tts, light_tts, patch_video, short_render, short_upload, standalone_video, video, audiobook_tts, youtube_metadata, youtube_upload
+from app.jobqueue.handlers import background_gen, gameplay_batch, gameplay_clip, kaggle_tts, light_tts, patch_video, short_render, short_upload, standalone_video, video, audiobook_tts, youtube_metadata, youtube_upload
 from app.jobqueue.runner import JobQueue, parse_concurrency
 
 logger = logging.getLogger(__name__)
 
 JOB_TYPES = (
     "audiobook_tts", "audiobook_tts_api", "video", "patch_video", "standalone_video",
-    "youtube_upload", "light_tts", "background_gen", "gameplay_clip", "kaggle_tts",
-    "youtube_metadata_gen", "short_render", "short_upload",
+    "youtube_upload", "light_tts", "background_gen", "gameplay_clip", "gameplay_batch",
+    "kaggle_tts", "youtube_metadata_gen", "short_render", "short_upload",
 )
 QUEUE_CONCURRENCY_STATE_KEY = "queue.concurrency"
 
@@ -30,6 +30,9 @@ def configured_concurrency(conn: sqlite3.Connection) -> dict[str, int]:
     )
     concurrency.setdefault("patch_video", max(1, int(settings.patch_video_concurrency)))
     concurrency.setdefault("gameplay_clip", max(1, int(settings.gameplay_clip_concurrency)))
+    # Batch expansion only simulates replays; one at a time avoids competing with
+    # clip rendering and keeps a 1000-clip request from saturating every worker.
+    concurrency.setdefault("gameplay_batch", 1)
     # Gọi LLM là I/O-bound, chạy song được vài job mà không tốn GPU: vài sách có
     # thể bấm sinh lại liên tiếp mà không phải xếp hàng dài.
     concurrency.setdefault("youtube_metadata_gen", 2)
@@ -82,6 +85,7 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     queue.register("light_tts", light_tts.handle)
     queue.register("background_gen", background_gen.handle)
     queue.register("gameplay_clip", gameplay_clip.handle)
+    queue.register("gameplay_batch", gameplay_batch.handle)
     queue.register("kaggle_tts", kaggle_tts.handle, cancellable=True)
     queue.register("youtube_metadata_gen", youtube_metadata.handle)
     # Short Video Studio: render chạy chung pool video (giữ concurrency=2),

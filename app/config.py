@@ -29,7 +29,6 @@ class Settings(BaseSettings):
     dtk_timeout_seconds: float = 60.0
     dtk_poll_interval_seconds: float = 2.0
     dtk_poll_timeout_seconds: float = 120.0
-    bg_video_variation_enabled: bool = False
 
     data_root: str = str(_APP_ROOT / "data")
     db_path: str = str(_APP_ROOT / "data" / "app.db")

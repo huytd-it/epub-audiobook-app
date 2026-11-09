@@ -46,29 +46,120 @@ def _create_replay(conn, game_id: str, seed: int, themes: list[dict], replay_key
     return save_gameplay_replay(conn, replay_key, replay)
 
 
-def enqueue_generation(conn, *, width: int, height: int, fps: int, count: int = 1,
-                       game_id: str = "snake_arena", quality: int = 23,
-                       config: dict | None = None) -> list[int]:
+def _clip_dir(profile: str, dest_dir: Path | None) -> Path:
+    """Where a rendered clip lands: the chosen storage folder, or the pool's
+    own profile directory when no destination was picked."""
+    return Path(dest_dir) if dest_dir is not None else Path(settings.data_root) / "gameplay" / "clips" / profile
+
+
+def _enqueue_clip(conn, *, game_id: str, ordinal: int, request_id: str,
+                  width: int, height: int, fps: int, quality: int,
+                  config: dict | None, dest_dir: Path | None) -> int | None:
     profile, themes = active_profile(conn, width, height, fps, game_id=game_id, quality=quality)
-    request_id = uuid.uuid4().hex
-    ids = []
-    for ordinal in range(max(0, count)):
-        seed = int(hashlib.sha256(f"pool:{game_id}:{profile}:{request_id}:{ordinal}".encode()).hexdigest()[:12], 16)
-        key = f"pool:{game_id}:{profile}:{request_id}:{ordinal}"
-        saved = _create_replay(conn, game_id, seed, themes, key, config or {})
-        path = str(Path(settings.data_root) / "gameplay" / "clips" / profile / f"{saved['id']}.mp4")
-        duration = float(saved["duration_seconds"])
+    seed = int(hashlib.sha256(f"pool:{game_id}:{profile}:{request_id}:{ordinal}".encode()).hexdigest()[:12], 16)
+    key = f"pool:{game_id}:{profile}:{request_id}:{ordinal}"
+    saved = _create_replay(conn, game_id, seed, themes, key, config or {})
+    duration = float(saved["duration_seconds"])
+    # The replay is keyed by (game, profile, request, ordinal), so a retried batch
+    # slice resolves to the same replay. Reuse its clip instead of inserting a
+    # second row, and skip clips that already finished rendering.
+    existing = conn.execute(
+        "SELECT id, status FROM gameplay_clip WHERE replay_id=? AND profile_key=? ORDER BY id LIMIT 1",
+        (saved["id"], profile)).fetchone()
+    if existing is not None and existing["status"] == "available":
+        return None
+    if existing is not None:
+        clip_id = int(existing["id"])
+    else:
+        path = str(_clip_dir(profile, dest_dir) / f"{saved['id']}.mp4")
         clip_id = create_clip(conn, profile, saved["id"], duration, path, status="rendering",
                               game_id=game_id,
                               render_profile={"game_id": game_id, "width": width, "height": height,
                                               "fps": fps, "quality": quality})
-        job_id = store.enqueue(conn, "gameplay_clip",
-                               payload={"clip_id": clip_id, "resolution": [width, height], "fps": fps,
-                                        "quality": quality, "game_id": game_id},
-                               dedupe_key=f"gameplay_clip:clip={clip_id}", max_attempts=3)
+    return store.enqueue(conn, "gameplay_clip",
+                         payload={"clip_id": clip_id, "resolution": [width, height], "fps": fps,
+                                  "quality": quality, "game_id": game_id},
+                         dedupe_key=f"gameplay_clip:clip={clip_id}", max_attempts=3)
+
+
+def enqueue_generation(conn, *, width: int, height: int, fps: int, count: int = 1,
+                       game_id: str = "snake_arena", quality: int = 23,
+                       config: dict | None = None, dest_dir: Path | None = None) -> list[int]:
+    request_id = uuid.uuid4().hex
+    ids = []
+    for ordinal in range(max(0, count)):
+        job_id = _enqueue_clip(conn, game_id=game_id, ordinal=ordinal, request_id=request_id,
+                               width=width, height=height, fps=fps, quality=quality,
+                               config=config, dest_dir=dest_dir)
         if job_id is not None:
             ids.append(job_id)
     return ids
+
+
+def plan_batch(*, game_ids: list[str], count: int) -> dict:
+    """Validate the target games and freeze a resumable batch plan.
+
+    Cheap on purpose: no replay is simulated here, so a 1000-clip request stays
+    a sub-second API call. The heavy work is expanded later by the worker."""
+    games = list(dict.fromkeys(game_ids or ["snake_arena"]))
+    for game_id in games:
+        get_game(game_id)
+    return {"request_id": uuid.uuid4().hex, "game_ids": games, "requested": max(0, int(count))}
+
+
+def batch_game_for_ordinal(game_ids: list[str], request_id: str, ordinal: int) -> str:
+    """Pick a game for one batch ordinal.
+
+    Round-robin from a request-random start, so a batch is spread evenly over the
+    selected games (differ by at most one) instead of leaving a game empty on a
+    small batch. Deterministic, so chunked expansion and a retry after a restart
+    assign the same game to the same ordinal."""
+    start = int(hashlib.sha256(request_id.encode()).hexdigest()[:8], 16) % len(game_ids)
+    return game_ids[(start + ordinal) % len(game_ids)]
+
+
+def enqueue_batch(conn, *, width: int, height: int, fps: int, count: int,
+                  game_ids: list[str], quality: int = 23,
+                  config: dict | None = None, dest_dir: Path | None = None) -> dict:
+    """Queue one resumable ``gameplay_batch`` job for ``count`` random clips.
+
+    Only planning happens here. The handler simulates the replays and creates the
+    clip rows on the worker, in bounded slices, so the API never blocks on
+    simulating (or rendering) a 1000-video request."""
+    plan = plan_batch(game_ids=game_ids, count=count)
+    per_game = {game_id: 0 for game_id in plan["game_ids"]}
+    for ordinal in range(plan["requested"]):
+        per_game[batch_game_for_ordinal(plan["game_ids"], plan["request_id"], ordinal)] += 1
+    payload = {"request_id": plan["request_id"], "game_ids": plan["game_ids"],
+               "requested": plan["requested"], "offset": 0,
+               "resolution": [width, height], "fps": fps, "quality": quality,
+               "dest_dir": str(dest_dir) if dest_dir is not None else None}
+    if config:
+        payload["config"] = config
+    job_id = store.enqueue(conn, "gameplay_batch", payload=payload,
+                           dedupe_key=f"gameplay_batch:{plan['request_id']}", max_attempts=3)
+    return {"requested": plan["requested"], "queued": plan["requested"],
+            "game_ids": plan["game_ids"], "per_game": per_game, "job_id": job_id,
+            "dest_path": str(dest_dir) if dest_dir is not None else None, "offset": 0}
+
+
+def expand_batch_slice(conn, *, game_ids: list[str], request_id: str, offset: int, count: int,
+                       width: int, height: int, fps: int, quality: int = 23,
+                       config: dict | None = None, dest_dir: Path | None = None) -> dict:
+    """Create the clips for a slice of a batch: ordinals [offset, offset+count).
+
+    Runs on the worker (each replay simulation costs 0.1-2s), which is why the
+    batch handler calls it in bounded chunks instead of the request handler."""
+    created: list[int] = []
+    end = offset + max(0, int(count))
+    for ordinal in range(offset, end):
+        game_id = batch_game_for_ordinal(game_ids, request_id, ordinal)
+        job_id = _enqueue_clip(conn, game_id=game_id, ordinal=ordinal, request_id=request_id,
+                               width=width, height=height, fps=fps, quality=quality,
+                               config=config, dest_dir=dest_dir)
+        if job_id is not None:
+            created.append(job_id)
+    return {"created": len(created), "next_offset": end}
 
 
 def maintain_pool(conn, *, width: int, height: int, fps: int,
@@ -203,4 +294,6 @@ def ensure_patch_coverage(conn, patch_id: int, required_seconds: float, *, width
         raise
 
 
-__all__ = ["active_profile", "enqueue_generation", "maintain_pool", "ensure_patch_coverage", "pool_status"]
+__all__ = ["active_profile", "enqueue_generation", "enqueue_batch", "expand_batch_slice",
+           "plan_batch", "batch_game_for_ordinal", "maintain_pool",
+           "ensure_patch_coverage", "pool_status"]

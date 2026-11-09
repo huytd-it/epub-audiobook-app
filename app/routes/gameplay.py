@@ -8,8 +8,9 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 
+from app import media_library
 from app.config import settings
-from app.gameplay_pool import maintain_pool
+from app.gameplay_pool import enqueue_batch
 from app.gameplay_preview import generate_preview
 from app.gameplay_registry import get_game, list_games
 from app.gameplay_repository import list_themes, pool_status
@@ -19,9 +20,44 @@ from app.gameplay_themes import install_theme_zip, theme_prompt
 
 router = APIRouter(prefix="/gameplay", tags=["gameplay"])
 
+# How many clips one batch request may queue. The queue renders them one at a
+# time, so this is a planning cap rather than a promise of instant output.
+MAX_BATCH_CLIPS = 1000
+SUPPORTED_RESOLUTIONS = {(1920, 1080), (1280, 720), (854, 480), (1080, 1920), (1080, 1080)}
+SUPPORTED_FPS = {24, 30, 60}
+
 
 def _locked(request: Request):
     return request.app.state.db_lock, request.app.state.conn
+
+
+def _storage_root() -> Path:
+    """The background library root that storage folders live under."""
+    return Path(settings.data_root) / "backgrounds"
+
+
+def _resolve_storage_folder(name: str) -> Path:
+    """Map a picked storage folder to a path under data/backgrounds.
+
+    Empty / ``__root__`` means the library root; any other name is validated as
+    a user folder and created when it does not exist yet."""
+    root = _storage_root()
+    root.mkdir(parents=True, exist_ok=True)
+    raw = (name or "").strip()
+    if not raw or raw == media_library.ROOT_FOLDER:
+        return root
+    cleaned = media_library.clean_folder_name(raw)
+    dest = root / cleaned
+    dest.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
+def _storage_options() -> dict:
+    return {
+        "root": str(_storage_root()),
+        "folders": [{"name": name, "count": len(media_library.folder_files(name))}
+                    for name in media_library.list_folders()],
+    }
 
 
 @router.get("/status")
@@ -41,7 +77,8 @@ def status(request: Request):
                 "leaderboard": leaderboard(conn, limit=12), "standings": standings(conn),
                 "stat_labels": {spec.id: [list(pair) for pair in spec.stat_labels]
                                 for spec in RETRO_GAMES},
-                "themes": themes, "fighters": fighters}
+                "themes": themes, "fighters": fighters, "storage": _storage_options(),
+                "batch_limit": MAX_BATCH_CLIPS}
 
 
 @router.get("/leaderboard")
@@ -76,22 +113,37 @@ def toggle_game(request: Request, game_id: str, enabled: bool = Form(...)):
 
 @router.post("/generate")
 def generate(request: Request, width: int = Form(1920), height: int = Form(1080),
-             fps: int = Form(30), count: int = Form(1), game_id: str = Form("snake_arena")):
-    if (width, height) not in {(1920, 1080), (1280, 720), (854, 480), (1080, 1920), (1080, 1080)}:
+             fps: int = Form(30), count: int = Form(1), game_id: str = Form("snake_arena"),
+             game_ids: str = Form(""), dest_folder: str = Form("")):
+    """Queue a batch of random clips across one or several games.
+
+    ``game_ids`` is an optional comma-separated list; when empty the single
+    ``game_id`` is used. ``dest_folder`` picks where the MP4s are stored under
+    data/backgrounds (empty = the library root, unknown names are created)."""
+    if (width, height) not in SUPPORTED_RESOLUTIONS:
         raise HTTPException(400, "Unsupported gameplay resolution")
-    if fps not in {24, 30, 60}:
+    if fps not in SUPPORTED_FPS:
         raise HTTPException(400, "Unsupported gameplay FPS")
+    picked = [value.strip() for value in (game_ids or "").split(",") if value.strip()]
+    selected = list(dict.fromkeys(picked or [game_id]))
+    for current in selected:
+        try:
+            get_game(current)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     try:
-        get_game(game_id)
+        dest = _resolve_storage_folder(dest_folder)
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, "Tên thư mục lưu trữ không hợp lệ") from exc
+    count = max(1, min(int(count), MAX_BATCH_CLIPS))
     lock, conn = _locked(request)
     with lock:
-        policy = conn.execute("SELECT enabled FROM gameplay_game WHERE game_id=?", (game_id,)).fetchone()
-        if policy is not None and not policy["enabled"]:
-            raise HTTPException(409, "Gameplay game is disabled")
-        return maintain_pool(conn, width=width, height=height, fps=fps, game_id=game_id,
-                             target_seconds=max(240, count * 240), max_enqueue=max(1, min(count, 10)))
+        disabled = [row["game_id"] for row in conn.execute(
+            "SELECT game_id FROM gameplay_game WHERE enabled=0") if row["game_id"] in selected]
+        if disabled:
+            raise HTTPException(409, f"Gameplay game is disabled: {', '.join(disabled)}")
+        return enqueue_batch(conn, width=width, height=height, fps=fps, count=count,
+                             game_ids=selected, dest_dir=dest)
 
 
 @router.post("/previews/{game_id}")
