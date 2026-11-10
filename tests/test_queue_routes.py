@@ -130,6 +130,55 @@ def test_clear_queue_deletes_inactive_and_preserves_active(client):
     assert {job.status for job in store.list_jobs(conn)} == {"running", "cancelling"}
 
 
+def _seed_statuses(conn):
+    ids = {}
+    for status in ("pending", "running", "failed", "done"):
+        job_id = store.enqueue(conn, "video")
+        conn.execute(
+            "UPDATE job SET status=?, error_message=? WHERE id=?",
+            (status, f"err-{status}", job_id),
+        )
+        ids[status] = job_id
+    extra_done = store.enqueue(conn, "youtube_upload")
+    conn.execute("UPDATE job SET status='done' WHERE id=?", (extra_done,))
+    conn.commit()
+    return ids, extra_done
+
+
+def test_clear_done_removes_only_done_jobs(client):
+    c, conn, _ = client
+    ids, extra_done = _seed_statuses(conn)
+
+    response = c.post("/queue/clear-done")
+
+    assert response.status_code == 200
+    assert response.json() == {"cleared": 2}
+    assert store.get(conn, ids["done"]) is None
+    assert store.get(conn, extra_done) is None
+    for status in ("pending", "running", "failed"):
+        assert store.get(conn, ids[status]).status == status
+    assert c.post("/queue/clear-done").json() == {"cleared": 0}
+
+
+def test_clear_errors_keeps_failed_status_and_other_jobs(client):
+    c, conn, _ = client
+    ids, extra_done = _seed_statuses(conn)
+
+    response = c.post("/queue/clear-errors")
+
+    assert response.status_code == 200
+    assert response.json() == {"cleared": 1}
+    failed = store.get(conn, ids["failed"])
+    assert failed.status == "failed"
+    assert failed.error_message is None
+    for status in ("pending", "running", "done"):
+        job = store.get(conn, ids[status])
+        assert job.status == status
+        assert job.error_message == f"err-{status}"
+    assert store.get(conn, extra_done).status == "done"
+    assert [j.id for j in store.list_jobs(conn) if j.status == "failed"] == [ids["failed"]]
+
+
 def test_retry_all_failed_jobs(client):
     c, conn, _ = client
     failed = store.enqueue(conn, "video")

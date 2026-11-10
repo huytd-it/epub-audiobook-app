@@ -481,6 +481,27 @@ def clear_inactive(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+def clear_done(conn: sqlite3.Connection) -> int:
+    """Xoá mọi job đã hoàn tất (status='done'); giữ nguyên các trạng thái khác."""
+    done_ids = [row["id"] for row in conn.execute("SELECT id FROM job WHERE status='done'")]
+    if not done_ids:
+        return 0
+    _suppress_auto_requeues(conn, done_ids)
+    cur = conn.execute("DELETE FROM job WHERE status='done'")
+    conn.commit()
+    return cur.rowcount
+
+
+def clear_error_messages(conn: sqlite3.Connection) -> int:
+    """Xoá nội dung lỗi của job failed nhưng giữ nguyên status='failed'."""
+    cur = conn.execute(
+        "UPDATE job SET error_message=NULL, updated_at=? WHERE status='failed'",
+        (_now(),),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def clear_all(conn: sqlite3.Connection) -> int:
     """Xoá sạch hàng đợi — kể cả job còn 'running'/'cancelling'.
 

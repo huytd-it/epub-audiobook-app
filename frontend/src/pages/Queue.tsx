@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowDownToLine, ArrowUpToLine, Check, ChevronLeft, ChevronRight, Copy, FileText, GripVertical, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered, Settings2 } from "lucide-react";
+import { ArrowDownToLine, ArrowUpToLine, Check, CheckCheck, Eraser, ChevronLeft, ChevronRight, Copy, FileText, GripVertical, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered, Settings2 } from "lucide-react";
 import { api, post, put, Job } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { LogLines } from "@/components/common/LogLines";
@@ -52,6 +52,8 @@ export function Queue() {
   const [jobs, setJobs] = useState<Job[]>();
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
+  const [clearingDone, setClearingDone] = useState(false);
+  const [clearingErrors, setClearingErrors] = useState(false);
   const [retryingSelected, setRetryingSelected] = useState(false);
   const [cancellingSelected, setCancellingSelected] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -131,6 +133,33 @@ export function Queue() {
       console.error(err);
     } finally {
       setClearing(false);
+    }
+  }
+
+  async function clearDoneJobs() {
+    if (!window.confirm("Xóa vĩnh viễn mọi tác vụ đã hoàn tất khỏi hàng đợi?")) return;
+    setClearingDone(true);
+    setQueueError("");
+    try {
+      await post("/queue/clear-done");
+      await load();
+    } catch (err) {
+      setQueueError(err instanceof Error ? err.message : "Không dọn được tác vụ đã hoàn tất");
+    } finally {
+      setClearingDone(false);
+    }
+  }
+
+  async function clearFailedErrors() {
+    setClearingErrors(true);
+    setQueueError("");
+    try {
+      await post("/queue/clear-errors");
+      await load();
+    } catch (err) {
+      setQueueError(err instanceof Error ? err.message : "Không dọn được trạng thái lỗi");
+    } finally {
+      setClearingErrors(false);
     }
   }
 
@@ -387,6 +416,28 @@ export function Queue() {
             >
               <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
               {clearing ? "Đang dọn..." : `Dọn theo đã chọn${selectedTerminalIds.length ? ` (${selectedTerminalIds.length})` : ""}`}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={clearDoneJobs}
+              disabled={clearingDone || clearingErrors}
+              title="Xóa mọi tác vụ có trạng thái hoàn tất"
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              <CheckCheck className="h-3.5 w-3.5 text-muted-foreground" />
+              {clearingDone ? "Đang dọn..." : "Dọn tác vụ đã hoàn tất"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={clearFailedErrors}
+              disabled={clearingErrors || clearingDone}
+              title="Chỉ xóa nội dung lỗi, tác vụ vẫn giữ trạng thái thất bại"
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              <Eraser className="h-3.5 w-3.5 text-muted-foreground" />
+              {clearingErrors ? "Đang dọn..." : "Dọn trạng thái lỗi"}
             </Button>
           </div>
         }

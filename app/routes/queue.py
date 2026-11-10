@@ -336,6 +336,22 @@ def clear_queue(request: Request):
     return {"cleared": cleared}
 
 
+@router.post("/queue/clear-done")
+def clear_done_jobs(request: Request):
+    with locked_conn(request) as conn:
+        cleared = store.clear_done(conn)
+    logger.info("event=queue.clear_done count=%s", cleared)
+    return {"cleared": cleared}
+
+
+@router.post("/queue/clear-errors")
+def clear_failed_errors(request: Request):
+    with locked_conn(request) as conn:
+        cleared = store.clear_error_messages(conn)
+    logger.info("event=queue.clear_errors count=%s", cleared)
+    return {"cleared": cleared}
+
+
 @router.post("/queue/requeue-stuck")
 def requeue_stuck(request: Request):
     """Operator escape hatch: flip every 'processing' patch back to 'pending' without
