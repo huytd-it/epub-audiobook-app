@@ -649,6 +649,12 @@ def api_list_playlists(request: Request, max_results: int = 50):
                          "next_page_token": None, "prev_page_token": None})
 
 
+def _ai_not_configured_detail(reason: str = "") -> str:
+    base = ("Chưa cấu hình AI sinh nội dung — đặt AI_CONTENT_API_KEY / AI_CONTENT_BASE_URL / "
+            "AI_CONTENT_MODEL (mục Generative AI trong .env).")
+    return f"{base} {reason}".strip() if reason else base
+
+
 class _PlaylistAiDescriptionBody(BaseModel):
     title: str = ""
     description: str = ""
@@ -661,11 +667,13 @@ def api_ai_playlist_description(request: Request, playlist_id: str, body: _Playl
     """Draft (never apply) an AI description for one playlist. The UI calls this
     per selected playlist so a bulk run shows progress and survives one failure;
     the drafts are then pushed together through /playlists/bulk-update."""
-    from app import ai_content, ai_providers, repository
+    from app import ai_content, repository
 
     _require_playlist_id(playlist_id)
-    if not ai_providers.is_configured(body.provider):
-        raise HTTPException(status_code=400, detail="Chưa cấu hình AI (xem mục Generative AI trong .env).")
+    # Cùng provider với "Sinh nội dung & thẻ" của sách (AI_CONTENT_* trong .env).
+    status = ai_content.provider_status()
+    if not status["configured"]:
+        raise HTTPException(status_code=400, detail=_ai_not_configured_detail(status["detail"]))
     with locked_conn(request) as conn:
         row = conn.execute(
             "SELECT book_id FROM youtube_playlist_map WHERE playlist_id = ? ORDER BY updated_at DESC LIMIT 1",
@@ -685,6 +693,8 @@ def api_ai_playlist_description(request: Request, playlist_id: str, body: _Playl
             title=body.title, current_description=body.description, video_titles=video_titles,
             book_ctx=book_ctx, provider_id=body.provider, model=body.model,
         )
+    except ai_content.ProviderNotConfigured as exc:
+        raise HTTPException(status_code=400, detail=_ai_not_configured_detail(str(exc))) from exc
     except (ValueError, RuntimeError) as exc:
         logger.warning("AI playlist description failed for %s: %s", playlist_id, exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc

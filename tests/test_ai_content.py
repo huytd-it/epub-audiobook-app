@@ -163,7 +163,9 @@ def test_parse_accepts_fenced_json_and_normalizes_tags():
     assert result["description"] == "Một cuốn sách nói hay"
     # Viết hoa/thứ tự giữ nguyên, chỉ khử trùng lặp không phân biệt hoa thường.
     assert result["tags"] == ["sách nói", "Audiobook", "Tiểu thuyết"]
-    assert result["genre_tags"] == "sách nói, Audiobook, Tiểu thuyết"
+    # Không có trường genres => genre_tags lọc từ tags: chỉ thể loại hai tiếng,
+    # bỏ "sách nói", viết hoa chữ đầu mỗi tiếng.
+    assert result["genre_tags"] == "Tiểu Thuyết"
 
 
 def test_parse_accepts_a_comma_separated_tag_string():
@@ -244,5 +246,52 @@ def test_generate_book_metadata_writes_nothing_itself(tmp_path, monkeypatch):
     ))
     result = ai_content.generate_book_metadata(conn, book_id)
     assert result["description"] == "Mô tả sinh ra"
-    assert result["genre_tags"] == "sách nói, tiểu thuyết"
+    assert result["genre_tags"] == "Tiểu Thuyết"
     assert conn.execute("SELECT automation_config FROM book WHERE id=?", (book_id,)).fetchone()[0] in (None, "{}")
+
+
+# ------------------------------------------------------------ thể loại (genres)
+
+def test_prompt_asks_for_three_to_five_two_word_genres_when_book_has_none():
+    prompt = ai_content.build_prompt("Sách", ["Chương 1"], {"genre_tags": ""}, book_info={"subjects": ""})
+    assert '"genres"' in prompt
+    assert "3-5 thể loại" in prompt and "đúng HAI tiếng" in prompt
+    for example in ("Linh Dị", "Đô Thị", "Trinh Thám", "Kiếm Hiệp", "Tiên Hiệp"):
+        assert example in prompt
+
+
+@pytest.mark.parametrize("config, book_info", [
+    ({"genre_tags": "Kiếm Hiệp, Võ Hiệp"}, {"subjects": ""}),
+    ({"genre_tags": ""}, {"subjects": "Huyền Huyễn, Tiên Hiệp"}),
+    ({}, {"subjects": ["Trinh Thám"]}),
+])
+def test_prompt_skips_genres_when_book_already_has_them(config, book_info):
+    prompt = ai_content.build_prompt("Sách", ["Chương 1"], config, book_info=book_info)
+    assert '"genres"' not in prompt
+    assert "đúng HAI tiếng" not in prompt
+
+
+def test_parse_builds_genre_tags_from_two_word_genres():
+    payload = {
+        "description": "Mô tả",
+        "genres": ["linh dị", "ĐÔ THỊ", "Trinh Thám", "kinh dị tâm lý", "Huyền", "Sách nói", "Linh Dị",
+                   "Tiên Hiệp", "Kiếm Hiệp", "Võ Hiệp"],
+        "tags": ["sách nói", "audiobook", "truyện linh dị"],
+    }
+    result = ai_content.parse_metadata(json.dumps(payload))
+    assert result["genre_tags"] == "Linh Dị, Đô Thị, Trinh Thám, Tiên Hiệp, Kiếm Hiệp"
+    assert result["tags"] == ["sách nói", "audiobook", "truyện linh dị"]
+    assert result["description"] == "Mô tả"
+
+
+def test_parse_keeps_existing_genres_untouched():
+    payload = {"description": "Mô tả", "genres": ["Đô Thị", "Linh Dị", "Trinh Thám"], "tags": ["sách nói"]}
+    result = ai_content.parse_metadata(json.dumps(payload), existing_genres="kiếm hiệp, võ hiệp cổ điển")
+    assert result["genre_tags"] == "kiếm hiệp, võ hiệp cổ điển"
+    assert result["description"] == "Mô tả"
+
+
+def test_parse_without_any_two_word_genre_keeps_description():
+    result = ai_content.parse_metadata(json.dumps({"description": "Mô tả", "tags": ["audiobook"]}))
+    assert result["description"] == "Mô tả"
+    assert result["genre_tags"] == ""

@@ -83,20 +83,61 @@ def test_handler_writes_only_description_and_genre_tags(monkeypatch):
 
     config = get_effective_youtube_config(conn, book)
     save_book_youtube_config(
-        conn, book_id, {**config, "description": "cũ", "genre_tags": "cũ", "privacy_status": "public"}
+        conn, book_id, {**config, "description": "cũ", "genre_tags": "", "privacy_status": "public"}
     )
 
     monkeypatch.setattr(ai_content, "complete", lambda prompt, config=None: json.dumps(
-        {"description": "Mô tả mới", "tags": ["sách nói", "tiểu thuyết"]}
+        {"description": "Mô tả mới", "genres": ["tiểu thuyết", "đô thị", "linh dị"], "tags": ["sách nói"]}
     ))
     result = _run(conn, {"book_id": book_id}, book_id=book_id)
 
     assert result["description"] == "Mô tả mới"
-    assert result["genre_tags"] == "sách nói, tiểu thuyết"
+    assert result["genre_tags"] == "Tiểu Thuyết, Đô Thị, Linh Dị"
     saved = get_effective_youtube_config(conn, repository.get_book(conn, book_id))
     assert saved["description"] == "Mô tả mới"
-    assert saved["genre_tags"] == "sách nói, tiểu thuyết"
+    assert saved["genre_tags"] == "Tiểu Thuyết, Đô Thị, Linh Dị"
     assert saved["privacy_status"] == "public"
+
+
+def test_handler_keeps_existing_genre_tags(monkeypatch):
+    """Sách đã có genre_tags thì job chỉ thay mô tả, genre_tags giữ nguyên."""
+    from app.youtube_metadata import save_book_youtube_config
+
+    conn = _memory()
+    book_id = _seed_book(conn)
+    config = get_effective_youtube_config(conn, repository.get_book(conn, book_id))
+    save_book_youtube_config(conn, book_id, {**config, "genre_tags": "Kiếm Hiệp, Võ Hiệp"})
+    prompts = []
+
+    def fake_complete(prompt, config=None):
+        prompts.append(prompt)
+        return json.dumps({"description": "Mô tả mới", "genres": ["Đô Thị", "Linh Dị", "Trinh Thám"],
+                           "tags": ["sách nói"]})
+
+    monkeypatch.setattr(ai_content, "complete", fake_complete)
+    result = _run(conn, {"book_id": book_id}, book_id=book_id)
+    assert '"genres"' not in prompts[0]
+    assert result["genre_tags"] == "Kiếm Hiệp, Võ Hiệp"
+    saved = get_effective_youtube_config(conn, repository.get_book(conn, book_id))
+    assert saved["genre_tags"] == "Kiếm Hiệp, Võ Hiệp"
+    assert saved["description"] == "Mô tả mới"
+
+
+def test_handler_uses_ebook_subjects_instead_of_generating_genres(monkeypatch):
+    conn = _memory()
+    book_id = _seed_book(conn)
+    conn.execute("UPDATE book SET subjects = ? WHERE id = ?", ("Huyền Huyễn, Tiên Hiệp", book_id))
+    conn.commit()
+    prompts = []
+
+    def fake_complete(prompt, config=None):
+        prompts.append(prompt)
+        return json.dumps({"description": "Mô tả", "genres": ["Đô Thị", "Linh Dị", "Trinh Thám"], "tags": ["a"]})
+
+    monkeypatch.setattr(ai_content, "complete", fake_complete)
+    result = _run(conn, {"book_id": book_id}, book_id=book_id)
+    assert '"genres"' not in prompts[0]
+    assert result["genre_tags"] == "Huyền Huyễn, Tiên Hiệp"
 
 
 def test_handler_reports_progress_and_result(monkeypatch):
@@ -180,3 +221,53 @@ def test_youtube_settings_reports_provider_status(client, monkeypatch):
     status = test_client.get(f"/books/{book_id}/youtube-settings").json()["ai_content"]
     assert status["configured"] is False
     assert "GEMINI_API_KEY" in status["detail"]
+
+
+def test_generated_content_reaches_youtube_settings_through_the_real_queue(client, monkeypatch):
+    """Item 3 E2E: route xếp job -> runner thật (connection riêng) chạy handler ->
+    /queue/jobs báo done kèm result -> GET youtube-settings (form Cấu hình) trả
+    đúng description/genre_tags vừa sinh. Sách đang 'inherit' YouTube và đã có
+    inherit dict cho nhóm khác, giống dữ liệu thật. Form áp ``job.result`` nên
+    result phải trùng với cấu hình đã lưu."""
+    import asyncio
+    import time
+
+    from app.jobqueue.runner import JobQueue
+
+    test_client, conn = client
+    book_id = _seed_book(conn)
+    conn.execute("UPDATE book SET automation_config = ? WHERE id = ?",
+                 (json.dumps({"inherit": {"audio": False}}), book_id))
+    conn.commit()
+    monkeypatch.setattr(ai_content, "complete", lambda prompt, config=None: json.dumps(
+        {"hook": "Mở đầu AI", "genres": ["kiếm hiệp", "tiên hiệp", "đô thị"], "tags": ["sách nói"]}
+    ))
+    before = test_client.get(f"/books/{book_id}/youtube-settings").json()["config"]
+    assert before["description"] == "" and before["genre_tags"] == ""
+
+    job_id = test_client.post(f"/books/{book_id}/youtube-metadata-generate").json()["job_id"]
+    queue = JobQueue(lambda: db.connect(settings.db_path), concurrency={"youtube_metadata_gen": 1},
+                     poll_interval=0.05)
+    queue.register("youtube_metadata_gen", handler.handle)
+
+    async def _drive():
+        await queue.start()
+        job = {}
+        deadline = time.monotonic() + 15
+        try:
+            while time.monotonic() < deadline:
+                job = (await asyncio.to_thread(test_client.get, f"/queue/jobs/{job_id}")).json()
+                if job["status"] in ("done", "failed", "cancelled"):
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            await queue.stop(5)
+        return job
+
+    job = asyncio.run(_drive())
+    assert job["status"] == "done", job
+    assert job["result"]["description"] == "Mở đầu AI"
+    assert job["result"]["genre_tags"] == "Kiếm Hiệp, Tiên Hiệp, Đô Thị"
+    after = test_client.get(f"/books/{book_id}/youtube-settings").json()["config"]
+    assert after["description"] == job["result"]["description"]
+    assert after["genre_tags"] == job["result"]["genre_tags"]

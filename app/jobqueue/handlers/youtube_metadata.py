@@ -37,13 +37,17 @@ def handle(ctx) -> dict:
         ctx.conn, book_id,
         {**config, "description": result["description"], "genre_tags": result["genre_tags"]},
     )
+    # Đọc lại cấu hình hiệu lực sau khi lưu: kết quả job là đúng những gì form
+    # Cấu hình sẽ hiển thị (UI áp thẳng giá trị này vào form khi job xong).
+    saved = get_effective_youtube_config(ctx.conn, repository.get_book(ctx.conn, book_id))
     ctx.progress(1, 1, phase="done")
     ctx.log(
-        f"đã ghi {len(result['tags'])} thẻ và {len(result['description'])} ký tự mô tả bằng {result['label']}",
+        f"đã ghi {len(result['tags'])} thẻ và {len(result['description'])} ký tự mô tả bằng {result['label']}"
+        f"; genre_tags={saved['genre_tags']!r}",
     )
     return {
-        "description": result["description"],
-        "genre_tags": result["genre_tags"],
+        "description": saved["description"],
+        "genre_tags": saved["genre_tags"],
         "provider": result["provider"],
         "model": result["model"],
     }

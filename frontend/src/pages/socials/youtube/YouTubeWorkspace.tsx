@@ -580,6 +580,11 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
           patch(draft.id, { status: "done", description: res.description });
         } catch (err: any) {
           patch(draft.id, { status: "error", error: err.message });
+          // Thiếu cấu hình AI thì playlist nào cũng sẽ lỗi y hệt: dừng và báo một lần.
+          if (String(err.message || "").includes("Chưa cấu hình AI")) {
+            alert(err.message);
+            break;
+          }
         }
       }
     } finally {

@@ -37,7 +37,7 @@ import { BackgroundPicker } from "./BackgroundPicker";
 import { SubtitleFields } from "./SubtitleFields";
 import { MusicMixFields } from "./MusicMixFields";
 import { ReplaceRulesPanel } from "./ReplaceRulesPanel";
-import { AiContentGenerator, YouTubeConfigFields } from "./YouTubeFields";
+import { AiContentGenerator, GeneratedYoutubeContent, YouTubeConfigFields } from "./YouTubeFields";
 import { useTtsOptions } from "./useBookDetail";
 import { ChunkPreviewBar, PreviewChunk, useChunkPreview } from "./useChunkPreview";
 
@@ -379,6 +379,9 @@ export function ConfigDialog({
   const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
   const [music, setMusic] = useState<MusicMixState>();
   const [ytSettings, setYtSettings] = useState<YouTubeSettings>();
+  // Job "Sinh nội dung & thẻ" đang chạy — giữ ở đây (không trong AiContentGenerator)
+  // để đổi tab/đóng hộp thoại không làm mất vòng poll và kết quả của job.
+  const [aiJobId, setAiJobId] = useState<number>();
   const [ytPreview, setYtPreview] = useState<YouTubeMetadataPreview>();
   const [ytPreviewLoading, setYtPreviewLoading] = useState(false);
   const [ytPreviewError, setYtPreviewError] = useState("");
@@ -387,6 +390,13 @@ export function ConfigDialog({
   const [normalizationPreviewLoading, setNormalizationPreviewLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [applyingPodcast, setApplyingPodcast] = useState(false);
+
+  // Đóng hộp thoại thì bỏ bản cấu hình YouTube đang giữ: mở lại phải đọc từ server,
+  // nếu không form hiện bản cũ (trước khi job AI ghi) và bấm Lưu sẽ ghi đè mất
+  // mô tả/genre tags vừa sinh.
+  useEffect(() => {
+    if (!open) setYtSettings(undefined);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -542,16 +552,30 @@ export function ConfigDialog({
     }
   };
 
-  /** Nạp lại cấu hình YouTube từ server — job sinh nội dung vừa ghi description
-   * và genre_tags, form phải hiện đúng kết quả đó. useCallback để vòng poll của
-   * nút AI không khởi động lại mỗi lần render. */
-  const reloadYoutubeSettings = useCallback(async () => {
-    try {
-      setYtSettings(await api<YouTubeSettings>(`/books/${bookId}/youtube-settings`));
-    } catch (error) {
-      onMessage(errorText(error));
-    }
-  }, [bookId, onMessage]);
+  /** Job sinh nội dung vừa ghi description + genre_tags: áp ngay giá trị job trả
+   * về vào form (không phụ thuộc request nạp lại), rồi nạp lại cấu hình từ server.
+   * useCallback để vòng poll của nút AI không khởi động lại mỗi lần render. */
+  const applyGeneratedYoutube = useCallback(
+    async (generated?: GeneratedYoutubeContent) => {
+      if (generated) {
+        setYtSettings((current) =>
+          current
+            ? {
+                ...current,
+                config: { ...current.config, description: generated.description, genre_tags: generated.genre_tags },
+              }
+            : current
+        );
+      }
+      try {
+        const fresh = await api<YouTubeSettings>(`/books/${bookId}/youtube-settings`);
+        setYtSettings(fresh);
+      } catch (error) {
+        onMessage(errorText(error));
+      }
+    },
+    [bookId, onMessage]
+  );
 
   /** Đẩy thẳng thiết lập podcast + ảnh bìa lên playlist, không phải chờ tập kế tiếp.
    * Lưu cấu hình trước để YouTube nhận đúng trạng thái vừa chỉnh trên form. */
@@ -1142,7 +1166,9 @@ export function ConfigDialog({
 
               <YouTubeConfigFields
                 config={ytSettings.config}
-                onChange={(patch) => setYtSettings({ ...ytSettings, config: { ...ytSettings.config, ...patch } })}
+                onChange={(patch) =>
+                  setYtSettings((current) => (current ? { ...current, config: { ...current.config, ...patch } } : current))
+                }
                 playlists={ytSettings.playlists}
                 podcastAction={
                   <div className="flex flex-wrap items-center gap-2">
@@ -1165,7 +1191,9 @@ export function ConfigDialog({
               <AiContentGenerator
                 bookId={bookId}
                 status={ytSettings.ai_content}
-                onApplied={reloadYoutubeSettings}
+                jobId={aiJobId}
+                onJobIdChange={setAiJobId}
+                onApplied={applyGeneratedYoutube}
                 onMessage={onMessage}
               />
 

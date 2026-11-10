@@ -1219,8 +1219,26 @@ def test_playlists_list_reports_updated_at_from_newest_cached_video(make_client,
     assert items["PL2"]["updated_at"] == "2026-02-01T00:00:00Z"
 
 
-def test_ai_playlist_description_grounds_prompt_in_cached_video_titles(make_client, monkeypatch):
+def _ai_content_custom_only(monkeypatch):
+    """Đúng cấu hình .env của người dùng: chỉ AI_CONTENT_BASE_URL/MODEL (custom,
+    không cần key), registry ai_providers KHÔNG được cấu hình."""
     from app import ai_providers
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ai_content_provider", "")
+    monkeypatch.setattr(settings, "ai_content_api_key", "")
+    monkeypatch.setattr(settings, "ai_content_base_url", "http://127.0.0.1:9/v1")
+    monkeypatch.setattr(settings, "ai_content_model", "local-model")
+    monkeypatch.setattr(ai_providers, "is_configured", lambda provider_id=None: False)
+
+    def _must_not_be_called(**kwargs):
+        raise AssertionError("playlist AI description must not use ai_providers")
+
+    monkeypatch.setattr(ai_providers, "generate_text", _must_not_be_called)
+
+
+def test_ai_playlist_description_grounds_prompt_in_cached_video_titles(make_client, monkeypatch):
+    from app import ai_content
 
     c = make_client()
     c.conn.execute(
@@ -1228,15 +1246,62 @@ def test_ai_playlist_description_grounds_prompt_in_cached_video_titles(make_clie
         ("v1", "Tập 1 - Khởi đầu", "2026-05-01T00:00:00Z", '["PL1"]', "2026-05-02T00:00:00Z"),
     )
     c.conn.commit()
+    _ai_content_custom_only(monkeypatch)
     seen = {}
-    monkeypatch.setattr(ai_providers, "is_configured", lambda provider_id=None: True)
 
-    def fake_generate(**kwargs):
-        seen.update(kwargs)
+    def fake_complete(prompt, *, config=None):
+        seen["prompt"], seen["config"] = prompt, config
         return '{"description": "Mô tả mới"}'
 
-    monkeypatch.setattr(ai_providers, "generate_text", fake_generate)
+    monkeypatch.setattr(ai_content, "complete", fake_complete)
     response = c.client.post("/youtube/api/playlists/PL1/ai-description", json={"title": "Truyện A"})
     assert response.status_code == 200
-    assert response.json()["description"] == "Mô tả mới"
-    assert "Tập 1 - Khởi đầu" in seen["user"] and "Truyện A" in seen["user"]
+    assert response.json() == {"playlist_id": "PL1", "description": "Mô tả mới", "book_id": None}
+    assert "Tập 1 - Khởi đầu" in seen["prompt"] and "Truyện A" in seen["prompt"]
+    assert seen["config"].provider == "custom" and seen["config"].model == "local-model"
+
+
+def test_ai_playlist_description_works_with_only_ai_content_env(make_client, monkeypatch):
+    """Regression: bulk playlist AI trả 400 'Chưa cấu hình AI' dù AI_CONTENT_* đã đặt."""
+    from app import ai_content
+
+    c = make_client()
+    _ai_content_custom_only(monkeypatch)
+    calls = []
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"description": "Nghe trọn bộ nhé."}'}}]}
+
+    def fake_request(kind, method, url, **kwargs):
+        calls.append(url)
+        return _Resp()
+
+    monkeypatch.setattr(ai_content.egress, "request", fake_request)
+    response = c.client.post(
+        "/youtube/api/playlists/PL1/ai-description",
+        json={"title": "Truyện A", "description": "", "provider": "openai", "model": "override-model"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["description"] == "Nghe trọn bộ nhé."
+    assert calls == ["http://127.0.0.1:9/v1/chat/completions"]
+
+
+def test_ai_playlist_description_400_when_nothing_configured(make_client, monkeypatch):
+    from app import ai_content
+    from app.config import settings
+
+    c = make_client()
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(settings, "ai_content_provider", "")
+    monkeypatch.setattr(settings, "ai_content_api_key", "")
+    monkeypatch.setattr(settings, "ai_content_base_url", "")
+    monkeypatch.setattr(settings, "ai_content_model", "")
+    monkeypatch.setattr(ai_content, "complete", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")))
+    response = c.client.post("/youtube/api/playlists/PL1/ai-description", json={"title": "Truyện A"})
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "Chưa cấu hình AI" in detail and "AI_CONTENT_" in detail

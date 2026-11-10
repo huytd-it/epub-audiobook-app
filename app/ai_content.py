@@ -17,7 +17,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -304,9 +304,12 @@ def generate_playlist_description(
     Grounded in the linked book's context when the playlist belongs to a book,
     otherwise only in what the channel itself shows: the playlist title, its
     current description and the titles of videos already in it.
-    """
-    from app import ai_providers as _providers
 
+    Goes through the ``AI_CONTENT_*`` provider (same as book metadata). ``model``
+    overrides the configured model; ``provider_id`` is accepted for API
+    compatibility but ignored — this system has exactly one provider, the one
+    in .env. Raises :class:`ProviderNotConfigured` when that is missing.
+    """
     lines = [f"- Tên playlist: {title or '(chưa có)'}"]
     if current_description.strip():
         lines.append(f"- Mô tả hiện tại: {current_description.strip()[:1500]}")
@@ -327,8 +330,12 @@ def generate_playlist_description(
         "≤ 800 ký tự, không bịa tên sách/tác giả/nhân vật không có trong thông tin trên, "
         "không chèn link. JSON: {\"description\": \"...\"}."
     )
-    raw = _providers.generate_text(system=system, user=user, provider_id=provider_id, model=model,
-                                   max_tokens=800, response_format="json")
+    # Cùng hệ provider với job "Sinh nội dung & thẻ" (AI_CONTENT_* trong .env),
+    # không phải registry ai_providers — người dùng chỉ cấu hình một chỗ.
+    config = resolve_provider()
+    if model and model.strip():
+        config = replace(config, model=model.strip())
+    raw = complete(f"{system}\n\n{user}", config=config)
     description = str(_parse_json_object(raw).get("description") or "").strip()
     if not description:
         raise RuntimeError("AI không trả về mô tả")
@@ -415,6 +422,11 @@ PROVIDERS: dict[str, dict[str, str]] = {
 # nối (link playlist, timeline chương, thông báo bản quyền) đi sau.
 DESCRIPTION_LIMIT = 3000
 MAX_TAGS = 12
+# Thể loại (genre_tags) khác tags tìm kiếm: chỉ 3-5 tên thể loại, mỗi tên đúng
+# hai tiếng viết hoa chữ đầu ("Linh Dị", "Trinh Thám") — đi thẳng vào tiêu đề video.
+MIN_GENRES = 3
+MAX_GENRES = 5
+GENRE_EXAMPLES = ("Linh Dị", "Đô Thị", "Trinh Thám", "Kiếm Hiệp", "Tiên Hiệp")
 # Model cần bối cảnh đủ để đoán thể loại, nhưng sách 1000 chương thì prompt
 # không tài nào đọc nổi — chỉ đưa tên chương của đoạn đầu và cuối.
 MAX_PROMPT_CHAPTERS = 30
@@ -629,6 +641,18 @@ def pick_excerpts(chapters, *, count: int = EXCERPT_COUNT, chars: int = EXCERPT_
     return excerpts
 
 
+def existing_genres(config: dict | None = None, book_info: dict | None = None) -> str:
+    """Thể loại đã có sẵn cho sách: genre_tags trong cấu hình, nếu trống thì thể
+    loại gốc từ ebook (book.subjects). Có thì job giữ nguyên, không sinh mới."""
+    current = str((config or {}).get("genre_tags") or "").strip()
+    if current:
+        return current
+    subjects = (book_info or {}).get("subjects")
+    if isinstance(subjects, (list, tuple)):
+        subjects = ", ".join(str(item).strip() for item in subjects if str(item).strip())
+    return str(subjects or "").strip()
+
+
 def build_prompt(
     book_title: str,
     chapter_titles: list[str],
@@ -674,7 +698,20 @@ def build_prompt(
     # trên Python < 3.12.
     chapter_block = "Tên chương (đầu và cuối):\n" + "\n".join(f"- {title}" for title in titles) if titles else ""
     known_block = f"Thông tin đã biết (đừng bịa thêm, nếu có thì ưu tiên số liệu này):\n{known}" if known else ""
-    genre_block = f"Thể loại đang dùng cho sách (có thể giữ lại hoặc bổ sung, không cần trùng hết): {existing}" if existing else ""
+    genre_block = f"Thể loại đang dùng cho sách (giữ nguyên, không cần đề xuất thể loại mới): {existing}" if existing else ""
+    # Đã có thể loại (từ cấu hình hoặc từ ebook) thì không xin model sinh nữa.
+    want_genres = not existing_genres(config, book_info)
+    examples = ", ".join(GENRE_EXAMPLES)
+    genres_field = (
+        f'  "genres": ["{MIN_GENRES}-{MAX_GENRES} thể loại, mỗi thể loại đúng 2 tiếng, viết hoa chữ cái đầu mỗi tiếng, ví dụ {examples}"],\n'
+        if want_genres else ""
+    )
+    genres_rule = (
+        f"\n\ngenres: từ {MIN_GENRES} đến {MAX_GENRES} thể loại tiếng Việt của sách, mỗi thể loại là một cụm "
+        f"đúng HAI tiếng (ví dụ: {examples}), viết hoa chữ cái đầu mỗi tiếng, không lặp, không ghép "
+        "\"sách nói\"/\"audiobook\", chỉ chọn thể loại có căn cứ trong dữ liệu."
+        if want_genres else ""
+    )
     excerpt_block = ""
     if excerpts:
         excerpt_block = "Trích đoạn thật từ sách (đầu và giữa sách, dùng làm căn cứ):\n" + "\n\n".join(
@@ -703,7 +740,7 @@ Trả về DUY NHẤT một JSON object, không markdown, không giải thích n
   "highlights": ["3-5 phân đoạn/tình tiết hay, mỗi mục 1 câu cụ thể", ...],
   "strengths": ["3-4 ưu điểm của cuốn sách, mỗi mục 1 câu (văn phong, nhân vật, nhịp truyện, thế giới, thông điệp...)", ...],
   "audience": "1 câu: cuốn sách hợp với người nghe nào.",
-  "tags": ["tên sách", "sách nói", "audiobook", "thể loại", ...]
+{genres_field}  "tags": ["tên sách", "sách nói", "audiobook", "thể loại", ...]
 }}
 
 Quy tắc nội dung:
@@ -714,7 +751,7 @@ Quy tắc nội dung:
 - Không nhắc tập số/chương hiện tại, không chèn link, không chèn hashtag, không viết tiêu đề video, không dùng ngoặc nhọn hay dấu lớn hơn/nhỏ hơn.
 - Tổng độ dài các phần dưới {DESCRIPTION_LIMIT} ký tự (khoảng 1200-1800 ký tự là vừa).
 
-tags: tối đa {MAX_TAGS} thẻ, viết thường (viết thường và số), mỗi thẻ một cụm từ ngắn, không lặp lại, không dùng ký tự đặc biệt. Ưu tiên thể loại và từ khóa tìm kiếm mà người nghe tiếng Việt hay dùng."""
+tags: tối đa {MAX_TAGS} thẻ, viết thường (viết thường và số), mỗi thẻ một cụm từ ngắn, không lặp lại, không dùng ký tự đặc biệt. Ưu tiên thể loại và từ khóa tìm kiếm mà người nghe tiếng Việt hay dùng.{genres_rule}"""
 
 
 # -------------------------------------------------------------------- parse
@@ -744,7 +781,23 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _normalize_tags(value: Any) -> list[str]:
+def _normalize_genres(value: Any) -> list[str]:
+    """Danh sách thể loại của model -> tối đa MAX_GENRES tên hai tiếng, viết hoa
+    chữ đầu mỗi tiếng ("linh dị" -> "Linh Dị"). Mục không đúng hai tiếng bị bỏ."""
+    genres: list[str] = []
+    for tag in _normalize_tags(value, limit=None):
+        words = tag.split()
+        if len(words) != 2:
+            continue
+        genre = " ".join(word[:1].upper() + word[1:].lower() for word in words)
+        if genre.lower() in {"sách nói", "audio book"}:
+            continue
+        if genre.lower() not in {existing.lower() for existing in genres}:
+            genres.append(genre)
+    return genres[:MAX_GENRES]
+
+
+def _normalize_tags(value: Any, *, limit: int | None = MAX_TAGS) -> list[str]:
     if isinstance(value, str):
         parts: list[Any] = re.split(r"[,\n]", value)
     elif isinstance(value, (list, tuple)):
@@ -759,7 +812,7 @@ def _normalize_tags(value: Any) -> list[str]:
         tag = re.sub(r"\s+", " ", tag).strip(" ,;:|/-")
         if tag and tag.lower() not in {existing.lower() for existing in tags}:
             tags.append(tag)
-    return tags[:MAX_TAGS]
+    return tags if limit is None else tags[:limit]
 
 
 _BULLET_RE = re.compile(r"^\s*(?:[-•*–—]+|\d+[.)])\s*")
@@ -810,8 +863,12 @@ def compose_description(payload: dict[str, Any]) -> str:
     return "\n\n".join(blocks)
 
 
-def parse_metadata(text: str) -> dict[str, Any]:
-    """JSON của model -> {"description", "genre_tags"} sạch, dùng được để lưu."""
+def parse_metadata(text: str, *, existing_genres: str | None = None) -> dict[str, Any]:
+    """JSON của model -> {"description", "genre_tags", "tags"} sạch, dùng được để lưu.
+
+    ``existing_genres`` khác rỗng (sách đã có thể loại từ cấu hình/ebook) thì
+    genre_tags giữ nguyên giá trị đó. Ngược lại genre_tags là 3-5 thể loại hai
+    tiếng từ trường ``genres`` của model (thiếu thì lọc từ ``tags``)."""
     payload = _extract_json(text)
     if payload is None:
         raise GenerationError(f"Model không trả về JSON hợp lệ: {(text or '')[:200]}")
@@ -819,15 +876,21 @@ def parse_metadata(text: str) -> dict[str, Any]:
     description = compose_description(payload) or str(payload.get("description") or payload.get("mo_ta") or "")
     description = _clean_description(description)
     tags = _normalize_tags(payload.get("tags", payload.get("genre_tags")))
+    kept = (existing_genres or "").strip()
+    genres = [] if kept else (_normalize_genres(payload.get("genres")) or _normalize_genres(tags))
+    if not tags and genres:
+        tags = list(genres)
     if not description and not tags:
         raise GenerationError("Model không sinh ra mô tả lẫn thẻ nào.")
     if not description:
         raise GenerationError("Model không sinh ra mô tả (description).")
     if not tags:
         raise GenerationError("Model không sinh ra thẻ nào (tags).")
+    # Model không đưa được thể loại hai tiếng nào thì để trống genre_tags (sách
+    # vốn chưa có thể loại) thay vì làm hỏng cả lượt sinh mô tả.
     return {
         "description": description[:DESCRIPTION_LIMIT],
-        "genre_tags": ", ".join(tags),
+        "genre_tags": kept or ", ".join(genres),
         "tags": tags,
     }
 
@@ -846,15 +909,17 @@ def generate_book_metadata(conn, book_id: int, *, config_provider=None) -> dict[
     chapters = repository.list_chapters(conn, book_id)
     config = get_effective_youtube_config(conn, book)
     provider = config_provider or resolve_provider()
+    book_info = {"author": book.author, "subjects": book.subjects, "description": book.description}
     prompt = build_prompt(
         book.title,
         [chapter.title for chapter in chapters],
         config,
-        book_info={"author": book.author, "subjects": book.subjects, "description": book.description},
+        book_info=book_info,
         excerpts=pick_excerpts(chapters),
     )
     raw = complete(prompt, config=provider)
-    result = parse_metadata(raw)
+    # Thể loại có sẵn (cấu hình hoặc ebook) được giữ nguyên, không bị model ghi đè.
+    result = parse_metadata(raw, existing_genres=existing_genres(config, book_info))
     return {
         "description": result["description"],
         "genre_tags": result["genre_tags"],

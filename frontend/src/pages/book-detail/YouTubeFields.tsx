@@ -201,27 +201,43 @@ export function PodcastFields({
   );
 }
 
-type AiJobState = { status: string; percent: number; error_message: string | null };
+type AiJobState = {
+  status: string;
+  percent: number;
+  error_message: string | null;
+  result?: { description?: string; genre_tags?: string } | null;
+};
+
+/** Giá trị job sinh nội dung đã lưu vào cấu hình sách. */
+export type GeneratedYoutubeContent = { description: string; genre_tags: string };
 
 /** Nút sinh Mô tả + Genre tags bằng API AI khai trong .env.
  *
  * Bấm là xếp job vào hàng đợi (một lượt gọi LLM chờ hàng chục giây, không giữ
  * request), rồi poll `/queue/jobs/{id}` cho tới khi job kết thúc. Xong sẽ nạp
  * lại cấu hình đã lưu nên hai ô trên form hiện đúng kết quả vừa sinh — chỉnh
- * tay trước khi bấm thì mất, nên phần ghi chú nhắc rõ điều đó. */
+ * tay trước khi bấm thì mất, nên phần ghi chú nhắc rõ điều đó.
+ *
+ * jobId do component cha giữ: đổi tab hay đóng hộp thoại khi job đang chạy làm
+ * component này unmount, nếu id nằm trong state cục bộ thì vòng poll mất và
+ * form không bao giờ nhận kết quả. */
 export function AiContentGenerator({
   bookId,
   status,
+  jobId,
+  onJobIdChange,
   onApplied,
   onMessage,
 }: {
   bookId: string;
   status?: AiContentStatus;
-  /** Nạp lại cấu hình YouTube từ server sau khi job đã ghi xong. */
-  onApplied: () => Promise<void> | void;
+  jobId: number | undefined;
+  onJobIdChange: (jobId: number | undefined) => void;
+  /** Áp kết quả job vào form (giá trị job đã lưu) rồi nạp lại cấu hình từ server. */
+  onApplied: (generated?: GeneratedYoutubeContent) => Promise<void> | void;
   onMessage: (message: string) => void;
 }) {
-  const [jobId, setJobId] = useState<number>();
+  const setJobId = onJobIdChange;
   const [detail, setDetail] = useState("");
   const running = jobId !== undefined;
 
@@ -237,8 +253,13 @@ export function AiContentGenerator({
         if (stopped) return;
         if (job.status === "done") {
           setJobId(undefined);
+          const result = job.result;
+          await onApplied(
+            result && typeof result.description === "string"
+              ? { description: result.description, genre_tags: result.genre_tags ?? "" }
+              : undefined
+          );
           setDetail("Đã ghi mô tả và thẻ vào cấu hình sách.");
-          await onApplied();
           return;
         }
         if (job.status === "failed" || job.status === "cancelled") {
@@ -261,7 +282,7 @@ export function AiContentGenerator({
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [jobId, onApplied]);
+  }, [jobId, onApplied, setJobId]);
 
   const run = useCallback(async () => {
     if (jobId !== undefined) return;
@@ -275,7 +296,7 @@ export function AiContentGenerator({
       setDetail(errorText(err));
       onMessage(errorText(err));
     }
-  }, [bookId, jobId, onMessage]);
+  }, [bookId, jobId, onMessage, setJobId]);
 
   return (
     <section className="space-y-2 rounded-md border border-border p-3">
