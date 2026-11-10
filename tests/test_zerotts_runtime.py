@@ -191,12 +191,21 @@ def test_reinstalling_zerotts_keeps_an_installed_gpu_build(monkeypatch):
 
 # --- packs mirrored into the repo (committed to git) --------------------------
 
+def _pack_suffix(voice_id: str) -> str:
+    """Repo pack names carry the latent hash (not the voice id, which may be a slug)."""
+    import json
+
+    from app.zerotts_voices import voice_path
+
+    meta = json.loads((voice_path(voice_id).parent / "meta.json").read_text(encoding="utf-8"))
+    return meta["latent_sha256"][:12]
+
 def test_import_endpoint_copies_pack_into_repo_folder(client, model):
     from app.zerotts_voices import repo_packs_dir
 
     body = client.post("/tts-models/zerotts/voices/import",
                        files={"file": ("speaker.zip", pack(), "application/zip")}).json()
-    short = body["voice"]["id"].removeprefix("custom_")[:12]
+    short = _pack_suffix(body["voice"]["id"])
     copies = list(repo_packs_dir().glob("*.zip"))
     assert [p.name for p in copies] == [f"Giọng của tôi.{short}.zip"]
     assert copies[0].read_bytes() == pack()
@@ -214,7 +223,7 @@ def test_sync_imports_pulled_packs_and_exports_local_ones(model, tmp_path, monke
     result = sync_repo_packs(model)
     assert [v["label"] for v in result["imported"]] == ["Từ máy khác"]
     assert [f["file"] for f in result["failed"]] == ["broken.zip"]
-    short = result["imported"][0]["id"].removeprefix("custom_")[:12]
+    short = _pack_suffix(result["imported"][0]["id"])
     assert sorted(p.name for p in folder.glob("*.zip")) == ["broken.zip", f"from-git.{short}.zip"]
     # Second run: nothing new, the bad pack is not retried until it changes.
     assert sync_repo_packs(model) == {"imported": [], "exported": [], "failed": []}

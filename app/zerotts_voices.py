@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import re
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -39,8 +40,87 @@ def repo_packs_dir() -> Path:
     return Path(settings.zerotts_voice_packs_dir or _APP_ROOT / "voice_packs" / "zerotts")
 
 
+# Voice ids come in two shapes, both resolved everywhere:
+# - legacy "custom_<sha256 of the latents>" (64 hex), from imports before short ids;
+# - a short slug of the pack's display name ("maichi", "kimoanh-2"), for new imports.
+# The latent hash stays the identity either way: slug voices record it in meta.json
+# (``latent_sha256``), so re-imports are idempotent and repo pack names stay stable.
+_LEGACY_ID = re.compile(r"custom_[0-9a-f]{64}")
+_SLUG_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+_SLUG_MAX = 40
+
+
+def _is_legacy(voice_id: str) -> bool:
+    return bool(_LEGACY_ID.fullmatch(voice_id))
+
+
+def _latent_hash(voice_id: str) -> str:
+    """sha256 hex of a voice's latents ("" when it cannot be determined)."""
+    if _is_legacy(voice_id):
+        return voice_id.removeprefix("custom_")
+    npz = voice_path(voice_id)
+    if npz is None:
+        return ""
+    try:
+        meta = json.loads((npz.parent / "meta.json").read_text(encoding="utf-8"))
+        digest = str(meta.get("latent_sha256") or "") if isinstance(meta, dict) else ""
+        if re.fullmatch(r"[0-9a-f]{64}", digest):
+            return digest
+    except (OSError, ValueError):
+        pass
+    try:
+        with np.load(npz, allow_pickle=False) as data:
+            return hashlib.sha256(np.asarray(data["voice_emb"], dtype=np.float32).tobytes()).hexdigest()
+    except (OSError, ValueError, KeyError):
+        return ""
+
+
 def _short(voice_id: str) -> str:
-    return voice_id.removeprefix("custom_")[:12]
+    """12-hex suffix of a voice's repo pack file name (from its latent hash)."""
+    return (_latent_hash(voice_id) or voice_id)[:12]
+
+
+def slugify_voice_name(name: str) -> str:
+    """"Mai Chi" -> "maichi": lowercase ASCII letters and digits only, never empty."""
+    text = str(name or "").replace("đ", "d").replace("Đ", "D")
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]", "", text.lower())[:_SLUG_MAX]
+    return slug or "giong"
+
+
+def _taken_ids(model_dir: Path | None) -> set[str]:
+    """Ids a new slug must not reuse: other custom voices, the bundled cast (a slug
+    would shadow it, since voice_path wins in the engine), and cached sample clips."""
+    taken = {p.name for p in voices_dir().iterdir()} if voices_dir().is_dir() else set()
+    if model_dir is not None and (model_dir / "voices").is_dir():
+        taken |= {p.name for p in (model_dir / "voices").iterdir()}
+    from app.config import settings
+
+    samples = Path(settings.data_root) / "voice_samples" / "zerotts"
+    if samples.is_dir():
+        taken |= {p.stem for p in samples.glob("*.wav")}
+    return taken
+
+
+def unique_voice_id(label: str, model_dir: Path | None = None) -> str:
+    base = slugify_voice_name(label)
+    taken = _taken_ids(model_dir)
+    candidate, n = base, 1
+    while candidate in taken or _is_legacy(candidate):
+        n += 1
+        candidate = f"{base}-{n}"
+    return candidate
+
+
+def _find_by_hash(digest: str) -> str | None:
+    """Existing voice (legacy or slug) whose latents hash to ``digest``."""
+    legacy = "custom_" + digest
+    if (voices_dir() / legacy / "voice.npz").is_file():
+        return legacy
+    for voice in list_voices():
+        if not _is_legacy(voice["id"]) and _latent_hash(voice["id"]) == digest:
+            return voice["id"]
+    return None
 
 
 def save_repo_copy(voice_id: str) -> Path | None:
@@ -126,9 +206,19 @@ def pack_bytes(voice_id: str) -> tuple[bytes, str]:
 
 
 def voice_path(voice_id: str) -> Path | None:
-    if not re.fullmatch(r"custom_[0-9a-f]{64}", voice_id):
+    """voice.npz of an imported voice, or None when ``voice_id`` is not one.
+
+    Legacy ``custom_<64 hex>`` ids map by shape alone (callers report a missing file).
+    Slug ids share their shape with the bundled cast, so they only count as imported
+    when their folder really holds a voice.npz; otherwise None lets the engine fall
+    back to the weights' own voices."""
+    voice_id = str(voice_id or "")
+    if _is_legacy(voice_id):
+        return voices_dir() / voice_id / "voice.npz"
+    if voice_id.startswith("custom_") or not _SLUG_ID.fullmatch(voice_id):
         return None
-    return voices_dir() / voice_id / "voice.npz"
+    npz = voices_dir() / voice_id / "voice.npz"
+    return npz if npz.is_file() else None
 
 
 def update_voice(voice_id: str, *, label: str, language: str) -> dict:
@@ -155,16 +245,17 @@ def delete_voice(voice_id: str) -> None:
         raise FileNotFoundError(voice_id)
     import shutil
 
+    short = _short(voice_id)
     shutil.rmtree(npz.parent)
     folder = repo_packs_dir()
     if folder.is_dir():
-        for pack in folder.glob(f"*.{_short(voice_id)}.zip"):
+        for pack in folder.glob(f"*.{short}.zip"):
             pack.unlink(missing_ok=True)
 
 
 def list_voices() -> list[dict]:
     result = []
-    for path in sorted(voices_dir().glob("custom_*/meta.json")):
+    for path in sorted(voices_dir().glob("*/meta.json")):
         if voice_path(path.parent.name) != path.parent / "voice.npz":
             continue
         if not (path.parent / "voice.npz").is_file():
@@ -217,9 +308,11 @@ def import_voice_pack(payload: bytes, model_dir: Path) -> dict:
         raise ValueError("Cần tải model ZeroTTS trước khi nhập giọng.") from exc
     except (zipfile.BadZipFile, KeyError, TypeError, UnicodeError, RuntimeError, EOFError) as exc:
         raise ValueError("Gói giọng ZeroTTS không hợp lệ.") from exc
-    voice_id = "custom_" + hashlib.sha256(emb.tobytes()).hexdigest()
-    dest = voices_dir() / voice_id
+    digest = hashlib.sha256(emb.tobytes()).hexdigest()
     label = str(meta.get("display_name") or prefix.strip("/").split("/")[-1] or "Giọng của tôi")[:120]
+    # Same latents -> same voice (legacy custom_<hash> or an earlier slug import).
+    voice_id = _find_by_hash(digest) or unique_voice_id(label, model_dir)
+    dest = voices_dir() / voice_id
     voice = {"id": voice_id, "label": label, "language": str(meta.get("language") or "vi")[:20]}
     dest.mkdir(parents=True, exist_ok=True)
     # Immutable identity: importing the same speaker is idempotent and cannot replace presets.
@@ -229,5 +322,6 @@ def import_voice_pack(payload: bytes, model_dir: Path) -> dict:
     # machine; the first copy of a speaker wins, like the latents themselves.
     if not (dest / PACK_NAME).exists():
         (dest / PACK_NAME).write_bytes(payload)
-    (dest / "meta.json").write_text(json.dumps({"display_name": label, "language": voice["language"]}, ensure_ascii=False), encoding="utf-8")
+    (dest / "meta.json").write_text(json.dumps({"display_name": label, "language": voice["language"],
+                                                "latent_sha256": digest}, ensure_ascii=False), encoding="utf-8")
     return voice

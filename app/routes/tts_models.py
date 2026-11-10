@@ -67,6 +67,7 @@ def delete_zerotts_voice(voice_id: str):
         delete_voice(voice_id)
     except FileNotFoundError:
         raise HTTPException(404, "Không tìm thấy giọng ZeroTTS này")
+    tts_model_manager.drop_custom_voice_preview(voice_id)
     return {"status": "ok", "id": voice_id}
 
 
@@ -251,6 +252,23 @@ def download_sample_voices(model_id: str = "zerotts"):
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@router.post("/sample-voices/zerotts/custom-previews")
+async def build_custom_voice_previews(request: Request):
+    """Tạo (một lần) bản nghe thử cho giọng ZeroTTS đã nhập, chạy nền.
+
+    Body tùy chọn ``{"voice_ids": [...]}``; bỏ trống = mọi giọng chưa có bản nghe thử.
+    Giọng đã có file cache không bao giờ bị tổng hợp lại. Poll GET /sample-voices
+    để thấy ``preview_status`` chuyển sang ``ready``."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    ids = body.get("voice_ids") if isinstance(body, dict) else None
+    if ids is not None and (not isinstance(ids, list) or not all(isinstance(i, str) for i in ids)):
+        raise HTTPException(400, "voice_ids phải là danh sách chuỗi")
+    return tts_model_manager.queue_custom_voice_previews(ids)
 
 
 @router.get("/sample-voices/file/{model_id}/{voice_id}")

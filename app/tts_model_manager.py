@@ -219,6 +219,7 @@ def list_sample_voices() -> dict:
             "cached": local is not None,
             "audio_url": f"/tts-models/sample-voices/file/zerotts/{vid}" if local is not None else None,
         })
+    zvoices.extend(_custom_sample_voices(zdir, {v["id"] for v in zvoices}))
     groups["zerotts"] = {
         "model_id": "zerotts",
         "name": "ZeroTTS",
@@ -242,6 +243,153 @@ def list_sample_voices() -> dict:
     return {"models": groups,
             "total": sum(g["count"] for g in groups.values()),
             "cached": sum(g["cached"] for g in groups.values())}
+
+
+# --- Preview clips for imported (clone) ZeroTTS voices -------------------------
+# Imported voices have no published preview.wav, so one short fixed line is
+# synthesized ONCE per voice and cached as <data_root>/voice_samples/zerotts/<id>.wav;
+# sample_voice_file then serves it like any other preview (no re-synthesis).
+# Building runs in one background worker (one engine at a time), started explicitly
+# by the UI -- the sample-list GET never synthesizes.
+
+CUSTOM_PREVIEW_TEXT = "Xin chào, đây là giọng đọc mẫu. Chúc bạn có những giờ nghe sách thật thú vị."
+_preview_lock = threading.Lock()
+# voice id -> {"status": "queued" | "building" | "failed", "error": str | None}
+_preview_state: dict[str, dict] = {}
+_preview_worker: threading.Thread | None = None
+
+
+def custom_preview_path(voice_id: str) -> Path:
+    return _sample_voice_dir("zerotts") / f"{voice_id}.wav"
+
+
+def _has_preview(voice_id: str) -> bool:
+    path = custom_preview_path(voice_id)
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _custom_sample_voices(zdir: Path, skip: set[str]) -> list[dict]:
+    """Imported ZeroTTS voices as sample-list entries (never synthesizes)."""
+    try:
+        from app.zerotts_voices import list_voices
+
+        custom = list_voices()
+    except Exception:
+        return []
+    with _preview_lock:
+        state = {k: dict(v) for k, v in _preview_state.items()}
+    entries = []
+    for voice in custom:
+        vid = voice["id"]
+        if vid in skip:
+            continue
+        cached = (zdir / f"{vid}.wav").is_file()
+        job = state.get(vid) or {}
+        entries.append({
+            "id": vid,
+            "label": voice.get("label") or vid,
+            "language": voice.get("language") or "vi",
+            "custom": True,
+            "cached": cached,
+            "audio_url": f"/tts-models/sample-voices/file/zerotts/{vid}" if cached else None,
+            "preview_status": "ready" if cached else (job.get("status") or "missing"),
+            "preview_error": None if cached else job.get("error"),
+        })
+    return entries
+
+
+def _synthesize_preview(voice_id: str):
+    """(audio, sample_rate) for the preview line -- same path as the Playground."""
+    from app.tts_engine import create_tts_engine
+
+    try:
+        stored = get_model_options("zerotts")
+    except KeyError:
+        stored = {}
+    engine = create_tts_engine("zerotts", voice=voice_id, **stored)
+    audio = engine.synthesize_chunk(CUSTOM_PREVIEW_TEXT)
+    return audio, int(engine.sample_rate)
+
+
+def build_custom_voice_preview(voice_id: str) -> Path:
+    """Cached preview of an imported voice, synthesizing it only when missing."""
+    from app.tts_engine import zerotts_model_dir
+    from app.zerotts_voices import voice_path
+
+    npz = voice_path(voice_id)
+    if npz is None or not npz.is_file():
+        raise FileNotFoundError(voice_id)
+    target = custom_preview_path(voice_id)
+    if _has_preview(voice_id):
+        return target
+    if not (zerotts_model_dir() / "config.json").is_file():
+        raise RuntimeError("Cần tải model ZeroTTS trước khi tạo bản nghe thử.")
+    import soundfile as sf
+
+    audio, sample_rate = _synthesize_preview(voice_id)
+    tmp = target.with_suffix(".wav.tmp")
+    sf.write(str(tmp), audio, sample_rate, format="WAV")
+    tmp.replace(target)
+    return target
+
+
+def _preview_worker_loop() -> None:
+    global _preview_worker
+    while True:
+        with _preview_lock:
+            vid = next((k for k, v in _preview_state.items() if v["status"] == "queued"), None)
+            if vid is None:
+                _preview_worker = None
+                return
+            _preview_state[vid] = {"status": "building", "error": None}
+        try:
+            build_custom_voice_preview(vid)
+            outcome = None
+        except FileNotFoundError:
+            outcome = {"status": "failed", "error": "Không tìm thấy giọng này."}
+        except Exception as exc:  # weights missing, synthesis error...
+            outcome = {"status": "failed", "error": str(exc)[:300]}
+        with _preview_lock:
+            if outcome is None:
+                _preview_state.pop(vid, None)
+            else:
+                _preview_state[vid] = outcome
+
+
+def queue_custom_voice_previews(voice_ids: list[str] | None = None) -> dict:
+    """Queue preview builds for imported voices that have none yet (all when
+    ``voice_ids`` is None) and start the background worker if idle."""
+    global _preview_worker
+    from app.zerotts_voices import list_voices
+
+    known = {v["id"] for v in list_voices()}
+    wanted = known if voice_ids is None else [v for v in voice_ids if v in known]
+    queued = []
+    with _preview_lock:
+        for vid in wanted:
+            if _has_preview(vid):
+                continue
+            if (_preview_state.get(vid) or {}).get("status") in ("queued", "building"):
+                continue
+            _preview_state[vid] = {"status": "queued", "error": None}
+            queued.append(vid)
+        if queued and _preview_worker is None:
+            _preview_worker = threading.Thread(target=_preview_worker_loop,
+                                               name="zerotts-custom-previews", daemon=True)
+            _preview_worker.start()
+        state = {k: dict(v) for k, v in _preview_state.items()}
+    return {"queued": sorted(queued), "jobs": state}
+
+
+def drop_custom_voice_preview(voice_id: str) -> None:
+    """Forget a deleted voice's cached preview (so a later slug reuse starts clean)."""
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", voice_id or ""):
+        return
+    with _preview_lock:
+        _preview_state.pop(voice_id, None)
+    custom_preview_path(voice_id).unlink(missing_ok=True)
 
 
 def download_sample_voices(*, timeout: float = 60.0) -> dict:

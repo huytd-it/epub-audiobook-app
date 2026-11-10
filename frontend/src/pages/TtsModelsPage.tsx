@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Cloud, Cpu, Download, ExternalLink, FlaskConical, FolderDown, Gauge, Loader2, Pencil, Play, Plus, RefreshCw, Save, Search, SlidersHorizontal, Trash2, TriangleAlert, Volume2 } from "lucide-react";
+import { CheckCircle2, Cloud, Cpu, Download, ExternalLink, FlaskConical, FolderDown, Gauge, Loader2, Pencil, Play, Plus, RefreshCw, Save, Search, SlidersHorizontal, Trash2, TriangleAlert, Volume2, Wand2 } from "lucide-react";
 import { api, del, postJson, put } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,7 +44,12 @@ type ManagedModel = TtsModel & {
 
 type OfflineJob = { state: "running" | "done" | "failed"; done: number; total: number; moved?: number; log: string; [key: string]: unknown };
 
-type SampleVoice = { id: string; label: string; language: string; cached: boolean; audio_url: string | null };
+type PreviewStatus = "ready" | "missing" | "queued" | "building" | "failed";
+type SampleVoice = {
+  id: string; label: string; language: string; cached: boolean; audio_url: string | null;
+  // Giọng ZeroTTS nhập từ gói .zip: bản nghe thử được tổng hợp một lần rồi cache.
+  custom?: boolean; preview_status?: PreviewStatus; preview_error?: string | null;
+};
 type SampleGroup = { model_id: string; name: string; count: number; cached: number; voices: SampleVoice[] };
 type SampleCatalog = { models: Record<string, SampleGroup>; total: number; cached: number };
 
@@ -118,14 +123,30 @@ export function TtsModelsPage() {
   const [samplesLoading, setSamplesLoading] = useState(true);
   const [downloadingSamples, setDownloadingSamples] = useState(false);
   const [samplesMessage, setSamplesMessage] = useState("");
-  const loadSamples = useCallback(() => {
-    setSamplesLoading(true);
+  const loadSamples = useCallback((quiet = false) => {
+    if (!quiet) setSamplesLoading(true);
     api<SampleCatalog>("/tts-models/sample-voices")
       .then((value) => { setSamples(value); setSamplesMessage(""); })
       .catch((error) => setSamplesMessage(error instanceof Error ? error.message : "Không thể tải danh sách voice mẫu."))
-      .finally(() => setSamplesLoading(false));
+      .finally(() => { if (!quiet) setSamplesLoading(false); });
   }, []);
   useEffect(() => { loadSamples(); }, [loadSamples]);
+  // Bản nghe thử của giọng nhập được tạo ở job nền: poll nhẹ tới khi xong.
+  const previewsBuilding = !!samples && Object.values(samples.models).some((group) =>
+    group.voices.some((voice) => voice.preview_status === "queued" || voice.preview_status === "building"));
+  useEffect(() => {
+    if (!previewsBuilding) return;
+    const timer = window.setInterval(() => loadSamples(true), 2500);
+    return () => window.clearInterval(timer);
+  }, [previewsBuilding, loadSamples]);
+  const buildCustomPreviews = useCallback(async (voiceIds?: string[]) => {
+    try {
+      await postJson("/tts-models/sample-voices/zerotts/custom-previews", voiceIds ? { voice_ids: voiceIds } : {});
+    } catch (error) {
+      setSamplesMessage(error instanceof Error ? error.message : "Không thể tạo bản nghe thử cho giọng nhập.");
+    }
+    loadSamples(true);
+  }, [loadSamples]);
   const load = useCallback(() => {
     api<{ models: ManagedModel[] }>("/tts-models").then((value) => setModels(value.models || [])).catch((error) => setMessage(error instanceof Error ? error.message : "Không thể tải catalog TTS.")).finally(() => setLoading(false));
     api<{ providers: CustomProvider[] }>("/tts-models/providers").then((value) => setCustomProviders(value.providers || [])).catch(() => {});
@@ -333,7 +354,8 @@ export function TtsModelsPage() {
       await load();
       setPlayModelId("zerotts"); setPlayVoice(result.voice.id);
       setPlayResult(undefined); setPlayError("");
-      setVoiceImportMessage(`Đã nhập giọng ${result.voice.label}. Giọng đã sẵn sàng để nghe thử và tạo audiobook bằng ZeroTTS.`);
+      setVoiceImportMessage(`Đã nhập giọng ${result.voice.label} (id: ${result.voice.id}). Đang tạo bản nghe thử một lần trong "Danh sách voice mẫu"; giọng đã sẵn sàng để tạo audiobook bằng ZeroTTS.`);
+      void buildCustomPreviews([result.voice.id]);
     } catch (error) {
       setVoiceImportMessage(error instanceof Error ? error.message : "Không thể nhập gói giọng.");
     } finally { setImportingVoice(false); }
@@ -366,6 +388,7 @@ export function TtsModelsPage() {
       setVoiceImportMessage(`Đã cập nhật thông tin giọng "${res.voice.label}".`);
       setEditingZeroVoice(null);
       await load();
+      loadSamples(true);
     } catch (error) {
       setVoiceImportMessage(error instanceof Error ? error.message : "Không thể cập nhật giọng ZeroTTS.");
     } finally {
@@ -382,6 +405,7 @@ export function TtsModelsPage() {
       setVoiceImportMessage(`Đã xóa giọng "${voice.label}".`);
       if (playVoice === voice.id) setPlayVoice("");
       await load();
+      loadSamples(true);
     } catch (error) {
       setVoiceImportMessage(error instanceof Error ? error.message : "Không thể xóa giọng ZeroTTS.");
     } finally {
@@ -591,7 +615,7 @@ export function TtsModelsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2"><Volume2 className="h-5 w-5 text-primary" /><div><h2 className="text-lg font-semibold">Danh sách voice mẫu</h2><p className="text-xs text-muted-foreground">ZeroTTS nghe trực tiếp file mẫu (không cần tải weights ~900 MB) · VieNeu V3 Turbo nghe qua Playground sau khi cài package{samples ? ` — ${samples.cached}/${samples.total} clip đã sẵn sàng` : ""}.</p></div></div>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={loadSamples} disabled={samplesLoading}>{samplesLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Tải lại</Button>
+          <Button size="sm" variant="outline" onClick={() => loadSamples()} disabled={samplesLoading}>{samplesLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Tải lại</Button>
           <Button size="sm" onClick={downloadSamples} disabled={downloadingSamples}>{downloadingSamples ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}{downloadingSamples ? "Đang tải..." : "Tải danh sách voice mẫu"}</Button>
         </div>
       </div>
@@ -603,15 +627,21 @@ export function TtsModelsPage() {
           {(Object.values(samples.models) as SampleGroup[]).map((group) => <Card key={group.model_id}>
             <CardHeader className="space-y-1 pb-3">
               <div className="flex items-center justify-between gap-3"><CardTitle className="text-base">{group.name}</CardTitle><span className="text-xs tabular-nums text-muted-foreground">{group.cached}/{group.count} sẵn sàng</span></div>
+              {group.voices.some((voice) => voice.custom && (voice.preview_status === "missing" || voice.preview_status === "failed")) && <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-2.5 py-1.5 text-[11px] text-muted-foreground"><span>Có giọng nhập chưa có bản nghe thử (tạo một lần, lần sau nghe ngay).</span><Button size="sm" variant="outline" onClick={() => void buildCustomPreviews()}><Wand2 className="h-3.5 w-3.5" /> Tạo tất cả</Button></div>}
               <p className="text-[11px] text-muted-foreground">{group.model_id === "zerotts" ? "File mẫu gốc từ Hugging Face — bấm play để nghe ngay." : "Preset trong package vieneu — bấm “Nghe thử” để tổng hợp qua Playground."}</p>
             </CardHeader>
             <CardContent className="space-y-2 text-xs">
               {group.voices.length === 0 && <p className="rounded-md border border-dashed px-3 py-2 text-muted-foreground">{group.model_id === "zerotts" ? "Chưa tải được danh sách — bấm “Tải danh sách voice mẫu”." : "Chưa cài package vieneu — dùng nút “Tải model” ở catalog bên dưới."}</p>}
               {group.voices.map((voice) => <div key={voice.id} className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-2.5 py-2">
-                <div className="min-w-0 flex-1"><p className="truncate font-medium">{voice.label || voice.id}</p><p className="font-mono text-[10px] text-muted-foreground">{voice.id}</p></div>
+                <div className="min-w-0 flex-1"><p className="truncate font-medium">{voice.label || voice.id}{voice.custom && <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-normal text-primary">giọng nhập</span>}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{voice.id}</p></div>
                 {voice.audio_url
                   ? <audio className="h-8 w-44" controls preload="none" src={voice.audio_url} />
-                  : <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{group.model_id === "zerotts" ? "chưa tải" : "qua Playground"}</span>}
+                  : voice.custom
+                    ? (voice.preview_status === "queued" || voice.preview_status === "building"
+                      ? <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />{voice.preview_status === "queued" ? "Đang chờ tạo..." : "Đang tạo bản nghe..."}</span>
+                      : <Button size="sm" variant="outline" title={voice.preview_error || "Tổng hợp một câu mẫu một lần rồi lưu lại"} onClick={() => void buildCustomPreviews([voice.id])}><Wand2 className="h-3.5 w-3.5" />{voice.preview_status === "failed" ? "Thử tạo lại" : "Tạo bản nghe"}</Button>)
+                    : <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{group.model_id === "zerotts" ? "chưa tải" : "qua Playground"}</span>}
+                {voice.custom && voice.preview_status === "failed" && voice.preview_error && <p className="w-full text-[10px] text-destructive">{voice.preview_error}</p>}
                 <Button size="sm" variant="outline" onClick={() => useSampleForPlayground(group.model_id, voice.id)}><Play className="h-3.5 w-3.5" /> Nghe thử</Button>
               </div>)}
             </CardContent>
