@@ -9,6 +9,7 @@ from app.config import settings
 from app.image_overlay import save_video_branding
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
+from app.music_bed import probe_duration
 from app.production_defaults import get_effective_branding_config, get_effective_video_config, resolve_voice_clip
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
@@ -72,6 +73,27 @@ def _render(ctx, book_job_id: int, book_id: int) -> str:
     intro_audio = resolve_voice_clip(video_config, "intro_voice")
     outro_audio = resolve_voice_clip(video_config, "outro_voice")
     done_patches = [p for p in patches if p.status == "done" and p.audio_path]
+    # Weight each chapter by its expected encoded workload. This makes ETA
+    # respond to audio length and the selected output settings, while elapsed
+    # render speed accounts for the actual machine/encoder performance.
+    width, height = (int(value) for value in str(video_config.get("resolution") or book.video_resolution or "1920x1080").split("x"))
+    fps = int(video_config.get("fps") or book.video_fps or 30)
+    pixels_factor = (width * height / (1920 * 1080)) ** 0.65
+    fps_factor = max(1, fps) / 30
+    codec = str(video_config.get("codec") or "libx264")
+    quality = int(video_config.get("quality") or 20)
+    codec_factor = 0.65 if codec == "h264_nvenc" or settings.use_nvenc else 1.0
+    quality_factor = max(0.75, min(1.5, 1 + (20 - quality) * 0.018))
+    complexity = pixels_factor * fps_factor * codec_factor * quality_factor
+    patch_weights = {}
+    for patch in done_patches:
+        duration = probe_duration(patch.audio_path) or 60
+        patch_weights[patch.patch_index] = max(1, round(duration * complexity * 1000))
+    concat_weight = max(1000, round(sum(patch_weights.values()) * 0.08))
+    total_work = sum(patch_weights.values()) + concat_weight
+    completed_work = 0
+    completed_patches = set()
+    patch_numbers = {patch.patch_index: index for index, patch in enumerate(done_patches, 1)}
     book_dir = Path(settings.data_root) / "books" / str(book_id)
     book_dir.mkdir(parents=True, exist_ok=True)
     out_path = str(book_dir / f"video_{book_job_id}.mp4")
@@ -82,8 +104,29 @@ def _render(ctx, book_job_id: int, book_id: int) -> str:
         (int(w), int(h)), branding, book_dir / ".branding" / f"branding_book_{book_job_id}.png")
 
     def _on_progress(event: str, fields: dict) -> None:
-        if event in _ENCODING_EVENTS:
-            ctx.progress(0, 1, phase="encoding")
+        nonlocal completed_work
+        patch_index = fields.get("patch_index")
+        if event in _ENCODING_EVENTS and isinstance(patch_index, int):
+            patch = next((item for item in done_patches if item.patch_index == patch_index), None)
+            patch_number = patch_numbers.get(patch_index, len(completed_patches) + 1)
+            title = getattr(patch, "name", None) if patch else None
+            detail = f"Video · đoạn {patch_number}/{len(done_patches)}"
+            if title:
+                detail += f" · {title}"
+            detail += f" · {width}×{height} · {fps}fps · {codec}"
+            ctx.progress(completed_work, total_work, phase=detail)
+        elif event in {"video.segment_done", "video.segment_skipped"} and isinstance(patch_index, int):
+            if patch_index not in completed_patches:
+                completed_patches.add(patch_index)
+                completed_work += patch_weights.get(patch_index, 0)
+            ctx.progress(completed_work, total_work,
+                         phase=f"Video · xong {len(completed_patches)}/{len(done_patches)} đoạn · {width}×{height} · {fps}fps")
+        elif event == "concat.start":
+            ctx.progress(completed_work, total_work,
+                         phase=f"Video · ghép {len(done_patches)} đoạn cuối · {width}×{height} · {fps}fps")
+        elif event == "concat.done":
+            completed_work = total_work
+            ctx.progress(completed_work, total_work, phase="Video · hoàn tất ghép")
         detail = " ".join(f"{k}={v}" for k, v in fields.items())
         level = logging.ERROR if event.endswith(".failed") else logging.INFO
         ctx.log(f"{event} {detail}".strip(), level=level)
