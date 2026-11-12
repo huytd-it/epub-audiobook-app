@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import { FileText, ListChecks, Play, RefreshCw, RotateCcw, ScanText, Search, Square, Trash2, Wand2 } from "lucide-react";
+import { FileText, FolderUp, ListChecks, Play, RefreshCw, RotateCcw, ScanText, Search, Square, Trash2, Wand2 } from "lucide-react";
 import { Chapter, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -71,6 +71,7 @@ export function ChaptersPanel({
   onOpenNormalize,
   onReimport,
   canReimport,
+  onUploadChunks,
 }: {
   bookId: string;
   chapters: Chapter[];
@@ -87,6 +88,8 @@ export function ChaptersPanel({
   onReimport: () => void;
   /** Sách còn EPUB gốc — không có thì chỉ còn đường upload lại tệp. */
   canReimport: boolean;
+  /** Mở hộp thoại upload thư mục chunk WAV theo chương. */
+  onUploadChunks: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ChapterFilter>("all");
@@ -202,6 +205,15 @@ export function ChaptersPanel({
                   disabled={!titles || titles.fixable === 0}
                 >
                   <Wand2 className="h-3.5 w-3.5" /> Chuẩn hoá tiêu đề{titles?.fixable ? ` (${titles.fixable})` : ""}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onUploadChunks}
+                  disabled={!chapters.length}
+                  title="Nạp thư mục chunk WAV làm sẵn (0001/chunk_000.wav, ...) vào kho chunk theo chương"
+                >
+                  <FolderUp className="h-3.5 w-3.5" /> Upload thư mục chunk
                 </Button>
                 <Button
                   size="sm"

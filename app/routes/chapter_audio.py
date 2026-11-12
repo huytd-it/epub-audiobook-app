@@ -194,3 +194,135 @@ async def rebuild_chapter_patches(request: Request, book_id: int):
         "patches": [item for item in affected if item["patch_id"] in reset_ids],
         "skipped_processing": sum(1 for item in affected if item["status"] == "processing"),
     }
+
+
+# Một lượt chọn thư mục có thể mang hàng nghìn chunk: frontend chia lô theo chương,
+# nhưng vẫn nới trần mặc định 1000 file của Starlette cho chương rất dài.
+_UPLOAD_MAX_FILES = 5000
+
+
+@router.post("/books/{book_id}/chapter-audio/upload")
+async def upload_chapter_chunks(request: Request, book_id: int):
+    """Nạp thư mục chunk WAV làm sẵn vào kho chunk theo chương.
+
+    multipart: ``files`` (tên file = đường dẫn tương đối ``…/0001/chunk_000.wav``, xem
+    app/chapter_chunk_upload.py), ``replace`` ("true" = xoá kho của chương trước khi
+    nạp). Chunk tách theo chuẩn hoá + max_chars hiện tại của sách. Mỗi chương báo cáo
+    riêng; một chương lỗi không chặn chương khác."""
+    from app import chapter_chunk_upload as upload
+
+    form = await request.form(max_files=_UPLOAD_MAX_FILES)
+    replace = str(form.get("replace") or "").lower() in {"1", "true", "on", "yes"}
+    rejected: list[dict] = []
+    grouped: dict[int, dict[int, tuple[str, object]]] = {}
+    for item in form.getlist("files"):
+        if not hasattr(item, "file"):
+            continue
+        label = item.filename or ""
+        parsed = upload.parse_upload_path(label)
+        if isinstance(parsed, str):
+            rejected.append({"filename": label, "reason": parsed})
+            continue
+        chapter_index, chunk_index = parsed
+        if chunk_index in grouped.setdefault(chapter_index, {}):
+            rejected.append({"filename": label, "reason": f"trùng chunk {chunk_index:03d} của chương {chapter_index + 1}"})
+            continue
+        grouped[chapter_index][chunk_index] = (label, item.file)
+
+    with locked_conn(request) as conn:
+        book = _require_book(conn, book_id)
+        opts = get_effective_normalization_options(conn, book)
+        rules = repository.list_replace_rules(conn, book_id)
+        limit = int(get_effective_audio_config(conn, book).get("max_chars") or 400)
+        chapters = {}
+        busy = set()
+        for chapter_index in grouped:
+            chapter = repository.get_chapter(conn, book_id, chapter_index)
+            if chapter is not None:
+                chapters[chapter_index] = chapter
+                if any(p.status == "processing"
+                       for p in repository.list_patches_covering_chapter(conn, book_id, chapter_index)):
+                    busy.add(chapter_index)
+
+    reports = []
+    try:
+        for chapter_index in sorted(grouped):
+            files = grouped[chapter_index]
+            chapter = chapters.get(chapter_index)
+            base = {"chapter_index": chapter_index, "chapter_no": chapter_index + 1,
+                    "received": len(files), "installed": 0, "rejected": [], "missing": [], "complete": False}
+            if chapter is None:
+                reports.append({**base, "status": "error", "detail": f"sách không có chương {chapter_index + 1}"})
+                continue
+            if chapter_index in busy:
+                reports.append({**base, "title": chapter.title, "status": "error",
+                                "detail": "có patch phủ chương đang tạo audio — chờ xong rồi nạp"})
+                continue
+            reports.append(await asyncio.to_thread(
+                upload.install_chapter_chunks, book_id, chapter, opts, rules, limit, files, replace=replace))
+    finally:
+        await form.close()
+
+    with locked_conn(request) as conn:
+        touched = [r["chapter_index"] for r in reports if r.get("installed")]
+        affected = _affected_patches(conn, book_id, touched)
+    return {
+        "max_chars": limit,
+        "chapters": reports,
+        "rejected": rejected,
+        "installed": sum(int(r.get("installed") or 0) for r in reports),
+        "affected_patches": affected,
+    }
+
+
+@router.post("/books/{book_id}/chapter-audio/merge-patches")
+async def merge_patches_from_chapter_chunks(request: Request, book_id: int):
+    """Ghép trực tiếp các patch phủ những chương này từ kho chunk theo chương (không qua
+    hàng đợi TTS, nên chunk nạp từ ngoài không bị tổng hợp lại). Patch còn thiếu chunk
+    được bỏ qua kèm lý do; patch ghép xong được đánh dấu done rồi qua cổng tự động hoá
+    video như khi import kết quả."""
+    from app import chapter_chunk_upload as upload
+    from app.patch_publishing import enqueue_patch_video, fetch_thumbnail_inputs, warm_patch_thumbnail
+    from app.routes.patches import _result_patch_publish_state
+
+    indexes = _chapter_indexes(await request.json())
+    with locked_conn(request) as conn:
+        book = _require_book(conn, book_id)
+        limit = int(get_effective_audio_config(conn, book).get("max_chars") or 400)
+        affected = _affected_patches(conn, book_id, indexes)
+        states = {item["patch_id"]: _result_patch_publish_state(conn, item["patch_id"]) for item in affected}
+        patches = {item["patch_id"]: repository.get_patch(conn, item["patch_id"]) for item in affected}
+
+    results = []
+    for item in affected:
+        row = dict(item)
+        patch = patches[item["patch_id"]]
+        if patch is None or patch.status == "processing":
+            results.append({**row, "result": "skipped", "detail": "patch đang tạo audio"})
+            continue
+        if states[patch.id] == "active":
+            results.append({**row, "result": "skipped", "detail": "patch đang tạo hoặc upload video"})
+            continue
+        try:
+            audio_path, total = await asyncio.to_thread(
+                upload.assemble_patch_from_stores, lambda: locked_conn(request), patch, limit)
+        except (upload.ChapterChunkUploadError, OSError, RuntimeError) as exc:
+            results.append({**row, "result": "skipped", "detail": str(exc)})
+            continue
+        with locked_conn(request) as conn:
+            inputs = fetch_thumbnail_inputs(conn, patch.id)
+        await asyncio.to_thread(warm_patch_thumbnail, inputs)
+        with locked_conn(request) as conn:
+            repository.update_patch_chunk_count(conn, patch.id, total)
+            repository.mark_patch_done(conn, patch.id, audio_path)
+            try:
+                automation = enqueue_patch_video(conn, patch.id, force_new=True)
+                row["publish_status"] = automation.get("state")
+            except Exception as exc:  # audio đã cài, video có thể chạy lại thủ công
+                row["publish_status"] = "enqueue_failed"
+                row["publish_error"] = str(exc)
+        results.append({**row, "result": "merged"})
+    return {
+        "merged": sum(1 for r in results if r["result"] == "merged"),
+        "patches": results,
+    }

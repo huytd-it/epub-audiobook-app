@@ -135,3 +135,18 @@ def test_batch_manifest_points_the_notebook_at_each_marker(conn, tmp_path, monke
         import shutil
 
         shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_ignore_ids_accepts_a_manifest_from_another_book(conn, tmp_path, data_root, monkeypatch):
+    from app.jobqueue.handlers import audiobook_tts
+    monkeypatch.setattr(audiobook_tts, "normalize_wav_in_place", lambda path: None)
+    connection, book, patch = conn
+    folder, manifest = _export(connection, book, patch, tmp_path / "batch")
+    source = chunk_import.read_patch_folder(folder)
+    source.manifest.update(book_id=37, patch_id=999)
+
+    with pytest.raises(chunk_import.ChunkImportError, match="thuộc patch 999"):
+        chunk_import.assemble_patch_from_chunks(lambda: nullcontext(connection), patch, source)
+    path = chunk_import.assemble_patch_from_chunks(
+        lambda: nullcontext(connection), patch, source, ignore_ids=True)
+    assert sf.info(path).frames > manifest["chunk_count"] * RATE

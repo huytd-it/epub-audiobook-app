@@ -49,6 +49,12 @@ export type Job = {
   attempt_count?: number;
   max_attempts?: number;
   patch_id?: number | null;
+  progress_current?: number;
+  progress_total?: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  /** Số giây đã chạy (job đang chạy) hoặc tổng thời gian chạy (job đã kết thúc). */
+  elapsed_sec?: number | null;
   payload?: Record<string, unknown>;
   result?: Record<string, unknown> | null;
 };

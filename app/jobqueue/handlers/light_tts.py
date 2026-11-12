@@ -142,11 +142,12 @@ def handle(ctx) -> dict:
         plan, payload["chunk_pause_ms"], payload["chapter_pause_ms"])
     audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=pauses)
     _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects, pauses)
-    from app.jobqueue.handlers.audiobook_tts import finalize_book_if_ready
+    from app.jobqueue.handlers.audiobook_tts import audio_seconds, finalize_book_if_ready
     final_path = finalize_book_if_ready(ctx, book_id)
     ctx.emit({"type": "done", "saved": True, "complete": True, "ok": ok_count, "failed": 0})
     ctx.progress(total, total, phase="done")
-    return {"audio_path": audio_path, "ok": ok_count, "failed": 0, "final_audio_path": final_path}
+    return {"audio_path": audio_path, "ok": ok_count, "failed": 0, "chunks": total,
+            "audio_seconds": audio_seconds(audio_path), "final_audio_path": final_path}
 
 
 def _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects, pauses) -> None:

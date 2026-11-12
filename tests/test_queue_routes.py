@@ -245,3 +245,36 @@ def test_requeue_stuck_reports_how_many_tts_jobs_it_queued(client):
     assert body["requeued"] == 1  # only the stuck 'processing' patch was flipped
     assert body["queued"] == 2  # ... but both it and the already-pending one got queued
     assert len(store.list_jobs(conn, job_type="audiobook_tts")) == 2
+
+
+def test_done_job_reports_full_progress_and_elapsed_time(client):
+    c, conn, _ = client
+    job_id = store.enqueue(conn, "video")
+    # Handler không báo tiến độ (0/0) nhưng job đã xong: phải hiện 100%, không phải 0%.
+    conn.execute(
+        "UPDATE job SET status='done', started_at=?, finished_at=? WHERE id=?",
+        ("2026-01-01T00:00:00+00:00", "2026-01-01T00:02:05+00:00", job_id),
+    )
+    conn.commit()
+
+    job = next(j for j in c.get("/queue/jobs").json()["jobs"] if j["id"] == job_id)
+
+    assert job["percent"] == 100
+    assert job["elapsed_sec"] == 125
+
+
+def test_retry_resets_progress_of_the_previous_run(client):
+    c, conn, _ = client
+    job_id = store.enqueue(conn, "video")
+    conn.execute(
+        "UPDATE job SET status='failed', progress_current=7, progress_total=10, phase='encoding' WHERE id=?",
+        (job_id,),
+    )
+    conn.commit()
+
+    assert c.post(f"/queue/jobs/{job_id}/retry").status_code == 200
+
+    job = store.get(conn, job_id)
+    assert (job.status, job.progress_current, job.phase) == ("pending", 0, None)
+    listed = next(j for j in c.get("/queue/jobs").json()["jobs"] if j["id"] == job_id)
+    assert listed["percent"] == 0 and listed["elapsed_sec"] is None

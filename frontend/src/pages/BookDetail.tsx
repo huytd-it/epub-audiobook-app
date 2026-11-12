@@ -44,6 +44,7 @@ import { ChapterDialog, ChapterTab } from "./book-detail/ChapterDialog";
 import { ConfigDialog, DeletePatchDialog, PatchPreviewDialog, TitleNormalizeDialog } from "./book-detail/dialogs";
 import { OverlayEditor } from "./book-detail/OverlayEditor";
 import { AiPanel } from "./book-detail/AiPanel";
+import { ChunkFolderUploadDialog } from "./book-detail/ChunkFolderUploadDialog";
 
 type MainTab = "patches" | "build" | "chapters" | "thumbnail" | "ai";
 
@@ -242,6 +243,7 @@ export function BookDetail() {
   const [sourceBusy, setSourceBusy] = useState<"delete" | "upload">();
   const [reimportOpen, setReimportOpen] = useState(false);
   const [reimporting, setReimporting] = useState(false);
+  const [chunkUploadOpen, setChunkUploadOpen] = useState(false);
   const [automation, setAutomation] = useState<BatchAutomation>(DEFAULT_AUTOMATION);
   const [settings, setSettings] = useState<AudioSettings>({
     modelId: "edge-tts",
@@ -278,7 +280,7 @@ export function BookDetail() {
   // Dừng polling khi đang mở dialog hoặc đang chạy thao tác: tránh ghi đè state giữa chừng.
   const paused =
     previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || batchOpen || sourceOpen ||
-    reimportOpen || resetVoiceTargets.length > 0 || busyCount > 0;
+    reimportOpen || chunkUploadOpen || resetVoiceTargets.length > 0 || busyCount > 0;
   const { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh } = useBookDetail(
     bookId,
     paused
@@ -1070,6 +1072,7 @@ export function BookDetail() {
           onOpenNormalize={() => setNormalizeOpen(true)}
           onReimport={() => setReimportOpen(true)}
           canReimport={hasBookSource}
+          onUploadChunks={() => setChunkUploadOpen(true)}
         />
       )}
 
@@ -1312,6 +1315,16 @@ export function BookDetail() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ChunkFolderUploadDialog
+        bookId={bookId}
+        chapters={data.chapters}
+        maxChars={settings.maxChars}
+        open={chunkUploadOpen}
+        onOpenChange={setChunkUploadOpen}
+        onMessage={showToast}
+        onChanged={onChapterAudioChanged}
+      />
 
       <ConfigDialog
         bookId={bookId}

@@ -122,6 +122,8 @@ def assemble_patch_from_chunks(
     db: Callable[[], AbstractContextManager],
     patch,
     source: PatchChunkSource,
+    *,
+    ignore_ids: bool = False,
 ) -> str:
     """Install ``source``'s chunks into the chapter stores and merge the patch audio.
 
@@ -133,7 +135,7 @@ def assemble_patch_from_chunks(
     from app.production_defaults import get_effective_audio_config
 
     manifest = source.manifest
-    if manifest.get("patch_id") not in (None, patch.id):
+    if not ignore_ids and manifest.get("patch_id") not in (None, patch.id):
         raise ChunkImportError(
             f"manifest.json thuộc patch {manifest.get('patch_id')}, không phải patch {patch.id}")
     tts = manifest.get("tts") if isinstance(manifest.get("tts"), dict) else {}

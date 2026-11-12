@@ -207,3 +207,13 @@ def test_log_and_emit_reach_the_job_log_file():
     assert "phase=encoding" in text
     events, _ = joblog.read_events(job_id)
     assert events == [{"type": "chunk", "index": 0}]
+
+
+def test_progress_with_none_changes_phase_but_keeps_the_numbers():
+    ctx, conn, job_id = _ctx(_FakeClock())
+    ctx.progress(4, 10, phase="synthesizing")
+
+    ctx.progress(None, phase="merging_book")
+
+    row = store.get(conn, job_id)
+    assert (row.progress_current, row.progress_total, row.phase) == (4, 10, "merging_book")

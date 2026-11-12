@@ -36,8 +36,19 @@ def _job_dict(job) -> dict:
     data = {name: getattr(job, name) for name in _JOB_FIELDS}
     data["payload"] = job.payload
     data["result"] = job.result
-    data["percent"] = (min(100, round(job.progress_current * 100 / job.progress_total))
-                       if job.progress_total else 0)
+    # Job đã xong luôn là 100%: nhiều handler không báo tiến độ (hoặc kết thúc ở 0/0
+    # khi bỏ qua vì kết quả đã có), trước đây chúng hiện 0% dù đã hoàn tất.
+    if job.status == "done":
+        data["percent"] = 100
+    else:
+        data["percent"] = (min(100, round(job.progress_current * 100 / job.progress_total))
+                           if job.progress_total else 0)
+    # Tính ở server để trình duyệt lệch giờ không làm sai thời gian chạy.
+    started = _parse_iso(job.started_at)
+    ended = _parse_iso(job.finished_at) or (
+        datetime.now(timezone.utc) if job.status in ("running", "cancelling") else None)
+    data["elapsed_sec"] = (max(0, round((ended - started).total_seconds()))
+                           if started and ended else None)
     return data
 
 

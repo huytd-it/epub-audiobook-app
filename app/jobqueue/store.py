@@ -351,7 +351,7 @@ def retry(conn: sqlite3.Connection, job_id: int) -> bool:
     cur = conn.execute(
         """UPDATE job SET status='pending', attempt_count=0, error_message=NULL,
                           next_retry_at=NULL, worker_id=NULL, started_at=NULL,
-                          finished_at=NULL, updated_at=?
+                          finished_at=NULL, progress_current=0, phase=NULL, updated_at=?
               WHERE id=?
                 AND status IN ('done', 'failed', 'cancelled')
                 AND NOT EXISTS (
@@ -381,7 +381,7 @@ def retry_all_failed(conn: sqlite3.Connection) -> int:
     cur = conn.execute(
         """UPDATE job SET status='pending', attempt_count=0, error_message=NULL,
                           next_retry_at=NULL, worker_id=NULL, started_at=NULL,
-                          finished_at=NULL, updated_at=?
+                          finished_at=NULL, progress_current=0, phase=NULL, updated_at=?
               WHERE status='failed'
                 AND (patch_id IS NULL OR id IN (
                     SELECT MAX(id) FROM job

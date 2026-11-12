@@ -23,10 +23,73 @@ const WORKER_TYPES = [
   ["standalone_video", "Video độc lập"], ["youtube_upload", "YouTube upload"],
   ["youtube_metadata_gen", "Sinh nội dung YouTube"],
   ["background_gen", "Tạo ảnh nền"], ["gameplay_clip", "Gameplay clip"],
+  ["gameplay_batch", "Gameplay hàng loạt"],
   ["short_render", "Short render"], ["short_upload", "Short upload"],
 ] as const;
 type WorkerType = typeof WORKER_TYPES[number][0];
-type WorkerSettings = { concurrency: Record<WorkerType, number>; min: number; max: number; requires_restart: boolean };
+const WORKER_LABELS: Record<string, string> = Object.fromEntries(WORKER_TYPES);
+// Khóa theo string chứ không theo WorkerType: backend là nguồn sự thật về danh sách
+// loại job, và PUT /queue/settings từ chối nếu thiếu dù chỉ một loại.
+type WorkerSettings = { concurrency: Record<string, number>; min: number; max: number; requires_restart: boolean };
+const TTS_JOB_TYPES = new Set(["audiobook_tts", "audiobook_tts_api", "light_tts", "kaggle_tts", "voxcpm_tts"]);
+
+function formatDuration(totalSeconds: number) {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}p${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}g${String(minutes % 60).padStart(2, "0")}p`;
+}
+
+function formatClock(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = date.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay ? time : `${time} ${date.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" })}`;
+}
+
+/** Dòng trên thanh tiến độ: job TTS đếm theo chunk, job khác đếm theo bước. */
+function progressLabel(job: Job) {
+  const current = job.progress_current ?? 0;
+  const total = job.progress_total ?? 0;
+  if (TTS_JOB_TYPES.has(job.job_type)) {
+    const chunks = total || Number(job.result?.chunks) || 0;
+    if (chunks > 0) return `Chunk ${job.status === "done" ? chunks : Math.min(current, chunks)}/${chunks}`;
+    return job.status === "done" ? "Dùng lại audio đã có" : "Chunk —";
+  }
+  // Tổng lớn là số byte/frame, hiển thị thô không có ích — chỉ để phần trăm.
+  return total > 1 && total <= 10000 ? `Bước ${Math.min(current, total)}/${total}` : "Tiến độ";
+}
+
+/** Dòng dưới thanh tiến độ: thời gian chạy, dự kiến còn lại, thời điểm hoàn thành. */
+function progressDetail(job: Job) {
+  const parts: string[] = [];
+  const elapsed = job.elapsed_sec;
+  const current = job.progress_current ?? 0;
+  const total = job.progress_total ?? 0;
+  if (job.status === "running" || job.status === "cancelling") {
+    if (elapsed != null) parts.push(`Đã chạy ${formatDuration(elapsed)}`);
+    if (elapsed && current > 0 && current < total) {
+      parts.push(`còn ~${formatDuration((elapsed * (total - current)) / current)}`);
+    }
+  } else if (job.finished_at) {
+    const verb = job.status === "done" ? "Xong" : job.status === "failed" ? "Lỗi" : "Dừng";
+    parts.push(`${verb} ${formatClock(job.finished_at)}`);
+    if (elapsed != null) parts.push(`mất ${formatDuration(elapsed)}`);
+    const audioSeconds = Number(job.result?.audio_seconds);
+    if (job.status === "done" && audioSeconds > 0) parts.push(`audio ${formatDuration(audioSeconds)}`);
+  }
+  return parts.join(" · ");
+}
+
+/** Engine/giọng đọc của job TTS, lấy từ payload lúc enqueue. */
+function ttsDetail(job: Job) {
+  if (!TTS_JOB_TYPES.has(job.job_type)) return "";
+  const engine = job.payload?.tts_engine;
+  const voice = job.payload?.voice;
+  return [engine, voice].filter((value) => typeof value === "string" && value).join(" · ");
+}
 type WorkerHealth = {
   worker_state: "disabled" | "idle" | "busy" | "paused";
   current_patch_id: number | null;
@@ -68,7 +131,7 @@ export function Queue() {
   const [logCopied, setLogCopied] = useState(false);
   const [workerDialogOpen, setWorkerDialogOpen] = useState(false);
   const [workerSettings, setWorkerSettings] = useState<WorkerSettings>();
-  const [workerDraft, setWorkerDraft] = useState<Record<WorkerType, string>>();
+  const [workerDraft, setWorkerDraft] = useState<Record<string, string>>();
   const [workerLoading, setWorkerLoading] = useState(false);
   const [workerSaving, setWorkerSaving] = useState(false);
   const [workerError, setWorkerError] = useState("");
@@ -346,7 +409,7 @@ export function Queue() {
     try {
       const data = await api<WorkerSettings>("/queue/settings");
       setWorkerSettings(data);
-      setWorkerDraft(Object.fromEntries(WORKER_TYPES.map(([type]) => [type, String(data.concurrency[type])])) as Record<WorkerType, string>);
+      setWorkerDraft(Object.fromEntries(Object.entries(data.concurrency).map(([type, value]) => [type, String(value)])));
     } catch (err) {
       setWorkerError(err instanceof Error ? err.message : "Không tải được cấu hình worker");
     } finally {
@@ -356,8 +419,9 @@ export function Queue() {
 
   async function saveWorkerSettings() {
     if (!workerSettings || !workerDraft) return;
-    const concurrency = Object.fromEntries(WORKER_TYPES.map(([type]) => [type, Number(workerDraft[type])])) as Record<WorkerType, number>;
-    if (Object.values(concurrency).some((value) => !Number.isInteger(value) || value < workerSettings.min || value > workerSettings.max)) {
+    // Gửi đúng bộ loại job backend trả về; ô để trống không được ngầm hiểu là 0.
+    const concurrency = Object.fromEntries(Object.keys(workerSettings.concurrency).map((type) => [type, Number(workerDraft[type])]));
+    if (Object.keys(concurrency).some((type) => (workerDraft[type] ?? "").trim() === "") || Object.values(concurrency).some((value) => !Number.isInteger(value) || value < workerSettings.min || value > workerSettings.max)) {
       setWorkerError(`Số worker phải là số nguyên từ ${workerSettings.min} đến ${workerSettings.max}.`);
       return;
     }
@@ -524,7 +588,7 @@ export function Queue() {
                   <TableHead className="w-16">MÃ JOB</TableHead>
                   <TableHead>LOẠI</TableHead>
                   <TableHead>GIAI ĐOẠN / SÁCH</TableHead>
-                  <TableHead className="w-48">TIẾN ĐỘ</TableHead>
+                  <TableHead className="w-60">TIẾN ĐỘ</TableHead>
                   <TableHead className="text-center">TRẠNG THÁI</TableHead>
                   <TableHead className="text-right">THAO TÁC</TableHead>
                 </TableRow>
@@ -601,14 +665,16 @@ export function Queue() {
                     <TableCell>
                       <div className="space-y-1">
                         <div className="flex justify-between text-[10px] font-mono">
-                          <span className="text-muted-foreground">
-                            {job.status === "running" && workerHealth && workerHealth.current_patch_id === job.patch_id && workerHealth.current_chunk_count
-                              ? `Chunk ${workerHealth.current_chunk_index}/${workerHealth.current_chunk_count}`
-                              : "Phần trăm"}
-                          </span>
-                          <span className="font-bold text-foreground">{job.percent}%</span>
+                          <span className="text-muted-foreground">{progressLabel(job)}</span>
+                          <span className="font-bold text-foreground">{job.percent ?? 0}%</span>
                         </div>
-                        <Progress value={job.percent} className="h-1.5" />
+                        <Progress value={job.percent ?? 0} className="h-1.5" />
+                        {(progressDetail(job) || ttsDetail(job)) && (
+                          <div className="space-y-0.5 text-[10px] font-mono text-muted-foreground">
+                            {progressDetail(job) && <div className="whitespace-nowrap">{progressDetail(job)}</div>}
+                            {ttsDetail(job) && <div className="max-w-56 truncate" title={ttsDetail(job)}>{ttsDetail(job)}</div>}
+                          </div>
+                        )}
                       </div>
                     </TableCell>
 
@@ -696,7 +762,7 @@ export function Queue() {
             <LoadingState text="Đang tải cấu hình worker..." />
           ) : workerDraft && workerSettings ? (
             <div className="grid gap-3 py-2 sm:grid-cols-2">
-              {WORKER_TYPES.map(([type, label]) => (
+              {Object.keys(workerSettings.concurrency).map((type) => [type, WORKER_LABELS[type] ?? type]).map(([type, label]) => (
                 <label key={type} className="flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2">
                   <span className="min-w-0">
                     <span className="block text-sm font-medium">{label}</span>
@@ -707,7 +773,7 @@ export function Queue() {
                     min={workerSettings.min}
                     max={workerSettings.max}
                     step={1}
-                    value={workerDraft[type]}
+                    value={workerDraft[type] ?? ""}
                     onChange={(event) => setWorkerDraft({ ...workerDraft, [type]: event.target.value })}
                     className="w-20 text-center font-mono"
                     aria-label={`Số worker cho ${label}`}

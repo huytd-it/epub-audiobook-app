@@ -53,11 +53,13 @@ class JobContext:
     # ------------------------------------------------------------- tiến độ
 
     def progress(
-        self, current: int, total: int | None = None, phase: str | None = None
+        self, current: int | None, total: int | None = None, phase: str | None = None
     ) -> None:
         """Luôn cập nhật trong bộ nhớ; chỉ chạm DB khi đã quá flush_interval kể từ lần
-        ghi trước, hoặc khi phase đổi. Gọi cái này mỗi chunk/mỗi frame đều an toàn."""
-        self._current = current
+        ghi trước, hoặc khi phase đổi. Gọi cái này mỗi chunk/mỗi frame đều an toàn.
+        current=None giữ nguyên con số đang có — dùng khi chỉ muốn đổi phase."""
+        if current is not None:
+            self._current = current
         if total is not None:
             self._total = total
         phase_changed = phase is not None and phase != self._phase

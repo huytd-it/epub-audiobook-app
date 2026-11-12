@@ -133,6 +133,17 @@ def handle(ctx) -> dict:
     return _finish_audio_result(ctx, patch, audio_path, payload, chunk_count=chunk_count)
 
 
+def audio_seconds(audio_path: str | None) -> float | None:
+    """Thời lượng file audio kết quả, để trang Queue hiển thị chi tiết job TTS."""
+    if not audio_path:
+        return None
+    try:
+        info = sf.info(audio_path)
+        return round(info.frames / info.samplerate, 1) if info.samplerate else None
+    except (OSError, RuntimeError):
+        return None
+
+
 def _finish_audio_result(ctx, patch, audio_path: str, payload: dict, *,
                          chunk_count: int = 0, skipped: bool = False) -> dict:
     """Persist a usable audio result and idempotently continue the media pipeline."""
@@ -158,6 +169,7 @@ def _finish_audio_result(ctx, patch, audio_path: str, payload: dict, *,
     if chunk_count:
         ctx.progress(chunk_count, chunk_count, phase="synthesizing")
     return {"audio_path": audio_path, "chunks": chunk_count,
+            "audio_seconds": audio_seconds(audio_path),
             "final_audio_path": final_path, "skipped": skipped,
             "automation": outcome["state"]}
 
@@ -420,7 +432,8 @@ def finalize_book_if_ready(ctx, book_id: int) -> str | None:
     book_dir = Path(settings.data_root) / "books" / str(book_id)
     book_dir.mkdir(parents=True, exist_ok=True)
     final_path = str(book_dir / "final.wav")
-    ctx.progress(ctx.job.progress_current, ctx.job.progress_total, phase="merging_book")
+    # Chỉ đổi phase: ctx.job là snapshot lúc claim (0/0), ghi nó sẽ kéo tiến độ về 0.
+    ctx.progress(None, phase="merging_book")
     audio_merge.concat_wavs(paths, final_path)
     normalize_wav_in_place(final_path)
     repository.set_book_final_audio(ctx.conn, book_id, final_path)

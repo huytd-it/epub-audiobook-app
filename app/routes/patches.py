@@ -1812,13 +1812,19 @@ async def _install_chunk_folders(
             rows.append({**row, "status": "error", "detail": str(exc), "file_outcomes": outcomes("rejected", str(exc))})
             continue
         manifest = source.manifest
-        patch = by_id.get(manifest.get("patch_id")) if manifest.get("patch_id") is not None else None
-        if patch is None and manifest.get("patch_id") is None:
+        # Manifest từ sách/DB khác (vd. sách 37 import lại thành sách 3): book_id và
+        # patch_id không còn nghĩa ở đây, nên khớp theo số thứ tự trong tên thư mục
+        # patch_NNN. An toàn nhờ assemble_patch_from_chunks đối chiếu từng đoạn văn.
+        foreign = manifest.get("book_id") not in (None, book_id)
+        patch = None
+        if not foreign and manifest.get("patch_id") is not None:
+            patch = by_id.get(manifest.get("patch_id"))
+        if patch is None and (foreign or manifest.get("patch_id") is None):
             try:
                 patch = patches.get(int(folder.name.removeprefix("patch_")))
             except ValueError:
                 patch = None
-        if manifest.get("book_id") not in (None, book_id) or patch is None:
+        if patch is None:
             reason = "không khớp patch nào của sách này"
             rows.append({**row, "status": "skipped", "detail": reason, "file_outcomes": outcomes("rejected", reason)})
             continue
@@ -1838,7 +1844,8 @@ async def _install_chunk_folders(
             continue
         try:
             audio_path = await asyncio.to_thread(
-                chunk_import.assemble_patch_from_chunks, lambda: locked_conn(request), patch, source)
+                chunk_import.assemble_patch_from_chunks, lambda: locked_conn(request), patch, source,
+                ignore_ids=foreign)
         except (chunk_import.ChunkImportError, OSError, RuntimeError) as exc:
             logger.warning("chunk import failed for patch %s", patch.id, exc_info=True)
             rows.append({**row, "status": "error", "detail": str(exc), "file_outcomes": outcomes("rejected", str(exc))})
