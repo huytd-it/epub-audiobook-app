@@ -15,6 +15,7 @@ from app.config import settings
 from app.image_overlay import save_video_branding
 from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
+from app.jobqueue.render_progress import ENCODE_END, ENCODE_START, SCALE, RenderProgress, render_stats
 from app.patch_publishing import (MAX_PATCH_RENDER_ATTEMPTS, audio_fingerprint,
                                   enqueue_patch_publish, seed_patch_video)
 from app.production_defaults import get_effective_branding_config, get_effective_video_config, resolve_voice_clip
@@ -23,6 +24,35 @@ from app.video_integrity import (VideoExpectation, validate_video,
 from app.video_publish import VideoValidationError, publish_validated_video
 from app.video_recovery import resume_upload_after_render
 from app.video_repository import upsert_patch_video
+
+
+# Sáu mốc cũ (0..6) trên thang SCALE: đoạn giữa ENCODE_START..ENCODE_END do
+# RenderProgress điền theo tiến độ encode thật thay vì đứng yên ở 2/6 suốt lần render.
+_STEP_UNITS = {0: 0, 1: 10, 2: ENCODE_START, 3: ENCODE_END, 4: 960, 5: 980, 6: SCALE}
+
+
+def _step(ctx, step: int, phase: str) -> None:
+    ctx.progress(_STEP_UNITS[step], SCALE, phase=phase)
+
+
+def _render_profile(*, common: dict, audio: str, background: str, sequence: bool,
+                    crossfade: bool, waveform: bool, branding: bool, extras: int) -> tuple[dict, float]:
+    """(mô tả cấu hình để hiển thị + làm chữ ký ước lượng, số lượt encode toàn bài)."""
+    width, height = common["resolution"]
+    burns_subtitles = Path(audio).with_suffix(".ass").is_file()
+    effects = [name for name, on in (("sóng âm", waveform), ("phụ đề", burns_subtitles),
+                                      ("logo", branding), ("chuyển cảnh", sequence and crossfade),
+                                      ("intro/outro", extras > 0)) if on]
+    config = {
+        "resolution": f"{width}x{height}", "fps": common["fps"], "codec": common["codec"],
+        "background": background, "effects": "+".join(effects),
+    }
+    passes = 1.0
+    if sequence:
+        # Lượt dựng nền, lượt xfade (nếu có), và lượt ghép cuối chỉ encode lại khi có
+        # hiệu ứng vẽ lên hình — không thì chỉ remux, nhanh tới mức không đáng tính.
+        passes = 1.0 + (1.0 if crossfade else 0.0) + (1.0 if (waveform or burns_subtitles or branding) else 0.0)
+    return config, passes
 
 
 def _expected_duration_seconds(audio_path: str, render_config: dict) -> float | None:
@@ -152,8 +182,8 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
             raise JobFatalError(f"source_unavailable: {key} missing: {value}")
     output = str(repository.get_patch_video_path(book.id, patch.patch_index))
     Path(output).parent.mkdir(parents=True, exist_ok=True)
-    ctx.progress(1, 6, phase="overlay")
-    ctx.progress(2, 6, phase="encoding")
+    _step(ctx, 1, "overlay")
+    _step(ctx, 2, "encoding")
     background_type = snapshot.get("background_type", "media")
     image = snapshot.get("image") or thumbnail
     if background_type == "media" and (not image or not Path(image).is_file()):
@@ -296,7 +326,19 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     ctx.log(f"render patch {patch.id} từ snapshot (sequence={sequence})")
     expected = _expected_video(audio, render_config)
     validator = partial(validate_video, expected=expected)
-    with ctx.keep_alive():
+    if background_type == "gameplay":
+        background_kind = "gameplay"
+    elif sequence:
+        background_kind = "chuỗi nền"
+    else:
+        background_kind = "video nền" if video_gen.is_video_background(image) else "ảnh tĩnh"
+    profile, passes = _render_profile(
+        common=common, audio=audio, background=background_kind, sequence=sequence,
+        crossfade=bool(seq_config.get("crossfade_enabled")),
+        waveform=bool(seq_config.get("waveform_enabled")),
+        branding=bool(branding_overlay_path), extras=bool(intro) + bool(outro))
+    with ctx.keep_alive(), RenderProgress(
+            ctx, video_seconds=expected.duration_seconds, config=profile, passes=passes):
         try:
             result = publish_validated_video(output, render, validator=validator)
         except VideoValidationError as exc:
@@ -324,7 +366,7 @@ def handle(ctx) -> dict:
     _resolved_audio = str(_resolved)
     recovery_upload_id = ctx.job.payload.get("recovery_upload_id")
     recovery_pipeline = (dict(pipeline) if pipeline else None) if recovery_upload_id is not None else None
-    ctx.progress(0, 6, phase="preparing")
+    _step(ctx, 0, "preparing")
 
     snapshot = ctx.job.payload.get("snapshot")
     if isinstance(snapshot, dict):
@@ -333,14 +375,15 @@ def handle(ctx) -> dict:
         pipeline_row = dict(pipeline) if pipeline else {}
         _account_render_attempt(ctx, patch_id, pipeline_row, recovery_upload_id)
         output = _render_from_snapshot(ctx, patch, book, pipeline_row, snapshot)
-        ctx.progress(4, 6, phase="registering")
+        _step(ctx, 4, "registering")
         if ctx.should_cancel():
             # Render 36 phút cho một job đã bị hủy (trường hợp job 6268): giữ file
             # trên đĩa nhưng không đăng ký videos/pipeline, để bản render thay thế
             # (job 6287) không bị đè trạng thái.
             ctx.log("job đã bị hủy: bỏ qua đăng ký video", level=logging.WARNING)
-            ctx.progress(6, 6, phase="done")
-            return {"output_path": output, "video_id": None, "youtube": None}
+            _step(ctx, 6, "done")
+            return {"output_path": output, "video_id": None, "youtube": None,
+                "render": render_stats(ctx)}
         video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                    file_path=output, resolution=book.video_resolution)
         _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
@@ -361,11 +404,12 @@ def handle(ctx) -> dict:
             persisted_snapshot = media.get("render_snapshot")
             if isinstance(persisted_snapshot, dict):
                 output = _render_from_snapshot(ctx, patch, book, recovery_pipeline, persisted_snapshot)
-                ctx.progress(4, 6, phase="registering")
+                _step(ctx, 4, "registering")
                 if ctx.should_cancel():
                     ctx.log("job đã bị hủy: bỏ qua đăng ký video", level=logging.WARNING)
-                    ctx.progress(6, 6, phase="done")
-                    return {"output_path": output, "video_id": None, "youtube": None}
+                    _step(ctx, 6, "done")
+                    return {"output_path": output, "video_id": None, "youtube": None,
+                "render": render_stats(ctx)}
                 video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                            file_path=output, resolution=book.video_resolution)
                 _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
@@ -375,8 +419,9 @@ def handle(ctx) -> dict:
                     for clip_path in consume_reserved(ctx.conn, patch_id, token):
                         Path(clip_path).unlink(missing_ok=True)
                 resume_upload_after_render(ctx.conn, recovery_upload_id)
-                ctx.progress(6, 6, phase="done")
-                return {"output_path": output, "video_id": video["id"], "youtube": None}
+                _step(ctx, 6, "done")
+                return {"output_path": output, "video_id": video["id"], "youtube": None,
+                "render": render_stats(ctx)}
             image = recovery_pipeline["thumbnail_path"]
             if not image or not Path(image).is_file():
                 raise JobFatalError(f"source_unavailable: thumbnail missing: {image}")
@@ -391,11 +436,18 @@ def handle(ctx) -> dict:
                 value = render_config.get(key)
                 if value and not Path(value).is_file():
                     raise JobFatalError(f"source_unavailable: {key} missing: {value}")
-            ctx.progress(1, 6, phase="overlay")
-            ctx.progress(2, 6, phase="encoding")
+            _step(ctx, 1, "overlay")
+            _step(ctx, 2, "encoding")
             expected = _expected_video(_resolved_audio, render_config or {})
             validator = partial(validate_video, expected=expected)
-            with ctx.keep_alive():
+            profile = {
+                "resolution": render_config.get("resolution"), "fps": render_config.get("fps"),
+                "codec": render_config.get("codec") or "libx264",
+                "background": "video nền" if video_gen.is_video_background(image) else "ảnh tĩnh",
+                "effects": "",
+            }
+            with ctx.keep_alive(), RenderProgress(
+                    ctx, video_seconds=expected.duration_seconds, config=profile):
                 try:
                     result = publish_validated_video(
                         output,
@@ -416,7 +468,7 @@ def handle(ctx) -> dict:
                 raise JobFatalError("source_unavailable: background missing")
             backgrounds = media_library.expand_backgrounds(config)
             sequence = len(backgrounds) > 1 and not (patch.image_path and Path(patch.image_path).exists())
-            ctx.progress(1, 6, phase="overlay")
+            _step(ctx, 1, "overlay")
             if sequence or video_gen.is_video_background(raw_bg):
                 image, image_type = raw_bg, "none"
             else:
@@ -493,11 +545,21 @@ def handle(ctx) -> dict:
                     video_gen.concat_segments(segments, target)
 
             ctx.log(f"render patch {patch_id}: audio={_audio} background={raw_bg}")
-            ctx.progress(2, 6, phase="encoding")
+            _step(ctx, 2, "encoding")
             render_config = {**common, "intro_audio": intro, "outro_audio": outro}
             expected = _expected_video(_audio, render_config)
             validator = partial(validate_video, expected=expected)
-            with ctx.keep_alive():
+            if sequence:
+                background_kind = "chuỗi nền"
+            else:
+                background_kind = "video nền" if video_gen.is_video_background(raw_bg) else "ảnh tĩnh"
+            profile, passes = _render_profile(
+                common=common, audio=_audio, background=background_kind, sequence=sequence,
+                crossfade=bool(config.get("crossfade_enabled")),
+                waveform=bool(config.get("waveform_enabled")),
+                branding=bool(branding_overlay_path), extras=bool(intro) + bool(outro))
+            with ctx.keep_alive(), RenderProgress(
+                    ctx, video_seconds=expected.duration_seconds, config=profile, passes=passes):
                 try:
                     result = publish_validated_video(output, render, validator=validator)
                 except VideoValidationError as exc:
@@ -505,11 +567,12 @@ def handle(ctx) -> dict:
                     raise
             _persist_validation_report(ctx, patch_id, result, expected)
 
-        ctx.progress(4, 6, phase="registering")
+        _step(ctx, 4, "registering")
         if ctx.should_cancel():
             ctx.log("job đã bị hủy: bỏ qua đăng ký video", level=logging.WARNING)
-            ctx.progress(6, 6, phase="done")
-            return {"output_path": output, "video_id": None, "youtube": None}
+            _step(ctx, 6, "done")
+            return {"output_path": output, "video_id": None, "youtube": None,
+                "render": render_stats(ctx)}
         video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                    file_path=output, resolution=book.video_resolution)
         _mark_pipeline_video_done(ctx, patch_id, video["id"], output)
@@ -521,7 +584,7 @@ def handle(ctx) -> dict:
         resume_upload_after_render(ctx.conn, recovery_upload_id)
     elif ctx.job.payload.get("upload_youtube"):
         from app.patch_publishing import run_patch_publish_stage
-        ctx.progress(5, 6, phase="publishing")
+        _step(ctx, 5, "publishing")
         seed_patch_video(ctx.conn, patch_id, video["id"], output)
         youtube_status = run_patch_publish_stage(ctx.conn, patch_id)
         upload_id = youtube_status.get("youtube_upload_id")
@@ -538,6 +601,7 @@ def handle(ctx) -> dict:
                 book_id=book.id, patch_id=patch_id,
                 dedupe_key=f"youtube_upload:upload={upload_id}",
             )
-    ctx.progress(6, 6, phase="done")
+    _step(ctx, 6, "done")
     ctx.log(f"video xong -> {output}")
-    return {"output_path": output, "video_id": video["id"], "youtube": youtube_status}
+    return {"output_path": output, "video_id": video["id"], "youtube": youtube_status,
+                "render": render_stats(ctx)}

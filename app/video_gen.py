@@ -5,7 +5,9 @@ import logging
 import random
 import subprocess
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -96,11 +98,87 @@ def _is_transient_crash(returncode: int) -> bool:
     return 0xC0000000 <= returncode <= 0xCFFFFFFF
 
 
+# callback(out_seconds, speed, fps, done): vị trí ffmpeg đã mã hóa tới trong lần gọi
+# hiện tại. Gắn theo thread vì mỗi job render chạy trọn trong một thread của runner,
+# nhờ vậy không phải luồn tham số qua mọi hàm generate_*/concat_*.
+EncoderProgress = Callable[[float, float | None, float | None, bool], None]
+_encoder_progress = threading.local()
+
+
+@contextmanager
+def encoder_progress(callback: EncoderProgress):
+    """Trong khối này, mọi lần ffmpeg mã hóa lại (không phải stream copy) trên thread
+    hiện tại báo tiến độ thật qua ``callback``."""
+    previous = getattr(_encoder_progress, "callback", None)
+    _encoder_progress.callback = callback
+    try:
+        yield
+    finally:
+        _encoder_progress.callback = previous
+
+
+def _is_stream_copy(cmd: list[str]) -> bool:
+    """Lệnh chỉ remux (-c copy / -c:v copy) chạy vài giây, không đáng tính tiến độ."""
+    return any(flag in ("-c", "-c:v") and value == "copy" for flag, value in zip(cmd, cmd[1:]))
+
+
+def _float_or_none(raw: str) -> float | None:
+    try:
+        return float(raw)
+    except ValueError:
+        return None  # ffmpeg in "N/A" trước khi có frame đầu tiên
+
+
+def _run_with_progress(
+    cmd: list[str], callback: EncoderProgress, *, cwd: str | None = None
+) -> subprocess.CompletedProcess:
+    """Như subprocess.run(check=True, capture_output=True) nhưng đọc '-progress' của
+    ffmpeg trong lúc chạy. stderr đi vào file tạm: để nó trong PIPE mà không đọc song
+    song thì ffmpeg treo khi buffer đầy."""
+    full = [cmd[0], "-progress", "pipe:1", "-nostats", *cmd[1:]]
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stderr_file:
+        process = subprocess.Popen(full, stdout=subprocess.PIPE, stderr=stderr_file,
+                                   text=True, encoding="utf-8", errors="replace", cwd=cwd)
+        out_seconds, speed, fps = 0.0, None, None
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                key, _, value = line.strip().partition("=")
+                if key in ("out_time_us", "out_time_ms"):
+                    # Tên gọi lịch sử: cả hai khóa đều tính bằng micro giây.
+                    micros = _float_or_none(value)
+                    if micros is not None and micros >= 0:
+                        out_seconds = micros / 1_000_000
+                elif key == "speed":
+                    speed = _float_or_none(value.rstrip("x"))
+                elif key == "fps":
+                    fps = _float_or_none(value)
+                elif key == "progress":
+                    try:
+                        callback(out_seconds, speed, fps, value == "end")
+                    except Exception:  # noqa: BLE001 — báo tiến độ không được làm hỏng render
+                        pass
+        except BaseException:
+            process.kill()
+            raise
+        finally:
+            process.stdout.close()
+            returncode = process.wait()
+        stderr_file.seek(0)
+        stderr = stderr_file.read()
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, cmd, output="", stderr=stderr)
+    return subprocess.CompletedProcess(cmd, returncode, "", stderr)
+
+
 def _run_encoder(cmd: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess:
     delay = 2.0
     last_exc: subprocess.CalledProcessError | None = None
+    callback = getattr(_encoder_progress, "callback", None)
     for attempt in range(_ENCODER_RETRIES + 1):
         try:
+            if callback is not None and not _is_stream_copy(cmd):
+                return _run_with_progress(cmd, callback, cwd=cwd)
             return subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=cwd)
         except subprocess.CalledProcessError as exc:
             if not _is_transient_crash(exc.returncode):

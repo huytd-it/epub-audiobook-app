@@ -8,6 +8,7 @@ from app import video_gen
 from app.config import settings
 from app.image_overlay import save_video_branding
 from app.jobqueue.models import JobFatalError
+from app.jobqueue.render_progress import SCALE, RenderProgress, render_stats
 from app.production_defaults import get_effective_branding_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
@@ -57,17 +58,26 @@ def handle(ctx) -> dict:
     except Exception:  # noqa: BLE001 — branding is best-effort for standalone re-render
         pass
 
-    ctx.progress(0, 1, phase="encoding")
-    publish_validated_video(
-        output,
-        lambda temp: video_gen.generate_standalone_video(audio, background, temp, **config,
-                                                         branding_overlay_path=branding_overlay_path),
-        validator=validate_video,
-    )
+    ctx.progress(0, SCALE, phase="encoding")
+    profile = {
+        "resolution": config.get("resolution") or "1920x1080", "fps": config.get("fps") or 30,
+        "codec": config.get("codec") or "libx264",
+        "background": "video nền" if video_gen.is_video_background(background) else "ảnh tĩnh",
+        "effects": "logo" if branding_overlay_path else "",
+    }
+    # keep_alive: encode dài không tự heartbeat, reaper sẽ tưởng worker đã chết.
+    with ctx.keep_alive(), RenderProgress(
+            ctx, video_seconds=video_gen._probe_audio_seconds(audio), config=profile):
+        publish_validated_video(
+            output,
+            lambda temp: video_gen.generate_standalone_video(audio, background, temp, **config,
+                                                             branding_overlay_path=branding_overlay_path),
+            validator=validate_video,
+        )
     update_video(ctx.conn, video_id, file_path=output, upload_status="queued",
                  error_message=None)
     recovery_upload_id = ctx.job.payload.get("recovery_upload_id")
     if recovery_upload_id is not None:
         resume_upload_after_render(ctx.conn, recovery_upload_id)
-    ctx.progress(1, 1, phase="done")
-    return {"output_path": output}
+    ctx.progress(SCALE, SCALE, phase="done")
+    return {"output_path": output, "render": render_stats(ctx)}

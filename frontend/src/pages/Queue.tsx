@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ArrowDownToLine, ArrowUpToLine, Check, CheckCheck, Eraser, ChevronLeft, ChevronRight, Copy, FileText, GripVertical, Trash2, RotateCcw, StopCircle, RefreshCw, ListOrdered, Settings2 } from "lucide-react";
-import { api, post, put, Job } from "@/api";
+import { api, post, put, Job, RenderDetail } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { LogLines } from "@/components/common/LogLines";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -49,10 +49,38 @@ function formatClock(iso: string) {
   return sameDay ? time : `${time} ${date.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" })}`;
 }
 
+const VIDEO_PHASE_LABELS: Record<string, string> = {
+  preparing: "Chuẩn bị", overlay: "Dựng ảnh nền", encoding: "Mã hóa",
+  registering: "Đăng ký video", publishing: "Chuẩn bị đăng", done: "Hoàn tất",
+};
+
+/** Thống kê render: lấy từ bộ nhớ runner khi đang chạy, từ result khi đã xong. */
+function renderInfo(job: Job): RenderDetail | null {
+  if (job.detail?.kind === "video") return job.detail;
+  const saved = job.result?.render;
+  return saved && typeof saved === "object" ? (saved as RenderDetail) : null;
+}
+
+/** Cấu hình render ảnh hưởng tới tốc độ: độ phân giải, fps, codec, nền, hiệu ứng. */
+function renderConfigLine(info: RenderDetail) {
+  return [
+    info.resolution, info.fps ? `${info.fps}fps` : "", info.codec, info.background, info.effects,
+  ].filter(Boolean).join(" · ");
+}
+
 /** Dòng trên thanh tiến độ: job TTS đếm theo chunk, job khác đếm theo bước. */
 function progressLabel(job: Job) {
   const current = job.progress_current ?? 0;
   const total = job.progress_total ?? 0;
+  const render = renderInfo(job);
+  if (render && job.status !== "done") {
+    const phase = VIDEO_PHASE_LABELS[job.phase] ?? "Render";
+    if (job.phase === "encoding" && render.video_sec && render.encoded_sec != null) {
+      return `${phase} ${formatDuration(render.encoded_sec)}/${formatDuration(render.video_sec)}`;
+    }
+    return phase;
+  }
+  if (job.job_type.includes("video")) return VIDEO_PHASE_LABELS[job.phase] ?? "Tiến độ";
   if (TTS_JOB_TYPES.has(job.job_type)) {
     const chunks = total || Number(job.result?.chunks) || 0;
     if (chunks > 0) return `Chunk ${job.status === "done" ? chunks : Math.min(current, chunks)}/${chunks}`;
@@ -68,9 +96,18 @@ function progressDetail(job: Job) {
   const elapsed = job.elapsed_sec;
   const current = job.progress_current ?? 0;
   const total = job.progress_total ?? 0;
+  const render = renderInfo(job);
   if (job.status === "running" || job.status === "cancelling") {
     if (elapsed != null) parts.push(`Đã chạy ${formatDuration(elapsed)}`);
-    if (elapsed && current > 0 && current < total) {
+    if (render) {
+      // ETA của job render do server tính từ tốc độ ffmpeg đo được; trước khi có
+      // frame đầu tiên nó là ước lượng từ các lần render cùng cấu hình.
+      if (render.eta_sec != null && job.phase === "encoding") {
+        parts.push(`${render.measured ? "còn" : "dự kiến còn"} ~${formatDuration(render.eta_sec)}`);
+      }
+      if (render.speed) parts.push(`${render.speed}x`);
+      if (render.encode_fps) parts.push(`${Math.round(render.encode_fps)}fps`);
+    } else if (elapsed && current > 0 && current < total) {
       parts.push(`còn ~${formatDuration((elapsed * (total - current)) / current)}`);
     }
   } else if (job.finished_at) {
@@ -79,12 +116,18 @@ function progressDetail(job: Job) {
     if (elapsed != null) parts.push(`mất ${formatDuration(elapsed)}`);
     const audioSeconds = Number(job.result?.audio_seconds);
     if (job.status === "done" && audioSeconds > 0) parts.push(`audio ${formatDuration(audioSeconds)}`);
+    if (job.status === "done" && render?.video_sec) {
+      parts.push(`video ${formatDuration(render.video_sec)}`);
+      if (render.speed) parts.push(`${render.speed}x`);
+    }
   }
   return parts.join(" · ");
 }
 
 /** Engine/giọng đọc của job TTS, lấy từ payload lúc enqueue. */
 function ttsDetail(job: Job) {
+  const render = renderInfo(job);
+  if (render) return renderConfigLine(render);
   if (!TTS_JOB_TYPES.has(job.job_type)) return "";
   const engine = job.payload?.tts_engine;
   const voice = job.payload?.voice;

@@ -32,7 +32,7 @@ _JOB_FIELDS = ("id", "job_type", "status", "priority", "book_id", "phase",
 _JOB_FIELDS += ("patch_id",)
 
 
-def _job_dict(job) -> dict:
+def _job_dict(job, queue=None) -> dict:
     data = {name: getattr(job, name) for name in _JOB_FIELDS}
     data["payload"] = job.payload
     data["result"] = job.result
@@ -49,7 +49,17 @@ def _job_dict(job) -> dict:
         datetime.now(timezone.utc) if job.status in ("running", "cancelling") else None)
     data["elapsed_sec"] = (max(0, round((ended - started).total_seconds()))
                            if started and ended else None)
+    # Chi tiết sống trong bộ nhớ của runner (tốc độ encode, ETA) — chỉ có khi job
+    # đang chạy trong tiến trình này.
+    detail = None
+    if queue is not None and job.status in ("running", "cancelling") and hasattr(queue, "job_detail"):
+        detail = queue.job_detail(job.id)
+    data["detail"] = detail
     return data
+
+
+def _queue(request: Request):
+    return getattr(request.app.state, "job_queue", None)
 
 
 @router.get("/queue/settings")
@@ -233,7 +243,7 @@ def list_jobs(request: Request, type: str = "", status: str = "",
         production_names = _production_names(conn, jobs)
     result = []
     for job in jobs:
-        data = _job_dict(job)
+        data = _job_dict(job, _queue(request))
         data["production_name"] = production_names.get(job.id)
         result.append(data)
     return {"jobs": result}
@@ -245,7 +255,7 @@ def job_detail(request: Request, job_id: int):
         job = store.get(conn, job_id)
     if job is None:
         raise HTTPException(404, detail=f"job {job_id} không tồn tại")
-    return _job_dict(job)
+    return _job_dict(job, _queue(request))
 
 
 @router.get("/queue/jobs/{job_id}/log", response_class=PlainTextResponse)
@@ -274,7 +284,7 @@ async def job_stream(request: Request, job_id: int):
                 job = store.get(conn, job_id)
             if job is None:
                 return
-            yield f"data: {json.dumps({'type': 'progress', **_job_dict(job)}, ensure_ascii=False, default=str)}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', **_job_dict(job, _queue(request))}, ensure_ascii=False, default=str)}\n\n"
             if job.status in TERMINAL_STATUSES or await request.is_disconnected():
                 return
             await asyncio.sleep(1.0)

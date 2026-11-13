@@ -43,6 +43,11 @@ class JobContext:
         # thread dùng cùng lúc). None => keep_alive thành no-op, dùng trong test.
         self._conn_factory = conn_factory
         self._lost_ownership = False
+        # Chi tiết tiến độ chỉ sống trong bộ nhớ (tốc độ encode, ETA...): đổi nhiều
+        # lần mỗi giây nên không đáng ghi DB. Runner đưa nó ra /queue/jobs khi job
+        # còn chạy. Luôn gán dict mới thay vì sửa tại chỗ để thread đọc không thấy
+        # trạng thái dở dang.
+        self.detail: dict[str, Any] = {}
 
         self._current = job.progress_current
         self._total = job.progress_total

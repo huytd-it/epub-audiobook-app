@@ -36,6 +36,24 @@ export type Chapter = {
   is_excluded: boolean;
   chapter_no?: number | null;
 };
+/** Tiến độ/thống kê render video: `detail` khi đang chạy, `result.render` khi đã xong. */
+export type RenderDetail = {
+  kind?: string;
+  resolution?: string;
+  fps?: number;
+  codec?: string;
+  background?: string;
+  effects?: string;
+  video_sec?: number;
+  encoded_sec?: number;
+  speed?: number | null;
+  encode_fps?: number | null;
+  eta_sec?: number | null;
+  estimated_sec?: number | null;
+  /** false: ETA còn là ước lượng từ lịch sử, ffmpeg chưa báo frame nào. */
+  measured?: boolean;
+  render_sec?: number;
+};
 export type Job = {
   id: number;
   job_type: string;
@@ -55,6 +73,8 @@ export type Job = {
   finished_at?: string | null;
   /** Số giây đã chạy (job đang chạy) hoặc tổng thời gian chạy (job đã kết thúc). */
   elapsed_sec?: number | null;
+  /** Chi tiết tiến độ trong bộ nhớ của job đang chạy (hiện chỉ job render video). */
+  detail?: RenderDetail | null;
   payload?: Record<string, unknown>;
   result?: Record<string, unknown> | null;
 };

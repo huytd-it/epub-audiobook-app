@@ -33,6 +33,7 @@ class _Tracker:
         self.job = job
         self.current = 0
         self.total = 0
+        self.ctx = None
 
 
 class JobQueue:
@@ -145,6 +146,7 @@ class JobQueue:
             job, conn, logger, lambda: self._cancelled(conn, job.id),
             conn_factory=self._conn_factory,
         )
+        tracker.ctx = ctx
         original_write = ctx._write
         def tracked_write(now):
             original_write(now)
@@ -211,6 +213,13 @@ class JobQueue:
                 return True
         row = conn.execute("SELECT status FROM job WHERE id=?", (job_id,)).fetchone()
         return bool(row and row["status"] == CANCELLING)
+
+    def job_detail(self, job_id):
+        """Chi tiết tiến độ trong bộ nhớ của job đang chạy (None nếu không có)."""
+        with self._lock:
+            tracker = self._running.get(job_id)
+        ctx = tracker.ctx if tracker else None
+        return dict(ctx.detail) if ctx is not None and ctx.detail else None
 
     def pool_status(self):
         conn = self._conn_factory()
