@@ -150,3 +150,41 @@ def test_ignore_ids_accepts_a_manifest_from_another_book(conn, tmp_path, data_ro
     path = chunk_import.assemble_patch_from_chunks(
         lambda: nullcontext(connection), patch, source, ignore_ids=True)
     assert sf.info(path).frames > manifest["chunk_count"] * RATE
+
+
+def test_foreign_manifest_with_drifted_text_merges_along_its_own_plan(conn, tmp_path, data_root, monkeypatch):
+    """Another DB's copy of the same novel differs in punctuation: the chunks still
+    speak the manifest's text, so they merge along it and stay out of the stores."""
+    from app.jobqueue.handlers import audiobook_tts
+    monkeypatch.setattr(audiobook_tts, "normalize_wav_in_place", lambda path: None)
+    connection, book, patch = conn
+    folder, manifest = _export(connection, book, patch, tmp_path / "batch")
+    connection.execute("UPDATE chapter SET text='Completely different words now.' WHERE book_id=? AND chapter_index=0",
+                       (book.id,))
+    connection.commit()
+    source = chunk_import.read_patch_folder(folder)
+    source.manifest.update(book_id=book.id + 100, patch_id=999)
+
+    path = chunk_import.assemble_patch_from_chunks(
+        lambda: nullcontext(connection), patch, source, ignore_ids=True)
+
+    assert sf.info(path).frames > manifest["chunk_count"] * RATE
+    assert not list(repository.get_patch_audio_path(book.id, patch.patch_index).parent.glob(".*import-chunks"))
+    plan = repository.build_patch_chunk_plan(connection, patch, max_chars=manifest["max_chars"] or None)
+    targets = chunk_store.resolve_plan_chunks(
+        book.id, repository.get_patch_chunk_dir(book.id, patch.patch_index), plan)
+    assert not any(cache.path(local).is_file() for cache, local in targets)
+
+
+def test_foreign_manifest_covering_other_chapters_is_still_refused(conn, tmp_path, data_root):
+    connection, book, patch = conn
+    folder, _ = _export(connection, book, patch, tmp_path / "batch")
+    source = chunk_import.read_patch_folder(folder)
+    source.manifest.update(book_id=book.id + 100, patch_id=999)
+    for item in source.manifest["chunk_metadata"]:
+        item["chapter_index"] += 50
+        item["text"] += " x"
+
+    with pytest.raises(chunk_import.ChunkImportError, match="đã đổi"):
+        chunk_import.assemble_patch_from_chunks(
+            lambda: nullcontext(connection), patch, source, ignore_ids=True)

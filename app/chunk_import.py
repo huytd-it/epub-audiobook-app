@@ -161,8 +161,20 @@ def assemble_patch_from_chunks(
     exported = [item.get("text") if isinstance(item, dict) else None
                 for item in manifest.get("chunk_metadata") or []]
     if exported != [item["text"] for item in plan]:
-        raise ChunkImportError(
-            "văn bản patch đã đổi kể từ lúc export (chunk không còn khớp) - export lại patch này")
+        # A manifest from another book/DB (the same novel imported again) carries that
+        # copy's text: punctuation fixes or another edition make it differ slightly
+        # from this patch's plan, which says nothing about the audio being wrong. The
+        # chunks still speak the manifest's text, so merge them along the manifest's
+        # own plan - timeline and subtitles then match the audio - as long as it
+        # covers exactly this patch's chapters. Same-book edits are still refused.
+        manifest_plan = _manifest_plan(manifest) if ignore_ids else None
+        if manifest_plan is None or (
+                {item["chapter_index"] for item in manifest_plan}
+                != {item["chapter_index"] for item in plan}):
+            raise ChunkImportError(
+                "văn bản patch đã đổi kể từ lúc export (chunk không còn khớp) - export lại patch này")
+        return _assemble_from_manifest_plan(db, patch, source, manifest_plan, audio_config,
+                                            with_effects=with_effects)
 
     paths = [source.output_dir / f"chunk_{index:03d}.wav" for index in range(len(plan))]
     missing = [path.name for path in paths if not path.is_file()]
@@ -209,4 +221,74 @@ def assemble_patch_from_chunks(
     with db() if with_effects else nullcontext(None) as conn:
         merge_patch_audio(conn, plan, chunk_paths, frame_counts, sample_rates.pop(), pauses,
                           str(audio_path), with_effects=with_effects)
+    return str(audio_path)
+
+
+def _manifest_plan(manifest: dict) -> list[dict] | None:
+    """The chunk plan the notebook actually spoke, rebuilt from chunk_metadata, or
+    None when the manifest does not describe one completely."""
+    plan = []
+    for item in manifest.get("chunk_metadata") or []:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            return None
+        try:
+            chapter_index = int(item["chapter_index"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        plan.append({
+            "kind": "narration",
+            "chapter_index": chapter_index,
+            "chapter_title": str(item.get("chapter_title") or ""),
+            "is_chapter_start": bool(item.get("is_chapter_start")),
+            "text": item["text"],
+        })
+    return plan or None
+
+
+def _assemble_from_manifest_plan(db, patch, source: PatchChunkSource, plan: list[dict],
+                                 audio_config: dict, *, with_effects: bool) -> str:
+    """Merge ``source``'s chunks along the manifest's own plan.
+
+    Their text is not this book's chapter text, so they stay out of the chapter
+    chunk stores (which would otherwise serve them as audio for the current text);
+    leveled copies live in a scratch folder only for the merge."""
+    from app.jobqueue.handlers.audiobook_tts import merge_patch_audio
+
+    paths = [source.output_dir / f"chunk_{index:03d}.wav" for index in range(len(plan))]
+    missing = [path.name for path in paths if not path.is_file()]
+    if missing:
+        raise ChunkImportError(f"thiếu {len(missing)}/{len(plan)} chunk (đầu tiên: {missing[0]})",
+                               transient=True)
+
+    audio_path = repository.get_patch_audio_path(patch.book_id, patch.patch_index)
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    scratch = audio_path.parent / f".{audio_path.stem}.import-chunks"
+    shutil.rmtree(scratch, ignore_errors=True)
+    scratch.mkdir(parents=True)
+    try:
+        chunk_paths: list[str] = []
+        frame_counts: list[int] = []
+        sample_rates: set[int] = set()
+        for path in paths:
+            try:
+                audio, rate = sf.read(str(path), dtype="float32", always_2d=False)
+            except (OSError, RuntimeError, sf.SoundFileError) as exc:
+                raise ChunkImportError(f"{path.name} không đọc được: {exc}") from exc
+            if np.asarray(audio).ndim > 1:
+                audio = np.asarray(audio).mean(axis=1)
+            audio = level_chunk_loudness(audio)
+            target = scratch / path.name
+            sf.write(str(target), audio, rate, format="WAV")
+            chunk_paths.append(str(target))
+            frame_counts.append(len(audio))
+            sample_rates.add(int(rate))
+        if len(sample_rates) != 1:
+            raise ChunkImportError(f"chunk có sample rate lệch nhau {sorted(sample_rates)}")
+        pauses = audio_merge.build_pause_plan(
+            plan, audio_config["chunk_pause_ms"], audio_config["chapter_pause_ms"])
+        with db() if with_effects else nullcontext(None) as conn:
+            merge_patch_audio(conn, plan, chunk_paths, frame_counts, sample_rates.pop(), pauses,
+                              str(audio_path), with_effects=with_effects)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     return str(audio_path)
