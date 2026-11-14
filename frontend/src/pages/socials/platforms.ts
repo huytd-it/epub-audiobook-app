@@ -39,14 +39,14 @@ export const PLATFORMS: PlatformMeta[] = [
     label: "Facebook",
     icon: Flag,
     accountNoun: "Page",
-    subtitle: "Đăng short lên Page (Reels), xem video đã đăng và lịch sử đăng.",
+    subtitle: "Kết nối Page và xem video & Reels đã đăng trên Page.",
   },
   {
     id: "tiktok",
     label: "TikTok",
     icon: Music2,
     accountNoun: "tài khoản",
-    subtitle: "Đăng short qua Content Posting API và theo dõi trạng thái publish.",
+    subtitle: "Quản lý tài khoản TikTok đã kết nối.",
   },
 ];
 

@@ -1,4 +1,4 @@
-"""TikTok Content Posting API cho Short Video Studio + Socials hub.
+"""TikTok Content Posting API cho Socials hub.
 
 Mỗi tài khoản là một dòng social_account (platform='tiktok', external_id = open_id)
 giữ access token dán tay; fallback .env TIKTOK_ACCESS_TOKEN khi chưa có tài khoản
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import requests
 
-from app import egress, social_accounts
+from app import social_accounts
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -115,13 +115,3 @@ def upload_file(*, token: str, video_path: str, caption: str,
                            timeout=UPLOAD_TIMEOUT)
         put.raise_for_status()
     return str(publish_id or data.get("video_id") or "")
-
-
-def publish_short_video(conn: sqlite3.Connection, video_path: str, caption: str,
-                        story_link: str = "", account_id: int | None = None) -> str:
-    creds = get_credentials(conn, account_id)
-    if not creds:
-        raise ValueError("TikTok chưa kết nối (thiếu access token)")
-    with egress.session(conn, "tiktok", creds["id"]) as http:
-        return upload_file(token=creds["access_token"], video_path=video_path,
-                           caption=caption, story_link=story_link, http=http)

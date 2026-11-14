@@ -21,7 +21,7 @@ const DEFAULT_ALLOWED_HOSTS = [
   "api.openai.com",
   "openrouter.ai",
   "api.groq.com",
-  // Dùng cho nút "Kiểm tra" ở trang Mạng & Proxy: trả về IP thoát của relay.
+  // Dùng cho endpoint test egress: trả về IP thoát của relay.
   "api.ipify.org",
 ];
 

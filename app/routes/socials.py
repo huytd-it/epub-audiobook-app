@@ -22,9 +22,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/socials/api", tags=["socials"])
 
-# platform của social_account -> khoá kênh trong short_uploads.
-_UPLOAD_CHANNEL = {"youtube": "youtube", "facebook": "fb", "tiktok": "tiktok"}
-
 
 def _account_or_404(conn, account_id: int, platform: str | None = None) -> dict:
     account = social_accounts.get_account(conn, account_id)
@@ -95,28 +92,6 @@ def delete_account(request: Request, account_id: int):
         _account_or_404(conn, account_id)
         social_accounts.delete(conn, account_id)
     return {"deleted": account_id}
-
-
-@router.get("/{platform}/accounts/{account_id}/uploads")
-def account_uploads(request: Request, platform: str, account_id: int, limit: int = 100):
-    """Lịch sử đăng short của một tài khoản. Dòng chưa gắn tài khoản (đăng bằng mặc
-    định, hoặc có từ trước multi-account) được tính cho tài khoản mặc định."""
-    if platform not in _UPLOAD_CHANNEL:
-        raise HTTPException(404, "Mạng không được hỗ trợ")
-    with locked_conn(request) as conn:
-        account = _account_or_404(conn, account_id, platform)
-        rows = conn.execute(
-            """SELECT u.short_id, u.platform_video_id, u.status, u.error_message,
-                      u.created_at, s.caption, s.book_id, b.title AS book_title
-               FROM short_uploads u
-               JOIN shorts s ON s.id = u.short_id
-               LEFT JOIN book b ON b.id = s.book_id
-               WHERE u.platform = ? AND (u.account_id = ? OR (u.account_id IS NULL AND ?))
-               ORDER BY u.created_at DESC, u.id DESC LIMIT ?""",
-            (_UPLOAD_CHANNEL[platform], account_id, 1 if account["is_default"] else 0,
-             max(1, min(limit, 500))),
-        ).fetchall()
-    return {"items": [dict(row) for row in rows]}
 
 
 # ------------------------------------------------------------------ Facebook

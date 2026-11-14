@@ -13,7 +13,7 @@ không dùng chung `node_modules` với thư mục gốc.
 | Chi phí | Miễn phí ở mức dùng cá nhân | Tuỳ nhà cung cấp proxy |
 
 App từ chối đặt relay cho scope mạng xã hội; muốn đổi IP cho YouTube/Facebook/TikTok
-thì thêm outbound proxy ở trang **Mạng & Proxy**.
+thì thêm outbound proxy (cấu hình egress qua API `/socials/api/network`).
 
 ## Deploy
 
@@ -27,13 +27,13 @@ npx vercel deploy --prod
 
 Tạo secret: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
-Sau khi deploy, vào app → **OPERATIONS → Mạng & Proxy → Thêm endpoint**:
+Sau khi deploy, thêm endpoint egress (API `/socials/api/network`):
 
 - Loại: `relay`
 - URL: địa chỉ production của project, ví dụ `https://epub-relay-sin.vercel.app`
 - Secret: đúng giá trị `RELAY_SECRET` vừa đặt
 
-Bấm **Kiểm tra** để thấy IP thoát, rồi đặt scope `ai` sang `relay`.
+Kiểm tra endpoint để thấy IP thoát, rồi đặt scope `ai` sang `relay`.
 
 ## Nhiều region / nhiều IP
 
@@ -55,7 +55,7 @@ Chọn vùng mà provider có phục vụ — đặt relay ở vùng bị chặn
 
 Thêm provider OpenAI-compatible khác (`AI_BASE_URL`, `AI_CONTENT_BASE_URL`) thì phải
 thêm host của nó vào `RELAY_ALLOWED_HOSTS`, nếu không relay trả 403 `host_not_allowed`.
-Giữ `api.ipify.org` trong danh sách nếu muốn nút **Kiểm tra** hoạt động.
+Giữ `api.ipify.org` trong danh sách nếu muốn endpoint test hoạt động.
 
 ## An toàn
 

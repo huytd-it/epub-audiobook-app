@@ -173,10 +173,8 @@ def test_build_queue_registers_all_four_handlers(tmp_path):
     assert {p["job_type"] for p in queue.pool_status()} == {
         "audiobook_tts", "audiobook_tts_api", "video", "patch_video", "standalone_video",
         "youtube_upload", "light_tts", "background_gen", "gameplay_clip", "gameplay_batch",
-        "kaggle_tts", "youtube_metadata_gen", "short_render", "short_upload",
+        "kaggle_tts", "youtube_metadata_gen",
     }
-    assert queue.capacity("short_render") == 1
-    assert queue.capacity("short_upload") == 3
 
 
 def test_kaggle_tts_concurrency_matches_enabled_account_count(tmp_path):

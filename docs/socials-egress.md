@@ -1,8 +1,8 @@
 # Socials hub: nhiều tài khoản và định tuyến mạng (relay / proxy)
 
 Trang **Socials** (`/socials`) gom mọi mạng xã hội vào một chỗ: mỗi mạng một tab với giao diện riêng,
-cùng một thanh tài khoản dùng chung. Trang **Mạng & Proxy** (`/network`, cũng nằm trong nhóm OPERATIONS)
-quyết định request ra ngoài đi đường nào.
+cùng một thanh tài khoản dùng chung. Lớp egress (`app/egress.py`) quyết định request ra ngoài đi đường
+nào; cấu hình qua API ở `/socials/api/network`.
 
 ## Tài khoản
 
@@ -22,10 +22,9 @@ tài khoản mặc định.
 Chọn tài khoản khi đăng:
 
 - **Video sách nói**: theo kênh của sách (tab YouTube trong cấu hình sách), không thì kênh mặc định.
-- **Short**: ở Short Video Studio, mỗi kênh có ô chọn tài khoản khi mạng đó có từ hai tài khoản trở lên.
 - **Tải thủ công** ở Socials → YouTube: kênh đang chọn trên thanh tài khoản.
 
-## Mạng & Proxy
+## Định tuyến mạng (relay / proxy)
 
 Hai loại điểm thoát:
 
@@ -69,8 +68,8 @@ Cách chọn endpoint:
 - Scope đã đặt proxy/relay mà không còn endpoint nào dùng được thì **báo lỗi**, không tự đi thẳng. Tài
   khoản ghim một proxy đã tắt/xoá cũng báo lỗi cho tới khi bạn ghim lại hoặc bỏ ghim.
 
-Nút **Kiểm tra** gọi `api.ipify.org` qua endpoint và hiện IP thoát. Bật lại một endpoint đang tắt sẽ xoá
-bộ đếm lỗi của nó.
+Kiểm tra một endpoint sẽ gọi `api.ipify.org` qua endpoint và hiện IP thoát. Bật lại một endpoint đang tắt
+sẽ xoá bộ đếm lỗi của nó.
 
 ### Bảo mật
 

@@ -24,7 +24,6 @@ const WORKER_TYPES = [
   ["youtube_metadata_gen", "Sinh nội dung YouTube"],
   ["background_gen", "Tạo ảnh nền"], ["gameplay_clip", "Gameplay clip"],
   ["gameplay_batch", "Gameplay hàng loạt"],
-  ["short_render", "Short render"], ["short_upload", "Short upload"],
 ] as const;
 type WorkerType = typeof WORKER_TYPES[number][0];
 const WORKER_LABELS: Record<string, string> = Object.fromEntries(WORKER_TYPES);

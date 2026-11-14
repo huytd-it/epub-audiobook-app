@@ -86,7 +86,7 @@ SUBTITLE_PADDING_RANGE = (0, 80)
 
 
 def validate_subtitle_style(result: dict) -> None:
-    """Kiểm tra các trường kiểu phụ đề dùng chung cho video sách và short."""
+    """Kiểm tra các trường kiểu phụ đề dùng chung cho video sách."""
     if result["subtitle_position"] not in _SUBTITLE_POSITIONS:
         raise ValueError("invalid subtitle position")
     if not isinstance(result["subtitle_font_size"], int) or not 20 <= result["subtitle_font_size"] <= 96:
@@ -242,40 +242,6 @@ def save_book_video_config(conn, book_id: int, config: dict) -> dict:
     from app.production_defaults import set_book_group_mode_db
     set_book_group_mode_db(conn, book_id, "video", "custom")
     return video
-
-
-# Short Video Studio: render 1 khổ mỗi lần, mặc định dọc 1080x1920.
-SHORT_RESOLUTIONS = {"1080x1920", "1080x1080", "1920x1080"}
-SHORT_DEFAULTS = {
-    "resolution": "1080x1920",
-    "fps": 30,
-    "subtitle_enabled": True,
-    "subtitle_font_size": 60,
-    "subtitle_font_family": "Segoe UI",
-    "subtitle_position": "bottom",
-    "subtitle_color": "#ffffff",
-    "subtitle_background_enabled": True,
-    "subtitle_background_color": "#000000",
-    "subtitle_background_opacity": 0.6,
-    "subtitle_background_padding": 16,
-    "fit_mode": "auto",  # auto->blur cho portrait, giữ pattern video_gen
-}
-
-
-def validate_short_config(config: dict | None) -> dict:
-    """Validate render config của short: đúng 1 khổ thuộc SHORT_RESOLUTIONS."""
-    cfg = _json_object(config)
-    resolution = str(cfg.get("resolution") or SHORT_DEFAULTS["resolution"])
-    if resolution not in SHORT_RESOLUTIONS:
-        raise ValueError("invalid short resolution (chọn 1 trong 1080x1920/1080x1080/1920x1080)")
-    fps = cfg.get("fps", SHORT_DEFAULTS["fps"])
-    if fps not in VALID_FPS:
-        raise ValueError("invalid fps")
-    out = {**SHORT_DEFAULTS, **cfg, "resolution": resolution, "fps": fps}
-    validate_subtitle_style(out)
-    if out["fit_mode"] not in _FIT_MODES:
-        raise ValueError("invalid fit mode")
-    return out
 
 
 def validate_media_path(path: str, allowed_dir: str | Path) -> str:

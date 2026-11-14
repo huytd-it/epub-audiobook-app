@@ -345,7 +345,7 @@ def pick(conn: sqlite3.Connection | None, scope: str, account_id: int | None = N
         if pinned is None or not pinned.enabled or pinned.kind != mode:
             raise EgressError(
                 f"Proxy ghim cho tài khoản {account_id} không dùng được "
-                "(đã tắt, đã xoá hoặc sai loại). Kiểm tra trang Mạng & Proxy.")
+                "(đã tắt, đã xoá hoặc sai loại). Kiểm tra cấu hình egress.")
         if pinned.id in exclude:
             raise EgressError(f"Proxy ghim cho tài khoản {account_id} đang lỗi: {pinned.last_error}")
         return pinned
@@ -356,7 +356,7 @@ def pick(conn: sqlite3.Connection | None, scope: str, account_id: int | None = N
     if not candidates:
         raise EgressError(
             f"Scope {scope} đang đặt {mode} nhưng không có điểm thoát nào dùng được. "
-            "Thêm/bật endpoint ở trang Mạng & Proxy hoặc chuyển scope về direct.")
+            "Thêm/bật endpoint egress hoặc chuyển scope về direct.")
 
     if rule["strategy"] == "sticky" and account_id is not None:
         # Cố định theo id tài khoản trên toàn bộ danh sách (không lọc cooldown) để một

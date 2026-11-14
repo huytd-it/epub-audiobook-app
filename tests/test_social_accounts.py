@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app import db, facebook, shorts_repository, social_accounts, tiktok, youtube
+from app import db, facebook, social_accounts, tiktok, youtube
 
 _NOW = datetime.now(timezone.utc).isoformat()
 
@@ -210,7 +210,7 @@ def test_book_channel_is_used_for_its_patch_uploads(conn):
 
 # ------------------------------------------------------------------ Facebook / TikTok
 
-def test_facebook_and_tiktok_pick_the_requested_account(conn, monkeypatch):
+def test_facebook_and_tiktok_pick_the_requested_account(conn):
     page_a = facebook.save_credentials(conn, page_id="pA", page_name="A", page_access_token="tokA")
     page_b = facebook.save_credentials(conn, page_id="pB", page_name="B", page_access_token="tokB")
     tik_a = tiktok.save_credentials(conn, open_id="oA", access_token="tA")
@@ -220,26 +220,4 @@ def test_facebook_and_tiktok_pick_the_requested_account(conn, monkeypatch):
     assert tiktok.get_credentials(conn, tik_b)["access_token"] == "tB"
     assert tiktok.get_credentials(conn)["id"] == tik_a
     assert facebook.get_credentials(conn, tik_a) is None
-
-    seen = {}
-    monkeypatch.setattr(facebook, "upload_reel", lambda **kw: seen.update(fb=kw["token"]) or "fb1")
-    monkeypatch.setattr(tiktok, "upload_file", lambda **kw: seen.update(tt=kw["token"]) or "tt1")
-    facebook.publish_short_video(conn, "/v.mp4", "cap", account_id=page_b)
-    tiktok.publish_short_video(conn, "/v.mp4", "cap", account_id=tik_b)
-    assert seen == {"fb": "tokB", "tt": "tB"}
     assert page_a != page_b
-
-
-def test_short_upload_account_choice_is_stored_per_channel(conn):
-    conn.execute(
-        """INSERT INTO book (id, title, original_filename, epub_path, patch_size, status,
-                             created_at, updated_at)
-           VALUES (1, 't', 'f.epub', '/tmp/f.epub', 10, 'ready', ?, ?)""", (_NOW, _NOW))
-    short_id = conn.execute("INSERT INTO shorts (book_id, created_at, updated_at) VALUES (1, ?, ?)",
-                            (_NOW, _NOW)).lastrowid
-    conn.commit()
-    shorts_repository.ensure_uploads(conn, short_id)
-    page = facebook.save_credentials(conn, page_id="pA", page_name="A", page_access_token="tokA")
-    shorts_repository.set_upload_account(conn, short_id, "fb", page)
-    assert shorts_repository.get_upload(conn, short_id, "fb").account_id == page
-    assert shorts_repository.get_upload(conn, short_id, "tiktok").account_id is None

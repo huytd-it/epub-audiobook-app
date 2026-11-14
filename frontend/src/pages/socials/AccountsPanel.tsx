@@ -165,7 +165,7 @@ export function AccountsPanel({
             )}
             <p className="w-full text-[11px] text-muted-foreground">
               Tài khoản mặc định là tài khoản được dùng khi một luồng không chọn gì (auto-upload của sách chưa
-              gán kênh, đăng short không chọn tài khoản).
+              gán kênh).
             </p>
           </div>
         )}

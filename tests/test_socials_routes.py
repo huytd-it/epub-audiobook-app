@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 
 from app import db, facebook, social_accounts
 from app import youtube as youtube_module
-from app.routes import shorts as shorts_routes
 from app.routes import socials as socials_routes
 from app.routes import youtube as youtube_routes
 
@@ -28,7 +27,6 @@ def ctx(tmp_path, monkeypatch):
     app = FastAPI()
     app.include_router(socials_routes.router)
     app.include_router(youtube_routes.router)
-    app.include_router(shorts_routes.router)
     app.state.conn = conn
     app.state.db_lock = threading.Lock()
     yield SimpleNamespace(conn=conn, client=TestClient(app))
@@ -124,52 +122,6 @@ def test_tiktok_accounts_are_keyed_by_open_id(ctx):
     assert again["id"] == first["id"] != second["id"]
     assert len(social_accounts.list_accounts(ctx.conn, "tiktok")) == 2
     assert ctx.client.post("/socials/api/tiktok/accounts", json={"access_token": ""}).status_code == 422
-
-
-def test_account_upload_history_attributes_unassigned_rows_to_the_default(ctx):
-    page_a = facebook.save_credentials(ctx.conn, page_id="pA", page_name="A", page_access_token="t")
-    page_b = facebook.save_credentials(ctx.conn, page_id="pB", page_name="B", page_access_token="t")
-    ctx.conn.execute(
-        """INSERT INTO book (id, title, original_filename, epub_path, patch_size, status,
-                             created_at, updated_at)
-           VALUES (1, 'Truyện', 'f.epub', '/tmp/f.epub', 10, 'ready', ?, ?)""", (_NOW, _NOW))
-    for short_id, account in ((1, None), (2, page_b)):
-        ctx.conn.execute("INSERT INTO shorts (id, book_id, created_at, updated_at) VALUES (?, 1, ?, ?)",
-                         (short_id, _NOW, _NOW))
-        ctx.conn.execute(
-            "INSERT INTO short_uploads (short_id, platform, status, created_at, account_id)"
-            " VALUES (?, 'fb', 'done', ?, ?)", (short_id, _NOW, account))
-    ctx.conn.commit()
-
-    def history(account_id):
-        items = ctx.client.get(f"/socials/api/facebook/accounts/{account_id}/uploads").json()["items"]
-        return [item["short_id"] for item in items]
-
-    assert history(page_a) == [1]
-    assert history(page_b) == [2]
-    assert ctx.client.get(f"/socials/api/tiktok/accounts/{page_a}/uploads").status_code == 404
-
-
-def test_publish_short_validates_and_stores_per_channel_accounts(ctx):
-    page = facebook.save_credentials(ctx.conn, page_id="pA", page_name="A", page_access_token="t")
-    channel = _youtube(ctx.conn, "UC1")
-    ctx.conn.execute(
-        """INSERT INTO book (id, title, original_filename, epub_path, patch_size, status,
-                             created_at, updated_at)
-           VALUES (1, 't', 'f.epub', '/tmp/f.epub', 10, 'ready', ?, ?)""", (_NOW, _NOW))
-    ctx.conn.execute("INSERT INTO shorts (id, book_id, video_path, created_at, updated_at)"
-                     " VALUES (1, 1, '/v.mp4', ?, ?)", (_NOW, _NOW))
-    ctx.conn.commit()
-
-    # Tài khoản YouTube không thể dùng cho kênh Facebook.
-    wrong = ctx.client.post("/shorts/1/publish", json={"accounts": {"fb": channel}})
-    assert wrong.status_code == 400
-
-    ok = ctx.client.post("/shorts/1/publish", json={"accounts": {"fb": page, "youtube": None}})
-    assert ok.status_code == 200
-    rows = {r["platform"]: r["account_id"] for r in
-            ctx.conn.execute("SELECT platform, account_id FROM short_uploads WHERE short_id=1")}
-    assert rows == {"fb": page, "tiktok": None, "youtube": None}
 
 
 # ------------------------------------------------------------------ mạng: relay / proxy

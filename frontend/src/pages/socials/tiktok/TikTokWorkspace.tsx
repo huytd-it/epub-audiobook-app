@@ -1,11 +1,10 @@
 import React, { useState } from "react";
-import { Lock, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { postJson, SocialAccount } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { showToast } from "@/components/ui/toast";
-import { ShortUploadHistory } from "../ShortUploadHistory";
 import type { WorkspaceProps } from "../platforms";
 
 /** Form dán access token. open_id là thứ phân biệt các tài khoản: trùng open_id = đổi token. */
@@ -76,24 +75,10 @@ function AddAccountForm({ onAdded }: { onAdded: (account: SocialAccount) => void
   );
 }
 
-export function TikTokWorkspace({ account, onChanged }: WorkspaceProps) {
+export function TikTokWorkspace({ onChanged }: WorkspaceProps) {
   return (
     <div className="space-y-4">
       <AddAccountForm onAdded={(added) => onChanged(added.id)} />
-      {account && (
-        <>
-          <Card>
-            <CardContent className="flex items-start gap-3 p-4 text-xs text-muted-foreground">
-              <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-              <p>
-                Short đăng lên TikTok ở mức riêng tư <code>SELF_ONLY</code> (chỉ mình bạn thấy). Vào app TikTok để
-                đổi sang công khai sau khi kiểm tra. Link trong caption của TikTok không bấm được.
-              </p>
-            </CardContent>
-          </Card>
-          <ShortUploadHistory platform="tiktok" accountId={account.id} />
-        </>
-      )}
     </div>
   );
 }

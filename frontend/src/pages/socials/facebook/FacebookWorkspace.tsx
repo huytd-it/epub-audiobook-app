@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { showToast } from "@/components/ui/toast";
-import { ShortUploadHistory } from "../ShortUploadHistory";
 import type { WorkspaceProps } from "../platforms";
 
 type PageVideo = {
@@ -164,10 +163,7 @@ export function FacebookWorkspace({ account, onChanged }: WorkspaceProps) {
     <div className="space-y-4">
       <AddPageForm onAdded={(added) => onChanged(added.id)} />
       {account && (
-        <>
-          <PageVideos key={`videos-${account.id}`} accountId={account.id} />
-          <ShortUploadHistory platform="facebook" accountId={account.id} />
-        </>
+        <PageVideos key={`videos-${account.id}`} accountId={account.id} />
       )}
     </div>
   );

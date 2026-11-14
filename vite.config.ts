@@ -22,7 +22,6 @@ const API_PREFIXES = [
   "/drive",
   "/youtube",
   "/socials",
-  "/shorts",
   "/logs",
   "/effects",
   "/database-io",
@@ -47,7 +46,7 @@ const SPA_ROUTES = [
   /^\/books$/,
   /^\/books\/upload$/,
   /^\/books\/\d+(\/.*)?$/,
-  /^\/(upload|queue|video|music|photos|voices|media|media-browser|gameplay|tools|youtube|drive|database-io|logs|effects|production-defaults|shorts|network|tts-models)$/,
+  /^\/(upload|queue|video|music|photos|voices|media|media-browser|gameplay|tools|youtube|drive|database-io|logs|effects|production-defaults|tts-models)$/,
   // Socials hub: /socials và /socials/<mạng>; API của nó nằm dưới /socials/api/.
   /^\/socials(\/(youtube|facebook|tiktok))?$/,
 ];
@@ -121,7 +120,7 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern:
-              /^https?:.*\/(api|books|text-bundles|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|local-bridge|tts-models|shorts|socials\/api)\//,
+              /^https?:.*\/(api|books|text-bundles|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|local-bridge|tts-models|socials\/api)\//,
             handler: "NetworkOnly",
           },
         ],

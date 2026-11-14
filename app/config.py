@@ -149,7 +149,7 @@ class Settings(BaseSettings):
     ai_timeout_seconds: float = 120.0
     # Queue job chạy nền
     # Loại nào không liệt kê ở đây nhận queue_default_concurrency.
-    queue_concurrency: str = "audiobook_tts=1,audiobook_tts_api=4,video=2,youtube_upload=1,patch_video=1,gameplay_clip=1,youtube_metadata_gen=2,short_render=1,short_upload=3"
+    queue_concurrency: str = "audiobook_tts=1,audiobook_tts_api=4,video=2,youtube_upload=1,patch_video=1,gameplay_clip=1,youtube_metadata_gen=2"
     queue_default_concurrency: int = 10
     queue_log_retention_days: int = 7
     # Job 'running' im lặng quá lâu bị coi là chết và trả về 'pending'.
@@ -174,7 +174,8 @@ class Settings(BaseSettings):
     kaggle_max_session_hours: int = 9
     kaggle_weekly_gpu_quota_hours: int = 30
 
-    # Short Video Studio: Facebook Page + TikTok auto-upload (MVP: đăng ngay).
+    # Facebook Page + TikTok credentials cho Socials hub (fallback .env khi chưa
+    # thêm tài khoản trong app).
     facebook_page_id: str = ""
     facebook_page_access_token: str = ""
     facebook_api_version: str = "v21.0"

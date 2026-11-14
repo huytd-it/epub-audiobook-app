@@ -1,4 +1,4 @@
-"""Facebook Page video/Reels upload qua Graph API (Short Video Studio + Socials hub).
+"""Facebook Page video/Reels upload qua Graph API (Socials hub).
 
 Mỗi Page là một dòng social_account (platform='facebook', external_id = page_id) giữ
 Page Access Token dán tay; fallback .env FACEBOOK_PAGE_ID / FACEBOOK_PAGE_ACCESS_TOKEN
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import requests
 
-from app import egress, social_accounts
+from app import social_accounts
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -144,15 +144,3 @@ def upload_reel(*, page_id: str, token: str, video_path: str,
         )
     resp.raise_for_status()
     return str(resp.json().get("id") or resp.json().get("post_id") or "")
-
-
-def publish_short_video(conn: sqlite3.Connection, video_path: str, caption: str,
-                        story_link: str = "", account_id: int | None = None) -> str:
-    creds = get_credentials(conn, account_id)
-    if not creds:
-        raise ValueError("Facebook chưa kết nối (thiếu Page Access Token)")
-    with egress.session(conn, "facebook", creds["id"]) as http:
-        return upload_reel(page_id=creds["page_id"] or settings.facebook_page_id,
-                           token=creds["page_access_token"],
-                           video_path=video_path, caption=caption,
-                           story_link=story_link, http=http)
