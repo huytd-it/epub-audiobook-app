@@ -62,13 +62,12 @@ export function Upload() {
         const data = await res.json();
         if (cancelled) return;
         const title = data.title || selectedFile.name.replace(/\.epub$/i, "");
-        const first = data.chapters?.[0]?.text_excerpt || data.chapters?.[0]?.text || "";
-        const desc = String(first).slice(0, 1200);
+        const meta = data.metadata || {};
+        const desc = String(meta.description || "").slice(0, 1200);
         setParsedTitle(title);
         setParsedDescription(desc);
         setCustomPlaylistTitle(title);
         setCustomPlaylistDesc(desc);
-        const meta = data.metadata || {};
         setMetaTitle(String(meta.title || title || ""));
         setMetaAuthor(String(meta.creator || ""));
         setMetaDescription(String(meta.description || "").slice(0, 2000));
@@ -270,7 +269,7 @@ export function Upload() {
                       <span className="text-muted-foreground">Tên sách phát hiện:</span>{" "}
                       <span className="font-semibold">{parsedTitle}</span>
                       {parsedDescription && (
-                        <span className="text-muted-foreground"> · Chương 1: {parsedDescription.length} ký tự</span>
+                        <span className="text-muted-foreground"> · Mô tả ebook: {parsedDescription.length} ký tự</span>
                       )}
                     </div>
                   )}
@@ -333,17 +332,17 @@ export function Upload() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium mb-1.5">
-                          Mô tả playlist — 1200 ký tự đầu Chương 1
+                          Mô tả playlist — lấy từ mô tả ebook
                         </label>
                         <Textarea
                           value={customPlaylistDesc}
                           onChange={(e) => setCustomPlaylistDesc(e.target.value)}
-                          placeholder="Nội dung 1200 ký tự đầu của Chương 1 sẽ tự điền..."
+                          placeholder="Mô tả ebook (nếu có)..."
                           className="min-h-24 text-xs"
                           maxLength={5000}
                         />
                         <div className="mt-1 text-[11px] text-muted-foreground text-right">
-                          {customPlaylistDesc.length} / 5000 ký tự · mặc định {parsedDescription.length} ký tự từ Chương 1
+                          {customPlaylistDesc.length} / 5000 ký tự · mặc định {parsedDescription.length} ký tự từ mô tả ebook
                         </div>
                       </div>
                     </div>

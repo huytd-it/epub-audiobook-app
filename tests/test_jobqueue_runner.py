@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
 import time
 
@@ -36,6 +37,81 @@ async def drain(c, timeout=10):
             return
         await asyncio.sleep(.02)
     raise AssertionError("queue did not drain")
+
+
+@pytest.mark.asyncio
+async def test_pool_fills_to_capacity_when_jobs_are_waiting(factory):
+    """capacity=6 và đủ job ⇒ đúng 6 job chạy song song, không để slot trống."""
+    c = factory()
+    [store.enqueue(c, "demo") for _ in range(12)]
+    live = peak = 0
+    lock = threading.Lock()
+
+    def fn(ctx):
+        nonlocal live, peak
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        time.sleep(0.05)
+        with lock:
+            live -= 1
+        return {}
+
+    q = JobQueue(factory, concurrency={"demo": 6}, poll_interval=0.01)
+    q.register("demo", fn)
+    await q.start()
+    await drain(c, 20)
+    await q.stop(5)
+    assert peak == 6
+
+
+@pytest.mark.asyncio
+async def test_dispatch_recovers_from_a_claim_error(factory, monkeypatch):
+    """Một lần claim vấp OperationalError (DB khóa) không được làm chết dispatcher."""
+    c = factory()
+    jid = store.enqueue(c, "demo")
+    real_claim = store.claim
+    calls = {"n": 0}
+
+    def flaky_claim(conn, job_type, worker_id, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_claim(conn, job_type, worker_id, **kw)
+
+    monkeypatch.setattr(store, "claim", flaky_claim)
+    q = queue(factory)
+    q.register("demo", lambda ctx: {})
+    await q.start()
+    await drain(c, 20)
+    await q.stop(5)
+    assert calls["n"] >= 2
+    assert store.get(c, jid).status == "done"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_restarts_a_dead_dispatcher(factory, monkeypatch):
+    """Dispatcher thoát/raise ngoài dự kiến phải được supervisor dựng lại, không
+    để pool rảnh trong khi job còn chờ."""
+    c = factory()
+    jid = store.enqueue(c, "demo")
+    real_dispatch = JobQueue._dispatch
+    calls = {"n": 0}
+
+    async def flaky_dispatch(self, job_type):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        await real_dispatch(self, job_type)
+
+    monkeypatch.setattr(JobQueue, "_dispatch", flaky_dispatch)
+    q = queue(factory)
+    q.register("demo", lambda ctx: {})
+    await q.start()
+    await drain(c, 20)
+    await q.stop(5)
+    assert calls["n"] >= 2
+    assert store.get(c, jid).status == "done"
 
 
 def test_parse_concurrency_reads_values():

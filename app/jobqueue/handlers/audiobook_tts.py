@@ -102,33 +102,39 @@ def handle(ctx) -> dict:
         }), encoding="utf-8")
 
     ctx.log(f"synthesize patch {patch_id} (book {patch.book_id}) engine={engine_id}")
-    try:
-        engine = get_engine(engine_id, voice, tts_options)
-        # Giọng hội thoại chỉ là một engine thứ hai cùng model: cùng engine để
-        # sample rate không lệch (audio_merge ghép theo một rate duy nhất).
-        dialogue_engine = None
-        if dialogue_voice and dialogue_voice != voice:
-            dialogue_engine = get_engine(engine_id, dialogue_voice, tts_options)
-        chunk_concurrency = int(payload.get("chunk_concurrency") or settings.tts_chunk_concurrency or 1)
-        audio_path, chunk_count = synthesize_patch(
-            ctx, patch, engine, Path(settings.data_root),
-            engine_id=engine_id,
-            effective_max_chars=max_chars if max_chars > 0 else None,
-            with_effects=with_effects, pause_config=pause_config,
-            dialogue_engine=dialogue_engine,
-            chunk_concurrency=chunk_concurrency,
-            tts_options=tts_options,
-            voice=voice,
-            dialogue_voice=dialogue_voice,
-        )
-    except asyncio.CancelledError:
-        raise
-    except JobFatalError:
-        repository.mark_patch_failed(ctx.conn, patch_id, "không có nội dung đọc được")
-        raise
-    except Exception as exc:
-        repository.mark_patch_failed(ctx.conn, patch_id, str(exc))
-        raise
+    # Model load, từng chunk và bước ghép đều có thể chạy im lặng hàng phút trên
+    # engine local/GPU — càng lâu khi nhiều worker cùng tranh CPU. Không có nhịp tim,
+    # reaper (queue_reap_after_seconds=120) tưởng job đã chết và trả nó về 'pending'
+    # trong khi nó vẫn đang chạy và ghi log; các lần ghi tiến độ sau đó bị fence theo
+    # worker_id nên bị bỏ, và trang Queue hiển thị "đang chờ" ở 0% cho job đang chạy.
+    with ctx.keep_alive():
+        try:
+            engine = get_engine(engine_id, voice, tts_options)
+            # Giọng hội thoại chỉ là một engine thứ hai cùng model: cùng engine để
+            # sample rate không lệch (audio_merge ghép theo một rate duy nhất).
+            dialogue_engine = None
+            if dialogue_voice and dialogue_voice != voice:
+                dialogue_engine = get_engine(engine_id, dialogue_voice, tts_options)
+            chunk_concurrency = int(payload.get("chunk_concurrency") or settings.tts_chunk_concurrency or 1)
+            audio_path, chunk_count = synthesize_patch(
+                ctx, patch, engine, Path(settings.data_root),
+                engine_id=engine_id,
+                effective_max_chars=max_chars if max_chars > 0 else None,
+                with_effects=with_effects, pause_config=pause_config,
+                dialogue_engine=dialogue_engine,
+                chunk_concurrency=chunk_concurrency,
+                tts_options=tts_options,
+                voice=voice,
+                dialogue_voice=dialogue_voice,
+            )
+        except asyncio.CancelledError:
+            raise
+        except JobFatalError:
+            repository.mark_patch_failed(ctx.conn, patch_id, "không có nội dung đọc được")
+            raise
+        except Exception as exc:
+            repository.mark_patch_failed(ctx.conn, patch_id, str(exc))
+            raise
 
     return _finish_audio_result(ctx, patch, audio_path, payload, chunk_count=chunk_count)
 
@@ -165,7 +171,10 @@ def _finish_audio_result(ctx, patch, audio_path: str, payload: dict, *,
     outcome = enqueue_patch_video(ctx.conn, patch.id, request_policy=request_policy)
 
     ctx.log(f"patch {patch.id} xong -> {audio_path}; automation={outcome['state']}")
-    final_path = finalize_book_if_ready(ctx, patch.book_id)
+    # Gộp cả sách (concat + normalize) cũng chạy im lặng; giữ nhịp tim để reaper
+    # không trả job về 'pending' giữa lúc nó đang nối final.wav.
+    with ctx.keep_alive():
+        final_path = finalize_book_if_ready(ctx, patch.book_id)
     if chunk_count:
         ctx.progress(chunk_count, chunk_count, phase="synthesizing")
     return {"audio_path": audio_path, "chunks": chunk_count,

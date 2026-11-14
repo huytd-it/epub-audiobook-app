@@ -68,7 +68,7 @@ class JobQueue:
         self._stop = asyncio.Event()
         total = sum(s.concurrency for s in self._specs.values()) or 1
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=total + 4)
-        self._tasks = [asyncio.create_task(self._dispatch(t)) for t in self._specs]
+        self._tasks = [asyncio.create_task(self._supervise(t)) for t in self._specs]
         self._tasks.append(asyncio.create_task(self._reaper()))
 
     async def stop(self, timeout):
@@ -87,6 +87,25 @@ class JobQueue:
         with self._lock:
             self._cancel.add(job_id)
 
+    async def _supervise(self, job_type):
+        """Giữ đúng một dispatcher sống cho mỗi loại job suốt vòng đời tiến trình.
+
+        Một dispatcher thoát/raise ngoài dự kiến sẽ bỏ rơi pool của nó vĩnh viễn:
+        /queue vẫn báo capacity = N, job vẫn 'pending', mà không ai nhặt nữa. Supervisor
+        khởi động lại nó (backoff ngắn) để pool luôn được lấp đầy thay vì âm thầm mất
+        throughput khi worker còn dư."""
+        if self.capacity(job_type) <= 0:
+            return
+        while not self._stop.is_set():
+            try:
+                await self._dispatch(job_type)
+                return  # stop đã bật, hoặc capacity bị tắt — thoát sạch
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.exception("event=queue.dispatch.restarted job_type=%s", job_type)
+                await asyncio.sleep(min(self._poll, 1.0))
+
     async def _dispatch(self, job_type):
         capacity = self.capacity(job_type)
         if capacity <= 0:
@@ -97,14 +116,32 @@ class JobQueue:
         try:
             while not self._stop.is_set():
                 self.last_heartbeat_at = datetime.now(timezone.utc).isoformat()
-                paused = bool(self._is_paused and self._is_paused(conn))
+                # Đọc trạng thái pause và claim đều có thể vấp DB đang bị khóa: phải
+                # làm chậm vòng lặp chứ không được giết nó. Dispatcher chết = pool rảnh
+                # dù job còn chờ.
+                try:
+                    paused = bool(self._is_paused and self._is_paused(conn))
+                except Exception:
+                    logging.exception(
+                        "event=queue.dispatch.pause_check_failed job_type=%s", job_type)
+                    paused = False
                 self._paused = paused
                 if paused:
                     await asyncio.sleep(self._poll)
                     continue
                 await sem.acquire()
                 sequence += 1
-                job = store.claim(conn, job_type, f"{job_type}#{sequence}")
+                try:
+                    job = store.claim(conn, job_type, f"{job_type}#{sequence}")
+                except Exception:
+                    logging.exception(
+                        "event=queue.dispatch.claim_failed job_type=%s", job_type)
+                    # Nhả slot đã xin (nếu không sẽ rò semaphore) và mở lại connection
+                    # vì lần lỗi này có thể là DB hỏng/khóa, không phải chỉ một câu SQL.
+                    sem.release()
+                    conn = self._reconnect(conn)
+                    await asyncio.sleep(self._poll)
+                    continue
                 if job is None:
                     sem.release()
                     await asyncio.sleep(self._poll)
@@ -117,13 +154,26 @@ class JobQueue:
         finally:
             conn.close()
 
+    def _reconnect(self, conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return self._conn_factory()
+
     async def _reaper(self):
         try:
             while not self._stop.is_set():
                 await asyncio.sleep(max(self._poll, 5))
                 conn = self._conn_factory()
-                store.reap_stale(conn, older_than_seconds=self._reap)
-                conn.close()
+                try:
+                    store.reap_stale(conn, older_than_seconds=self._reap)
+                except Exception:
+                    # Một lần reap lỗi (DB khóa) không được giết reaper: chết rồi thì
+                    # job 'running' treo sẽ không bao giờ được trả về 'pending' nữa.
+                    logging.exception("event=queue.reaper.failed")
+                finally:
+                    conn.close()
         except asyncio.CancelledError:
             pass
 

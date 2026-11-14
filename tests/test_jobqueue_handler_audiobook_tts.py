@@ -229,6 +229,42 @@ def test_model_config_change_invalidates_chunks_and_restarts_at_zero(tmp_path, m
     assert len(engine.calls) > first_calls
 
 
+def test_handle_keeps_the_job_alive_through_synthesis_and_finalize(tmp_path, monkeypatch):
+    """Model load, chunk synthesis và gộp final.wav đều im lặng lâu; job phải nằm
+    trong keep_alive suốt hai giai đoạn đó, nếu không reaper sẽ trả nó về 'pending'
+    dù nó đang chạy (xem runner._reaper / store.reap_stale)."""
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn)
+    audio = tmp_path / "patch.wav"
+    sf.write(audio, np.zeros(2400, dtype="float32"), 24000)
+
+    events = []
+
+    class KeepAlive:
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, *args):
+            events.append("exit")
+
+    monkeypatch.setattr(audiobook_tts, "get_engine", lambda *a, **k: _FakeEngine())
+    monkeypatch.setattr(
+        audiobook_tts, "synthesize_patch",
+        lambda *a, **k: events.append("synthesize") or (str(audio), 3),
+    )
+    monkeypatch.setattr(
+        audiobook_tts, "finalize_book_if_ready",
+        lambda *a, **k: events.append("finalize"),
+    )
+
+    ctx, _ = _ctx(conn, patch_id=patch_id)
+    monkeypatch.setattr(ctx, "keep_alive", lambda: KeepAlive())
+    audiobook_tts.handle(ctx)
+
+    assert events == ["enter", "synthesize", "exit", "enter", "finalize", "exit"]
+
+
 def test_cancel_between_chunks_stops_the_run(tmp_path, monkeypatch):
     import asyncio
     conn = db.connect(str(tmp_path / "a.db"))
