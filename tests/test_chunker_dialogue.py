@@ -64,6 +64,34 @@ def test_long_dialogue_hard_split_keeps_dialogue_kind():
     assert all(len(item["text"]) <= 100 for item in items)
 
 
+def test_long_dialogue_splits_at_sentence_end_not_mid_clause():
+    """Lượt thoại dài hơn max_chars bị chia tại dấu chấm (ranh giới câu) trước,
+    không cắt ngang mệnh đề tại dấu phẩy như cách cũ (cắt tại khoảng trắng)."""
+    turn = '"' + ("Một câu dài ở đây. Rất nhiều chữ tiếp theo sau dấu phẩy, "
+                  "và còn thêm vài chữ nữa cho dài. ") * 3 + '"'
+    chunks = split_into_tts_chunks(turn, max_chars=60)
+
+    assert all(len(chunk) <= 60 for chunk in chunks)
+    # Cách cũ cắt mảnh đầu ở 60 ký tự, rơi vào giữa câu (sau dấu phẩy). Mảnh đầu
+    # giờ phải kết thúc ngay tại dấu chấm của câu đầu.
+    assert chunks[0].endswith(".")
+    assert chunks[0] == '"Một câu dài ở đây.'
+
+
+def test_long_dialogue_does_not_cut_inside_protected_span():
+    """Dấu chấm/phẩy trong số, viết tắt địa danh không bao giờ là điểm cắt, dù
+    lượt thoại bị chia cứng vì quá max_chars."""
+    turn = '"' + ("Giá là 1.500.000 đồng tại TP.HCM và Q.1, mua luôn 1,500,000 nữa. ") * 8 + '"'
+    chunks = split_into_tts_chunks(turn, max_chars=60)
+
+    assert all(len(chunk) <= 60 for chunk in chunks)
+    for token in ("1.500.000", "TP.HCM", "Q.1", "1,500,000"):
+        assert any(token in chunk for chunk in chunks), token
+    # Không mảnh nào dừng giữa một con số (…1. | …500. | …000.).
+    assert not any(chunk.rstrip('"').endswith(("1.", "500.", "000.")) for chunk in chunks)
+
+
+
 def test_dash_bullets_inside_bracket_block_stay_narration():
     items = split_into_tts_chunk_items("[Kỹ năng:\n- Thể Oán Linh (cấp 3)\n- Trảm Hồn]", 400)
     assert all(item["kind"] == "narration" for item in items)

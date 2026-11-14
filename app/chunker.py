@@ -226,29 +226,77 @@ def _kind_for(piece: str, *, in_bracket_block: bool = False) -> str:
     return "dialogue" if _is_dialogue_item(piece, in_bracket_block=in_bracket_block) else "narration"
 
 
-def _hard_split(piece: str, max_chars: int) -> list[str]:
-    """Last-resort split at word boundaries for a sentence longer than max_chars.
+# Thứ tự ưu tiên điểm cắt khi buộc phải chia một câu/một lượt thoại dài hơn
+# max_chars: kết câu trước, rồi dấu mệnh đề, phẩy, cuối cùng mới tới khoảng trắng.
+# Cắt ở dấu chấm cho TTS nghỉ đúng chỗ và giữ ranh giới câu; cắt ở phẩy giữa câu
+# chỉ là phương án chót trước khi cắt cứng giữa từ.
+_HARD_BREAK_LAYERS = (".!?\u2026", ";:", ",", " \t\n\r")
 
-    Without this a paragraph carrying no sentence-ending punctuation would leave the
-    chunker as one oversized chunk, and TTS backends reject it.
+
+def _protected_positions(text: str) -> list[bool]:
+    """Vị trí nằm trong mẫu bảo vệ (1.500.000, TP.HCM, GS.TS...).
+
+    Không bao giờ cắt ở đây: cắt giữa số thập phân hay tên viết tắt làm TTS đọc
+    sai (docs/toi_uu_tts.md mục 8.3)."""
+    protected = [False] * len(text)
+    for pattern in _PROTECTED_PATTERNS:
+        for match in pattern.finditer(text):
+            for i in range(match.start(), match.end()):
+                protected[i] = True
+    return protected
+
+
+def _choose_prose_break(window: str, protected: list[bool]) -> int:
+    """Chỉ số ngay *sau* điểm cắt tốt nhất trong ``window``, hoặc -1 khi không có.
+
+    Duyệt lớp ưu tiên từ cao xuống; trong một lớp lấy vị trí xa nhất (mảnh trái
+    dài nhất mà vẫn <= max_chars). Bỏ index 0 để mảnh trái không rỗng, và bỏ mọi
+    vị trí nằm trong mẫu bảo vệ."""
+    for layer in _HARD_BREAK_LAYERS:
+        for i in range(len(window) - 1, 0, -1):
+            if window[i] in layer and not protected[i]:
+                return i + 1
+    return -1
+
+
+def _hard_split(piece: str, max_chars: int) -> list[str]:
+    """Chia một câu/một lượt thoại dài hơn max_chars thành các mảnh <= max_chars.
+
+    Ưu tiên cắt tại dấu kết câu ('.', '!', '?', '…') để mỗi mảnh kết thúc ở ranh
+    giới câu thay vì giữa câu tại một dấu phẩy; chỉ khi trong tầm max_chars không
+    có dấu kết câu mới hạ xuống ';' ':', phẩy, rồi khoảng trắng, và cuối cùng là
+    cắt cứng giữa từ. Dấu nằm trong mẫu bảo vệ (1.500.000, TP.HCM, GS.TS) không
+    bao giờ là điểm cắt.
+
+    Trường hợp hay gặp: một lượt thoại trong ngoặc kép dài hơn max_chars —
+    ``mask_dialogue_spans`` che dấu chấm bên trong nó nên bước tách câu để nguyên
+    cả lượt; không có hàm này thì cụm thoại sẽ bị cắt ở khoảng trắng/phẩy bất kỳ.
+    Không có nó, một đoạn không dấu kết câu sẽ ra một chunk quá dài và backend
+    TTS từ chối.
     """
-    words = piece.split(" ")
+    if len(piece) <= max_chars:
+        return [piece]
+    protected = _protected_positions(piece)
     parts: list[str] = []
-    buffer = ""
-    for word in words:
-        candidate = f"{buffer} {word}".strip()
-        if len(candidate) <= max_chars:
-            buffer = candidate
-            continue
-        if buffer:
-            parts.append(buffer)
-        # A single word longer than the limit still has to be cut somewhere.
-        while len(word) > max_chars:
-            parts.append(word[:max_chars])
-            word = word[max_chars:]
-        buffer = word
-    if buffer:
-        parts.append(buffer)
+    start = 0
+    total = len(piece)
+    while start < total:
+        if total - start <= max_chars:
+            tail = piece[start:].strip()
+            if tail:
+                parts.append(tail)
+            break
+        window = piece[start:start + max_chars]
+        cut = _choose_prose_break(window, protected[start:start + max_chars])
+        if cut <= 0:
+            # Không có chỗ ngắt tự nhiên (một token dài duy nhất): cắt cứng.
+            cut = max_chars
+        part = piece[start:start + cut].strip()
+        if part:
+            parts.append(part)
+        start += cut
+        while start < total and piece[start].isspace():
+            start += 1
     return parts
 
 
