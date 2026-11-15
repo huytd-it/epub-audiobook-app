@@ -61,19 +61,8 @@ try {
         Write-Host "  Cleaned." -ForegroundColor Green
     }
 
-    # ── 2. Build Frontend ─────────────────────────────────────────────────────
-    Write-Host "`n[1/2] Building frontend (Vite)..." -ForegroundColor Yellow
-    Push-Location $Root
-    try {
-        npm run build
-        if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
-        Write-Host "  Frontend built to app/spa_dist/" -ForegroundColor Green
-    } finally {
-        Pop-Location
-    }
-
-    # ── 3. Build Tauri ────────────────────────────────────────────────────────
-    Write-Host "`n[2/2] Building Tauri desktop app..." -ForegroundColor Yellow
+    # ── 2. Build Tauri (frontend is built automatically via beforeBuildCommand) ─
+    Write-Host "`n[1/1] Building Tauri desktop app (includes frontend)..." -ForegroundColor Yellow
     $buildMode = if ($Debug) { "debug" } else { "release" }
     Write-Host "  Mode: $buildMode" -ForegroundColor DarkGray
 
@@ -89,7 +78,7 @@ try {
         Pop-Location
     }
 
-    # ── 4. Output ─────────────────────────────────────────────────────────────
+    # ── 3. Output ─────────────────────────────────────────────────────────────
     $bundleDir = Join-Path $Root "src-tauri\target\$buildMode\bundle"
     $builtExe = Join-Path $Root "src-tauri\target\$buildMode\epub-audiobook-studio.exe"
     $desktopExe = Join-Path $Root "XuongSachNoi.exe"
