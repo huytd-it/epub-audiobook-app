@@ -4,15 +4,22 @@ Chunk WAV sống trong kho theo chương (app/chunk_store.py), độc lập vớ
 endpoint ở đây đọc/xoá trực tiếp kho đó; "ghép lại patch" chỉ reset patch phủ chương
 rồi đưa vào hàng đợi TTS — handler sẽ dùng lại mọi chunk còn hợp lệ và chỉ tổng hợp
 phần thiếu.
+
+Folder lớn (24GB+): thay vì đẩy qua HTTP multipart, chép thư mục chunk vào
+``data/books/{book_id}/_staging`` (hoặc subdir bất kỳ trong ``data/books/{id}``)
+rồi gọi ``POST .../ingest`` — server quét đĩa từng batch, ghi vào kho và cập nhật
+qua queue. Lỗi ở một file/batch được bỏ qua, không xoá nguồn.
 """
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from app import audio_merge, chunk_store, repository
+from app.config import settings
 from app.deps import locked_conn
 from app.production_defaults import get_effective_audio_config, get_effective_normalization_options
 
@@ -76,6 +83,85 @@ def chapter_audio_summary(request: Request, book_id: int):
         rules = repository.list_replace_rules(conn, book_id)
     summary = repository.list_chapter_audio_summary(book_id, chapters, opts, rules)
     return {"chapters": {str(index): item for index, item in summary.items()}}
+
+
+@router.get("/books/{book_id}/chapter-audio/ingest-status")
+def ingest_status(request: Request, book_id: int):
+    """Liệt kê thư mục staging có thể ingest: data/books/{id}/_staging, incoming, import..."""
+    with locked_conn(request) as conn:
+        _require_book(conn, book_id)
+    base = Path(settings.data_root) / "books" / str(book_id)
+    candidates = ["_staging", "incoming", "import", "_chunks_staging"]
+    found = []
+    for name in candidates:
+        p = base / name
+        if p.is_dir():
+            try:
+                count = sum(1 for _ in p.rglob("*.wav"))
+            except OSError:
+                count = 0
+            found.append({"name": name, "path": str(p), "wav_count": count})
+    known = set(candidates) | {"chapters", "audio", "videos", "patches", "patch_videos", "processed", "rejected", ".branding", "backup_audio"}
+    for child in base.iterdir() if base.is_dir() else []:
+        if child.is_dir() and child.name not in known and not child.name.startswith("."):
+            try:
+                c = sum(1 for _ in child.rglob("*.wav"))
+            except OSError:
+                c = 0
+            if c:
+                found.append({"name": child.name, "path": str(child), "wav_count": c})
+    return {"book_id": book_id, "base": str(base), "candidates": found}
+
+
+@router.post("/books/{book_id}/chapter-audio/ingest")
+async def ingest_chapter_chunks(request: Request, book_id: int):
+    """Đưa folder chunk đã chép sẵn vào queue để xử lý từng batch trên đĩa.
+
+    Body JSON: ``{"source_subdir": "_staging", "replace": false, "merge_patches": true}``
+    - ``source_subdir``: thư mục con trong ``data/books/{id}`` chứa chunk (``0001/chunk_000.wav``).
+      Để trống = tự tìm ``_staging``/``incoming``/``import``.
+    - ``replace``: xoá chunk cũ của chương trước khi ghi.
+    - ``merge_patches``: ghép luôn patch phủ chương đã đủ chunk.
+
+    Không đọc file qua HTTP, không xoá nguồn khi lỗi — chỉ ghi log và bỏ qua batch/chương lỗi.
+    """
+    from app.jobqueue import store as qstore
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    source_subdir = str(body.get("source_subdir") or "").strip().strip("/\\")
+    replace = bool(body.get("replace"))
+    merge_patches = bool(body.get("merge_patches", True))
+
+    with locked_conn(request) as conn:
+        book = _require_book(conn, book_id)
+        base = Path(settings.data_root) / "books" / str(book_id)
+        root = (base / source_subdir) if source_subdir else None
+        if root is not None:
+            try:
+                root.resolve().relative_to(base.resolve())
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"source_subdir không hợp lệ: {source_subdir}")
+            if not root.is_dir():
+                raise HTTPException(status_code=404, detail=f"thư mục nguồn không tồn tại: {source_subdir}")
+
+        payload = {"book_id": book_id, "source_subdir": source_subdir, "replace": replace, "merge_patches": merge_patches}
+        dedupe_key = f"chapter_chunk_ingest:book={book_id}:{source_subdir or '_auto'}"
+        job_id = qstore.enqueue(
+            conn, "chapter_chunk_ingest",
+            payload=payload, book_id=book_id,
+            dedupe_key=dedupe_key, max_attempts=1,
+        )
+        if job_id is None:
+            existing = qstore.find_live_by_dedupe(conn, dedupe_key)
+            if existing:
+                raise HTTPException(status_code=409, detail=f"đã có job ingest đang chạy/đợi #{existing.id}")
+            raise HTTPException(status_code=409, detail="đã có job ingest đang chạy")
+
+    return {"ok": True, "job_id": job_id, "book_id": book_id, "source_subdir": source_subdir or None, "replace": replace, "merge_patches": merge_patches}
 
 
 @router.get("/books/{book_id}/chapter-audio/{chapter_index}")

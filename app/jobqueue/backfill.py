@@ -9,7 +9,7 @@ from typing import Callable
 
 from app.config import settings
 from app.jobqueue import store
-from app.jobqueue.handlers import background_gen, gameplay_batch, gameplay_clip, kaggle_tts, light_tts, patch_video, standalone_video, video, audiobook_tts, youtube_metadata, youtube_upload
+from app.jobqueue.handlers import background_gen, chapter_chunk_ingest, gameplay_batch, gameplay_clip, kaggle_tts, light_tts, patch_video, standalone_video, video, audiobook_tts, youtube_metadata, youtube_upload
 from app.jobqueue.runner import JobQueue, parse_concurrency
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 JOB_TYPES = (
     "audiobook_tts", "audiobook_tts_api", "video", "patch_video", "standalone_video",
     "youtube_upload", "light_tts", "background_gen", "gameplay_clip", "gameplay_batch",
-    "kaggle_tts", "youtube_metadata_gen",
+    "kaggle_tts", "youtube_metadata_gen", "chapter_chunk_ingest",
 )
 QUEUE_CONCURRENCY_STATE_KEY = "queue.concurrency"
 
@@ -88,6 +88,7 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     queue.register("gameplay_batch", gameplay_batch.handle)
     queue.register("kaggle_tts", kaggle_tts.handle, cancellable=True)
     queue.register("youtube_metadata_gen", youtube_metadata.handle)
+    queue.register("chapter_chunk_ingest", chapter_chunk_ingest.handle, concurrency=1, max_attempts=1)
     return queue
 
 

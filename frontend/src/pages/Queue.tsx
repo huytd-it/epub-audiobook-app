@@ -483,8 +483,8 @@ export function Queue() {
   return (
     <div className="space-y-6">
       <Header
-        title="Hàng đợi sản xuất"
-        subtitle="Trung tâm điều phối các tác vụ tổng hợp giọng đọc, ghép media và xuất video theo thời gian thực."
+        title="Hàng đợi"
+        subtitle=""
         action={
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={openWorkerSettings} className="text-xs">
