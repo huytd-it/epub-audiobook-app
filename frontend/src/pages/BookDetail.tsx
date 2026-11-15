@@ -17,6 +17,7 @@ import {
   Video,
 } from "lucide-react";
 import { api, Patch, post, postForm, postJson } from "@/api";
+import { pushRecentBook } from "@/lib/recentBooks";
 import { Header, LoadingState } from "@/components/common/Header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -288,6 +289,12 @@ export function BookDetail() {
   const { ttsModels, voiceOptions, currentVoiceName } = useTtsOptions(data, settings.modelId);
   const chapterVal = useChapterValidation(bookId);
   const chapterAudio = useChapterAudio(bookId);
+
+  // Ghi nhận ebook đang làm — Dashboard và Shell đọc từ đây để hiện "Quay lại"
+  useEffect(() => {
+    if (!data?.book) return;
+    pushRecentBook({ id: data.book.id, title: data.book.title, original_filename: data.book.original_filename });
+  }, [data?.book?.id, data?.book?.title, data?.book?.original_filename]);
 
   useEffect(() => {
     if (!data) return;
@@ -1016,10 +1023,6 @@ export function BookDetail() {
             onMessage={showToast}
             onRefresh={refresh}
             onBusyChange={setBusy}
-            ttsModels={ttsModels}
-            bookModelId={settings.modelId}
-            bookVoiceId={settings.voiceId}
-            bookVoiceName={currentVoiceName}
             chapterAudio={chapterAudio.summary}
           />
           <ExportPanel

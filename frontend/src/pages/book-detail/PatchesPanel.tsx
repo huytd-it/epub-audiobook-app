@@ -13,7 +13,7 @@ import {
   Video,
   Wrench,
 } from "lucide-react";
-import { api, Chapter, Patch, VoiceItem, post, postJson } from "@/api";
+import { api, Chapter, Patch, post, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/Header";
@@ -32,18 +32,14 @@ import { cn } from "@/lib/utils";
 import { MediaBrowser } from "@/components/media-browser/MediaBrowser";
 import {
   ChapterAudioSummary,
-  OnlineVoice,
   PatchRangeReport,
   PatchRangesReport,
   PatchReport,
   PatchTextCheckSummary,
   PipelineInfo,
-  TtsModel,
-  VoiceOption,
   errorText,
   stageBlockedReason,
 } from "./types";
-import { buildVoiceOptions, modelNeedsOnlineVoices } from "./useBookDetail";
 import { SectionHead, Field, checkboxClass, fieldClass, selectClass } from "./parts";
 import { patchMediaDir } from "./paths";
 import { PatchIssuesDialog } from "./PatchIssuesDialog";
@@ -108,58 +104,7 @@ type RowProps = {
   onUploadVideo: (patch: Patch) => void;
   onRetryPublish: (patch: Patch) => void;
   onRepublish: (patch: Patch) => void;
-  voice: VoiceCtx;
 };
-
-type VoiceCtx = {
-  ttsModels: TtsModel[];
-  bookModelId: string;
-  bookVoiceId: string;
-  bookVoiceName: string;
-  localVoices: VoiceItem[];
-  onlineCache: Record<string, OnlineVoice[]>;
-  ensureOnlineVoices: (modelId: string) => void;
-};
-
-/** Nhãn giọng hiệu lực của patch (chỉ hiển thị): giọng riêng đã lưu, nếu không
- *  thì giọng chung của sách. Gán/tự động lưu khi chạy TTS. */
-function PatchVoiceLabel({ patch, voice }: { patch: Patch; voice: VoiceCtx }) {
-  const { ttsModels, bookModelId, bookVoiceId, bookVoiceName, localVoices, onlineCache, ensureOnlineVoices } = voice;
-  const hasOverride = Boolean(patch.tts_model || patch.tts_voice_id);
-  const effectiveModel = patch.tts_model || bookModelId;
-  const rawVoice = patch.tts_voice_id != null ? patch.tts_voice_id : bookVoiceId;
-  const model = ttsModels.find((item) => item.id === effectiveModel) || null;
-
-  useEffect(() => {
-    if (modelNeedsOnlineVoices(model)) ensureOnlineVoices(effectiveModel);
-  }, [model, effectiveModel, ensureOnlineVoices]);
-
-  const options: VoiceOption[] = useMemo(
-    () =>
-      buildVoiceOptions({
-        ttsModels,
-        modelId: effectiveModel,
-        localVoices,
-        onlineVoices: onlineCache[effectiveModel] || [],
-        currentVoiceName: bookVoiceName,
-      }),
-    [ttsModels, effectiveModel, localVoices, onlineCache, bookVoiceName]
-  );
-
-  const voiceLabel = rawVoice
-    ? options.find((option) => option.value === rawVoice)?.label || rawVoice
-    : "—";
-  return (
-    <div
-      className="min-w-0 max-w-44"
-      title={hasOverride ? `Giọng riêng patch này (tự lưu khi chạy TTS): ${model?.name || effectiveModel} · ${voiceLabel}` : `Theo cấu hình chung của sách: ${model?.name || effectiveModel} · ${voiceLabel}`}
-    >
-      <p className="truncate text-[11px] font-medium">{voiceLabel}</p>
-      <p className="truncate font-mono text-[10px] text-muted-foreground">{model?.name || effectiveModel}</p>
-      {hasOverride && <span className="text-[10px] font-medium text-primary">Giọng riêng</span>}
-    </div>
-  );
-}
 
 /** Memo hoá theo từng dòng: nhịp polling chỉ vẽ lại patch thực sự đổi. */
 const PatchRow = React.memo(function PatchRow({
@@ -179,7 +124,6 @@ const PatchRow = React.memo(function PatchRow({
   onUploadVideo,
   onRetryPublish,
   onRepublish,
-  voice,
 }: RowProps) {
   const percent = patch.chunk_count ? (patch.next_chunk_index * 100) / patch.chunk_count : 0;
   const rangeBad = rangeReport && rangeReport.severity !== "ok";
@@ -372,10 +316,6 @@ const PatchRow = React.memo(function PatchRow({
         </div>
       </TableCell>
 
-      <TableCell className="min-w-44 py-2.5">
-        <PatchVoiceLabel patch={patch} voice={voice} />
-      </TableCell>
-
       <TableCell className="py-2.5 text-right">
         <StatusBadge value={patch.status} />
       </TableCell>
@@ -449,10 +389,6 @@ export function PatchesPanel({
   onMessage,
   onRefresh,
   onBusyChange,
-  ttsModels,
-  bookModelId,
-  bookVoiceId,
-  bookVoiceName,
   chapterAudio,
 }: {
   bookId: string;
@@ -465,14 +401,6 @@ export function PatchesPanel({
   onMessage: (message: string) => void;
   onRefresh: () => Promise<void> | void;
   onBusyChange: (busy: boolean) => void;
-  /** Catalog TTS của sách — dựng cột giọng riêng từng patch. */
-  ttsModels: TtsModel[];
-  /** Model audio hiện tại của sách (kế thừa khi patch không gán riêng). */
-  bookModelId: string;
-  /** Voice audio hiện tại của sách (kế thừa khi patch không gán riêng). */
-  bookVoiceId: string;
-  /** Tên file clip mẫu của sách (cho model clone). */
-  bookVoiceName: string;
   /** Kho chunk TTS theo chương (useChapterAudio) — đếm chương sẵn sàng của từng patch. */
   chapterAudio: Record<string, ChapterAudioSummary>;
 }) {
@@ -505,48 +433,6 @@ export function PatchesPanel({
     }
     return result;
   }, [patches, chapters, chapterAudio]);
-
-  // Giọng riêng từng patch: clip thư viện tải một lần; giọng online tải theo
-  // model khi dòng cần (edge-tts/gTTS), cache theo model để không gọi lặp.
-  const [localVoices, setLocalVoices] = useState<VoiceItem[]>([]);
-  const [onlineCache, setOnlineCache] = useState<Record<string, OnlineVoice[]>>({});
-  const onlineInflight = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    api<{ voices: VoiceItem[] }>("/api/ui/media")
-      .then((res) => setLocalVoices(res.voices || []))
-      .catch(() => {});
-  }, []);
-  const ensureOnlineVoices = useCallback((modelId: string) => {
-    if (!modelId) return;
-    setOnlineCache((prev) => {
-      if (prev[modelId] || onlineInflight.current.has(modelId)) return prev;
-      onlineInflight.current.add(modelId);
-      api<{ voices: OnlineVoice[] }>(`/text-studio/light-tts/voices?backend=${encodeURIComponent(modelId)}`)
-        .then((res) =>
-          setOnlineCache((cur) => (cur[modelId] ? cur : { ...cur, [modelId]: res.voices || [] }))
-        )
-        .catch(() =>
-          setOnlineCache((cur) => (cur[modelId] ? cur : { ...cur, [modelId]: [] }))
-        )
-        .finally(() => {
-          onlineInflight.current.delete(modelId);
-        });
-      return prev;
-    });
-  }, []);
-
-  const voiceCtx = useMemo(
-    () => ({
-      ttsModels,
-      bookModelId,
-      bookVoiceId,
-      bookVoiceName,
-      localVoices,
-      onlineCache,
-      ensureOnlineVoices,
-    }),
-    [ttsModels, bookModelId, bookVoiceId, bookVoiceName, localVoices, onlineCache, ensureOnlineVoices]
-  );
 
   const checkChunks = useCallback(async () => {
     setCheckingChunks(true);
@@ -931,7 +817,6 @@ export function PatchesPanel({
                   <TableHead>Patch</TableHead>
                   <TableHead>Tiến độ</TableHead>
                   <TableHead>Pipeline</TableHead>
-                  <TableHead>Giọng đọc</TableHead>
                   <TableHead className="text-right">Trạng thái</TableHead>
                   <TableHead className="pr-4 text-right">Thao tác</TableHead>
                 </TableRow>
@@ -956,7 +841,6 @@ export function PatchesPanel({
                     onUploadVideo={uploadVideo}
                     onRetryPublish={retryPublish}
                     onRepublish={(patch) => setRepublishPatch(patch)}
-                    voice={voiceCtx}
                   />
                 ))}
               </TableBody>

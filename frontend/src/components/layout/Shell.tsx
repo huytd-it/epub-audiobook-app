@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -23,9 +23,13 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Share2,
+  BookMarked,
+  ArrowRight,
+  Clock3,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { getLastBookId, getRecentBooks } from "@/lib/recentBooks";
 
 interface NavItem {
   to: string;
@@ -74,6 +78,62 @@ const navSections: NavSection[] = [
   },
 ];
 
+function ResumeEntry({ onSelect, collapsed }: { onSelect?: () => void; collapsed?: boolean }) {
+  const [tick, setTick] = useState(0);
+  const location = useLocation();
+  useEffect(() => {
+    const bump = () => setTick((n) => n + 1);
+    window.addEventListener("storage", bump);
+    window.addEventListener("focus", bump);
+    return () => {
+      window.removeEventListener("storage", bump);
+      window.removeEventListener("focus", bump);
+    };
+  }, []);
+  // re-read on tick + on route change (after navigating to a book, sidebar updates ngay)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const last = useMemo(() => {
+    const id = getLastBookId();
+    const recents = getRecentBooks();
+    const r = id ? recents.find((x) => x.id === id) || recents[0] : recents[0];
+    return r || null;
+  }, [tick, location.pathname]);
+  if (!last) return null;
+  const isActive = location.pathname === `/books/${last.id}` || location.pathname.startsWith(`/books/${last.id}/`);
+  if (collapsed) {
+    return (
+      <Link
+        to={`/books/${last.id}`}
+        onClick={onSelect}
+        title={`Quay lại: ${last.title}`}
+        aria-label={`Quay lại ${last.title}`}
+        className={`flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition-colors border ${isActive ? "bg-primary text-primary-foreground border-primary" : "bg-lime/15 border-lime/30 text-foreground hover:bg-lime/25"}`}
+      >
+        <BookMarked className="h-4 w-4 shrink-0" />
+      </Link>
+    );
+  }
+  return (
+    <Link
+      to={`/books/${last.id}`}
+      onClick={onSelect}
+      className={`flex items-center gap-2.5 px-3 py-2.5 rounded-md border text-xs transition-colors ${isActive ? "bg-primary text-primary-foreground border-primary" : "bg-lime/10 border-lime/30 hover:bg-lime/20 text-foreground"}`}
+    >
+      <span className={`h-7 w-7 rounded-md flex items-center justify-center shrink-0 ${isActive ? "bg-primary-foreground/15" : "bg-lime/30"}`}>
+        <BookMarked className="h-3.5 w-3.5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1 text-[10px] font-mono font-semibold tracking-wider opacity-70">
+          <Clock3 className="h-3 w-3" /> TIẾP TỤC
+        </span>
+        <span className="block truncate font-semibold leading-tight">{last.title}</span>
+        <span className={`block truncate text-[11px] font-mono ${isActive ? "text-primary-foreground/70" : "text-muted-foreground"}`}>#{last.id}</span>
+      </span>
+      <ArrowRight className="h-3.5 w-3.5 shrink-0 opacity-60" />
+    </Link>
+  );
+}
+
 function SidebarNav({ onSelect, collapsed = false }: { onSelect?: () => void; collapsed?: boolean }) {
   const location = useLocation();
 
@@ -90,6 +150,11 @@ function SidebarNav({ onSelect, collapsed = false }: { onSelect?: () => void; co
             <img src="/studio-mark.svg" alt="Xưởng Sách Nói" className="h-full w-full invert" />
           </div>
         </Link>
+
+        {/* Quick resume */}
+        <div className="px-2 pt-3">
+          <ResumeEntry onSelect={onSelect} collapsed />
+        </div>
 
         {/* Navigation Sections */}
         <div className="flex-1 overflow-y-auto py-4 px-2 space-y-6">
@@ -157,6 +222,11 @@ function SidebarNav({ onSelect, collapsed = false }: { onSelect?: () => void; co
           <span className="text-[10px] text-muted-foreground font-mono tracking-tight">CONTROL ROOM v1.0</span>
         </div>
       </Link>
+
+      {/* Quick resume — ebook đang làm */}
+      <div className="px-2 pt-3">
+        <ResumeEntry onSelect={onSelect} />
+      </div>
 
       {/* Navigation Sections */}
       <div className="flex-1 overflow-y-auto py-4 px-2 space-y-6">

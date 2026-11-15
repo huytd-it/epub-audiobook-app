@@ -1,12 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { BookOpen, ListOrdered, ArrowRight, Plus, CheckCircle2, ChevronRight, HardDriveDownload, Layers, Cpu, Play } from "lucide-react";
+import { BookOpen, ListOrdered, ArrowRight, Plus, CheckCircle2, ChevronRight, HardDriveDownload, Layers, Cpu, Play, History, BookMarked, Clock3 } from "lucide-react";
 import { api, Book, Job } from "@/api";
 import { Header, LoadingState, EmptyState } from "@/components/common/Header";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Progress } from "@/components/ui/progress";
+import { getLastBookId, getRecentBooks, timeAgo } from "@/lib/recentBooks";
 
 export function Dashboard() {
   const [data, setData] = useState<any>();
@@ -21,6 +22,21 @@ export function Dashboard() {
       .finally(() => setLoading(false));
   }, []);
 
+  // recently-worked helper — đọc từ localStorage (do BookDetail ghi mỗi lần mở sách)
+  const [recentTick, setRecentTick] = useState(0);
+  useEffect(() => {
+    const onStorage = () => setRecentTick((n) => n + 1);
+    const onFocus = () => setRecentTick((n) => n + 1);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const recentLocal = useMemo(() => getRecentBooks(), [recentTick, data?.book_count]);
+
   if (loading || !data) return <LoadingState text="Đang kết nối trung tâm điều phối..." />;
 
   const taskCount = Object.values(data.queue?.jobs ?? {}).reduce<number>(
@@ -32,6 +48,27 @@ export function Dashboard() {
       ),
     0
   );
+
+  // ebook đang làm: ưu tiên localStorage (người dùng vừa mở), fallback sách mới nhất từ bootstrap
+  const lastId = getLastBookId();
+  const bootstrapById = useMemo(() => {
+    const m = new Map<number, Book>();
+    (data.books as Book[] | undefined)?.forEach((b) => m.set(b.id, b));
+    return m;
+  }, [data.books]);
+  const resumeBook: (Book & { _localTitle?: string }) | null = useMemo(() => {
+    if (lastId && bootstrapById.has(lastId)) return bootstrapById.get(lastId)!;
+    const local = recentLocal[0];
+    if (local && bootstrapById.has(local.id)) return bootstrapById.get(local.id)!;
+    if (local) return { id: local.id, title: local.title, status: "ready", priority: 0, original_filename: local.filename || "", created_at: local.at } as Book;
+    const newest = (data.books as Book[] | undefined)?.[0];
+    return newest || null;
+  }, [lastId, bootstrapById, recentLocal, data.books]);
+  const resumeProgress = resumeBook?.patches ? Math.round((resumeBook.patches.done / Math.max(resumeBook.patches.total, 1)) * 100) : null;
+  const otherRecents = useMemo(() => {
+    const ids = new Set([resumeBook?.id]);
+    return recentLocal.filter((r) => !ids.has(r.id)).slice(0, 4);
+  }, [recentLocal, resumeBook]);
 
   return (
     <div className="space-y-6">
@@ -47,6 +84,107 @@ export function Dashboard() {
           </Button>
         }
       />
+
+      {/* ── QUAY LẠI EBOOK ĐANG LÀM ── */}
+      {resumeBook ? (
+        <Card className="border-primary/30 overflow-hidden shadow-sm">
+          <div className="flex flex-col lg:flex-row">
+            {/* Left: hero */}
+            <div className="flex-1 p-4 sm:p-5 flex gap-4 min-w-0">
+              <div className="hidden sm:flex h-12 w-12 rounded-lg bg-primary text-primary-foreground items-center justify-center shrink-0">
+                <BookMarked className="h-6 w-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-lime/20 border border-lime/40 px-2.5 py-0.5 text-[11px] font-mono font-semibold text-foreground">
+                    <Clock3 className="h-3 w-3" /> TIẾP TỤC LÀM VIỆC
+                  </span>
+                  <span className="text-[11px] font-mono text-muted-foreground">#{resumeBook.id}</span>
+                  <StatusBadge value={resumeBook.status} />
+                </div>
+                <h3 className="mt-2 text-sm sm:text-base font-bold leading-tight truncate pr-2">{resumeBook.title}</h3>
+                <p className="text-[11px] font-mono text-muted-foreground truncate mt-0.5">{resumeBook.original_filename || "—"}</p>
+                {resumeBook.patches && (
+                  <div className="mt-3 space-y-1.5 max-w-md">
+                    <div className="flex justify-between text-[11px] font-mono">
+                      <span className="text-muted-foreground">Tiến độ patches</span>
+                      <span className="font-semibold text-foreground">
+                        {resumeBook.patches.done}/{resumeBook.patches.total} · {resumeProgress}%
+                      </span>
+                    </div>
+                    <Progress value={resumeProgress ?? 0} className="h-2" />
+                    <div className="flex gap-3 text-[11px] font-mono">
+                      {(resumeBook.patches.active || 0) > 0 && <span className="text-amber-700">đang chạy {resumeBook.patches.active}</span>}
+                      {(resumeBook.patches.failed || 0) > 0 && <span className="text-red-600">lỗi {resumeBook.patches.failed}</span>}
+                      {(resumeBook.patches.active || 0) === 0 && (resumeBook.patches.failed || 0) === 0 && resumeBook.patches.total > 0 && resumeBook.patches.done < resumeBook.patches.total && (
+                        <span className="text-muted-foreground">còn {resumeBook.patches.total - resumeBook.patches.done} patch chờ</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Right: actions */}
+            <div className="flex flex-row lg:flex-col items-center gap-2 p-4 sm:p-5 bg-muted/20 border-t lg:border-t-0 lg:border-l border-border lg:w-[220px] shrink-0">
+              <Button asChild className="flex-1 lg:w-full justify-center">
+                <Link to={`/books/${resumeBook.id}`}>
+                  Quay lại ebook <ArrowRight className="h-4 w-4" />
+                </Link>
+              </Button>
+              <Button asChild variant="outline" size="sm" className="lg:w-full justify-center">
+                <Link to="/books">Thư viện</Link>
+              </Button>
+              <span className="hidden lg:block text-[10px] font-mono text-muted-foreground text-center mt-1">
+                Phím tắt: nhấp để tiếp tục
+              </span>
+            </div>
+          </div>
+
+          {/* Recent strip — 1 hàng lịch sử nhanh */}
+          {otherRecents.length > 0 && (
+            <div className="border-t border-border bg-muted/10 px-4 py-2.5 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1 text-[11px] font-mono font-medium text-muted-foreground shrink-0">
+                <History className="h-3.5 w-3.5" /> Gần đây:
+              </span>
+              {otherRecents.map((r) => (
+                <Link
+                  key={r.id}
+                  to={`/books/${r.id}`}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-xs hover:border-primary/40 hover:bg-accent/10 transition-colors max-w-[220px]"
+                  title={r.title}
+                >
+                  <span className="font-mono text-[11px] text-muted-foreground">#{r.id}</span>
+                  <span className="truncate font-medium">{r.title}</span>
+                  <span className="text-[10px] font-mono text-muted-foreground shrink-0">{timeAgo(r.at)}</span>
+                </Link>
+              ))}
+              <Link to="/books" className="ml-auto text-[11px] font-mono text-primary hover:underline shrink-0">
+                Xem tất cả →
+              </Link>
+            </div>
+          )}
+        </Card>
+      ) : (
+        <Card className="border-dashed p-5 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center shrink-0">
+              <BookMarked className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">Chưa có ebook nào đang làm</p>
+              <p className="text-xs text-muted-foreground">Nhập EPUB mới hoặc mở một sách trong thư viện để bắt đầu — sẽ hiện ở đây để quay lại nhanh.</p>
+            </div>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Button asChild variant="accent" size="sm">
+              <Link to="/upload"><Plus className="h-4 w-4" /> Nhập sách mới</Link>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <Link to="/books">Mở thư viện</Link>
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {/* KPI Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
