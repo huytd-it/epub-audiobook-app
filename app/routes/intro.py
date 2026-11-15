@@ -82,6 +82,8 @@ async def put_book_intro_settings(request: Request, book_id: int):
                 "channel_name": channel_name,
                 "book_title": getattr(book, "title", "") or "",
                 "chapter_title": "Chương 1",
+                "chapter_start": "1",
+                "chapter_end": "10",
                 "author": author,
             }
             w = collect_warnings(tpl, vars_for_check)
@@ -119,6 +121,8 @@ async def intro_preview(request: Request):
         "channel_name": "",
         "book_title": "",
         "chapter_title": "",
+        "chapter_start": "",
+        "chapter_end": "",
         "author": "",
     }
     if book_id is not None:
@@ -136,18 +140,33 @@ async def intro_preview(request: Request):
             variables["channel_name"] = str(intro_cfg.get("channel_name") or "")
             variables["book_title"] = getattr(book, "title", "") or ""
             variables["author"] = getattr(book, "author", "") or ""
-            # chapter_title: first chapter title of first patch, or first chapter
+            # chapter_start/chapter_end from first patch display range; chapter_title legacy
             try:
                 patches = repository.list_patches(conn, book_id)
                 if patches:
                     p0 = patches[0]
+                    cs_val = getattr(p0, "chapter_no_start", None)
+                    ce_val = getattr(p0, "chapter_no_end", None)
+                    if cs_val is not None:
+                        variables["chapter_start"] = str(cs_val)
+                        variables["chapter_end"] = str(ce_val if ce_val is not None else cs_val)
+                    else:
+                        variables["chapter_start"] = str(p0.chapter_start + 1)
+                        variables["chapter_end"] = str(p0.chapter_end + 1)
                     chs = repository.get_chapters_in_range(conn, book_id, p0.chapter_start, p0.chapter_end)
                     if chs:
                         variables["chapter_title"] = chs[0].title or ""
                 if not variables["chapter_title"]:
-                    chs = repository.list_chapters(conn, book_id)
-                    if chs:
-                        variables["chapter_title"] = chs[0].title or ""
+                    chs2 = repository.list_chapters(conn, book_id)
+                    if chs2:
+                        variables["chapter_title"] = chs2[0].title or ""
+                if not (variables["chapter_start"] or "").strip():
+                    # fallback patch size default
+                    chs3 = repository.list_chapters(conn, book_id)
+                    total = len([c for c in chs3 if not getattr(c, "is_excluded", False)]) or len(chs3)
+                    if total:
+                        variables["chapter_start"] = "1"
+                        variables["chapter_end"] = str(min(10, total))
             except Exception:
                 pass
     # vars_override wins

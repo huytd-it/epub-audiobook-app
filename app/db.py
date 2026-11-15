@@ -1289,14 +1289,18 @@ def _migrate_strip_intro_voice(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE patch_pipeline SET media_snapshot=? WHERE patch_id=?", (json.dumps(media), row["patch_id"]))
 
 
+_LEGACY_INTRO_TMPL = "Ch\u00e0o m\u1eebng \u0111\u1ebfn v\u1edbi k\u00eanh {channel_name}, m\u1eddi b\u1ea1n nghe {book_title} - {chapter_title}"
+
 def _migrate_ensure_intro_defaults(conn: sqlite3.Connection) -> None:
-    """Ensure intro group has non-empty templates; repair empty-string templates left by early Phase 1."""
+    """Ensure intro group has non-empty templates; repair empty-string templates left by early Phase 1
+    and migrate legacy {chapter_title} intro to {chapter_start}/{chapter_end} range."""
     try:
         from app.production_defaults import DEFAULT_INTRO_CONFIG
         raw_row = conn.execute("SELECT config_json FROM automation_settings WHERE id=1").fetchone()
         raw = json.loads(raw_row["config_json"] or "{}") if raw_row else {}
         intro = raw.get("intro") if isinstance(raw.get("intro"), dict) else None
         needs_global = intro is None or not (intro.get("intro_template") or "").strip() or not (intro.get("cta_template") or "").strip()
+        legacy_global = isinstance(intro, dict) and (intro.get("intro_template") or "").strip() == _LEGACY_INTRO_TMPL
         if needs_global:
             fixed = dict(DEFAULT_INTRO_CONFIG)
             if isinstance(intro, dict) and intro.get("channel_name"):
@@ -1307,7 +1311,12 @@ def _migrate_ensure_intro_defaults(conn: sqlite3.Connection) -> None:
                         fixed[k] = intro[k]
             raw["intro"] = fixed
             conn.execute("UPDATE automation_settings SET config_json=? WHERE id=1", (json.dumps(raw),))
+        elif legacy_global:
+            intro["intro_template"] = DEFAULT_INTRO_CONFIG["intro_template"]
+            raw["intro"] = intro
+            conn.execute("UPDATE automation_settings SET config_json=? WHERE id=1", (json.dumps(raw),))
         # Per-book custom intros with empty templates -> switch to inherit so they pick up global
+        # Legacy per-book intro_template -> migrate to new range template in place
         for row in conn.execute("SELECT id, automation_config FROM book").fetchall():
             try:
                 braw = json.loads(row["automation_config"] or "{}")
@@ -1315,6 +1324,10 @@ def _migrate_ensure_intro_defaults(conn: sqlite3.Connection) -> None:
                 continue
             bintro = braw.get("intro")
             if not isinstance(bintro, dict):
+                continue
+            if (bintro.get("intro_template") or "").strip() == _LEGACY_INTRO_TMPL:
+                bintro["intro_template"] = DEFAULT_INTRO_CONFIG["intro_template"]
+                conn.execute("UPDATE book SET automation_config=? WHERE id=?", (json.dumps(braw), row["id"]))
                 continue
             if not (bintro.get("intro_template") or "").strip() or not (bintro.get("cta_template") or "").strip():
                 inherit = braw.get("inherit")

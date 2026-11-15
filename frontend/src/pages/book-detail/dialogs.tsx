@@ -1124,7 +1124,7 @@ export function ConfigDialog({
                       <span className="text-xs font-semibold">Intro đầu patch</span>
                       <CheckField checked={introConfig.intro_enabled} onChange={(v) => setIntroConfig({ ...introConfig, intro_enabled: v })} label="Bật" />
                     </div>
-                    <Field label="Mẫu intro" hint="{channel_name} {book_title} {chapter_title} {author} · 0–300">
+                    <Field label="Mẫu intro" hint="{channel_name} {book_title} {chapter_start} {chapter_end} {chapter_title} {author} · 0–300">
                       <textarea className={fieldClass} rows={2} maxLength={300} value={introConfig.intro_template} onChange={(e) => setIntroConfig({ ...introConfig, intro_template: e.target.value })} />
                     </Field>
                     <Button size="sm" variant="outline" onClick={async () => {

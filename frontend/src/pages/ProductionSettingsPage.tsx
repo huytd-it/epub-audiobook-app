@@ -1064,14 +1064,14 @@ export function ProductionSettingsPage() {
                   <span className="text-sm font-medium">Intro đầu patch</span>
                   <CheckField checked={draft.intro.intro_enabled} onChange={(v) => patchGroup("intro", { intro_enabled: v })} label="Bật" />
                 </div>
-                <Field label="Mẫu intro" hint="Biến: {channel_name} {book_title} {chapter_title} {author} · 0–300 ký tự">
+                <Field label="Mẫu intro" hint="Biến: {channel_name} {book_title} {chapter_start} {chapter_end} {chapter_title} {author} · 0–300 ký tự">
                   <textarea
                     className={fieldClass}
                     rows={2}
                     maxLength={300}
                     value={draft.intro.intro_template}
                     onChange={(event) => patchGroup("intro", { intro_template: event.target.value })}
-                    placeholder="Chào mừng đến với kênh {channel_name}, mời bạn nghe {book_title} - {chapter_title}"
+                    placeholder="Chào mừng đến với kênh {channel_name}, mời bạn nghe {book_title} - từ chương {chapter_start} tới chương {chapter_end}"
                   />
                 </Field>
                 <div className="flex gap-2">

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-ALLOWED_VARIABLES = {"channel_name", "book_title", "chapter_title", "author"}
+ALLOWED_VARIABLES = {"channel_name", "book_title", "chapter_title", "author", "chapter_start", "chapter_end"}
 _VARIABLE_RE = re.compile(r"\{(\w+)\}")
 MAX_TEMPLATE_LENGTH = 300
 MAX_CHANNEL_NAME_LENGTH = 100

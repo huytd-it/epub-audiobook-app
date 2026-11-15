@@ -199,11 +199,29 @@ def _engine_voice(engine) -> str | None:
     return voice if isinstance(voice, str) else None
 
 
-def _intro_cta_vars(channel_name: str, book, chapter_title: str | None) -> dict:
+def _patch_display_range(patch) -> tuple[int, int]:
+    """Display numbers for a patch: semantic chapter_no if stored, else 1-based index."""
+    s = getattr(patch, "chapter_no_start", None)
+    e = getattr(patch, "chapter_no_end", None)
+    if s is not None:
+        return int(s), int(e if e is not None else s)
+    return int(patch.chapter_start) + 1, int(patch.chapter_end) + 1
+
+
+def _intro_cta_vars(
+    channel_name: str,
+    book,
+    chapter_title: str | None = None,
+    *,
+    chapter_start: int | str | None = None,
+    chapter_end: int | str | None = None,
+) -> dict:
     return {
         "channel_name": channel_name or "",
         "book_title": getattr(book, "title", "") or "",
         "chapter_title": chapter_title or "",
+        "chapter_start": str(chapter_start) if chapter_start is not None and str(chapter_start).strip() != "" else "",
+        "chapter_end": str(chapter_end) if chapter_end is not None and str(chapter_end).strip() != "" else "",
         "author": getattr(book, "author", "") or "",
     }
 
@@ -256,20 +274,22 @@ def _inject_intro_cta(
 
     # --- Intro: đầu patch ---
     if intro_cfg.get("intro_enabled") and str(intro_cfg.get("intro_template") or "").strip():
-        # chapter_title cho intro = chương đầu của patch
+        # chapter_title cho intro = chương đầu của patch (backward compat); ưu tiên chapter_start/end theo patch
         first_title = None
         for item in plan:
             if item.get("chapter_title"):
                 first_title = item["chapter_title"]
                 break
         if first_title is None:
-            # fallback: title chương đầu theo DB
             try:
                 chapters = _repo.get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end)  # type: ignore[attr-defined]
                 first_title = (chapters[0].title if chapters else "") if chapters else ""
             except Exception:
                 first_title = ""
-        vars_intro = _intro_cta_vars(intro_cfg.get("channel_name") or "", book, first_title)
+        cs, ce = _patch_display_range(patch)
+        vars_intro = _intro_cta_vars(
+            intro_cfg.get("channel_name") or "", book, first_title, chapter_start=cs, chapter_end=ce
+        )
         rendered = render_template(str(intro_cfg.get("intro_template") or ""), vars_intro).strip()
         if rendered and has_speakable_text(rendered):
             parts = _chunker._hard_split(rendered, max_chars)
@@ -309,10 +329,15 @@ def _inject_intro_cta(
             scored.sort(key=lambda x: x[0])
             chosen_gaps = sorted(scored[:k], key=lambda x: x[1])
             # insert CTA chunks before each chosen gap, from last to first to keep indices
+            # CTA vars also expose patch range for completeness (if user uses it in custom CTA)
+            cs_cta, ce_cta = _patch_display_range(patch)
             for _, gap in reversed(chosen_gaps):
                 # chapter_title cho CTA: tên chương mở tại gap
                 cta_title = new_plan[gap].get("chapter_title") or ""
-                vars_cta = _intro_cta_vars(intro_cfg.get("channel_name") or "", book, cta_title)
+                vars_cta = _intro_cta_vars(
+                    intro_cfg.get("channel_name") or "", book, cta_title,
+                    chapter_start=cs_cta, chapter_end=ce_cta,
+                )
                 rendered_cta = render_template(str(intro_cfg.get("cta_template") or ""), vars_cta).strip()
                 if not rendered_cta or not has_speakable_text(rendered_cta):
                     continue

@@ -36,11 +36,12 @@ GROUPS = ("audio", "normalization", "video", "youtube", "branding", "intro")
 DEFAULT_INTRO_CONFIG = {
     "channel_name": "",
     "intro_enabled": True,
-    "intro_template": "Chào mừng đến với kênh {channel_name}, mời bạn nghe {book_title} - {chapter_title}",
+    "intro_template": "Chào mừng đến với kênh {channel_name}, mời bạn nghe {book_title} - từ chương {chapter_start} tới chương {chapter_end}",
     "cta_enabled": True,
     "cta_template": "Nếu yêu thích {book_title}, hãy đăng ký kênh {channel_name} để không bỏ lỡ chương tiếp theo",
     "cta_max_per_patch": 1,
 }
+_LEGACY_INTRO_TEMPLATE = "Chào mừng đến với kênh {channel_name}, mời bạn nghe {book_title} - {chapter_title}"
 
 # Global audio defaults: the production default engine is settings.tts_engine, the
 # same value the save route and the bulk queue treat as the canonical default.
@@ -670,7 +671,7 @@ def intro_warnings_for_config(intro_cfg: dict) -> list[str]:
                 pass
         # Also surface generic empty-var warnings for the configured channel_name
         from app.intro_templates import collect_warnings
-        vars_for_check = {"channel_name": channel_name, "book_title": "x", "chapter_title": "x", "author": "x"}
+        vars_for_check = {"channel_name": channel_name, "book_title": "x", "chapter_title": "x", "chapter_start": "1", "chapter_end": "10", "author": "x"}
         # Only report the missing-channel_name part here to avoid noise from placeholder titles
         ch_warnings = [w for w in collect_warnings(tpl, vars_for_check) if "channel_name" in w]
         for w in ch_warnings:
