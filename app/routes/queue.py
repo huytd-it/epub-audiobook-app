@@ -137,6 +137,38 @@ def _production_names(conn, jobs) -> dict[int, str]:
     }
 
 
+def _book_titles(conn, jobs) -> dict[int, str]:
+    upload_ids = {
+        upload_id for job in jobs
+        if job.patch_id is None and job.payload.get("patch_id") is None
+        and (upload_id := job.payload.get("upload_id")) is not None
+    }
+    by_upload = _patch_ids_by_upload(conn, upload_ids)
+    patch_by_job = {
+        job.id: patch_id for job in jobs
+        if (patch_id := _job_patch_id(job, by_upload)) is not None
+    }
+    book_by_job = {job.id: job.book_id for job in jobs if job.book_id is not None}
+    patch_ids = set(patch_by_job.values())
+    if patch_ids:
+        placeholders = ",".join("?" for _ in patch_ids)
+        book_by_patch = {row["id"]: row["book_id"] for row in conn.execute(
+            f"SELECT id, book_id FROM patch WHERE id IN ({placeholders})", tuple(patch_ids)
+        ).fetchall()}
+        book_by_job.update({job_id: book_by_patch[patch_id] for job_id, patch_id in patch_by_job.items()
+                            if patch_id in book_by_patch})
+    book_ids = set(book_by_job.values())
+    if not book_ids:
+        return {}
+    placeholders = ",".join("?" for _ in book_ids)
+    rows = conn.execute(
+        f"SELECT id, title FROM book WHERE id IN ({placeholders})",
+        tuple(book_ids),
+    ).fetchall()
+    titles = {row["id"]: row["title"] for row in rows}
+    return {job_id: titles[book_id] for job_id, book_id in book_by_job.items() if book_id in titles}
+
+
 def _pools(worker) -> list[dict]:
     if worker is None or not hasattr(worker, "pool_status"):
         return []
@@ -241,10 +273,12 @@ def list_jobs(request: Request, type: str = "", status: str = "",
                                book_id=book_id, limit=limit,
                                queue_order=order == "queue" and bool(type) and status == "pending")
         production_names = _production_names(conn, jobs)
+        book_titles = _book_titles(conn, jobs)
     result = []
     for job in jobs:
         data = _job_dict(job, _queue(request))
         data["production_name"] = production_names.get(job.id)
+        data["book_title"] = book_titles.get(job.id)
         result.append(data)
     return {"jobs": result}
 

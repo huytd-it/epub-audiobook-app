@@ -34,41 +34,58 @@ export function Dashboard() {
       window.removeEventListener("focus", onFocus);
     };
   }, []);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+
+  // ── Hooks phải nằm TRƯỚC early return, nếu không sẽ lỗi React #310
+  //    (Rendered more hooks than during the previous render) ──
   const recentLocal = useMemo(() => getRecentBooks(), [recentTick, data?.book_count]);
 
-  if (loading || !data) return <LoadingState text="Đang kết nối trung tâm điều phối..." />;
-
-  const taskCount = Object.values(data.queue?.jobs ?? {}).reduce<number>(
-    (sum, counts) =>
-      sum +
-      Object.entries(counts as Record<string, unknown>).reduce<number>(
-        (s, [status, n]) => s + (["pending", "running"].includes(status) ? Number(n) || 0 : 0),
-        0
-      ),
-    0
-  );
-
-  // ebook đang làm: ưu tiên localStorage (người dùng vừa mở), fallback sách mới nhất từ bootstrap
-  const lastId = getLastBookId();
   const bootstrapById = useMemo(() => {
     const m = new Map<number, Book>();
-    (data.books as Book[] | undefined)?.forEach((b) => m.set(b.id, b));
+    (data?.books as Book[] | undefined)?.forEach((b) => m.set(b.id, b));
     return m;
-  }, [data.books]);
+  }, [data?.books]);
+
+  const lastId = useMemo(() => getLastBookId(), [recentTick, data?.book_count]);
+
   const resumeBook: (Book & { _localTitle?: string }) | null = useMemo(() => {
+    // khi data chưa về vẫn trả về local để hook order ổn định (render loading sẽ không dùng giá trị này)
+    if (!data?.books || !Array.isArray(data.books)) {
+      const local = recentLocal[0];
+      if (local) return { id: local.id, title: local.title, status: "ready", priority: 0, original_filename: local.filename || "", created_at: local.at } as Book;
+      return null;
+    }
     if (lastId && bootstrapById.has(lastId)) return bootstrapById.get(lastId)!;
     const local = recentLocal[0];
     if (local && bootstrapById.has(local.id)) return bootstrapById.get(local.id)!;
     if (local) return { id: local.id, title: local.title, status: "ready", priority: 0, original_filename: local.filename || "", created_at: local.at } as Book;
     const newest = (data.books as Book[] | undefined)?.[0];
     return newest || null;
-  }, [lastId, bootstrapById, recentLocal, data.books]);
-  const resumeProgress = resumeBook?.patches ? Math.round((resumeBook.patches.done / Math.max(resumeBook.patches.total, 1)) * 100) : null;
+  }, [lastId, bootstrapById, recentLocal, data?.books]);
+
   const otherRecents = useMemo(() => {
     const ids = new Set([resumeBook?.id]);
     return recentLocal.filter((r) => !ids.has(r.id)).slice(0, 4);
   }, [recentLocal, resumeBook]);
+
+  const taskCount = useMemo(() => {
+    if (!data?.queue?.jobs) return 0;
+    return Object.values(data.queue.jobs as Record<string, unknown>).reduce<number>(
+      (sum, counts) =>
+        sum +
+        Object.entries(counts as Record<string, unknown>).reduce<number>(
+          (s, [status, n]) => s + (["pending", "running"].includes(status) ? Number(n) || 0 : 0),
+          0
+        ),
+      0
+    );
+  }, [data?.queue]);
+
+  const resumeProgress = useMemo(
+    () => (resumeBook?.patches ? Math.round((resumeBook.patches.done / Math.max(resumeBook.patches.total, 1)) * 100) : null),
+    [resumeBook]
+  );
+
+  if (loading || !data) return <LoadingState text="Đang kết nối trung tâm điều phối..." />;
 
   return (
     <div className="space-y-6">

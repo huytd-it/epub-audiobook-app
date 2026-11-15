@@ -27,8 +27,6 @@ VIDEO_DEFAULTS = {
     "music_chapter_end_seconds": 15,
     "music_random_start": False,
     "music_fade_enabled": True,
-    "intro_voice": "",
-    "outro_voice": "",
     "codec": "libx264",
     "audio_bitrate": "320k",
     # CRF 20 is visually transparent for 1080p audiobook artwork/gameplay while
@@ -185,8 +183,7 @@ def validate_video_config(config: dict | None) -> dict:
     if not isinstance(result["crossfade_seconds"], (int, float)) or not 0 <= result["crossfade_seconds"] <= 3:
         raise ValueError("crossfade must be 0-3 seconds")
     for field in ("intro_voice", "outro_voice"):
-        if not isinstance(result[field], str):
-            raise ValueError(f"{field} must be a string")
+        result.pop(field, None)
     if result["waveform_style"] not in _WAVEFORM_STYLES:
         raise ValueError("invalid waveform style")
     if result["waveform_position"] not in {"top", "center", "bottom"}:

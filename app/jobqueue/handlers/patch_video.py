@@ -18,7 +18,7 @@ from app.jobqueue.models import JobFatalError
 from app.jobqueue.render_progress import ENCODE_END, ENCODE_START, SCALE, RenderProgress, render_stats
 from app.patch_publishing import (MAX_PATCH_RENDER_ATTEMPTS, audio_fingerprint,
                                   enqueue_patch_publish, seed_patch_video)
-from app.production_defaults import get_effective_branding_config, get_effective_video_config, resolve_voice_clip
+from app.production_defaults import get_effective_branding_config, get_effective_video_config
 from app.video_integrity import (VideoExpectation, validate_video,
                                  validation_report_json)
 from app.video_publish import VideoValidationError, publish_validated_video
@@ -56,11 +56,10 @@ def _render_profile(*, common: dict, audio: str, background: str, sequence: bool
 
 
 def _expected_duration_seconds(audio_path: str, render_config: dict) -> float | None:
-    """WAV length + intro/outro — what the muxed output should measure."""
+    """WAV length — what the muxed output should measure. Phase 1: intro/outro ignored."""
     try:
         total = 0.0
-        for path in [audio_path, *((render_config.get("intro_audio"), render_config.get("outro_audio"))
-                                   if isinstance(render_config, dict) else ())]:
+        for path in [audio_path]:
             if not path or not Path(path).is_file():
                 continue
             info = sf.info(str(path))
@@ -176,10 +175,11 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
     if not isinstance(render_config, dict):
         raise JobFatalError("source_unavailable: invalid render config snapshot")
     branding = snapshot.get("branding") if isinstance(snapshot.get("branding"), dict) else None
-    for key in ("music_path", "intro_audio", "outro_audio"):
+    for key in ("music_path",):
         value = render_config.get(key)
         if value and not Path(value).is_file():
             raise JobFatalError(f"source_unavailable: {key} missing: {value}")
+    # Phase 1: pending jobs may still carry intro_audio/outro_audio — ignore.
     output = str(repository.get_patch_video_path(book.id, patch.patch_index))
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     _step(ctx, 1, "overlay")
@@ -203,10 +203,10 @@ def _render_from_snapshot(ctx, patch, book, pipeline: dict, snapshot: dict) -> s
         "quality": int(render_config.get("crf") or 20),
         "audio_bitrate": render_config.get("audio_bitrate") or "320k",
     }
-    intro = render_config.get("intro_audio")
-    outro = render_config.get("outro_audio")
+    intro = None
+    outro = None
     music_path = render_config.get("music_path")
-    music_volume = render_config.get("music_volume", 0.15)
+    music_volume = render_config.get("music_volume", 0.20)
     # Snapshots frozen before chapter-end music shipped carry none of these
     # keys; music_bed falls back to the defaults video_config hands out, so an
     # old snapshot renders the same way a fresh one would.
@@ -370,7 +370,7 @@ def handle(ctx) -> dict:
 
     snapshot = ctx.job.payload.get("snapshot")
     if isinstance(snapshot, dict):
-        if ctx.job.payload.get("schema_version") not in {1, 2, 3}:
+        if ctx.job.payload.get("schema_version") not in {1, 2, 3, 4}:
             raise JobFatalError("payload snapshot unsupported")
         pipeline_row = dict(pipeline) if pipeline else {}
         _account_render_attempt(ctx, patch_id, pipeline_row, recovery_upload_id)
@@ -432,7 +432,7 @@ def handle(ctx) -> dict:
                 "fps": book.video_fps or 30,
                 "fit_mode": "auto",
             }
-            for key in ("music_path", "intro_audio", "outro_audio"):
+            for key in ("music_path",):
                 value = render_config.get(key)
                 if value and not Path(value).is_file():
                     raise JobFatalError(f"source_unavailable: {key} missing: {value}")
@@ -483,8 +483,8 @@ def handle(ctx) -> dict:
                 music = repository.get_music(ctx.conn, book.music_id)
                 if music and Path(music.file_path).is_file():
                     music_path = music.file_path
-            intro = resolve_voice_clip(config, "intro_voice")
-            outro = resolve_voice_clip(config, "outro_voice")
+            intro = None
+            outro = None
             width, height = (book.video_resolution or "1920x1080").split("x")
             resolution = (int(width), int(height))
             common = {

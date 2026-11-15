@@ -663,7 +663,7 @@ def generate_segment(
     crf: int = 20,
     use_nvenc: bool = False,
     music_path: str | None = None,
-    music_volume: float = 0.15,
+    music_volume: float = 0.20,
     music_mix: dict | None = None,
     codec: str = "libx264",
     quality: int | None = None,
@@ -1137,7 +1137,7 @@ def generate_background_sequence(
     resolution: tuple[int, int], fps: int, image_duration: float,
     fit_mode: str = "contain",
     mode: str = "sequential", seed: str = "", music_path: str | None = None,
-    music_volume: float = 0.15, music_mix: dict | None = None,
+    music_volume: float = 0.20, music_mix: dict | None = None,
     codec: str = "libx264", quality: int = 20,
     audio_bitrate: str = "320k", on_progress: ProgressCallback | None = None,
     start_index: int = 0,
@@ -1205,22 +1205,44 @@ def generate_background_sequence(
                 graph.append(f"{current}[v{i}]xfade=transition=fade:duration={fade}:offset={max(0, elapsed - fade)}{out}")
                 current = out
                 elapsed += plan[i][1] - fade
-            # Windows caps a command line at 32767 characters, and both the xfade
-            # graph and the -i list grow with the piece count: a long patch (one
-            # piece per image_duration seconds) overflowed the cap and died in
-            # CreateProcess with WinError 206 before ffmpeg ever started. Keep the
-            # graph in a script file and pass the pieces as bare filenames
-            # relative to their own directory.
-            script = Path(temp) / "xfade.txt"
-            script.write_text(";".join(graph), encoding="utf-8")
-            cmd = [settings.get_ffmpeg_path(), "-y"]
-            for piece in pieces:
-                cmd += ["-i", Path(piece).name]
-            cmd += ["-filter_complex_script", script.name, "-map", current, "-an", "-c:v", video_codec,
-                    "-pix_fmt", "yuv420p", "-r", str(fps),
-                    ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality),
-                    Path(visual).name]
-            _run_encoder(cmd, cwd=temp)
+            # Inline filter_complex preferred: bundled ffmpeg n9.x lacks
+            # -filter_complex_script. Fall back to script file only when graph
+            # exceeds Windows' 32767 char limit (~16000 safe for graph alone).
+            graph_text = ";".join(graph)
+            if len(graph_text) < 16000:
+                cmd = [settings.get_ffmpeg_path(), "-y"]
+                for piece in pieces:
+                    cmd += ["-i", piece]
+                cmd += ["-filter_complex", graph_text, "-map", current, "-an", "-c:v", video_codec,
+                        "-pix_fmt", "yuv420p", "-r", str(fps),
+                        ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality),
+                        visual]
+                _run_encoder(cmd)
+            else:
+                script = Path(temp) / "xfade.txt"
+                script.write_text(graph_text, encoding="utf-8")
+                cmd = [settings.get_ffmpeg_path(), "-y"]
+                for piece in pieces:
+                    cmd += ["-i", Path(piece).name]
+                cmd += ["-filter_complex_script", script.name, "-map", current, "-an", "-c:v", video_codec,
+                        "-pix_fmt", "yuv420p", "-r", str(fps),
+                        ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality),
+                        Path(visual).name]
+                try:
+                    _run_encoder(cmd, cwd=temp)
+                except subprocess.CalledProcessError as exc:
+                    if "filter_complex_script" in (exc.stderr or ""):
+                        # Fallback to inline if build lacks the option.
+                        cmd2 = [settings.get_ffmpeg_path(), "-y"]
+                        for piece in pieces:
+                            cmd2 += ["-i", piece]
+                        cmd2 += ["-filter_complex", graph_text, "-map", current, "-an", "-c:v", video_codec,
+                                "-pix_fmt", "yuv420p", "-r", str(fps),
+                                ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality),
+                                visual]
+                        _run_encoder(cmd2)
+                    else:
+                        raise
         else:
             concat_segments(pieces, visual)
         inputs = [settings.get_ffmpeg_path(), "-y", "-i", visual, "-i", audio_path]
@@ -1380,7 +1402,7 @@ def generate_full_video(
     default_image: str,
     use_nvenc: bool = False,
     music_path: str | None = None,
-    music_volume: float = 0.15,
+    music_volume: float = 0.20,
     music_mix: dict | None = None,
     codec: str = "libx264",
     quality: int = 20,
@@ -1545,7 +1567,7 @@ def generate_standalone_video(
     image_type: str = "none",
     crf: int = 20,
     music_path: str | None = None,
-    music_volume: float = 0.15,
+    music_volume: float = 0.20,
     music_mix: dict | None = None,
     intro_audio: str | None = None,
     outro_audio: str | None = None,

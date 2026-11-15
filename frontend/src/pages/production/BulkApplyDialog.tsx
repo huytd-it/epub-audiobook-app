@@ -44,7 +44,7 @@ const SECTION_DEFS: Partial<Record<ProductionGroup, { label: string; match: (key
       label: "Nền video (ảnh/video nền, gameplay, thời lượng ảnh, animation)",
       match: (k) => k.startsWith("background") || ["gameplay", "image_duration_seconds", "image_animation"].includes(k),
     },
-    { label: "Nhạc nền & intro/outro", match: (k) => k.startsWith("music_") || k === "intro_voice" || k === "outro_voice" },
+    { label: "Nhạc nền", match: (k) => k.startsWith("music_") },
     {
       label: "Hiệu ứng (crossfade, Ken Burns, thanh tiến độ, credit giọng đọc)",
       match: (k) => k.startsWith("crossfade") || ["ken_burns_enabled", "progress_bar_enabled", "narrator_credit_enabled"].includes(k),
@@ -58,6 +58,12 @@ const SECTION_DEFS: Partial<Record<ProductionGroup, { label: string; match: (key
 };
 
 const KEY_LABELS: Record<string, string> = {
+  channel_name: "Tên kênh",
+  intro_enabled: "Bật intro",
+  intro_template: "Mẫu intro",
+  cta_enabled: "Bật CTA",
+  cta_template: "Mẫu CTA",
+  cta_max_per_patch: "Số CTA tối đa / patch",
   numbers: "Chuyển số, ngày giờ, đơn vị thành chữ",
   junk: "Xóa token rác từ EPUB",
   spellcheck: "Sửa dấu chấm chèn trong từ",

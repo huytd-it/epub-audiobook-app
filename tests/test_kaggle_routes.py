@@ -167,7 +167,7 @@ def test_export_batch_kaggle_upload_forces_video_like_the_audio_dialog(client, t
     with db.connect(str(tmp_path / "app.db")) as conn:
         job = store.get(conn, resp.json()["job_id"])
     assert job.payload["auto_create_video"] is True
-    assert job.payload["automation_mode"] == "after_all"  # mode mặc định an toàn
+    assert job.payload["automation_mode"] == "per_patch"  # luôn per_patch
 
 
 def test_export_batch_kaggle_omits_automation_keys_for_legacy_callers(client, tmp_path):

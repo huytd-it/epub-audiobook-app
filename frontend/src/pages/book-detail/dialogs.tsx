@@ -17,6 +17,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogVoiceMeta,
 } from "@/components/ui/dialog";
 import {
   AudioSettings,
@@ -376,7 +377,6 @@ export function ConfigDialog({
   onSaved: () => Promise<void>;
 }) {
   const [videoConfig, setVideoConfig] = useState<VideoConfig>();
-  const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
   const [music, setMusic] = useState<MusicMixState>();
   const [ytSettings, setYtSettings] = useState<YouTubeSettings>();
   // Job "Sinh nội dung & thẻ" đang chạy — giữ ở đây (không trong AiContentGenerator)
@@ -404,12 +404,10 @@ export function ConfigDialog({
       Promise.all([
         api<VideoConfig>(`/books/${bookId}/video-config`),
         api<MusicMixState>(`/books/${bookId}/music`),
-        api<{ voices: VoiceItem[] }>("/api/ui/media"),
       ])
-        .then(([config, musicSettings, voiceMedia]) => {
+        .then(([config, musicSettings]) => {
           setVideoConfig(config);
           setMusic(musicSettings);
-          setIntroOutroVoices(voiceMedia.voices || []);
         })
         .catch((error) => onMessage(errorText(error)));
     }
@@ -517,6 +515,33 @@ export function ConfigDialog({
     }
   };
 
+  // Per-book Intro & CTA
+  const [introConfig, setIntroConfig] = useState<import("./types").IntroConfig | null>(null);
+  const [introMode, setIntroMode] = useState<"inherit" | "custom">("inherit");
+  const [introPreview, setIntroPreview] = useState<{ rendered: string; warnings: string[]; estimated_seconds: number } | null>(null);
+  const [ctaPreview, setCtaPreview] = useState<{ rendered: string; warnings: string[]; estimated_seconds: number } | null>(null);
+  useEffect(() => {
+    if (!open || tab !== "intro" || introConfig) return;
+    api<{ config: import("./types").IntroConfig; mode: "inherit" | "custom" }>(`/books/${bookId}/intro-settings`)
+      .then((res) => {
+        setIntroConfig(res.config);
+        setIntroMode(res.mode);
+      })
+      .catch((e) => onMessage(errorText(e)));
+  }, [open, tab, bookId, introConfig, onMessage]);
+  const saveIntro = async () => {
+    if (!introConfig) return;
+    setSaving(true);
+    try {
+      if (introMode === "inherit") {
+        await postJson(`/books/${bookId}/production-settings-mode`, { group: "intro", mode: "custom" });
+      }
+      await postJson(`/books/${bookId}/intro-settings`, introConfig);
+      onMessage("Đã lưu Intro & CTA.");
+      setIntroMode("custom");
+    } catch (e) { onMessage(errorText(e)); } finally { setSaving(false); }
+  };
+
   const saveYoutube = async () => {
     if (!ytSettings) return;
     setSaving(true);
@@ -611,9 +636,12 @@ export function ConfigDialog({
         <DialogHeader>
           <DialogTitle>Cấu hình sản xuất</DialogTitle>
           <DialogDescription>
-            Thiết lập âm thanh, video và YouTube riêng cho sách này. Khi lưu, nhóm cấu hình đó tách khỏi{" "}
-            <Link to="/production-defaults" className="underline">Cấu hình mặc định</Link> và chỉ áp dụng cho ebook này.
+            Thiết lập âm thanh, video và YouTube riêng cho sách này.
           </DialogDescription>
+          <DialogVoiceMeta
+            modelName={ttsModels.find((m) => m.id === settings.modelId)?.name || settings.modelId}
+            voiceName={voiceOptions.find((o) => o.value === settings.voiceId)?.label || settings.voiceId || "—"}
+          />
         </DialogHeader>
 
         <TabBar<ConfigTab>
@@ -624,6 +652,7 @@ export function ConfigDialog({
             { value: "normalization", label: "Chuẩn hóa TTS" },
             { value: "video", label: "Video" },
             { value: "youtube", label: "YouTube" },
+            { value: "intro", label: "Intro & CTA" },
           ]}
         />
 
@@ -665,7 +694,7 @@ export function ConfigDialog({
                   />
                 </div>
               </Field>
-              <Field label="Giọng hội thoại" hint="Đọc các câu trong ngoặc kép / dòng “- ...”; để trống = đọc chung giọng trên">
+              <Field label="Giọng hội thoại" >
                 <div className="flex items-center gap-1">
                   <Combobox
                     className="min-w-0 flex-1"
@@ -700,14 +729,8 @@ export function ConfigDialog({
                   onChange={(event) => onSettingsChange({ maxChars: event.target.value })}
                 />
               </Field>
-              <div className="flex items-end">
-                <CheckField
-                  checked={settings.withEffects}
-                  onChange={(value) => onSettingsChange({ withEffects: value })}
-                  label="Thêm hiệu ứng âm thanh"
-                />
-              </div>
-              <Field label="Khoảng lặng giữa chunk (ms)" hint="Nhịp thở giữa hai đoạn liền nhau">
+
+              <Field label="Khoảng lặng giữa chunk (ms)" >
                 <input
                   className={fieldClass}
                   type="number"
@@ -720,7 +743,7 @@ export function ConfigDialog({
               </Field>
               <Field
                 label="Khoảng lặng giữa chương (ms)"
-                hint="Chèn trước mỗi chương trong cùng một patch; nhạc nền cuối chương fade ra tại đây"
+                
               >
                 <input
                   className={fieldClass}
@@ -732,6 +755,13 @@ export function ConfigDialog({
                   onChange={(event) => onSettingsChange({ chapterPauseMs: event.target.value })}
                 />
               </Field>
+                            <div className="flex items-end">
+                <CheckField
+                  checked={settings.withEffects}
+                  onChange={(value) => onSettingsChange({ withEffects: value })}
+                  label="Thêm hiệu ứng âm thanh"
+                />
+              </div>
               <TtsOptionsFields model={selectedModel} value={settings.ttsOptions}
                 onChange={(ttsOptions) => onSettingsChange({ ttsOptions })} />
             </div>
@@ -849,10 +879,7 @@ export function ConfigDialog({
                     <option value="1080x1080">1080×1080 (1:1 — vuông)</option>
                   </select>
                 </Field>
-                <Field
-                  label="Khung hình nền"
-                  hint="Auto: tự chọn cách hiển thị nền ngang trong khung dọc"
-                >
+                <Field label="Khung hình nền">
                   <select
                     className={selectClass}
                     value={videoConfig.fit_mode || "auto"}
@@ -897,7 +924,7 @@ export function ConfigDialog({
                     <option value="320k">320k (khuyên dùng)</option>
                   </select>
                 </Field>
-                <Field label="Chất lượng" hint="CRF 20 khuyên dùng; số thấp hơn = file lớn hơn">
+                <Field label="Chất lượng">
                   <input
                     className={fieldClass}
                     type="number"
@@ -907,7 +934,7 @@ export function ConfigDialog({
                     onChange={(event) => setVideoConfig({ ...videoConfig, quality: Number(event.target.value) })}
                   />
                 </Field>
-                <Field label="Thời lượng ảnh" hint="giây">
+                <Field label="Thời lượng ảnh">
                   <input
                     className={fieldClass}
                     type="number"
@@ -968,32 +995,7 @@ export function ConfigDialog({
                 />
               )}
 
-              <div className="grid grid-cols-1 gap-4 rounded-md border border-border p-3 sm:grid-cols-2">
-                <Field label="Âm thanh intro" hint="Phát trước nội dung patch">
-                  <select
-                    className={selectClass}
-                    value={videoConfig.intro_voice}
-                    onChange={(event) => setVideoConfig({ ...videoConfig, intro_voice: event.target.value })}
-                  >
-                    <option value="">Không dùng intro</option>
-                    {introOutroVoices.map((voice) => (
-                      <option key={voice.name} value={voice.name}>{voice.name}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Âm thanh outro" hint="Phát sau nội dung patch">
-                  <select
-                    className={selectClass}
-                    value={videoConfig.outro_voice}
-                    onChange={(event) => setVideoConfig({ ...videoConfig, outro_voice: event.target.value })}
-                  >
-                    <option value="">Không dùng outro</option>
-                    {introOutroVoices.map((voice) => (
-                      <option key={voice.name} value={voice.name}>{voice.name}</option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
+              {/* Phase 1: intro_voice/outro_voice hidden — see Intro & CTA tab */}
 
               {music && (
                 <MusicMixFields
@@ -1006,36 +1008,11 @@ export function ConfigDialog({
 
               <div className="flex flex-wrap gap-4 rounded-md bg-muted/30 p-3">
                 <CheckField
-                  checked={videoConfig.crossfade_enabled}
-                  onChange={(value) => setVideoConfig({ ...videoConfig, crossfade_enabled: value })}
-                  label="Crossfade"
-                />
-                <CheckField
-                  checked={videoConfig.ken_burns_enabled}
-                  onChange={(value) => setVideoConfig({ ...videoConfig, ken_burns_enabled: value })}
-                  label="Ken Burns"
-                />
-                <CheckField
-                  checked={videoConfig.progress_bar_enabled}
-                  onChange={(value) => setVideoConfig({ ...videoConfig, progress_bar_enabled: value })}
-                  label="Progress bar"
-                />
-                <CheckField
                   checked={videoConfig.narrator_credit_enabled || false}
                   onChange={(value) => setVideoConfig({ ...videoConfig, narrator_credit_enabled: value })}
                   label="Hiện tên giọng đọc + TTS model"
                 />
               </div>
-              {videoConfig.narrator_credit_enabled && (
-                <p className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
-                  Tự động thêm text overlay dưới mỗi khung hình:{" "}
-                  <span className="font-semibold">
-                    Giọng đọc: {voiceOptions.find((option) => option.value === settings.voiceId)?.label || settings.voiceId || "—"}
-                    {" · "}
-                    {ttsModels.find((model) => model.id === settings.modelId)?.name || settings.modelId}
-                  </span>
-                </p>
-              )}
 
               <section className="space-y-3 rounded-md border border-border p-3">
                 <div className="flex items-start justify-between gap-3">
@@ -1123,6 +1100,73 @@ export function ConfigDialog({
           ) : (
             <div className="py-8 text-center text-xs text-muted-foreground">Đang tải cấu hình video...</div>
           ))}
+
+        {tab === "intro" && (
+          introConfig ? (
+            <div className="space-y-4">
+              <div className="flex gap-2 text-xs">
+                <Button size="sm" variant={introMode === "inherit" ? "default" : "outline"} onClick={async () => {
+                  await postJson(`/books/${bookId}/production-settings-mode`, { group: "intro", mode: "inherit" });
+                  const fresh = await api<{ config: import("./types").IntroConfig; mode: "inherit" | "custom" }>(`/books/${bookId}/intro-settings`);
+                  setIntroConfig(fresh.config); setIntroMode("inherit");
+                }}>Kế thừa</Button>
+                <Button size="sm" variant={introMode === "custom" ? "default" : "outline"} onClick={() => setIntroMode("custom")}>Tùy chỉnh</Button>
+              </div>
+              {introMode === "inherit" ? (
+                <p className="text-xs text-muted-foreground">Đang dùng cấu hình chung. Bấm Tùy chỉnh để ghi đè riêng cho sách này.</p>
+              ) : (
+                <div className="space-y-4">
+                  <Field label="Tên kênh" hint="Biến {channel_name} · 0–100">
+                    <input className={fieldClass} value={introConfig.channel_name} maxLength={100} onChange={(e) => setIntroConfig({ ...introConfig, channel_name: e.target.value })} />
+                  </Field>
+                  <div className="rounded-md border p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold">Intro đầu patch</span>
+                      <CheckField checked={introConfig.intro_enabled} onChange={(v) => setIntroConfig({ ...introConfig, intro_enabled: v })} label="Bật" />
+                    </div>
+                    <Field label="Mẫu intro" hint="{channel_name} {book_title} {chapter_title} {author} · 0–300">
+                      <textarea className={fieldClass} rows={2} maxLength={300} value={introConfig.intro_template} onChange={(e) => setIntroConfig({ ...introConfig, intro_template: e.target.value })} />
+                    </Field>
+                    <Button size="sm" variant="outline" onClick={async () => {
+                      const r = await postJson<{ rendered: string; warnings: string[]; estimated_seconds: number }>("/intro/preview", { template: introConfig.intro_template, book_id: Number(bookId) });
+                      setIntroPreview(r);
+                    }}>Xem trước</Button>
+                    {introPreview && (
+                      <div className="rounded bg-muted/30 p-2 text-xs">
+                        <div>{introPreview.rendered || <em>(trống)</em>}</div>
+                        {introPreview.warnings.map((w) => <div key={w} className="text-amber-600">{w}</div>)}
+                        <div className="text-muted-foreground">~{introPreview.estimated_seconds}s</div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="rounded-md border p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold">CTA giữa chương</span>
+                      <CheckField checked={introConfig.cta_enabled} onChange={(v) => setIntroConfig({ ...introConfig, cta_enabled: v })} label="Bật" />
+                    </div>
+                    <Field label="Mẫu CTA" hint="Chèn ngẫu nhiên deterministic ở ranh giới chương">
+                      <textarea className={fieldClass} rows={2} maxLength={300} value={introConfig.cta_template} onChange={(e) => setIntroConfig({ ...introConfig, cta_template: e.target.value })} />
+                    </Field>
+                    <Field label="Số CTA tối đa / patch (0–5)">
+                      <input className={fieldClass} type="number" min={0} max={5} value={introConfig.cta_max_per_patch} onChange={(e) => setIntroConfig({ ...introConfig, cta_max_per_patch: Math.max(0, Math.min(5, Number(e.target.value) || 0)) })} />
+                    </Field>
+                    <Button size="sm" variant="outline" onClick={async () => {
+                      const r = await postJson<{ rendered: string; warnings: string[]; estimated_seconds: number }>("/intro/preview", { template: introConfig.cta_template, book_id: Number(bookId) });
+                      setCtaPreview(r);
+                    }}>Xem trước CTA</Button>
+                    {ctaPreview && (
+                      <div className="rounded bg-muted/30 p-2 text-xs">
+                        <div>{ctaPreview.rendered || <em>(trống)</em>}</div>
+                        {ctaPreview.warnings.map((w) => <div key={w} className="text-amber-600">{w}</div>)}
+                        <div className="text-muted-foreground">~{ctaPreview.estimated_seconds}s</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : <div className="py-8 text-center text-xs text-muted-foreground">Đang tải...</div>
+        )}
 
         {tab === "youtube" &&
           (ytSettings ? (
@@ -1253,8 +1297,8 @@ export function ConfigDialog({
         </div>
         <DialogFooter className="shrink-0 border-t border-border pt-4">
           <Button
-            onClick={tab === "audio" ? saveAudio : tab === "normalization" ? saveNormalization : tab === "video" ? saveVideo : saveYoutube}
-            disabled={saving || (tab === "video" && (!videoConfig || !music)) || (tab === "youtube" && !ytSettings)}
+            onClick={tab === "audio" ? saveAudio : tab === "normalization" ? saveNormalization : tab === "video" ? saveVideo : tab === "intro" ? saveIntro : saveYoutube}
+            disabled={saving || (tab === "video" && (!videoConfig || !music)) || (tab === "youtube" && !ytSettings) || (tab === "intro" && !introConfig)}
           >
             {saving
               ? "Đang lưu..."
@@ -1264,7 +1308,9 @@ export function ConfigDialog({
                   ? "Lưu cấu hình chuẩn hóa"
                   : tab === "video"
                     ? "Lưu cấu hình video"
-                    : "Lưu cấu hình YouTube"}
+                    : tab === "intro"
+                      ? "Lưu Intro & CTA"
+                      : "Lưu cấu hình YouTube"}
           </Button>
         </DialogFooter>
       </DialogContent>

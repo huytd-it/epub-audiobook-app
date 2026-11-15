@@ -819,7 +819,7 @@ def export_batch_to_kaggle(
     with_effects: int = Form(0),
     auto_create_video: int | None = Form(None),
     auto_upload_youtube: int | None = Form(None),
-    automation_mode: str = Form("after_all"),
+    automation_mode: str = Form("per_patch"),
 ):
     """Enqueue a kaggle_tts job: the Kaggle kernel reads and writes the batch through
     Google Drive API, and the worker imports only the Drive ``result`` folder. One
@@ -828,11 +828,13 @@ def export_batch_to_kaggle(
 
     Automation mirrors the "Tạo âm thanh" dialog (/tts/generate): auto_create_video /
     auto_upload_youtube (absent = legacy behavior, only the old publish hook runs)
-    chain video + YouTube after TTS. automation_mode selects WHEN: "per_patch"
-    automates each patch as its audio lands, "after_all" (default, safer) waits
-    until every requested patch is done, then automates the whole set at once."""
+    chain video + YouTube after TTS. Luôn ``per_patch`` — mỗi patch xong audio sẽ
+    chuỗi ngay sang video/YouTube; tham số ``automation_mode`` chỉ giữ lại để tương
+    thích ngược và luôn được chuẩn hoá về ``per_patch``."""
     if automation_mode not in ("per_patch", "after_all"):
         raise HTTPException(400, f"automation_mode phải là per_patch hoặc after_all, got {automation_mode!r}")
+    # Chuẩn hoá: UI mới luôn per_patch; after_all chỉ để tương thích payload cũ.
+    automation_mode = "per_patch"
     with locked_conn(request) as conn:
         book, patches = _load_batch_patches(conn, book_id, patch_ids)
         dedupe_key = f"kaggle_tts:book={book_id}"
@@ -1304,13 +1306,11 @@ async def youtube_metadata_preview_draft(request: Request, book_id: int):
             validated = validate_book_youtube_config(config) if config is not None else None
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        from app.production_defaults import (get_effective_video_config, get_effective_youtube_config,
-                                             resolve_voice_clip)
+        from app.production_defaults import get_effective_youtube_config
         if validated is None:
             validated = get_effective_youtube_config(conn, book)
-        intro = resolve_voice_clip(get_effective_video_config(conn, book), "intro_voice")
         context = {**repository.build_patch_metadata_context(conn, book, patch),
-                   "intro_seconds": audio_duration_seconds(intro) if intro else 0.0}
+                   "intro_seconds": 0.0}
         try:
             return resolve_patch_youtube_metadata(
                 book, patch, get_patch_youtube_override(conn, patch.id), context, config=validated)

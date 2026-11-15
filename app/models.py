@@ -41,7 +41,7 @@ class Book:
     normalize_abbreviations_enabled: int = 1
     normalize_breaks_enabled: int = 1
     music_id: int | None = None
-    music_volume: float = 0.15
+    music_volume: float = 0.20
     overlay_config: str | None = None
     text_position: str = "top"
     text_align: str = "center"

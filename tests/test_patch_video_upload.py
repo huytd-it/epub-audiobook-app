@@ -205,7 +205,8 @@ def test_generate_patch_video_mixes_book_background_music(tmp_path, monkeypatch)
     assert captured["music_volume"] == 0.3
 
 
-def test_generate_patch_video_appends_intro_and_outro(tmp_path, monkeypatch):
+def test_generate_patch_video_ignores_legacy_intro_outro_phase2(tmp_path, monkeypatch):
+    """Phase 2: legacy intro_voice/outro_voice stripped — video is narration only."""
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
     monkeypatch.setattr(settings, "data_root", str(tmp_path))
     monkeypatch.setattr(settings, "enable_worker", False)
@@ -221,18 +222,12 @@ def test_generate_patch_video_appends_intro_and_outro(tmp_path, monkeypatch):
     intro.write_bytes(b"intro")
     outro.write_bytes(b"outro")
     segment_calls = []
-    concat_calls = []
 
     def render(*args, **kwargs):
         segment_calls.append((args[0], args[1], args[2]))
         Path(args[2]).write_bytes(b"video")
 
-    def concat(segments, out_path, **kwargs):
-        concat_calls.append((list(segments), out_path))
-        Path(out_path).write_bytes(b"final")
-
     monkeypatch.setattr(patch_video.video_gen, "generate_segment", render)
-    monkeypatch.setattr(patch_video.video_gen, "concat_segments", concat)
     monkeypatch.setattr(patch_video.image_overlay, "ensure_patch_overlay", lambda *args, **kwargs: str(image))
 
     with TestClient(app) as client:
@@ -255,14 +250,8 @@ def test_generate_patch_video_appends_intro_and_outro(tmp_path, monkeypatch):
 
     assert response.status_code == 202
     audios = [call[1] for call in segment_calls]
-    assert audios == [str(intro), str(audio), str(outro)]
-    assert len(concat_calls) == 1
-    segments, out_path = concat_calls[0]
-    assert len(segments) == 3
-    final = tmp_path / "books" / "1" / "videos" / "1_001.mp4"
-    assert Path(out_path) != final
-    assert final.is_file()
-    assert final.read_bytes() == b"final"
+    assert audios == [str(audio)]
+    assert str(intro) not in audios and str(outro) not in audios
 
 
 def _seed_book_with_patch_video(conn, tmp_path) -> Path:

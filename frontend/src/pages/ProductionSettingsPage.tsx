@@ -36,6 +36,7 @@ const GROUPS: { key: ProductionGroup; label: string; hint: string }[] = [
   { key: "video", label: "Video", hint: "Khung hình, codec, nền, waveform và phụ đề." },
   { key: "youtube", label: "YouTube", hint: "Tiêu đề, description, timeline, tags và playlist." },
   { key: "branding", label: "Thương hiệu", hint: "Watermark văn bản, logo và mục tiêu áp dụng trên thumbnail, podcast và video." },
+  { key: "intro", label: "Intro & CTA", hint: "Kênh, intro động đầu patch và CTA ngẫu nhiên giữa chương." },
 ];
 
 const NORMALIZATION_LABELS: { key: keyof NormalizationSettings; label: string }[] = [
@@ -538,7 +539,8 @@ export function ProductionSettingsPage() {
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState<ProductionGroup>();
-  const [introOutroVoices, setIntroOutroVoices] = useState<VoiceItem[]>([]);
+  const [introPreview, setIntroPreview] = useState<{ rendered: string; warnings: string[]; estimated_seconds: number } | null>(null);
+  const [ctaPreview, setCtaPreview] = useState<{ rendered: string; warnings: string[]; estimated_seconds: number } | null>(null);
   const [playlists, setPlaylists] = useState<{ id: string; title: string }[]>([]);
   const [logoBrowserOpen, setLogoBrowserOpen] = useState(false);
   const [frameBrowserOpen, setFrameBrowserOpen] = useState(false);
@@ -553,9 +555,6 @@ export function ProductionSettingsPage() {
         setUpdatedAt(value.updated_at);
       })
       .catch((error) => setMessage(errorText(error)));
-    api<{ voices: VoiceItem[] }>("/api/ui/media")
-      .then((res) => setIntroOutroVoices(res.voices || []))
-      .catch(() => {});
     api<{ items: { id: string; title: string }[] }>("/youtube/api/playlists")
       .then((res) => setPlaylists(res.items || []))
       .catch(() => setPlaylists([]));
@@ -717,7 +716,7 @@ export function ProductionSettingsPage() {
                   label="Thêm hiệu ứng âm thanh"
                 />
               </div>
-              <Field label="Khoảng lặng giữa chunk (ms)" hint="Nhịp thở giữa hai đoạn liền nhau">
+              <Field label="Khoảng lặng giữa chunk (ms)">
                 <input
                   className={fieldClass}
                   type="number"
@@ -730,7 +729,7 @@ export function ProductionSettingsPage() {
               </Field>
               <Field
                 label="Khoảng lặng giữa chương (ms)"
-                hint="Chèn trước mỗi chương trong cùng một patch; nhạc nền cuối chương fade ra tại đây"
+                
               >
                 <input
                   className={fieldClass}
@@ -888,57 +887,13 @@ export function ProductionSettingsPage() {
                 <BackgroundPicker value={video} onChange={setVideo} />
               )}
 
-              <div className="grid grid-cols-1 gap-4 rounded-md border border-border p-3 sm:grid-cols-2">
-                <Field label="Âm thanh intro" hint="Phát trước nội dung patch">
-                  <select
-                    className={selectClass}
-                    value={video.intro_voice}
-                    onChange={(event) => setVideo({ intro_voice: event.target.value })}
-                  >
-                    <option value="">Không dùng intro</option>
-                    {introOutroVoices.map((voice) => (
-                      <option key={voice.name} value={voice.name}>
-                        {voice.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Âm thanh outro" hint="Phát sau nội dung patch">
-                  <select
-                    className={selectClass}
-                    value={video.outro_voice}
-                    onChange={(event) => setVideo({ outro_voice: event.target.value })}
-                  >
-                    <option value="">Không dùng outro</option>
-                    {introOutroVoices.map((voice) => (
-                      <option key={voice.name} value={voice.name}>
-                        {voice.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
+              {/* Phase 1: intro_voice/outro_voice hidden, replaced by Intro động */}
 
               <div className="rounded-md border border-border p-3">
                 <MusicPlacementFields value={video} onChange={setVideo} />
               </div>
 
               <div className="flex flex-wrap gap-4 rounded-md bg-muted/30 p-3">
-                <CheckField
-                  checked={video.crossfade_enabled}
-                  onChange={(value) => setVideo({ crossfade_enabled: value })}
-                  label="Crossfade"
-                />
-                <CheckField
-                  checked={video.ken_burns_enabled}
-                  onChange={(value) => setVideo({ ken_burns_enabled: value })}
-                  label="Ken Burns"
-                />
-                <CheckField
-                  checked={video.progress_bar_enabled}
-                  onChange={(value) => setVideo({ progress_bar_enabled: value })}
-                  label="Progress bar"
-                />
                 <CheckField
                   checked={video.narrator_credit_enabled || false}
                   onChange={(value) => setVideo({ narrator_credit_enabled: value })}
@@ -1091,6 +1046,113 @@ export function ProductionSettingsPage() {
               frameBrowserOpen={frameBrowserOpen}
               onFrameBrowserOpenChange={setFrameBrowserOpen}
             />
+          )}
+
+          {tab === "intro" && (
+            <div className="space-y-4">
+              <Field label="Tên kênh" hint="Dùng trong biến {channel_name} · 0–100 ký tự">
+                <input
+                  className={fieldClass}
+                  value={draft.intro.channel_name}
+                  maxLength={100}
+                  placeholder="Tên kênh YouTube / podcast"
+                  onChange={(event) => patchGroup("intro", { channel_name: event.target.value })}
+                />
+              </Field>
+              <div className="rounded-md border border-border p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Intro đầu patch</span>
+                  <CheckField checked={draft.intro.intro_enabled} onChange={(v) => patchGroup("intro", { intro_enabled: v })} label="Bật" />
+                </div>
+                <Field label="Mẫu intro" hint="Biến: {channel_name} {book_title} {chapter_title} {author} · 0–300 ký tự">
+                  <textarea
+                    className={fieldClass}
+                    rows={2}
+                    maxLength={300}
+                    value={draft.intro.intro_template}
+                    onChange={(event) => patchGroup("intro", { intro_template: event.target.value })}
+                    placeholder="Chào mừng đến với kênh {channel_name}, mời bạn nghe {book_title} - {chapter_title}"
+                  />
+                </Field>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const res = await postJson<{ rendered: string; warnings: string[]; estimated_seconds: number }>("/intro/preview", { template: draft.intro.intro_template });
+                        setIntroPreview(res);
+                      } catch (e) { setMessage(errorText(e)); }
+                    }}
+                  >
+                    Xem trước intro
+                  </Button>
+                  {introPreview && (
+                    <span className="text-xs text-muted-foreground">~{introPreview.estimated_seconds}s</span>
+                  )}
+                </div>
+                {introPreview && (
+                  <div className="rounded bg-muted/40 p-2 text-xs">
+                    <div>{introPreview.rendered || <em className="text-muted-foreground">(trống)</em>}</div>
+                    {introPreview.warnings.map((w) => (
+                      <div key={w} className="text-amber-600">{w}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="rounded-md border border-border p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">CTA giữa chương</span>
+                  <CheckField checked={draft.intro.cta_enabled} onChange={(v) => patchGroup("intro", { cta_enabled: v })} label="Bật" />
+                </div>
+                <Field label="Mẫu CTA" hint="Chèn ngẫu nhiên (deterministic) ở ranh giới chương · 0–300 ký tự">
+                  <textarea
+                    className={fieldClass}
+                    rows={2}
+                    maxLength={300}
+                    value={draft.intro.cta_template}
+                    onChange={(event) => patchGroup("intro", { cta_template: event.target.value })}
+                    placeholder="Nếu yêu thích {book_title}, hãy đăng ký kênh {channel_name}"
+                  />
+                </Field>
+                <Field label="Số CTA tối đa / patch (0 = tắt, 0–5)">
+                  <input
+                    className={fieldClass}
+                    type="number"
+                    min={0}
+                    max={5}
+                    value={draft.intro.cta_max_per_patch}
+                    onChange={(event) => patchGroup("intro", { cta_max_per_patch: Math.max(0, Math.min(5, Number(event.target.value) || 0)) })}
+                  />
+                </Field>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const res = await postJson<{ rendered: string; warnings: string[]; estimated_seconds: number }>("/intro/preview", { template: draft.intro.cta_template });
+                        setCtaPreview(res);
+                      } catch (e) { setMessage(errorText(e)); }
+                    }}
+                  >
+                    Xem trước CTA
+                  </Button>
+                  {ctaPreview && <span className="text-xs text-muted-foreground">~{ctaPreview.estimated_seconds}s</span>}
+                </div>
+                {ctaPreview && (
+                  <div className="rounded bg-muted/40 p-2 text-xs">
+                    <div>{ctaPreview.rendered || <em className="text-muted-foreground">(trống)</em>}</div>
+                    {ctaPreview.warnings.map((w) => (
+                      <div key={w} className="text-amber-600">{w}</div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[11px] text-muted-foreground">Patch 1 chương không chèn CTA. Vị trí CTA deterministic theo hash(patch_id + template + channel_name).</p>
+              </div>
+            </div>
           )}
 
           <div className="flex items-center justify-end gap-2 border-t border-border pt-4">

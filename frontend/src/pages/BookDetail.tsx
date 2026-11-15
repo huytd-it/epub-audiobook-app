@@ -848,8 +848,21 @@ export function BookDetail() {
     { icon: Video, value: stats.uploads, label: "YouTube", accent: stats.uploads > 0 },
   ];
 
+  // ExportPanel renders a fixed Kaggle bar only on tab=patches (with an internal
+  // spacer), plus this page renders a fixed selection bar when patches are selected.
+  // Reserve page bottom so the last card (TextBundle) is not hidden behind them.
+  const KAGGLE_H = 52; // 48px bar + 4px breathing
+  const SELECT_H = 60;
+  const bottomReserve =
+    tab === "patches"
+      ? selectedIds.length
+        ? KAGGLE_H + SELECT_H
+        : KAGGLE_H
+      : selectedIds.length
+        ? SELECT_H
+        : 0;
   return (
-    <div className={cn("space-y-5", selectedIds.length && "pb-24")}>
+    <div className={cn("space-y-5")} style={bottomReserve ? { paddingBottom: bottomReserve } : undefined}>
       <Button asChild variant="ghost" size="sm" className="-mb-2 px-0">
         <Link to="/books" className="gap-1.5 text-xs">
           <ArrowLeft className="h-3.5 w-3.5" /> Trở lại Thư viện

@@ -1086,7 +1086,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "music_id" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN music_id INTEGER REFERENCES music(id)")
     if "music_volume" not in existing:
-        conn.execute("ALTER TABLE book ADD COLUMN music_volume REAL NOT NULL DEFAULT 0.15")
+        conn.execute("ALTER TABLE book ADD COLUMN music_volume REAL NOT NULL DEFAULT 0.20")
     if "overlay_config" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN overlay_config TEXT")
     voice_meta_existing = {row["name"] for row in conn.execute("PRAGMA table_info(voice_meta)")}
@@ -1231,7 +1231,98 @@ def _migrate(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         )"""
     )
+    _migrate_strip_intro_voice(conn)
+    _migrate_ensure_intro_defaults(conn)
     _migrate_social_accounts(conn)
+
+
+def _migrate_strip_intro_voice(conn: sqlite3.Connection) -> None:
+    """Phase 2: strip intro_voice/outro_voice khỏi automation_settings.config_json và book.automation_config."""
+    # Global config_json
+    for row in conn.execute("SELECT config_json FROM automation_settings WHERE id=1").fetchall():
+        try:
+            raw = json.loads(row["config_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        changed = False
+        video = raw.get("video")
+        if isinstance(video, dict):
+            for key in ("intro_voice", "outro_voice"):
+                if key in video:
+                    video.pop(key, None)
+                    changed = True
+        if changed:
+            conn.execute("UPDATE automation_settings SET config_json=? WHERE id=1", (json.dumps(raw),))
+
+    # Per-book automation_config
+    for row in conn.execute("SELECT id, automation_config FROM book").fetchall():
+        try:
+            raw = json.loads(row["automation_config"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        video = raw.get("video")
+        if isinstance(video, dict):
+            stripped = False
+            for key in ("intro_voice", "outro_voice"):
+                if key in video:
+                    video.pop(key, None)
+                    stripped = True
+            if stripped:
+                conn.execute("UPDATE book SET automation_config=? WHERE id=?", (json.dumps(raw), row["id"]))
+
+    # patch_publishing.media_snapshot render_config
+    for row in conn.execute("SELECT patch_id, media_snapshot FROM patch_pipeline").fetchall():
+        try:
+            media = json.loads(row["media_snapshot"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        rc = media.get("render_config") if isinstance(media.get("render_config"), dict) else None
+        rs = (media.get("render_snapshot") or {}).get("render_config") if isinstance(media.get("render_snapshot"), dict) else None
+        changed = False
+        for cfg in (rc, rs):
+            if isinstance(cfg, dict):
+                for key in ("intro_audio", "outro_audio"):
+                    if key in cfg:
+                        cfg.pop(key, None)
+                        changed = True
+        if changed:
+            conn.execute("UPDATE patch_pipeline SET media_snapshot=? WHERE patch_id=?", (json.dumps(media), row["patch_id"]))
+
+
+def _migrate_ensure_intro_defaults(conn: sqlite3.Connection) -> None:
+    """Ensure intro group has non-empty templates; repair empty-string templates left by early Phase 1."""
+    try:
+        from app.production_defaults import DEFAULT_INTRO_CONFIG
+        raw_row = conn.execute("SELECT config_json FROM automation_settings WHERE id=1").fetchone()
+        raw = json.loads(raw_row["config_json"] or "{}") if raw_row else {}
+        intro = raw.get("intro") if isinstance(raw.get("intro"), dict) else None
+        needs_global = intro is None or not (intro.get("intro_template") or "").strip() or not (intro.get("cta_template") or "").strip()
+        if needs_global:
+            fixed = dict(DEFAULT_INTRO_CONFIG)
+            if isinstance(intro, dict) and intro.get("channel_name"):
+                fixed["channel_name"] = intro["channel_name"]
+            if isinstance(intro, dict):
+                for k in ("intro_enabled", "cta_enabled", "cta_max_per_patch"):
+                    if k in intro:
+                        fixed[k] = intro[k]
+            raw["intro"] = fixed
+            conn.execute("UPDATE automation_settings SET config_json=? WHERE id=1", (json.dumps(raw),))
+        # Per-book custom intros with empty templates -> switch to inherit so they pick up global
+        for row in conn.execute("SELECT id, automation_config FROM book").fetchall():
+            try:
+                braw = json.loads(row["automation_config"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            bintro = braw.get("intro")
+            if not isinstance(bintro, dict):
+                continue
+            if not (bintro.get("intro_template") or "").strip() or not (bintro.get("cta_template") or "").strip():
+                inherit = braw.get("inherit")
+                if isinstance(inherit, dict) and inherit.get("intro") is False:
+                    braw["inherit"]["intro"] = True
+                    conn.execute("UPDATE book SET automation_config=? WHERE id=?", (json.dumps(braw), row["id"]))
+    except Exception:
+        pass
 
 
 def _migrate_social_accounts(conn: sqlite3.Connection) -> None:

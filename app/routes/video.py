@@ -457,7 +457,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
     # Music: resolve library id -> file path (batch-wide, optional)
     music_path: str | None = None
     music_attribution = ""
-    music_volume = max(0, min(100, int(raw_cfg.get("music_volume", 15)))) / 100.0
+    music_volume = max(0, min(30, int(raw_cfg.get("music_volume", 20)))) / 100.0
     raw_music_id = raw_cfg.get("music_id")
     if raw_music_id is not None and str(raw_music_id).strip().isdigit():
         with locked_conn(request) as conn:

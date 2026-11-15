@@ -267,9 +267,18 @@ export type YouTubeMetadataPreview = {
   youtube: { mode: string; playlist_id: string };
 };
 
-export type ConfigTab = "audio" | "normalization" | "video" | "youtube" | "branding";
+export type ConfigTab = "audio" | "normalization" | "video" | "youtube" | "branding" | "intro";
 
 export type ProductionGroup = ConfigTab;
+
+export type IntroConfig = {
+  channel_name: string;
+  intro_enabled: boolean;
+  intro_template: string;
+  cta_enabled: boolean;
+  cta_template: string;
+  cta_max_per_patch: number;
+};
 export type ProductionMode = "inherit" | "custom";
 export type ProductionSettings = {
   schema_version: number;
@@ -292,6 +301,7 @@ export type ProductionSettings = {
     video: VideoConfig;
     youtube: YouTubeConfig;
     branding: BrandingConfig;
+    intro: IntroConfig;
   };
   book_id?: number;
   modes?: Record<ProductionGroup, ProductionMode>;

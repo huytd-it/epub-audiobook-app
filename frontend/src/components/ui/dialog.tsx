@@ -1,7 +1,34 @@
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { X } from "lucide-react";
+import { Cpu, Mic, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/** Nhãn nhỏ hiện tên TTS model + giọng đọc đang chọn — dùng trong mọi dialog cấu hình. */
+export function DialogVoiceMeta({
+  modelName,
+  voiceName,
+  className,
+}: {
+  modelName?: string;
+  voiceName?: string;
+  className?: string;
+}) {
+  if (!modelName && !voiceName) return null;
+  return (
+    <div className={cn("flex flex-wrap items-center gap-1.5 pt-1", className)}>
+      {modelName && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-0.5 text-[11px] font-mono">
+          <Cpu className="h-3 w-3 text-primary" /> {modelName}
+        </span>
+      )}
+      {voiceName && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-0.5 text-[11px] font-mono">
+          <Mic className="h-3 w-3 text-primary" /> {voiceName}
+        </span>
+      )}
+    </div>
+  );
+}
 
 const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;

@@ -199,6 +199,142 @@ def _engine_voice(engine) -> str | None:
     return voice if isinstance(voice, str) else None
 
 
+def _intro_cta_vars(channel_name: str, book, chapter_title: str | None) -> dict:
+    return {
+        "channel_name": channel_name or "",
+        "book_title": getattr(book, "title", "") or "",
+        "chapter_title": chapter_title or "",
+        "author": getattr(book, "author", "") or "",
+    }
+
+
+def _pick_cta_gaps(plan: list[dict], cta_max: int) -> list[int]:
+    """Indices in plan where a new chapter starts (excluding 0)."""
+    gaps = [i for i, item in enumerate(plan) if item.get("is_chapter_start") and i != 0]
+    if not gaps or cta_max <= 0:
+        return []
+    # Deterministic single pick; for cta_max>1 pick non-adjacent would be added later.
+    return gaps[:0]  # placeholder handled by caller
+
+
+def _deterministic_cta_index(patch_id: int, cta_template: str, channel_name: str, num_gaps: int) -> int:
+    import hashlib
+
+    h = hashlib.md5(f"{patch_id}|{cta_template}|{channel_name}".encode("utf-8")).hexdigest()
+    return int(h[:8], 16) % num_gaps if num_gaps else 0
+
+
+def _inject_intro_cta(
+    conn, patch, plan: list[dict], effective_max_chars: int | None
+) -> list[dict]:
+    """Return new plan with intro at head and one deterministic CTA at a chapter gap."""
+    from app import chunker as _chunker
+
+    try:
+        from app.production_defaults import get_effective_intro_config
+        from app.intro_templates import render_template
+        from app.repository import has_speakable_text
+    except Exception:
+        return plan
+
+    book = None
+    try:
+        from app import repository as _repo
+
+        book = _repo.get_book(conn, patch.book_id)
+    except Exception:
+        book = None
+    if book is None:
+        return plan
+
+    intro_cfg = get_effective_intro_config(conn, book)
+    max_chars = int(effective_max_chars or getattr(book, "tts_max_chars", 0) or 400)
+    if max_chars <= 0:
+        max_chars = 400
+
+    new_plan = list(plan)
+
+    # --- Intro: đầu patch ---
+    if intro_cfg.get("intro_enabled") and str(intro_cfg.get("intro_template") or "").strip():
+        # chapter_title cho intro = chương đầu của patch
+        first_title = None
+        for item in plan:
+            if item.get("chapter_title"):
+                first_title = item["chapter_title"]
+                break
+        if first_title is None:
+            # fallback: title chương đầu theo DB
+            try:
+                chapters = _repo.get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end)  # type: ignore[attr-defined]
+                first_title = (chapters[0].title if chapters else "") if chapters else ""
+            except Exception:
+                first_title = ""
+        vars_intro = _intro_cta_vars(intro_cfg.get("channel_name") or "", book, first_title)
+        rendered = render_template(str(intro_cfg.get("intro_template") or ""), vars_intro).strip()
+        if rendered and has_speakable_text(rendered):
+            parts = _chunker._hard_split(rendered, max_chars)
+            intro_items = []
+            for part in parts:
+                p = part.strip()
+                if p and has_speakable_text(p):
+                    intro_items.append({
+                        "text": p,
+                        "kind": "narration",
+                        "chapter_index": None,
+                        "chapter_title": None,
+                        "is_chapter_start": False,
+                        "is_intro": True,
+                    })
+            new_plan = intro_items + new_plan
+
+    # --- CTA: ranh giới chương ---
+    cta_max = int(intro_cfg.get("cta_max_per_patch") or 0)
+    if intro_cfg.get("cta_enabled") and cta_max > 0 and str(intro_cfg.get("cta_template") or "").strip():
+        # gaps sau khi đã chèn intro
+        gaps = [i for i, it in enumerate(new_plan) if it.get("is_chapter_start") and i != 0]
+        if gaps:
+            # deterministic pick 1 gap (k=1). For cta_max>1 we pick min(k, len(gaps)) distinct.
+            import hashlib
+
+            h = hashlib.md5(
+                f"{patch.id}|{intro_cfg.get('cta_template')}|{intro_cfg.get('channel_name')}".encode("utf-8")
+            ).hexdigest()
+            # pick up to cta_max distinct gaps deterministically
+            k = min(cta_max, len(gaps))
+            # order gaps by hash-derived priority
+            scored = []
+            for idx, gap in enumerate(gaps):
+                hh = hashlib.md5(f"{h}|{gap}".encode("utf-8")).hexdigest()
+                scored.append((int(hh[:8], 16), gap))
+            scored.sort(key=lambda x: x[0])
+            chosen_gaps = sorted(scored[:k], key=lambda x: x[1])
+            # insert CTA chunks before each chosen gap, from last to first to keep indices
+            for _, gap in reversed(chosen_gaps):
+                # chapter_title cho CTA: tên chương mở tại gap
+                cta_title = new_plan[gap].get("chapter_title") or ""
+                vars_cta = _intro_cta_vars(intro_cfg.get("channel_name") or "", book, cta_title)
+                rendered_cta = render_template(str(intro_cfg.get("cta_template") or ""), vars_cta).strip()
+                if not rendered_cta or not has_speakable_text(rendered_cta):
+                    continue
+                parts = _chunker._hard_split(rendered_cta, max_chars)
+                cta_items = []
+                for part in parts:
+                    p = part.strip()
+                    if p and has_speakable_text(p):
+                        cta_items.append({
+                            "text": p,
+                            "kind": "narration",
+                            "chapter_index": None,
+                            "chapter_title": None,
+                            "is_chapter_start": False,
+                            "is_cta": True,
+                        })
+                if cta_items:
+                    new_plan[gap:gap] = cta_items
+
+    return new_plan
+
+
 def synthesize_patch(
     ctx, patch, engine, data_root: Path, *,
     engine_id: str, effective_max_chars: int | None, with_effects: bool,
@@ -221,6 +357,10 @@ def synthesize_patch(
     plan = repository.build_chunk_plan_from_inputs(plan_inputs)
     if not plan:
         raise JobFatalError("patch không có nội dung đọc được")
+    # Inject intro (đầu patch) và CTA (ranh giới chương) — deterministic, split theo max_chars
+    plan = _inject_intro_cta(ctx.conn, patch, plan, effective_max_chars)
+    if not plan:
+        raise JobFatalError("patch không có nội dung đọc được")
     chunk_pause_ms, chapter_pause_ms = pause_config or (
         audio_merge.DEFAULT_CHUNK_PAUSE_MS, audio_merge.DEFAULT_CHAPTER_PAUSE_MS)
     # One gap per chunk instead of one for the whole patch: a chunk that opens a
@@ -237,6 +377,31 @@ def synthesize_patch(
     subtitle_path = Path(audio_path).with_suffix(".ass")
     total = len(plan)
     ctx.progress(patch.next_chunk_index, total, phase="synthesizing")
+    progress_lock = threading.Lock()
+    active_chunks: set[int] = set()
+
+    def report_chunk_started(index: int) -> None:
+        # Local engines can spend minutes inside one synthesize_chunk call. Keep
+        # progress/detail fresh while the model works, without changing the
+        # completed chunk count or writing to SQLite from a worker thread.
+        with progress_lock:
+            active_chunks.add(index)
+            ctx.detail = {
+                "kind": "tts",
+                "active_chunk": min(active_chunks) + 1,
+                "active_chunks": len(active_chunks),
+                "total_chunks": total,
+            }
+
+    def report_chunk_finished(index: int) -> None:
+        with progress_lock:
+            active_chunks.discard(index)
+            ctx.detail = {
+                "kind": "tts",
+                "active_chunk": min(active_chunks) + 1 if active_chunks else None,
+                "active_chunks": len(active_chunks),
+                "total_chunks": total,
+            }
     from app.tts_api_providers import is_api_engine
     allow_parallel = (engine_id == "zerotts" or is_api_engine(engine_id))
     parallelism = max(1, min(int(chunk_concurrency or settings.tts_chunk_concurrency or 1), 16)) if allow_parallel else 1
@@ -248,12 +413,16 @@ def synthesize_patch(
             def synthesize_in_worker(index, item):
                 if ctx.should_cancel():
                     raise asyncio.CancelledError()
+                report_chunk_started(index)
                 selected_voice = dialogue_voice if dialogue_engine is not None and item.get("kind") == "dialogue" else voice
                 worker_engine = get_worker_engine(engine_id, selected_voice, tts_options)
                 ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
-                arr = level_chunk_loudness(worker_engine.synthesize_chunk(
-                    item["text"], reference_wav_path=ref_wav, prompt_text=ref_text))
-                return index, arr, worker_engine.sample_rate
+                try:
+                    arr = level_chunk_loudness(worker_engine.synthesize_chunk(
+                        item["text"], reference_wav_path=ref_wav, prompt_text=ref_text))
+                    return index, arr, worker_engine.sample_rate
+                finally:
+                    report_chunk_finished(index)
 
             results = {}
             with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix="zerotts-chunk") as pool:
@@ -277,8 +446,12 @@ def synthesize_patch(
                 if ctx.should_cancel():
                     raise asyncio.CancelledError()
                 chunk_engine = _chunk_engine(item, engine, dialogue_engine)
+                report_chunk_started(index)
                 ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
-                arr = chunk_engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+                try:
+                    arr = chunk_engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text)
+                finally:
+                    report_chunk_finished(index)
                 arr = level_chunk_loudness(arr)
                 rates.add(chunk_engine.sample_rate)
                 ctx.log(f"chunk {index + 1}/{total} xong: {len(arr) / chunk_engine.sample_rate:.1f}s audio")
@@ -336,14 +509,21 @@ def synthesize_patch(
         tasks.append((index, item, cache, local, key, voice))
         frame_counts.append(0)
 
+    # Cached chunks are real completed work too, including non-contiguous cache hits.
+    ctx.progress(reused, total)
+
     def synthesize_and_save(task):
         index, item, cache, local, key, chunk_voice = task
         if ctx.should_cancel():
             raise asyncio.CancelledError()
         worker_engine = get_worker_engine(engine_id, chunk_voice, tts_options) if parallelism > 1 else _chunk_engine(item, engine, dialogue_engine)
+        report_chunk_started(index)
         ctx.log(f"chunk {index + 1}/{total} văn bản: {item['text']}")
-        arr = level_chunk_loudness(worker_engine.synthesize_chunk(
-            item["text"], reference_wav_path=ref_wav, prompt_text=ref_text))
+        try:
+            arr = level_chunk_loudness(worker_engine.synthesize_chunk(
+                item["text"], reference_wav_path=ref_wav, prompt_text=ref_text))
+        finally:
+            report_chunk_finished(index)
         rate = worker_engine.sample_rate
         cache.dir.mkdir(parents=True, exist_ok=True)
         audio_merge.atomic_write_wav(str(cache.path(local)), lambda p, a=arr, r=rate: sf.write(p, a, r, format="WAV"))
@@ -368,6 +548,10 @@ def synthesize_patch(
         for task in tasks:
             index, frames, rate = synthesize_and_save(task)
             completed[index] = (frames, rate)
+            # Publish real completed work as each sequential local chunk finishes.
+            # Previously this branch waited until all chunks had synthesized before
+            # updating the queue progress, leaving the bar at 0% for long jobs.
+            ctx.progress(reused + len(completed), total)
     contiguous = 0
     for index, ((item, (cache, local)), frames_rate) in enumerate(zip(zip(plan, targets), frame_counts)):
         if index in completed:
@@ -378,7 +562,6 @@ def synthesize_patch(
         if index == contiguous and (frames_rate or index in completed):
             contiguous += 1
         repository.update_patch_chunk_progress(ctx.conn, patch.id, contiguous)
-        ctx.progress(index + 1, total)
         last_of_store = index + 1 == total or targets[index + 1][0] is not cache
         chapter = chapters_by_index.get(item.get("chapter_index"))
         if last_of_store and chapter is not None:

@@ -82,6 +82,10 @@ function progressLabel(job: Job) {
   if (job.job_type.includes("video")) return VIDEO_PHASE_LABELS[job.phase] ?? "Tiến độ";
   if (TTS_JOB_TYPES.has(job.job_type)) {
     const chunks = total || Number(job.result?.chunks) || 0;
+    const activeChunk = Number(job.detail?.active_chunk);
+    if (job.status === "running" && activeChunk > 0 && chunks > 0) {
+      return `Đang tổng hợp chunk ${Math.min(activeChunk, chunks)}/${chunks}`;
+    }
     if (chunks > 0) return `Chunk ${job.status === "done" ? chunks : Math.min(current, chunks)}/${chunks}`;
     return job.status === "done" ? "Dùng lại audio đã có" : "Chunk —";
   }
@@ -97,7 +101,11 @@ function progressDetail(job: Job) {
   const total = job.progress_total ?? 0;
   const render = renderInfo(job);
   if (job.status === "running" || job.status === "cancelling") {
-    if (elapsed != null) parts.push(`Đã chạy ${formatDuration(elapsed)}`);
+    if (elapsed != null) {
+      const fetchedAt = Number(job._clientReceivedAt);
+      const liveElapsed = fetchedAt > 0 ? elapsed + Math.max(0, (Date.now() - fetchedAt) / 1000) : elapsed;
+      parts.push(`Đã chạy ${formatDuration(liveElapsed)}`);
+    }
     if (render) {
       // ETA của job render do server tính từ tốc độ ffmpeg đo được; trước khi có
       // frame đầu tiên nó là ước lượng từ các lần render cùng cấu hình.
@@ -155,6 +163,7 @@ function jobTypeLabel(jobType: string) {
 
 export function Queue() {
   const [jobs, setJobs] = useState<Job[]>();
+  const [, setClock] = useState(0);
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
   const [clearingDone, setClearingDone] = useState(false);
@@ -193,7 +202,8 @@ export function Queue() {
     }
     return Promise.all([
       api<{ jobs: Job[] }>(`/queue/jobs?${params}`).then((queue) => {
-        setJobs(queue.jobs);
+        const receivedAt = Date.now();
+        setJobs(queue.jobs.map((job) => ({ ...job, _clientReceivedAt: receivedAt })));
       }).catch((err) => {
         setQueueError(err instanceof Error ? err.message : "Không đọc được dữ liệu hàng đợi");
       }),
@@ -212,6 +222,11 @@ export function Queue() {
     const timer = setInterval(load, 3000);
     return () => clearInterval(timer);
   }, [jobTypeFilter, statusFilter]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setClock((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   async function act(id: number, action: string) {
     try {
@@ -681,24 +696,31 @@ export function Queue() {
                     </TableCell>
 
                     <TableCell className="max-w-md text-xs text-muted-foreground font-mono">
-                      <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
-                        <span className="shrink-0">
-                          {job.phase || "Đang chờ"} • {job.production_name || (job.book_id ? `Sách ${job.book_id}` : "—")}
-                        </span>
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+                          <span className="min-w-0 truncate">
+                            {job.phase || "Đang chờ"} • {job.production_name || (job.book_id ? `Sách ${job.book_id}` : "—")}
+                          </span>
+                          {job.status === "failed" && job.attempt_count != null && (
+                            <span
+                              className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                              title={`Số lần đã thử / tổng lần thử tối đa của job này`}
+                            >
+                              thử {job.attempt_count}/{job.max_attempts ?? job.attempt_count}
+                            </span>
+                          )}
+                        </div>
+                        {job.book_title && (
+                          <span className="block w-full truncate text-[10px] text-foreground" title={job.book_title}>
+                            {job.book_title}
+                          </span>
+                        )}
                         {job.error_message && (
                           <span
-                            className="min-w-0 truncate text-[10px] text-red-600"
+                            className="block w-full truncate text-[10px] text-red-600"
                             title={job.error_message}
                           >
                             • {job.error_message}
-                          </span>
-                        )}
-                        {job.status === "failed" && job.attempt_count != null && (
-                          <span
-                            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                            title={`Số lần đã thử / tổng lần thử tối đa của job này`}
-                          >
-                            thử {job.attempt_count}/{job.max_attempts ?? job.attempt_count}
                           </span>
                         )}
                       </div>
@@ -710,7 +732,10 @@ export function Queue() {
                           <span className="text-muted-foreground">{progressLabel(job)}</span>
                           <span className="font-bold text-foreground">{job.percent ?? 0}%</span>
                         </div>
-                        <Progress value={job.percent ?? 0} className="h-1.5" />
+                        <Progress
+                          value={job.percent ?? 0}
+                          className="h-1.5"
+                        />
                         {(progressDetail(job) || ttsDetail(job)) && (
                           <div className="space-y-0.5 text-[10px] font-mono text-muted-foreground">
                             {progressDetail(job) && <div className="whitespace-nowrap">{progressDetail(job)}</div>}

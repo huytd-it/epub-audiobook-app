@@ -53,6 +53,9 @@ export type RenderDetail = {
   /** false: ETA còn là ước lượng từ lịch sử, ffmpeg chưa báo frame nào. */
   measured?: boolean;
   render_sec?: number;
+  active_chunk?: number | null;
+  active_chunks?: number;
+  total_chunks?: number;
 };
 export type Job = {
   id: number;
@@ -62,6 +65,7 @@ export type Job = {
   percent: number;
   book_id: number | null;
   production_name: string | null;
+  book_title?: string | null;
   error_message: string | null;
   created_at: string;
   attempt_count?: number;
@@ -73,6 +77,8 @@ export type Job = {
   finished_at?: string | null;
   /** Số giây đã chạy (job đang chạy) hoặc tổng thời gian chạy (job đã kết thúc). */
   elapsed_sec?: number | null;
+  /** Client timestamp used to keep the displayed elapsed clock moving between polls. */
+  _clientReceivedAt?: number;
   /** Chi tiết tiến độ trong bộ nhớ của job đang chạy (hiện chỉ job render video). */
   detail?: RenderDetail | null;
   payload?: Record<string, unknown>;

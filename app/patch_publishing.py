@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 # Tổng số lần render/rerender một patch video trước khi pipeline bị khoá chạy tiếp.
 MAX_PATCH_RENDER_ATTEMPTS = 3
 # phiên bản cấu trúc snapshot cấp vào job patch_video lúc enqueue.
-SNAPSHOT_SCHEMA_VERSION = 2
-GAMEPLAY_SNAPSHOT_SCHEMA_VERSION = 3
+SNAPSHOT_SCHEMA_VERSION = 4
+GAMEPLAY_SNAPSHOT_SCHEMA_VERSION = 4
 
 AUTOMATION_PREFLIGHT_STATES = (
     "no_automation", "waiting_config", "waiting_timeline",
@@ -431,8 +431,8 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
         return existing
     metadata = _build_metadata_snapshot(conn, book, patch)
     video_config = get_effective_video_config(conn, book)
-    intro = resolve_voice_clip(video_config, "intro_voice")
-    outro = resolve_voice_clip(video_config, "outro_voice")
+    intro = None
+    outro = None
     music_path = None
     if book.music_id is not None:
         music = repository.get_music(conn, book.music_id)
@@ -454,8 +454,6 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
         "music_chapter_end_seconds": video_config.get("music_chapter_end_seconds", 15),
         "music_random_start": video_config.get("music_random_start", False),
         "music_fade_enabled": video_config.get("music_fade_enabled", True),
-        "intro_audio": intro,
-        "outro_audio": outro,
     }
     branding = get_effective_branding_config(conn, book)
     media = {"patch_id": patch_id, "audio_path": patch.audio_path,

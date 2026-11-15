@@ -22,6 +22,7 @@ from app.config import settings
 from app.deps import locked_conn
 from app.production_defaults import (GROUPS, get_effective_audio_config,
                                      get_effective_branding_config,
+                                     get_effective_intro_config,
                                      get_effective_normalization_config,
                                      get_effective_video_config,
                                      get_effective_youtube_config,
@@ -67,6 +68,8 @@ def _book_effective(conn, book, group: str) -> dict:
         return get_effective_video_config(conn, book)
     if group == "branding":
         return get_effective_branding_config(conn, book)
+    if group == "intro":
+        return get_effective_intro_config(conn, book)
     return get_effective_youtube_config(conn, book)
 
 

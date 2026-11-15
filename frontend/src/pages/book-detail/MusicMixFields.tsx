@@ -1,4 +1,4 @@
-import { CheckField, Field, fieldClass, selectClass } from "./parts";
+import { Field, fieldClass, selectClass } from "./parts";
 import { MusicMixState, MusicPlacementSettings } from "./types";
 
 /** Vị trí chèn nhạc nền: phủ dưới N giây cuối mỗi chương — dùng chung cho cấu
@@ -15,7 +15,7 @@ export function MusicPlacementFields({
 }) {
   return (
     <div className="space-y-3">
-      <Field label="Chèn vào cuối mỗi chương (giây)" hint="1–300 · mặc định 15">
+      <Field label="Chèn vào cuối mỗi chương (giây)">
         <input
           className={fieldClass}
           type="number"
@@ -29,24 +29,6 @@ export function MusicPlacementFields({
           }
         />
       </Field>
-      <p className="text-xs text-muted-foreground">
-        Nhạc phát dưới giọng đọc ở những giây cuối của mỗi chương và kết thúc đúng lúc chương mới bắt đầu. Độ dài
-        video, phụ đề và timeline YouTube không đổi.
-      </p>
-      <div className="flex flex-wrap gap-4">
-        <CheckField
-          checked={value.music_random_start}
-          disabled={disabled}
-          onChange={(checked) => onChange({ music_random_start: checked })}
-          label="Chèn ngẫu nhiên (mỗi chương phát từ một đoạn bất kỳ trong bài)"
-        />
-        <CheckField
-          checked={value.music_fade_enabled}
-          disabled={disabled}
-          onChange={(checked) => onChange({ music_fade_enabled: checked })}
-          label="Fade nhạc vào/ra"
-        />
-      </div>
     </div>
   );
 }
@@ -87,10 +69,10 @@ export function MusicMixFields({
             className="w-full accent-primary"
             type="range"
             min="0"
-            max="100"
+            max="30"
             value={music.music_volume}
             disabled={noMusic}
-            onChange={(event) => onMusicChange({ ...music, music_volume: Number(event.target.value) })}
+            onChange={(event) => onMusicChange({ ...music, music_volume: Math.max(0, Math.min(30, Number(event.target.value))) })}
           />
         </Field>
       </div>

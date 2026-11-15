@@ -269,7 +269,7 @@ def test_production_settings_get_defaults(tmp_path, monkeypatch):
     body = response.json()
     assert body["schema_version"] == 1
     assert body["defaults"]["audio"]["model_id"] == settings.tts_engine
-    assert set(body["defaults"]) == {"audio", "normalization", "video", "youtube", "branding"}
+    assert set(body["defaults"]) == {"audio", "normalization", "video", "youtube", "branding", "intro"}
 
 
 def test_production_settings_round_trip_the_merge_pauses(tmp_path, monkeypatch):
@@ -340,12 +340,16 @@ def test_audio_settings_save_marks_mode_custom(tmp_path, monkeypatch):
     with _client(monkeypatch, tmp_path) as client:
         conn = client.app.state.conn
         got = client.get("/books/1/audio-settings")
-    assert got.json() == {
-        "model_id": "omnivoice", "voice_id": "", "dialogue_voice_id": "",
-        "max_chars": 500, "with_effects": True,
-        "chunk_pause_ms": 300, "chapter_pause_ms": 1500,
-        "tts_options": {},
-    }
+    body = got.json()
+    assert body["model_id"] == "omnivoice"
+    assert body["voice_id"] == ""
+    assert body["dialogue_voice_id"] == ""
+    assert body["max_chars"] == 500
+    assert body["with_effects"] is True
+    assert body["chunk_pause_ms"] == 300
+    assert body["chapter_pause_ms"] == 1500
+    # tts_options are model defaults for omnivoice
+    assert body["tts_options"]["language"] == "vi"
 
 
 def test_video_config_save_marks_mode_custom(tmp_path, monkeypatch):
@@ -391,7 +395,9 @@ def test_bulk_start_queue_uses_book_audio_config_when_custom():
     _insert_book(conn, tts_model="edge-tts", tts_voice_id="vi-VN-HoaiMyNeural")
     _patch(conn)
     assert enqueue_pending_patch_jobs(conn) == 1
-    job = store.list_jobs(conn, job_type="audiobook_tts")[0]
+    jobs = store.list_jobs(conn, job_type="audiobook_tts") + store.list_jobs(conn, job_type="audiobook_tts_api")
+    assert len(jobs) == 1
+    job = jobs[0]
     assert job.payload["tts_engine"] == "edge-tts"
     assert job.payload["voice"] == "vi-VN-HoaiMyNeural"
 
@@ -468,47 +474,24 @@ def _patch_with_timeline(tmp_path):
                            audio_path=str(audio))
 
 
-def test_effective_metadata_shifts_the_timeline_by_the_configured_intro(tmp_path, monkeypatch):
-    """Video phát intro trước nội dung patch: mốc chương phải dời đúng độ dài intro."""
-    import numpy as np
-    import soundfile as sf
-
+def test_effective_metadata_ignores_intro_voice_phase2(tmp_path, monkeypatch):
+    """Phase 2: intro_voice removed — intro_seconds is always 0, no Giới thiệu."""
     from app.production_defaults import resolve_effective_youtube_metadata
 
     monkeypatch.setattr(settings, "data_root", str(tmp_path))
-    voices = tmp_path / "voices"
-    voices.mkdir()
-    sf.write(voices / "intro.wav", np.zeros(12 * 16000), 16000)
-
     conn = _conn()
     book = _insert_book(conn, config={"youtube": {"description": "mo ta", "description_extra": {"enabled": False, "contact_email": "fixture@example.com"}}})
-    # video inherit để nhận intro từ global defaults, youtube custom để giữ
-    # description tự viết (timeline được nối vào sau nó).
     set_book_group_mode_db(conn, book.id, "video", "inherit")
     set_book_group_mode_db(conn, book.id, "youtube", "custom")
     book = _book(conn)
     patch = _patch_with_timeline(tmp_path)
-
     before = resolve_effective_youtube_metadata(conn, book, patch, None)["description"]
     assert before == "mo ta\n\n00:00 Mot\n00:10 Hai\n00:20 Ba"
-
+    # Even if intro_voice is stored (legacy), it is stripped and has no effect
     save_global_production_defaults(conn, {"video": {"intro_voice": "intro.wav"}})
     after = resolve_effective_youtube_metadata(conn, _book(conn), patch, None)["description"]
-    assert after == "mo ta\n\n00:00 Giới thiệu\n00:12 Mot\n00:22 Hai\n00:32 Ba"
-
-
-def test_effective_metadata_ignores_an_intro_whose_file_is_gone(tmp_path, monkeypatch):
-    from app.production_defaults import resolve_effective_youtube_metadata
-
-    monkeypatch.setattr(settings, "data_root", str(tmp_path))
-    conn = _conn()
-    book = _insert_book(conn, config={"youtube": {"description": "mo ta", "description_extra": {"enabled": False, "contact_email": "fixture@example.com"}}})
-    set_book_group_mode_db(conn, book.id, "video", "inherit")
-    set_book_group_mode_db(conn, book.id, "youtube", "custom")
-    save_global_production_defaults(conn, {"video": {"intro_voice": "missing.wav"}})
-    description = resolve_effective_youtube_metadata(
-        conn, _book(conn), _patch_with_timeline(tmp_path), None)["description"]
-    assert description == "mo ta\n\n00:00 Mot\n00:10 Hai\n00:20 Ba"
+    assert after == "mo ta\n\n00:00 Mot\n00:10 Hai\n00:20 Ba"
+    assert "Giới thiệu" not in after
 
 
 # ---------------------------------------------------------------------------

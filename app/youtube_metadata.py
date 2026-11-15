@@ -22,8 +22,6 @@ YOUTUBE_DESCRIPTION_LIMIT = 5000
 CHAPTER_SECTION_HEADING = "📖 Nội dung:"
 # Độ dài tối đa của đoạn trích chương đầu mở màn description của mỗi video.
 CHAPTER_EXCERPT_CHARS = 500
-# Tên chương cho đoạn intro chèn trước nội dung patch trong video.
-INTRO_TIMELINE_TITLE = "Giới thiệu"
 OVERRIDE_FIELDS = {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"}
 
 # --- Playlist link -------------------------------------------------------------
@@ -573,14 +571,7 @@ def audio_duration_seconds(path) -> float:
 
 
 def _timeline_description(patch, intro_seconds: float = 0.0) -> str:
-    """Các dòng "mm:ss Tên chương" cho description, tính theo timeline của *video*.
-
-    Sidecar timeline mô tả file WAV, nhưng video phát intro trước nội dung đó, nên
-    mọi mốc phải dời đi đúng độ dài intro. YouTube chỉ dựng chương khi mốc đầu tiên
-    là 0:00 và mỗi chương dài tối thiểu 10 giây: intro đủ 10 giây thì thành chương
-    "Giới thiệu" mở màn, intro ngắn hơn không đủ làm một chương nên chương đầu giữ
-    0:00 và ôm luôn phần intro.
-    """
+    """Các dòng "mm:ss Tên chương" cho description, tính theo timeline của *WAV*."""
     audio_path = getattr(patch, "audio_path", None)
     if not audio_path:
         return ""
@@ -601,12 +592,7 @@ def _timeline_description(patch, intro_seconds: float = 0.0) -> str:
             titles.append(title.strip())
         if len(starts) < 3 or any(b - a < sample_rate * 10 for a, b in zip(starts, starts[1:])) or total_frames - starts[-1] < sample_rate * 10:
             return ""
-        offset = max(round((intro_seconds or 0) * sample_rate), 0)
-        entries = [(start + offset, title) for start, title in zip(starts, titles)]
-        if offset >= sample_rate * 10:
-            entries.insert(0, (0, INTRO_TIMELINE_TITLE))
-        else:
-            entries[0] = (0, entries[0][1])
+        # Intro động TTS đã nằm trong WAV/timeline, không cần offset riêng.
 
         def format_time(frame):
             seconds = frame // sample_rate
@@ -614,7 +600,7 @@ def _timeline_description(patch, intro_seconds: float = 0.0) -> str:
             hours, minutes = divmod(minutes, 60)
             return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
 
-        return "\n".join(f"{format_time(start)} {title}" for start, title in entries)
+        return "\n".join(f"{format_time(start)} {title}" for start, title in zip(starts, titles))
     except (OSError, TypeError, ValueError, UnicodeDecodeError, KeyError, json.JSONDecodeError, sf.SoundFileError):
         return ""
 

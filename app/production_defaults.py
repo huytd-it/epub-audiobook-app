@@ -31,7 +31,16 @@ from app import audio_merge
 from app.config import settings
 from app.normalization import NormalizationOptions
 
-GROUPS = ("audio", "normalization", "video", "youtube", "branding")
+GROUPS = ("audio", "normalization", "video", "youtube", "branding", "intro")
+
+DEFAULT_INTRO_CONFIG = {
+    "channel_name": "",
+    "intro_enabled": True,
+    "intro_template": "Chào mừng đến với kênh {channel_name}, mời bạn nghe {book_title} - {chapter_title}",
+    "cta_enabled": True,
+    "cta_template": "Nếu yêu thích {book_title}, hãy đăng ký kênh {channel_name} để không bỏ lỡ chương tiếp theo",
+    "cta_max_per_patch": 1,
+}
 
 # Global audio defaults: the production default engine is settings.tts_engine, the
 # same value the save route and the bulk queue treat as the canonical default.
@@ -261,6 +270,35 @@ def validate_branding_config(config) -> dict:
     return {"watermark": watermark, "logo": logo, "frame": frame, "targets": targets}
 
 
+def validate_intro_config(config) -> dict:
+    """Validate the dynamic intro / CTA block (group ``intro``)."""
+    if not isinstance(config, dict):
+        return copy.deepcopy(DEFAULT_INTRO_CONFIG)
+    from app.intro_templates import ALLOWED_VARIABLES, MAX_TEMPLATE_LENGTH, MAX_CHANNEL_NAME_LENGTH, _VARIABLE_RE
+
+    channel_name = str(config.get("channel_name") or "")[:MAX_CHANNEL_NAME_LENGTH]
+    intro_template = str(config.get("intro_template") or "")[:MAX_TEMPLATE_LENGTH]
+    cta_template = str(config.get("cta_template") or "")[:MAX_TEMPLATE_LENGTH]
+    # Whitelist: reject unsupported placeholders
+    for tpl in (intro_template, cta_template):
+        unsupported = {n for n in _VARIABLE_RE.findall(tpl) if n not in ALLOWED_VARIABLES}
+        if unsupported:
+            raise ValueError("intro template chứa biến không hỗ trợ: " + ", ".join(sorted(unsupported)))
+    try:
+        cta_max = int(config.get("cta_max_per_patch", DEFAULT_INTRO_CONFIG["cta_max_per_patch"]))
+    except (TypeError, ValueError):
+        cta_max = DEFAULT_INTRO_CONFIG["cta_max_per_patch"]
+    cta_max = max(0, min(5, cta_max))
+    return {
+        "channel_name": channel_name,
+        "intro_enabled": _flag(config.get("intro_enabled", True), True),
+        "intro_template": intro_template,
+        "cta_enabled": _flag(config.get("cta_enabled", True), True),
+        "cta_template": cta_template,
+        "cta_max_per_patch": cta_max,
+    }
+
+
 def _group_validator(group: str):
     if group == "audio":
         return validate_audio_config
@@ -270,6 +308,8 @@ def _group_validator(group: str):
         return validate_video_config
     if group == "branding":
         return validate_branding_config
+    if group == "intro":
+        return validate_intro_config
     return validate_youtube_config
 
 
@@ -571,6 +611,31 @@ def get_effective_normalization_options(conn: sqlite3.Connection, book) -> Norma
     return NormalizationOptions(**get_effective_normalization_config(conn, book))
 
 
+def get_effective_intro_config(conn: sqlite3.Connection, book) -> dict:
+    """Resolved intro/CTA config: global defaults -> per-book override."""
+    config = parse_book_config(book)
+    if get_group_mode(config, "intro", book=book) == "inherit":
+        return _global_group(conn, "intro")
+    stored = config.get("intro") if isinstance(config.get("intro"), dict) else {}
+    return validate_intro_config(stored)
+
+
+def save_book_intro_config(conn: sqlite3.Connection, book_id: int, intro: dict) -> dict:
+    """Persist intro config into automation_config['intro'] and set mode to custom."""
+    validated = validate_intro_config(intro)
+    row = conn.execute("SELECT automation_config FROM book WHERE id = ?", (book_id,)).fetchone()
+    if row is None:
+        raise ValueError("book not found")
+    raw = _json_object(row["automation_config"], {})
+    raw["intro"] = validated
+    set_group_mode(raw, "intro", "custom")
+    conn.execute(
+        "UPDATE book SET automation_config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (json.dumps(raw), book_id),
+    )
+    return validated
+
+
 def get_effective_branding_config(conn: sqlite3.Connection, book) -> dict:
     """Resolved branding config: global defaults -> per-book override.
 
@@ -582,6 +647,36 @@ def get_effective_branding_config(conn: sqlite3.Connection, book) -> dict:
         return _global_group(conn, "branding")
     stored = config.get("branding") if isinstance(config.get("branding"), dict) else {}
     return validate_branding_config(stored)
+
+
+def intro_warnings_for_config(intro_cfg: dict) -> list[str]:
+    """Blocking warnings when an enabled template references an empty variable."""
+    from app.intro_templates import _VARIABLE_RE, ALLOWED_VARIABLES
+
+    warnings: list[str] = []
+    channel_name = str(intro_cfg.get("channel_name") or "")
+    for enabled_key, tpl_key in (("intro_enabled", "intro_template"), ("cta_enabled", "cta_template")):
+        if not intro_cfg.get(enabled_key):
+            continue
+        tpl = str(intro_cfg.get(tpl_key) or "")
+        for var in _VARIABLE_RE.findall(tpl):
+            if var not in ALLOWED_VARIABLES:
+                continue
+            if var == "channel_name" and not channel_name.strip():
+                warnings.append(f"{tpl_key} tham chiếu {{channel_name}} nhưng channel_name đang trống")
+            if var == "author":
+                # author emptiness is checked per-book at preview/save time; note it here when
+                # the book is known, otherwise caller should re-check with real author.
+                pass
+        # Also surface generic empty-var warnings for the configured channel_name
+        from app.intro_templates import collect_warnings
+        vars_for_check = {"channel_name": channel_name, "book_title": "x", "chapter_title": "x", "author": "x"}
+        # Only report the missing-channel_name part here to avoid noise from placeholder titles
+        ch_warnings = [w for w in collect_warnings(tpl, vars_for_check) if "channel_name" in w]
+        for w in ch_warnings:
+            if w not in warnings:
+                warnings.append(w)
+    return warnings
 
 
 def resolve_voice_clip(video_config: dict | None, key: str) -> str | None:
@@ -601,13 +696,11 @@ def resolve_effective_youtube_metadata(conn: sqlite3.Connection, book, patch, ov
     point so every call site with a connection (preflight, snapshots, previews,
     uploads) resolves against the effective config.
 
-    Nó cũng đo intro của video config: video phát intro trước nội dung patch, nên
-    timeline chương trong description phải dời theo đúng độ dài đó."""
-    from app.youtube_metadata import audio_duration_seconds, resolve_patch_youtube_metadata
+    Phase 1 intro phasing: video no longer prepends a static intro clip, so
+    intro_seconds is always 0. Kept for compatibility until Phase 2 removes it."""
+    from app.youtube_metadata import resolve_patch_youtube_metadata
 
-    intro = resolve_voice_clip(get_effective_video_config(conn, book), "intro_voice")
-    context = {**(context if isinstance(context, dict) else {}),
-               "intro_seconds": audio_duration_seconds(intro) if intro else 0.0}
+    context = {**(context if isinstance(context, dict) else {}), "intro_seconds": 0.0}
     return resolve_patch_youtube_metadata(
         book, patch, override, context,
         config=get_effective_youtube_config(conn, book),
@@ -632,6 +725,8 @@ def _effective_group(conn: sqlite3.Connection, book, group: str) -> dict:
         return get_effective_video_config(conn, book)
     if group == "branding":
         return get_effective_branding_config(conn, book)
+    if group == "intro":
+        return get_effective_intro_config(conn, book)
     return get_effective_youtube_config(conn, book)
 
 
@@ -669,6 +764,10 @@ def _apply_values_to_book(conn: sqlite3.Connection, book, group: str, values: di
         from app.youtube_metadata import save_book_youtube_config
         clean = {k: v for k, v in values.items() if k not in BULK_YOUTUBE_SKIPPED_KEYS}
         save_book_youtube_config(conn, book.id, {**base, **clean})
+        return
+    if group == "intro":
+        save_book_intro_config(conn, book.id, {**base, **values})
+        conn.commit()
         return
     save_book_branding_config(conn, book.id, {**base, **values})
     conn.commit()

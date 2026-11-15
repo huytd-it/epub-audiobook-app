@@ -192,9 +192,14 @@ class Settings(BaseSettings):
         local = _PROJECT_BIN / "ffmpeg.exe"
         if local.exists():
             return str(local)
-        exe = shutil.which(Settings().ffmpeg_path)
-        if exe:
-            return exe
+        configured = Settings().ffmpeg_path
+        # The default can point at a bundled path that is absent in a source
+        # checkout. Still honor an installed FFmpeg on PATH (including Windows
+        # package-manager shims) before returning that stale configured path.
+        for candidate in (configured, "ffmpeg"):
+            exe = shutil.which(candidate)
+            if exe:
+                return exe
         fallbacks = [
             r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
             str(Path.home() / "AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1.2-full_build/bin/ffmpeg.exe"),

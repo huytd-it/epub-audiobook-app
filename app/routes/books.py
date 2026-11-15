@@ -767,7 +767,7 @@ def get_book_music(request: Request, book_id: int):
 async def save_book_music_json(request: Request, book_id: int):
     data = await request.json()
     music_id = data.get("music_id")
-    volume = max(0, min(100, int(data.get("music_volume", 15))))
+    volume = max(0, min(30, int(data.get("music_volume", 20))))
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(404, "book not found")
@@ -784,13 +784,13 @@ def update_book_music(
     request: Request,
     book_id: int,
     music_id: str = Form(default=""),
-    music_volume: int = Form(default=15),
+    music_volume: int = Form(default=20),
 ):
     from app import image_overlay
     mid: int | None = None
     if music_id.strip().isdigit():
         mid = int(music_id.strip())
-    vol = max(0, min(100, music_volume)) / 100.0
+    vol = max(0, min(30, music_volume)) / 100.0
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
         if book is None:

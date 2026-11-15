@@ -27,7 +27,7 @@ from app import audio_merge, repository, video_gen
 from app.audio_mastering import normalize_wav_in_place
 from app.config import settings
 from app.models import BookJob, Patch
-from app.production_defaults import get_effective_video_config, resolve_voice_clip
+from app.production_defaults import get_effective_video_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
 from app.tts_engine import VoxCPMEngine
@@ -444,8 +444,8 @@ class PatchWorker:
         if video_config is None:
             with self.db_lock:
                 video_config = get_effective_video_config(self.conn, book)
-        intro_audio = resolve_voice_clip(video_config, "intro_voice")
-        outro_audio = resolve_voice_clip(video_config, "outro_voice")
+        intro_audio = None
+        outro_audio = None
 
         done_patches = [p for p in patches if p.status == "done" and p.audio_path]
         book_dir = self.data_root / "books" / str(job.book_id)

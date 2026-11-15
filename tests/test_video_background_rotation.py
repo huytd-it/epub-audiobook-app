@@ -159,9 +159,10 @@ def test_background_sequence_crossfade_uses_xfade(tmp_path, monkeypatch):
 
     def run(cmd, **kwargs):
         commands.append(cmd)
-        if "-filter_complex_script" in cmd:
-            # The script lives in a TemporaryDirectory that is gone by the time
-            # the assertions run, so read it while ffmpeg would have.
+        if "-filter_complex" in cmd:
+            idx = cmd.index("-filter_complex")
+            graphs.append(cmd[idx + 1])
+        elif "-filter_complex_script" in cmd:
             script = Path(kwargs["cwd"]) / cmd[cmd.index("-filter_complex_script") + 1]
             graphs.append(script.read_text(encoding="utf-8"))
         class Result:
@@ -214,7 +215,7 @@ def test_background_sequence_crossfade_command_fits_windows_limit(tmp_path, monk
         resolution=(1280, 720), fps=30, image_duration=15,
         crossfade=True, crossfade_seconds=1,
     )
-    xfade_cmd = next(cmd for cmd in commands if "-filter_complex_script" in cmd)
+    xfade_cmd = next(cmd for cmd in commands if "-filter_complex" in cmd or "-filter_complex_script" in cmd)
     assert len(" ".join(xfade_cmd)) < 32000, len(" ".join(xfade_cmd))
 
 

@@ -31,10 +31,8 @@ from app.patch_publishing import (
 
 logger = logging.getLogger(__name__)
 
-# When automation runs: "per_patch" chains video/YouTube right after each patch's
-# audio lands (progressive, resilient to a mid-batch failure); "after_all" marks
-# every patch done first and automates the whole set once nothing is missing
-# (safer, all-or-nothing). Route default is "after_all".
+# Luôn per_patch — mỗi patch xong audio sẽ chuỗi ngay sang video/YouTube.
+# Hằng after_all chỉ giữ để chuẩn hoá input cũ và lấp chỗ trống ở lần retry.
 AUTOMATION_PER_PATCH = "per_patch"
 AUTOMATION_AFTER_ALL = "after_all"
 
@@ -519,7 +517,8 @@ def _automation_policy(payload: dict) -> tuple[dict, str, bool]:
     Mirrors the "Tạo âm thanh" dialog (/tts/generate) honored by audiobook_tts:
     explicit payload flags override the book's persisted flags; when the route
     sends no flags at all the job stays legacy (only the old publish hook runs).
-    Automation is active when video and/or upload is explicitly requested."""
+    Automation is active when video and/or upload is explicitly requested.
+    Route mới luôn per_patch; after_all chỉ còn để tương thích payload cũ."""
     request_policy: dict = {}
     if payload.get("auto_create_video") is not None:
         request_policy["auto_create_video"] = bool(payload.get("auto_create_video"))

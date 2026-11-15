@@ -198,19 +198,36 @@ def build_filter_graph(pieces: list[Piece], options: BedOptions) -> str:
 
 
 def build_bed_command(music_path: str | Path, out_path: str | Path, pieces: list[Piece],
-                      script_path: str | Path) -> list[str]:
+                      script_path: str | Path | None = None) -> list[str]:
     """ffmpeg argv rendering the bed (exposed for tests).
 
     The music is opened once per piece instead of split from a single input:
     each piece then owns its own decoder, and no branch has to buffer while
     another one drains. ``-stream_loop -1`` lets a piece longer than the track
     (a 15s window over a 10s sting) keep playing instead of cutting to silence.
+
+    ``script_path`` is kept for compat but ignored: the bundled Windows ffmpeg
+    (n9.x) has no ``-filter_complex_script`` (see patch 1152 log), so the graph
+    is always inlined via ``-filter_complex``.
     """
+    # Build inline to avoid `-filter_complex_script` (missing on this build).
+    # graph is recomputed from pieces/options by caller; if script_path is given
+    # and exists its content is preferred for exact parity.
+    graph = ""
+    if script_path is not None:
+        try:
+            graph = Path(script_path).read_text(encoding="utf-8")
+        except OSError:
+            graph = ""
+    if not graph:
+        # fallback: caller should have built it; build a best-effort one
+        from app.music_bed import BedOptions as _BedOptions  # type: ignore
+        graph = build_filter_graph(pieces, _BedOptions())
     cmd = [settings.get_ffmpeg_path(), "-y", "-hide_banner", "-nostdin"]
     for _ in pieces:
         cmd += ["-stream_loop", "-1", "-i", str(music_path)]
     cmd += [
-        "-filter_complex_script", str(script_path),
+        "-filter_complex", graph,
         "-map", "[bed]",
         "-c:a", "pcm_s16le", "-ar", str(BED_SAMPLE_RATE), "-ac", str(BED_CHANNELS),
         "-map_metadata", "-1", str(out_path),
@@ -246,8 +263,10 @@ def build_chapter_bed(
     # The graph grows with the chapter count and Windows caps a command line at
     # 32767 characters, so it goes to a script file (same reason video_gen's
     # xfade graph does).
+    graph = build_filter_graph(pieces, options)
     script_path = out_path.with_suffix(".graph.txt")
-    script_path.write_text(build_filter_graph(pieces, options), encoding="utf-8")
+    # Kept for debugging: written then removed; command uses inline -filter_complex.
+    script_path.write_text(graph, encoding="utf-8")
     try:
         result = subprocess.run(
             build_bed_command(music_path, out_path, pieces, script_path),

@@ -800,28 +800,12 @@ def test_no_playlist_means_no_link_block():
     assert "youtube.com/playlist" not in description
 
 
-# --- Intro offset -------------------------------------------------------------
-# Video phát intro trước nội dung patch, nên timeline (đo trên WAV) phải dời theo.
+# --- Intro offset (Phase 2) ---------------------------------------------------
+# Intro động TTS đã nằm trong WAV/timeline, không còn offset riêng hay chương "Giới thiệu".
 
-def test_timeline_shifts_by_intro_and_gives_the_intro_its_own_chapter(tmp_path):
+def test_intro_seconds_is_ignored_phase2(tmp_path):
     audio = _timeline_audio(tmp_path)
-    description = resolve_patch_youtube_metadata(
-        _book(), _patch(str(audio)), None, {"intro_seconds": 12.0})["description"]
-    assert description == ("book description\n\n00:00 Giới thiệu\n00:12 Intro"
-                           "\n00:22 Chapter 1\n00:32 Chapter 2")
-
-
-def test_short_intro_keeps_the_first_chapter_at_zero(tmp_path):
-    # Dưới 10 giây thì YouTube không nhận intro là một chương riêng; mốc đầu phải
-    # là 0:00 nếu không cả danh sách chương bị bỏ.
-    audio = _timeline_audio(tmp_path)
-    description = resolve_patch_youtube_metadata(
-        _book(), _patch(str(audio)), None, {"intro_seconds": 4.0})["description"]
-    assert description == "book description\n\n00:00 Intro\n00:14 Chapter 1\n00:24 Chapter 2"
-
-
-def test_timeline_without_intro_is_unshifted(tmp_path):
-    audio = _timeline_audio(tmp_path)
-    for context in ({}, {"intro_seconds": 0.0}, {"intro_seconds": None}):
-        description = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None, context)["description"]
+    for ctx in ({"intro_seconds": 12.0}, {"intro_seconds": 4.0}, {}, {"intro_seconds": 0.0}):
+        description = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None, ctx)["description"]
         assert description == "book description\n\n00:00 Intro\n00:10 Chapter 1\n00:20 Chapter 2"
+        assert "Giới thiệu" not in description

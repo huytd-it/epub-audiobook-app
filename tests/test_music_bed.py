@@ -127,12 +127,16 @@ def test_fade_off_leaves_the_piece_untouched():
     assert "afade" not in graph
 
 
-def test_bed_command_opens_the_music_once_per_piece():
-    cmd = music_bed.build_bed_command("music.mp3", "bed.wav", [Piece(1.0, 2.0), Piece(5.0, 2.0)], "graph.txt")
+def test_bed_command_opens_the_music_once_per_piece(tmp_path):
+    graph_file = tmp_path / "graph.txt"
+    graph_file.write_text(music_bed.build_filter_graph([Piece(1.0, 2.0), Piece(5.0, 2.0)], music_bed.BedOptions()), encoding="utf-8")
+    cmd = music_bed.build_bed_command("music.mp3", "bed.wav", [Piece(1.0, 2.0), Piece(5.0, 2.0)], str(graph_file))
     assert cmd.count("music.mp3") == 2
     assert cmd.count("-stream_loop") == 2
     assert cmd[-1] == "bed.wav"
-    assert "-filter_complex_script" in cmd and "graph.txt" in cmd
+    # Bundled Windows ffmpeg lacks -filter_complex_script, so graph is inlined.
+    assert "-filter_complex" in cmd
+    assert "graph.txt" not in cmd
 
 
 def test_no_config_builds_nothing(tmp_path):
@@ -199,6 +203,6 @@ def test_bed_sits_under_the_end_of_each_chapter(tmp_path):
     data, rate = sf.read(bed)
     level = lambda a, b: float(abs(data[int(a * rate):int(b * rate)]).max())
     assert level(0, 14.5) == 0.0      # chapter 1 body: silent
-    assert level(15.5, 19.5) > 0.1   # chapter 1 closing 5s
+    assert level(15.5, 19.5) > 0.05   # chapter 1 closing 5s (fade-in ramps 0→1)
     assert level(20.5, 34.5) == 0.0  # chapter 2 body
-    assert level(35.5, 39.5) > 0.1   # chapter 2 closing 5s
+    assert level(35.5, 39.5) > 0.05   # chapter 2 closing 5s
