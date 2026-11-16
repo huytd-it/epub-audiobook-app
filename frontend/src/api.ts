@@ -28,6 +28,27 @@ export type Book = {
   patches?: { total: number; done: number; active: number; failed: number };
 };
 export type Patch = { id: number; book_id: number; patch_index: number; chapter_start: number; chapter_end: number; chapter_no_start?: number | null; chapter_no_end?: number | null; name: string; status: string; chunk_count: number; next_chunk_index: number; error_message: string | null; audio_path?: string | null; tts_model?: string | null; tts_voice_id?: string | null };
+/** Một dòng của trang Quản lý Patch (GET /api/ui/patches). */
+export type PatchPhase = "queued" | "tts_partial" | "tts_failed" | "not_started" | "publish_failed" | "publish_pending" | "complete";
+export type PatchGroup = "unfinished" | "not_started" | "queued" | "complete" | "all";
+export type PatchOverviewItem = {
+  patch_id: number; book_id: number; book_title: string; patch_index: number; name: string;
+  chapter_start: number; chapter_end: number; chapter_no_start: number | null; chapter_no_end: number | null;
+  status: string; phase: PatchPhase; chunk_count: number; next_chunk_index: number;
+  error_message: string | null;
+  pipeline: { stage: string; video_status: string; upload_status: string } | null;
+  youtube_video_id: string | null;
+  live_job: { id: number; job_type: string; status: string; progress_current: number; progress_total: number } | null;
+  updated_at: string;
+};
+export type PatchOverview = {
+  items: PatchOverviewItem[]; counts: Record<PatchGroup, number>; total: number; page: number;
+  per_page: number; total_pages: number; books: Array<{ id: number; title: string }>;
+};
+export type ContinuePatchesResult = {
+  tts_queued: number; enqueued_render: number; enqueued_upload: number; already_live: number;
+  skipped: Array<{ patch_id?: number; book_id?: number; reason: string; error?: string | null; count?: number }>;
+};
 export type Chapter = {
   id: number;
   chapter_index: number;

@@ -415,18 +415,39 @@ _WAVE_MODES = {"line": "bar", "cline": "bar", "p2p": "bar", "point": "dot"}
 
 # Wrap a bar strip into the preview's ring: sample the strip by (angle, radius)
 # instead of (x, y). Column -> spoke, height above the strip's baseline -> reach
-# past the inner hole, with a faint stroke on the hole itself. Runs on a single
-# grey plane so it stays one expression per pixel; the colour is painted back on
-# afterwards.
-_WAVE_POLAR = (
-    "geq=lum='"
-    f"if(between(hypot(X-W/2\\,Y-H/2)\\,W*{_WAVE_INNER}\\,W/2)\\,"
-    "max("
-    "lum(mod(atan2(X-W/2\\,H/2-Y)/(2*PI)+1\\,1)*W\\,"
-    f"H-1-(hypot(X-W/2\\,Y-H/2)-W*{_WAVE_INNER})/(W/2-W*{_WAVE_INNER})*H)\\,"
-    f"if(lte(abs(hypot(X-W/2\\,Y-H/2)-W*{_WAVE_INNER})\\,2)\\,115\\,0))\\,"
-    "0)'"
-)
+# past the inner hole, with a faint stroke on the hole itself. The colour is
+# painted back on afterwards.
+#
+# The (angle, radius) lookup never changes between frames, so it is computed once:
+# geq evaluates each table on a single frame, ``loop`` repeats it, and ``remap``
+# just indexes the strip per frame. Evaluating hypot/atan2 per pixel per frame
+# (the previous geq-on-every-frame form) was ~2/3 of the whole mux's CPU time.
+_WAVE_RADIUS = "hypot(X-W/2\\,Y-H/2)"
+_WAVE_IN_RING = f"between({_WAVE_RADIUS}\\,W*{_WAVE_INNER}\\,W/2)"
+_WAVE_OFF_FRAME = 65535     # remap paints coordinates outside the strip with `fill`
+
+
+def _wave_polar_chains(size: int, fps: int, source: str, label: str) -> list[str]:
+    """Chains turning the ``size``-square bar strip ``source`` into its ring ``label``."""
+    def table(name: str, pix_fmt: str, expr: str) -> str:
+        # trim keeps nullsrc from being pulled forever; loop=-1 repeats the frame.
+        return (f"nullsrc=s={size}x{size}:r={fps},format={pix_fmt},geq=lum='{expr}'"
+                f",trim=end_frame=1,loop=loop=-1:size=1[{name}]")
+
+    angle = "floor(mod(atan2(X-W/2\\,H/2-Y)/(2*PI)+1\\,1)*W)"
+    reach = (f"clip(floor(H-1-({_WAVE_RADIUS}-W*{_WAVE_INNER})"
+             f"/(W/2-W*{_WAVE_INNER})*H)\\,0\\,H-1)")
+    stroke = f"{_WAVE_IN_RING}*lte(abs({_WAVE_RADIUS}-W*{_WAVE_INNER})\\,2)"
+    return [
+        table("wavexmap", "gray16le", f"if({_WAVE_IN_RING}\\,{angle}\\,{_WAVE_OFF_FRAME})"),
+        table("waveymap", "gray16le", f"if({_WAVE_IN_RING}\\,{reach}\\,{_WAVE_OFF_FRAME})"),
+        table("waveringsrc", "gray", f"if({stroke}\\,115\\,0)"),
+        # remap's black fill lands on limited-range 16, not 0; the strip itself is
+        # pure 0/255, so flooring the low end only clears the fill.
+        (f"{source}[wavexmap][waveymap]remap=format=gray:fill=black"
+         f",lut=c0='if(lt(val\\,17)\\,0\\,val)'[wavepolar]"),
+        f"[wavepolar][waveringsrc]blend=all_mode=lighten:shortest=1[{label}]",
+    ]
 
 
 def _even(value: float, minimum: int = 2) -> int:
@@ -536,7 +557,8 @@ def _waveform_chains(config: dict, width: int, height: int, audio_input: int,
         strip = _wave_strip(bars=_WAVE_RADIAL_BARS, slot=slot, rows=work, thickness=work,
                             mode="bar", paint=None, fps=fps)
         wave_chains = [
-            f"[waveaudio]{strip},{_WAVE_POLAR}[wavemask]",
+            f"[waveaudio]{strip}[wavestrip]",
+            *_wave_polar_chains(work, fps, "[wavestrip]", "wavemask"),
             "[wavemask]split=2[wavemaska][wavemaskb]",
             f"[wavemaska]format=rgba,lutrgb=r={red}:g={green}:b={blue}[waveplate]",
             f"[waveplate][wavemaskb]alphamerge,colorchannelmixer=aa={opacity}"

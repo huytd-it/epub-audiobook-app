@@ -224,3 +224,47 @@ def book_exports(request: Request, book_id: int):
         "exports": exports, "sync_targets": sync_targets, "accounts": accounts,
         "kaggle_accounts": kaggle_accounts_list,
     }
+
+
+@router.get("/patches")
+def patch_overview(request: Request, group: str = "unfinished", book_id: int | None = None,
+                   q: str | None = None, page: int = 1, per_page: int = 50):
+    """Patch của mọi sách cho trang Quản lý Patch, phân nhóm theo bước còn thiếu."""
+    from app.patch_overview import list_patch_overview
+
+    with locked_conn(request) as conn:
+        try:
+            return list_patch_overview(conn, group=group, book_id=book_id, q=q,
+                                       page=page, per_page=per_page)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
+class ContinuePatchesRequest(BaseModel):
+    patch_ids: list[int]
+
+
+@router.post("/patches/continue")
+def continue_patches(request: Request, body: ContinuePatchesRequest):
+    """Đẩy tiếp các patch được chọn đúng bước còn thiếu: chưa có audio -> TTS (resume
+    chunk sẵn có, cấu hình của sách); đã có audio -> video/upload theo automation sách."""
+    from app.patch_overview import (continue_publish_targets, enqueue_tts_targets,
+                                    split_continue_targets)
+    from app.routes.patches import _off_lock
+
+    if not body.patch_ids:
+        raise HTTPException(400, "chưa chọn patch nào")
+    with locked_conn(request) as conn:
+        targets = split_continue_targets(conn, body.patch_ids)
+        tts = enqueue_tts_targets(conn, targets["tts"])
+    # Publish stage render thumbnail bằng PIL — chạy trên connection riêng, không giữ db_lock.
+    publish = (_off_lock(request, lambda conn: continue_publish_targets(conn, targets["publish"]))
+               if targets["publish"] else
+               {"enqueued_render": 0, "enqueued_upload": 0, "already_live": 0, "skipped": []})
+    return {
+        "tts_queued": tts["queued"],
+        "enqueued_render": publish["enqueued_render"],
+        "enqueued_upload": publish["enqueued_upload"],
+        "already_live": publish["already_live"],
+        "skipped": targets["skipped"] + tts["skipped"] + publish["skipped"],
+    }

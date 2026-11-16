@@ -722,67 +722,75 @@ def reconcile_patch_automation(conn: sqlite3.Connection, *,
         stats["checked"] += 1
         patch_id = int(row["id"])
         try:
-            if not row["audio_path"] or not Path(row["audio_path"]).is_file():
-                stats["skipped"] += 1
-                continue
-            result = preflight_patch(conn, patch_id, request_policy=request_policy)
-            if result["state"] != "ready":
-                stats["skipped"] += 1
-                continue
-            if store.find_live_by_dedupe(conn, f"patch_video:patch={patch_id}") is not None:
-                stats["already_live"] += 1
-                continue
-            pipeline = _row(conn, patch_id) or {}
-            if pipeline.get("stage") == "cancelled":
-                discard_stale_patch_video(conn, int(row["book_id"]), patch_id)
-                pipeline = _row(conn, patch_id) or {}
-            upload_id = pipeline.get("youtube_upload_id")
-            if upload_id:
-                upload = conn.execute(
-                    "SELECT status FROM youtube_uploads WHERE id=?", (upload_id,),
-                ).fetchone()
-                if upload and upload["status"] in ("pending", "claiming", "uploading",
-                                                    "waiting_for_rerender"):
-                    stats["already_live"] += 1
-                    continue
-                if upload and upload["status"] == "done":
-                    stats["skipped"] += 1
-                    continue
-                if upload and upload["status"] == "failed":
-                    # Retry the same upload identity and rendered file. Creating a
-                    # fresh render/upload here can publish the same audio twice when
-                    # YouTube accepted the previous transfer but its response was lost.
-                    store.enqueue(
-                        conn, "youtube_upload", payload={"upload_id": upload_id},
-                        book_id=row["book_id"], dedupe_key=f"youtube_upload:upload={upload_id}",
-                    )
-                    stats["enqueued_upload"] += 1
-                    continue
-            video_ready = (pipeline.get("video_status") == "done"
-                           and pipeline.get("video_path")
-                           and Path(pipeline["video_path"]).is_file())
-            if video_ready and not upload_id:
-                # Đã có video hợp lệ trên đĩa — chỉ thiếu bước upload. run_patch_publish_stage
-                # không render lại khi video_status='done' (chỉ resolve metadata + tạo row).
-                run_patch_publish_stage(conn, patch_id)
-                refreshed = _row(conn, patch_id) or {}
-                new_upload_id = refreshed.get("youtube_upload_id")
-                if new_upload_id:
-                    store.enqueue(
-                        conn, "youtube_upload", payload={"upload_id": new_upload_id},
-                        book_id=row["book_id"], dedupe_key=f"youtube_upload:upload={new_upload_id}",
-                    )
-                    stats["enqueued_upload"] += 1
-                    continue
-                stats["skipped"] += 1
-                continue
-            enqueued = enqueue_patch_video(conn, patch_id, request_policy=request_policy,
-                                           force_new=bool(pipeline))
-            if enqueued["state"] == "queued":
-                stats["enqueued_render"] += 1
-            else:
-                stats["skipped"] += 1
+            outcome = continue_patch_automation(
+                conn, patch_id, book_id=int(row["book_id"]), audio_path=row["audio_path"],
+                request_policy=request_policy)
         except Exception as exc:  # noqa: BLE001 - mỗi patch là một chốt chặn riêng
             logging.getLogger(__name__).exception("automation reconcile failed for patch %s", patch_id)
             stats["errors"].append({"patch_id": patch_id, "error": str(exc)[:500]})
+            continue
+        stats[outcome["outcome"]] += 1
     return stats
+
+
+def continue_patch_automation(conn: sqlite3.Connection, patch_id: int, *, book_id: int,
+                              audio_path: str | None,
+                              request_policy: dict | None = None) -> dict:
+    """Đẩy tiếp tự động hoá của MỘT patch đã có audio, đúng bước còn thiếu: chưa render
+    -> enqueue patch_video; có video hợp lệ nhưng chưa upload -> publish stage + enqueue
+    youtube_upload; upload failed -> retry đúng upload đó.
+
+    Trả về {"outcome": enqueued_render|enqueued_upload|already_live|skipped, "reason": ...}.
+    Dùng chung cho reconcile lúc khởi động và nút "Tiếp tục" của trang Quản lý Patch."""
+    if not audio_path or not Path(audio_path).is_file():
+        return {"outcome": "skipped", "reason": "audio_missing"}
+    result = preflight_patch(conn, patch_id, request_policy=request_policy)
+    if result["state"] != "ready":
+        return {"outcome": "skipped", "reason": result["state"], "error": result.get("error")}
+    if store.find_live_by_dedupe(conn, f"patch_video:patch={patch_id}") is not None:
+        return {"outcome": "already_live", "reason": "patch_video_live"}
+    pipeline = _row(conn, patch_id) or {}
+    if pipeline.get("stage") == "cancelled":
+        discard_stale_patch_video(conn, book_id, patch_id)
+        pipeline = _row(conn, patch_id) or {}
+    upload_id = pipeline.get("youtube_upload_id")
+    if upload_id:
+        upload = conn.execute(
+            "SELECT status FROM youtube_uploads WHERE id=?", (upload_id,),
+        ).fetchone()
+        if upload and upload["status"] in ("pending", "claiming", "uploading",
+                                            "waiting_for_rerender"):
+            return {"outcome": "already_live", "reason": "upload_live"}
+        if upload and upload["status"] == "done":
+            return {"outcome": "skipped", "reason": "already_uploaded"}
+        if upload and upload["status"] == "failed":
+            # Retry the same upload identity and rendered file. Creating a
+            # fresh render/upload here can publish the same audio twice when
+            # YouTube accepted the previous transfer but its response was lost.
+            store.enqueue(
+                conn, "youtube_upload", payload={"upload_id": upload_id},
+                book_id=book_id, dedupe_key=f"youtube_upload:upload={upload_id}",
+            )
+            return {"outcome": "enqueued_upload", "reason": "retry_failed_upload"}
+    video_ready = (pipeline.get("video_status") == "done"
+                   and pipeline.get("video_path")
+                   and Path(pipeline["video_path"]).is_file())
+    if video_ready and not upload_id:
+        # Đã có video hợp lệ trên đĩa — chỉ thiếu bước upload. run_patch_publish_stage
+        # không render lại khi video_status='done' (chỉ resolve metadata + tạo row).
+        run_patch_publish_stage(conn, patch_id)
+        refreshed = _row(conn, patch_id) or {}
+        new_upload_id = refreshed.get("youtube_upload_id")
+        if new_upload_id:
+            store.enqueue(
+                conn, "youtube_upload", payload={"upload_id": new_upload_id},
+                book_id=book_id, dedupe_key=f"youtube_upload:upload={new_upload_id}",
+            )
+            return {"outcome": "enqueued_upload", "reason": "video_ready"}
+        return {"outcome": "skipped", "reason": "no_upload_created"}
+    enqueued = enqueue_patch_video(conn, patch_id, request_policy=request_policy,
+                                   force_new=bool(pipeline))
+    if enqueued["state"] == "queued":
+        return {"outcome": "enqueued_render", "reason": None}
+    return {"outcome": "skipped", "reason": enqueued.get("code") or enqueued["state"],
+            "error": enqueued.get("error")}

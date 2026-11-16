@@ -5,6 +5,7 @@ import {
   Library,
   UploadCloud,
   ListOrdered,
+  Layers,
   HardDrive,
   Database,
   FileText,
@@ -56,6 +57,7 @@ const navSections: NavSection[] = [
     title: "PRODUCTION",
     items: [
       { to: "/queue", label: "Hàng đợi sản xuất", icon: ListOrdered },
+      { to: "/patches", label: "Quản lý Patch", icon: Layers },
       { to: "/kaggle", label: "Gói Kaggle CLI", icon: Box },
       { to: "/media-browser", label: "Duyệt Media", icon: FolderSearch },
       { to: "/music", label: "Âm nhạc & Nhạc nền", icon: Music },
