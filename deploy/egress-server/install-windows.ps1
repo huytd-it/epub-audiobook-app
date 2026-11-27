@@ -51,17 +51,32 @@ if ($Pass -notmatch '^[A-Za-z0-9._-]{12,}$') { throw "-Pass tối thiểu 12 ký
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "amd64" }
 $asset = "gost_${GostVersion}_windows_${arch}.zip"
 $url = "https://github.com/go-gost/gost/releases/download/v$GostVersion/$asset"
-$tmp = Join-Path ([IO.Path]::GetTempPath()) ("gost-egress-" + [Guid]::NewGuid())
-New-Item -ItemType Directory -Path $tmp | Out-Null
+# Tải vào thư mục cố định bên trong thư mục cài (không phải %TEMP% ngẫu nhiên): Microsoft
+# Defender hay xếp gost (công cụ proxy/tunnel) vào "HackTool/PUA", và khi đó chỉ cần MỘT
+# ngoại lệ cho $InstallDir là đủ cho cả file tải về lẫn gost.exe.
+$tmp = Join-Path $InstallDir "_download"
+Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+$defenderHint = @"
+Microsoft Defender đã chặn/cách ly file gost (thường bị xếp loại HackTool/PUA vì là công cụ proxy).
+Xem tên mối đe doạ:   Get-MpThreatDetection | Sort-Object InitialDetectionTime | Select-Object -Last 1
+Nếu đúng là gost và bạn chấp nhận, thêm ngoại lệ CHỈ cho thư mục cài rồi chạy lại script:
+  Add-MpPreference -ExclusionPath "$InstallDir"
+Checksum SHA-256 vẫn được kiểm tra nên file tải về phải đúng bản v$GostVersion chính thức.
+"@
 try {
   Write-Host "==> Tải $url"
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   Invoke-WebRequest -Uri $url -OutFile (Join-Path $tmp $asset) -UseBasicParsing
-  $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $asset)).Hash.ToLowerInvariant()
+  try {
+    $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $asset) -ErrorAction Stop).Hash.ToLowerInvariant()
+  } catch {
+    throw "Không đọc được file vừa tải: $($_.Exception.Message)`n$defenderHint"
+  }
   if ($hash -ne $GostSha256[$arch]) { throw "Checksum KHÔNG khớp ($hash) — dừng, không cài." }
   Expand-Archive -Path (Join-Path $tmp $asset) -DestinationPath (Join-Path $tmp "x") -Force
   $exe = Get-ChildItem -Path (Join-Path $tmp "x") -Recurse -Filter "gost.exe" | Select-Object -First 1
-  if (-not $exe) { throw "Không thấy gost.exe trong $asset" }
+  if (-not $exe) { throw "Không thấy gost.exe trong $asset (có thể Defender đã xoá khi giải nén).`n$defenderHint" }
 
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
   Get-Process -Name gost -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$InstallDir*" } | Stop-Process -Force

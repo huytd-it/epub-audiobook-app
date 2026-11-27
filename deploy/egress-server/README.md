@@ -52,6 +52,12 @@ PowerShell **Run as Administrator**:
   Script gỡ các luật cũ trỏ tới `gost.exe`, kể cả luật "Allow" Windows tự tạo, để không còn
   luật nào mở cổng ra Internet.
 
+> **Microsoft Defender** hay chặn gost (xếp loại HackTool/PUA vì là công cụ proxy). Khi đó
+> script dừng và in hướng dẫn. Kiểm tra tên mối đe doạ bằng `Get-MpThreatDetection`; nếu đúng
+> là gost và bạn chấp nhận thì thêm ngoại lệ **chỉ** cho thư mục cài:
+> `Add-MpPreference -ExclusionPath "$env:ProgramData\gost-egress"`, rồi chạy lại script.
+> Checksum SHA-256 vẫn được kiểm tra.
+
 > Gost nghe trên mọi interface. Firewall là lớp chặn chính, user/pass là lớp thứ hai.
 > **Không** mở/forward cổng này trên router.
 
