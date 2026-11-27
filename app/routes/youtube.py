@@ -1129,6 +1129,9 @@ class _ChannelVideoBulkUpdateBody(BaseModel):
     description_template: str = ""
     privacy_status: str | None = None
     add_tags: list[str] = Field(default_factory=list)
+    # True = description kèm danh sách tên chương, False = gỡ hẳn khối chương,
+    # None/không gửi = giữ nguyên như description hiện tại.
+    chapters_enabled: bool | None = None
 
     @field_validator("privacy_status")
     @classmethod
@@ -1143,8 +1146,12 @@ _EPISODE_RE = re.compile(r"(?:episode|tap|tập|chuong|chương|ep)[\s#]*(\d+)",
 
 @router.post("/youtube/api/channel/videos/bulk-update")
 def api_bulk_update_channel_videos(request: Request, body: _ChannelVideoBulkUpdateBody):
-    """Bulk-edit title/description (with {episode} templating), privacy, and tags
-    for several live channel videos at once."""
+    """Bulk-edit title/description (with {episode} templating), privacy, tags and the
+    chapter list of several live channel videos at once.
+
+    `chapters_enabled` reworks the chapter block of each video's description: True
+    keeps/inserts the chapter-name list (names already in the description are reused
+    when no template was given), False strips it out."""
     _require_connected(request)
     with locked_conn(request) as conn:
         current = {r["video_id"]: r for r in youtube.get_cached_channel_videos(conn, body.video_ids)}
@@ -1158,11 +1165,14 @@ def api_bulk_update_channel_videos(request: Request, body: _ChannelVideoBulkUpda
             match = _EPISODE_RE.search(title)
             episode = match.group(1) if match else video_id
             item["title"] = body.title_template.replace("{episode}", episode)
+        description = row.get("description", "")
         if body.description_template:
-            description = row.get("description", "")
             match = _EPISODE_RE.search(description)
             episode = match.group(1) if match else video_id
-            item["description"] = body.description_template.replace("{episode}", episode)
+            description = body.description_template.replace("{episode}", episode)
+        if body.chapters_enabled is not None:
+            item["description"] = youtube_metadata.apply_chapter_block(
+                description, [], body.chapters_enabled)
         if body.privacy_status:
             item["privacy_status"] = body.privacy_status
         if body.add_tags:
@@ -1211,12 +1221,36 @@ def api_bulk_remove_channel_videos_from_playlist(request: Request, body: _Channe
 # ---------------------------------------------------------------------------
 
 
+def _upload_chapter_titles(conn, upload: dict) -> list[str]:
+    """Tên các chương của patch đứng sau một lượt upload, [] nếu video không từ patch.
+
+    Video upload thẳng/nhóm sách không có patch để tra chương, nên khối chương chỉ
+    chạy trên các bản upload do pipeline patch tạo ra.
+    """
+    if (upload.get("render_source_type") or "") != "patch":
+        return []
+    patch_id = upload.get("render_source_id")
+    if patch_id is None:
+        return []
+    from app import repository
+
+    patch = repository.get_patch(conn, patch_id)
+    book = repository.get_book(conn, patch.book_id) if patch else None
+    if patch is None or book is None:
+        return []
+    context = repository.build_patch_metadata_context(conn, book, patch)
+    return youtube_metadata.patch_chapter_lines(patch, context.get("chapter_titles"))
+
+
 class _BulkUpdateBody(BaseModel):
     ids: list[int]
     title_template: str = ""
     description_template: str = ""
     scheduled_publish_at: str | None = None
     generate_ai_labels: bool = False
+    # True = description kèm danh sách tên chương, False = gỡ hẳn khối chương,
+    # None/không gửi = giữ nguyên như mô tả hiện tại.
+    chapters_enabled: bool | None = None
 
 
 @router.post("/youtube/uploads/bulk-update")
@@ -1237,28 +1271,36 @@ def bulk_update_uploads(request: Request, body: _BulkUpdateBody):
             upload = dict(row)
             title = upload.get("title") or ""
             description = upload.get("description") or ""
+            # Chapter names already on the row, captured before any template rewrite.
+            existing_chapter_titles = youtube_metadata.chapter_titles_from_description(description)
 
             # Apply title template with {episode} replacement
             if body.title_template:
-                episode_num = upload.get("id", 0)
-                new_title = body.title_template.replace("{episode}", str(episode_num))
-                # Also try to extract episode from existing title
-                import re
-                ep_match = re.search(r'(?:episode|tap|chuong|ep)[\s#]*(\d+)', title, re.IGNORECASE)
-                if ep_match:
-                    new_title = new_title.replace("{episode}", ep_match.group(1))
+                ep_match = _EPISODE_RE.search(title)
+                episode = ep_match.group(1) if ep_match else str(upload.get("id", 0))
+                new_title = body.title_template.replace("{episode}", episode)
                 conn.execute("UPDATE youtube_uploads SET title=? WHERE id=?", (new_title, upload["id"]))
                 updated_count += 1
 
             # Apply description template with {episode} replacement
+            description_changed = False
             if body.description_template:
-                episode_num = upload.get("id", 0)
-                new_desc = body.description_template.replace("{episode}", str(episode_num))
-                import re
-                ep_match = re.search(r'(?:episode|tap|chuong|ep)[\s#]*(\d+)', description, re.IGNORECASE)
-                if ep_match:
-                    new_desc = new_desc.replace("{episode}", ep_match.group(1))
-                conn.execute("UPDATE youtube_uploads SET description=? WHERE id=?", (new_desc, upload["id"]))
+                # The existing description's episode number wins over the row id; the
+                # placeholder is resolved once, before anything else touches the text.
+                ep_match = _EPISODE_RE.search(description)
+                episode = ep_match.group(1) if ep_match else str(upload.get("id", 0))
+                description = body.description_template.replace("{episode}", episode)
+                description_changed = True
+
+            # Chapter list: True keeps/inserts the chapter names, False strips the block.
+            if body.chapters_enabled is not None:
+                titles = _upload_chapter_titles(conn, upload) or existing_chapter_titles
+                description = youtube_metadata.apply_chapter_block(
+                    description, titles, body.chapters_enabled)
+                description_changed = True
+
+            if description_changed:
+                conn.execute("UPDATE youtube_uploads SET description=? WHERE id=?", (description, upload["id"]))
                 updated_count += 1
 
             # Set scheduled publish time

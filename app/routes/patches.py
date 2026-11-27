@@ -1318,6 +1318,104 @@ async def youtube_metadata_preview_draft(request: Request, book_id: int):
             raise HTTPException(400, str(exc)) from exc
 
 
+@router.post("/books/{book_id}/patches/youtube-description")
+async def push_youtube_descriptions(request: Request, book_id: int):
+    """Dựng lại description từ cấu hình hiện tại và đẩy lên các video đã đăng.
+
+    Body: {patch_ids: [int], chapters_enabled: bool | null, dry_run: bool}.
+    chapters_enabled null = theo cấu hình YouTube của sách; true/false ghi đè cho
+    riêng lượt cập nhật này (hiện / ẩn danh sách tên chương). dry_run chỉ trả về
+    description sẽ gửi, không gọi YouTube. Tiêu đề, tags và quyền riêng tư giữ nguyên.
+    """
+    data = await request.json()
+    raw_ids = data.get("patch_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(400, "patch_ids không được để trống")
+    try:
+        patch_ids = list(dict.fromkeys(int(value) for value in raw_ids))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "patch_ids phải là danh sách số") from exc
+    chapters = data.get("chapters_enabled")
+    if chapters is not None and not isinstance(chapters, bool):
+        raise HTTPException(400, "chapters_enabled phải là true, false hoặc null")
+    dry_run = bool(data.get("dry_run"))
+
+    from app.production_defaults import get_effective_youtube_config
+
+    items: list[dict] = []
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "book not found")
+        try:
+            config = dict(get_effective_youtube_config(conn, book))
+        except ValueError as exc:
+            raise HTTPException(400, f"cấu hình YouTube không hợp lệ: {exc}") from exc
+        if chapters is not None:
+            config["chapters_enabled"] = chapters
+        # Chỉ cần description: không sinh nhãn AI (gọi model) cho mỗi patch.
+        config["auto_ai_labels"] = False
+        for patch_id in patch_ids:
+            item: dict = {"patch_id": patch_id}
+            items.append(item)
+            patch = repository.get_patch(conn, patch_id)
+            if patch is None or patch.book_id != book_id:
+                item.update(status="skipped", reason="patch không thuộc sách này")
+                continue
+            item["patch_index"] = patch.patch_index
+            upload = conn.execute(
+                """SELECT yu.id, yu.youtube_video_id, yu.account_id
+                     FROM patch_pipeline pp
+                     JOIN youtube_uploads yu ON yu.id = pp.youtube_upload_id
+                    WHERE pp.patch_id=? AND yu.status='done' AND yu.youtube_video_id IS NOT NULL
+                      AND yu.youtube_video_id != ''""",
+                (patch_id,),
+            ).fetchone()
+            if upload is None:
+                item.update(status="skipped", reason="patch chưa đăng lên YouTube")
+                continue
+            context = {**repository.build_patch_metadata_context(conn, book, patch), "intro_seconds": 0.0}
+            try:
+                metadata = resolve_patch_youtube_metadata(
+                    book, patch, get_patch_youtube_override(conn, patch_id), context, config=config)
+            except ValueError as exc:
+                item.update(status="failed", reason=str(exc))
+                continue
+            item.update(upload_id=upload["id"], youtube_video_id=upload["youtube_video_id"],
+                        account_id=upload["account_id"], description=metadata["description"])
+
+    pending = [item for item in items if "description" in item and "status" not in item]
+    if dry_run:
+        for item in pending:
+            item["status"] = "preview"
+    elif pending:
+        if not youtube.is_configured():
+            raise HTTPException(400, "YouTube chưa được cấu hình")
+
+        def push(conn):
+            for item in pending:
+                try:
+                    with youtube.use_account(item["account_id"]):
+                        youtube.update_video_description(conn, item["youtube_video_id"], item["description"])
+                    conn.execute("UPDATE youtube_uploads SET description=? WHERE id=?",
+                                 (item["description"], item["upload_id"]))
+                    conn.commit()
+                    item["status"] = "updated"
+                except Exception as exc:  # noqa: BLE001 - one video failing must not stop the batch
+                    logger.warning("cập nhật description cho patch %s thất bại", item["patch_id"], exc_info=True)
+                    item.update(status="failed", reason=str(exc)[:500])
+
+        # Gọi YouTube ngoài db_lock để không chặn các request khác.
+        await asyncio.to_thread(_off_lock, request, push)
+
+    for item in items:
+        item.pop("account_id", None)
+        item.pop("upload_id", None)
+    counts = {status: sum(1 for item in items if item.get("status") == status)
+              for status in ("updated", "preview", "skipped", "failed")}
+    return {"items": items, **counts, "requested": len(patch_ids)}
+
+
 @router.get("/books/{book_id}/patches/{patch_id}/youtube-metadata")
 def get_youtube_metadata(request: Request, book_id: int, patch_id: int):
     with locked_conn(request) as conn:

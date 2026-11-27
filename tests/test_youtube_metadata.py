@@ -77,7 +77,7 @@ def test_load_timeline_rejects_duplicate_or_regressing_indexes(tmp_path, indexes
     assert load_timeline(audio) is None
 
 
-def test_valid_short_timeline_loads_but_is_not_added_to_description(tmp_path):
+def test_valid_short_timeline_lists_chapter_names_in_the_description(tmp_path):
     audio = tmp_path / "short.wav"
     sf.write(audio, np.zeros(20), 10)
     timeline = {"version": 1, "sample_rate": 10, "total_frames": 20,
@@ -85,7 +85,8 @@ def test_valid_short_timeline_loads_but_is_not_added_to_description(tmp_path):
     audio.with_suffix(".timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
     from app.youtube_metadata import load_timeline, resolve_patch_youtube_metadata
     assert load_timeline(audio) == timeline
-    assert "Only" not in resolve_patch_youtube_metadata(_book(), _patch(str(audio)), {})["description"]
+    description = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), {})["description"]
+    assert description.endswith("📖 Nội dung:\nOnly")
 
 
 def _book():
@@ -125,7 +126,7 @@ def _write_timeline(audio, **values):
     audio.with_suffix(".timeline.json").write_text(json.dumps(timeline))
 
 
-def test_valid_timeline_is_appended_once_with_floor_and_hour_formatting(tmp_path):
+def test_valid_timeline_appends_timestamped_chapters_once(tmp_path):
     audio = _timeline_audio(tmp_path, frames=72000, sample_rate=10, chapters=[
         {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "Intro"},
         {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "Chapter 1"},
@@ -134,7 +135,7 @@ def test_valid_timeline_is_appended_once_with_floor_and_hour_formatting(tmp_path
     book = _book()
     patch = _patch(str(audio))
     result = resolve_patch_youtube_metadata(book, patch, None)
-    assert result["description"] == "book description\n\n00:00 Intro\n00:10 Chapter 1\n1:00:00 Chapter 2"
+    assert result["description"] == "book description\n\n📖 Nội dung:\n00:00 Intro\n00:10 Chapter 1\n1:00:00 Chapter 2"
     assert result["description"].count("Intro") == 1
 
 
@@ -164,20 +165,21 @@ def test_invalid_utf8_timeline_preserves_description(tmp_path):
     assert resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)["description"] == "book description"
 
 
-def test_existing_timeline_after_prose_and_blank_line_is_unchanged(tmp_path):
-    audio = _timeline_audio(tmp_path)
-    _write_timeline(audio, chapters=[{"start_frame": 0, "title": "Intro"},
-                                     {"start_frame": 100, "title": "One"},
-                                     {"start_frame": 200, "title": "Two"}])
-    block = "00:00 Intro\n00:10 One\n00:20 Two"
+def test_legacy_timestamp_block_is_moved_under_the_chapter_heading(tmp_path):
+    audio = _timeline_audio(tmp_path, chapters=[
+        {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "Intro"},
+        {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "One"},
+        {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "Two"},
+    ])
     book = _book()
     book.automation_config = json.dumps({"youtube": {
-        "description": f"Prose\n\n{block}",
+        "description": "Prose\n\n00:00 Intro\n00:10 One\n00:20 Two",
         "description_extra": {"enabled": False, "contact_email": "fixture@example.com"},
     }})
     description = resolve_patch_youtube_metadata(book, _patch(str(audio)), None)["description"]
-    assert description == f"Prose\n\n{block}"
+    assert description == "Prose\n\n📖 Nội dung:\n00:00 Intro\n00:10 One\n00:20 Two"
     assert description.count("00:00 Intro") == 1
+    assert description.count("Intro") == 1
 
 
 @pytest.mark.parametrize("values", [
@@ -207,29 +209,32 @@ def test_start_seconds_must_match_frame_position_tightly(tmp_path):
             {"chapter_index": 2, "start_frame": 100, "start_seconds": 10.0, "title": "Chapter 1"},
             {"chapter_index": 3, "start_frame": 200, "start_seconds": 20.0, "title": "Chapter 2"},
     ])
-    assert "00:10 Chapter 1" in resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)["description"]
+    assert "📖 Nội dung:\n00:00 Intro\n00:10 Chapter 1\n00:20 Chapter 2" in resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)["description"]
 
 
-def test_timeline_append_is_idempotent_for_exact_existing_block(tmp_path):
-    audio = _timeline_audio(tmp_path)
-    _write_timeline(audio, chapters=[{"start_frame": 0, "title": "Intro"},
-                                     {"start_frame": 100, "title": "One"},
-                                     {"start_frame": 200, "title": "Two"}])
-    book = _book()
-    book.automation_config = json.dumps({"youtube": {"description": "00:00 Intro\n00:10 One\n00:20 Two"}})
-    result = resolve_patch_youtube_metadata(book, _patch(str(audio)), None)
-    assert result["description"].count("00:00 Intro") == 1
+def test_chapter_block_is_idempotent_for_the_generated_description(tmp_path):
+    audio = _timeline_audio(tmp_path, chapters=[
+        {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "Intro"},
+        {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "One"},
+        {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "Two"},
+    ])
+    block = "📖 Nội dung:\n00:00 Intro\n00:10 One\n00:20 Two"
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(str(audio)), None,
+        config=_config(description=f"Prose\n\n{block}"))["description"]
+    assert description == f"Prose\n\n{block}"
+    assert description.count("Intro") == 1
 
 
-@pytest.mark.parametrize("chapters,frames,valid", [
+@pytest.mark.parametrize("chapters,frames,chapters_shown", [
         ([{"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "a"}, {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "b"}, {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "c"}], 300, True),
     ([{"start_frame": 0, "start_seconds": 0, "title": "a"}, {"start_frame": 99, "start_seconds": 9.9, "title": "b"}, {"start_frame": 200, "start_seconds": 20, "title": "c"}], 300, False),
     ([{"start_frame": 0, "start_seconds": 0, "title": "a"}, {"start_frame": 100, "start_seconds": 10, "title": "b"}, {"start_frame": 200, "start_seconds": 20, "title": "c"}], 299, False),
 ])
-def test_timeline_ten_second_boundaries(tmp_path, chapters, frames, valid):
+def test_invalid_timeline_keeps_the_author_written_description(tmp_path, chapters, frames, chapters_shown):
     audio = _timeline_audio(tmp_path, frames=frames, chapters=chapters)
     result = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)
-    assert ("00:00 a" in result["description"]) is valid
+    assert ("📖 Nội dung:\n00:00 a" in result["description"]) is chapters_shown
 
 
 def test_default_patch_title_and_tags():
@@ -342,17 +347,15 @@ def test_default_description_lists_every_chapter_by_name():
     assert "Chương 3: Gió" in description
 
 
-def test_chapter_list_uses_timeline_timestamps_when_available(tmp_path):
+def test_chapter_list_uses_timeline_timestamps_when_context_has_none(tmp_path):
     audio = _timeline_audio(tmp_path, chapters=[
         {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "Chương 1: Mưa"},
         {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "Chương 2: Nắng"},
         {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "Chương 3: Gió"},
     ])
-    context = {"chapter_titles": ["Chương 1: Mưa", "Chương 2: Nắng", "Chương 3: Gió"]}
     description = resolve_patch_youtube_metadata(
-        _empty_config_book(), _patch(str(audio)), None, context=context)["description"]
-    assert "00:00 Chương 1: Mưa" in description
-    assert "00:10 Chương 2: Nắng" in description
+        _empty_config_book(), _patch(str(audio)), None)["description"]
+    assert "📖 Nội dung:\n00:00 Chương 1: Mưa\n00:10 Chương 2: Nắng\n00:20 Chương 3: Gió" in description
     assert description.count("Chương 2: Nắng") == 1
 
 
@@ -382,10 +385,18 @@ def test_hashtags_use_book_title_before_its_first_dash():
     assert "#Tập1" not in description
 
 
-def test_configured_description_is_not_replaced_by_generated_sections():
+def test_configured_description_gets_the_chapter_block_appended():
     context = {"chapter_titles": ["Chương 1: Mưa"], "music": {"name": "Incredulity", "license": "CC"}}
     description = resolve_patch_youtube_metadata(_book(), _patch(), None, context=context)["description"]
+    assert description == "book description\n\n📖 Nội dung:\nChương 1: Mưa"
+
+
+def test_configured_description_keeps_music_unset_and_hashtags_out():
+    """Nhạc nền và hashtag chỉ thuộc mô tả sinh tự động, không dán vào mô tả tác giả."""
+    context = {"music": {"name": "Incredulity", "license": "CC"}}
+    description = resolve_patch_youtube_metadata(_book(), _patch(), None, context=context)["description"]
     assert description == "book description"
+    assert "Incredulity" not in description
 
 
 def test_description_opens_with_first_chapter_excerpt_instead_of_book_description():
@@ -424,13 +435,13 @@ def test_generated_description_is_capped_at_youtube_limit():
     assert len(description) <= 5000
 
 
-def test_default_description_still_appends_timeline(tmp_path):
+def test_default_description_lists_the_timeline_with_timestamps(tmp_path):
     audio = _timeline_audio(tmp_path)
     book = _book()
     book.automation_config = json.dumps({"youtube": {}})
     result = resolve_patch_youtube_metadata(book, _patch(str(audio)), None)
     assert "Tập 4 - Chương 1-2: Mua" in result["description"]
-    assert "00:00 Intro" in result["description"]
+    assert "📖 Nội dung:\n00:00 Intro\n00:10 Chapter 1\n00:20 Chapter 2" in result["description"]
 
 
 def test_optional_title_segments_are_omitted():
@@ -656,24 +667,40 @@ def _config(**values):
             **values}
 
 
-def test_timeline_is_omitted_when_timeline_display_is_disabled(tmp_path):
+def test_chapter_list_is_omitted_when_chapters_display_is_disabled(tmp_path):
     audio = _timeline_audio(tmp_path)
     shown = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None,
-                                           config=_config(timeline_enabled=True))["description"]
+                                           config=_config(chapters_enabled=True))["description"]
     hidden = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None,
-                                            config=_config(timeline_enabled=False))["description"]
-    assert "00:10 Chapter 1" in shown
-    assert "00:10" not in hidden
+                                            config=_config(chapters_enabled=False))["description"]
+    assert "📖 Nội dung:\n00:00 Intro\n00:10 Chapter 1\n00:20 Chapter 2" in shown
+    assert "Chapter 1" not in hidden
+    assert "📖" not in hidden
     assert hidden == "book description"
 
 
-def test_description_extra_is_appended_after_the_timeline(tmp_path):
+def test_disabling_chapters_strips_a_stale_chapter_block(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(str(audio)), None,
+        config=_config(description="Prose\n\n📖 Nội dung:\nIntro\nChapter 1", chapters_enabled=False))["description"]
+    assert description == "Prose"
+
+
+def test_legacy_timeline_flag_is_honoured_as_the_chapters_flag():
+    assert validate_book_youtube_config({"timeline_enabled": False})["chapters_enabled"] is False
+    migrated = validate_book_youtube_config({"chapters_enabled": True, "timeline_enabled": False})
+    assert migrated["chapters_enabled"] is True
+    assert "timeline_enabled" not in migrated
+
+
+def test_description_extra_is_appended_after_the_chapter_list(tmp_path):
     audio = _timeline_audio(tmp_path)
     extra = {"enabled": True, "template": "Contact: {contact_email}", "contact_email": "me@example.com"}
     description = resolve_patch_youtube_metadata(
         _book(), _patch(str(audio)), None, config=_config(description_extra=extra))["description"]
     assert description.endswith("Contact: me@example.com")
-    assert description.index("00:10 Chapter 1") < description.index("Contact:")
+    assert description.index("Chapter 1") < description.index("Contact:")
 
 
 def test_description_extra_drops_lines_whose_placeholder_is_blank():
@@ -701,9 +728,9 @@ def test_description_extra_reaches_the_generated_fallback_description():
     assert "Fair use: https://example.com/fair-use" in description
 
 
-def test_youtube_config_defaults_expose_timeline_and_extra_block():
+def test_youtube_config_defaults_expose_chapters_and_extra_block():
     config = validate_book_youtube_config({})
-    assert config["timeline_enabled"] is True
+    assert config["chapters_enabled"] is True
     assert config["description_extra"]["enabled"] is True
     assert "{contact_email}" in config["description_extra"]["template"]
 
@@ -807,5 +834,52 @@ def test_intro_seconds_is_ignored_phase2(tmp_path):
     audio = _timeline_audio(tmp_path)
     for ctx in ({"intro_seconds": 12.0}, {"intro_seconds": 4.0}, {}, {"intro_seconds": 0.0}):
         description = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None, ctx)["description"]
-        assert description == "book description\n\n00:00 Intro\n00:10 Chapter 1\n00:20 Chapter 2"
+        assert description == "book description\n\n📖 Nội dung:\n00:00 Intro\n00:10 Chapter 1\n00:20 Chapter 2"
         assert "Giới thiệu" not in description
+
+
+def test_timeline_whose_first_chapter_follows_an_intro_is_accepted(tmp_path):
+    """Intro TTS chèn ở đầu WAV không có mục riêng: chương 1 bắt đầu sau frame 0."""
+    audio = tmp_path / "intro.wav"
+    sf.write(audio, np.zeros(300), 10)
+    timeline = {"version": 1, "sample_rate": 10, "total_frames": 300, "chapters": [
+        {"chapter_index": 1, "start_frame": 77, "start_seconds": 7.7, "title": "Chương 1"},
+        {"chapter_index": 2, "start_frame": 200, "start_seconds": 20.0, "title": "Chương 2"},
+    ]}
+    audio.with_suffix(".timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
+    assert load_timeline(audio) == timeline
+
+
+def _intro_audio(tmp_path, first_seconds):
+    audio = tmp_path / "intro_ep.wav"
+    sf.write(audio, np.zeros(600), 10)
+    starts = [first_seconds, first_seconds + 12, first_seconds + 24]
+    audio.with_suffix(".timeline.json").write_text(json.dumps({
+        "version": 1, "sample_rate": 10, "total_frames": 600, "chapters": [
+            {"chapter_index": i + 1, "start_frame": s * 10, "start_seconds": float(s), "title": f"Chương {i + 1}"}
+            for i, s in enumerate(starts)]}), encoding="utf-8")
+    return audio
+
+
+def test_long_intro_gets_its_own_zero_marker(tmp_path):
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(str(_intro_audio(tmp_path, 15))), None, config=_config())["description"]
+    assert "📖 Nội dung:\n00:00 Giới thiệu\n00:15 Chương 1\n00:27 Chương 2\n00:39 Chương 3" in description
+
+
+def test_short_intro_is_folded_into_the_first_chapter(tmp_path):
+    """Intro < 10 giây không đủ làm chapter YouTube: chương 1 được kéo về 00:00."""
+    description = resolve_patch_youtube_metadata(
+        _book(), _patch(str(_intro_audio(tmp_path, 7))), None, config=_config())["description"]
+    assert "📖 Nội dung:\n00:00 Chương 1\n00:19 Chương 2\n00:31 Chương 3" in description
+    assert "Giới thiệu" not in description
+
+
+def test_timeline_too_short_for_youtube_chapters_falls_back_to_names(tmp_path):
+    audio = _timeline_audio(tmp_path, chapters=[
+        {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "A"},
+        {"chapter_index": 2, "start_frame": 50, "start_seconds": 5, "title": "B"},
+        {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "C"},
+    ])
+    description = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None, config=_config())["description"]
+    assert description.endswith("📖 Nội dung:\nA\nB\nC")

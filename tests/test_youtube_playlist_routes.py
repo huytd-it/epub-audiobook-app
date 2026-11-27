@@ -1203,6 +1203,73 @@ def test_channel_videos_bulk_remove_from_playlist_calls_shared_service_by_video_
     assert calls == [("PL1", ["v1"])]
 
 
+def test_channel_videos_bulk_update_keeps_legacy_timestamps_under_the_chapter_heading(make_client, monkeypatch):
+    """Bật danh sách chương: khối timeline cũ đổi thành danh sách tên chương ngay trên YouTube."""
+    c = make_client()
+    _seed_channel_video(c.conn, "v1", description="Mở đầu\n\n00:00 Mưa\n00:10 Nắng")
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "bulk_update_channel_videos",
+        lambda conn, updates: calls.append(updates) or _batch(succeeded=len(updates)),
+    )
+
+    response = c.client.post("/youtube/api/channel/videos/bulk-update", json={
+        "video_ids": ["v1"], "chapters_enabled": True,
+    })
+
+    assert response.status_code == 200
+    assert calls == [[{"video_id": "v1", "description": "Mở đầu\n\n📖 Nội dung:\n00:00 Mưa\n00:10 Nắng"}]]
+
+
+def test_channel_videos_bulk_update_disabled_chapters_removes_the_block(make_client, monkeypatch):
+    c = make_client()
+    _seed_channel_video(c.conn, "v1", description="Mở đầu\n\n📖 Nội dung:\nMưa\nNắng")
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "bulk_update_channel_videos",
+        lambda conn, updates: calls.append(updates) or _batch(succeeded=len(updates)),
+    )
+
+    c.client.post("/youtube/api/channel/videos/bulk-update", json={
+        "video_ids": ["v1"], "chapters_enabled": False,
+    })
+
+    assert calls == [[{"video_id": "v1", "description": "Mở đầu"}]]
+
+
+def test_channel_videos_bulk_update_without_chapters_flag_keeps_the_description(make_client, monkeypatch):
+    """Không chọn gì về chương thì description hiện tại không bị đụng tới."""
+    c = make_client()
+    _seed_channel_video(c.conn, "v1", description="Mở đầu\n\n📖 Nội dung:\nMưa")
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "bulk_update_channel_videos",
+        lambda conn, updates: calls.append(updates) or _batch(succeeded=len(updates)),
+    )
+
+    c.client.post("/youtube/api/channel/videos/bulk-update", json={
+        "video_ids": ["v1"], "privacy_status": "public",
+    })
+
+    assert calls == [[{"video_id": "v1", "privacy_status": "public"}]]
+
+
+def test_channel_videos_bulk_update_description_template_appends_the_chapter_list(make_client, monkeypatch):
+    c = make_client()
+    _seed_channel_video(c.conn, "v1", description="Tập 3 cũ")
+    calls = []
+    monkeypatch.setattr(
+        youtube_module, "bulk_update_channel_videos",
+        lambda conn, updates: calls.append(updates) or _batch(succeeded=len(updates)),
+    )
+
+    c.client.post("/youtube/api/channel/videos/bulk-update", json={
+        "video_ids": ["v1"], "description_template": "Tập {episode} mới", "chapters_enabled": True,
+    })
+
+    assert calls == [[{"video_id": "v1", "description": "Tập 3 mới"}]]
+
+
 def test_playlists_list_reports_updated_at_from_newest_cached_video(make_client, monkeypatch):
     c = make_client()
     c.conn.execute(

@@ -420,8 +420,8 @@ def test_bulk_start_queue_explicit_engine_still_wins():
     assert job.payload["tts_engine"] == "voxcpm2"
 
 
-def test_production_settings_round_trip_youtube_timeline_and_extra(tmp_path, monkeypatch):
-    """The defaults page edits the youtube group as a whole; the two new blocks
+def test_production_settings_round_trip_youtube_chapters_and_extra(tmp_path, monkeypatch):
+    """The defaults page edits the youtube group as a whole; the two blocks
     must survive a save/read cycle and reach a book that inherits them."""
     extra = {"enabled": True, "contact_email": "me@example.com", "story_title": "Truyen X",
              "story_source_name": "Nguon", "story_source_url": "https://example.com",
@@ -431,14 +431,14 @@ def test_production_settings_round_trip_youtube_timeline_and_extra(tmp_path, mon
         _insert_book(conn, book_id=1)
         current = client.get("/production-settings").json()["defaults"]["youtube"]
         saved = client.post("/production-settings", json={"groups": {
-            "youtube": {**current, "timeline_enabled": False, "description_extra": extra},
+            "youtube": {**current, "chapters_enabled": False, "description_extra": extra},
         }})
         assert saved.status_code == 200
         stored = saved.json()["defaults"]["youtube"]
-        assert stored["timeline_enabled"] is False
+        assert stored["chapters_enabled"] is False
         assert stored["description_extra"]["contact_email"] == "me@example.com"
         effective = client.get("/production-settings?book_id=1").json()["effective"]["youtube"]
-    assert effective["timeline_enabled"] is False
+    assert effective["chapters_enabled"] is False
     assert effective["description_extra"]["story_title"] == "Truyen X"
 
 
@@ -486,11 +486,11 @@ def test_effective_metadata_ignores_intro_voice_phase2(tmp_path, monkeypatch):
     book = _book(conn)
     patch = _patch_with_timeline(tmp_path)
     before = resolve_effective_youtube_metadata(conn, book, patch, None)["description"]
-    assert before == "mo ta\n\n00:00 Mot\n00:10 Hai\n00:20 Ba"
+    assert before == "mo ta\n\n📖 Nội dung:\n00:00 Mot\n00:10 Hai\n00:20 Ba"
     # Even if intro_voice is stored (legacy), it is stripped and has no effect
     save_global_production_defaults(conn, {"video": {"intro_voice": "intro.wav"}})
     after = resolve_effective_youtube_metadata(conn, _book(conn), patch, None)["description"]
-    assert after == "mo ta\n\n00:00 Mot\n00:10 Hai\n00:20 Ba"
+    assert after == "mo ta\n\n📖 Nội dung:\n00:00 Mot\n00:10 Hai\n00:20 Ba"
     assert "Giới thiệu" not in after
 
 

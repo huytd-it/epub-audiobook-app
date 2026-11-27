@@ -213,6 +213,168 @@ export function BatchRunDialog({
   );
 }
 
+type ChapterChoice = "config" | "show" | "hide";
+
+type DescriptionPushResult = {
+  items: Array<{
+    patch_id: number;
+    patch_index?: number;
+    status: "updated" | "preview" | "skipped" | "failed";
+    reason?: string;
+    description?: string;
+  }>;
+  updated: number;
+  preview: number;
+  skipped: number;
+  failed: number;
+  requested: number;
+};
+
+/** Dựng lại description từ cấu hình YouTube hiện tại và đẩy lên các video đã
+ * đăng. Tiêu đề, tags và quyền riêng tư không đổi. Danh sách tên chương có thể
+ * theo cấu hình sách hoặc bật/tắt riêng cho lượt cập nhật này. */
+function DescriptionUpdateDialog({
+  bookId,
+  patchIds,
+  open,
+  onOpenChange,
+  onDone,
+}: {
+  bookId: string;
+  /** Các patch đã đăng YouTube sẽ được cập nhật. */
+  patchIds: number[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onDone: () => void;
+}) {
+  const [chapters, setChapters] = useState<ChapterChoice>("config");
+  const [preview, setPreview] = useState<DescriptionPushResult>();
+  const [busy, setBusy] = useState<"preview" | "apply">();
+
+  useEffect(() => {
+    if (!open) return;
+    setChapters("config");
+    setPreview(undefined);
+  }, [open]);
+
+  // Đổi lựa chọn thì bản xem trước cũ không còn đúng.
+  useEffect(() => setPreview(undefined), [chapters]);
+
+  const send = async (dryRun: boolean) =>
+    postJson<DescriptionPushResult>(`/books/${bookId}/patches/youtube-description`, {
+      patch_ids: patchIds,
+      chapters_enabled: chapters === "config" ? null : chapters === "show",
+      dry_run: dryRun,
+    });
+
+  const runPreview = async () => {
+    setBusy("preview");
+    try {
+      setPreview(await send(true));
+    } catch (err) {
+      showToast(errorText(err));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const apply = async () => {
+    setBusy("apply");
+    try {
+      const result = await send(false);
+      const failed = result.items.find((item) => item.status === "failed");
+      showToast(
+        `Đã cập nhật description ${result.updated}/${patchIds.length} video` +
+          (result.skipped ? ` · bỏ qua ${result.skipped}` : "") +
+          (result.failed ? ` · ${result.failed} lỗi: ${failed?.reason || ""}` : "") +
+          "."
+      );
+      onOpenChange(false);
+      onDone();
+    } catch (err) {
+      showToast(errorText(err));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const sample = preview?.items.find((item) => item.description !== undefined);
+  const choices: { value: ChapterChoice; label: string; hint: string }[] = [
+    { value: "config", label: "Theo cấu hình sách", hint: "Dùng checkbox trong Cấu hình › YouTube" },
+    { value: "show", label: "Hiển thị tên chương", hint: "Thêm khối “📖 Nội dung:” liệt kê tên chương" },
+    { value: "hide", label: "Ẩn danh sách chương", hint: "Description không có khối chương" },
+  ];
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-auto">
+        <DialogHeader>
+          <DialogTitle>Cập nhật description {patchIds.length} video YouTube</DialogTitle>
+          <DialogDescription>
+            Description được dựng lại từ cấu hình YouTube hiện tại của sách rồi ghi đè lên video đã đăng. Tiêu đề, tags
+            và quyền riêng tư giữ nguyên. Patch chưa đăng sẽ được bỏ qua.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="space-y-2 rounded-md border border-border p-3">
+            <div className="text-xs font-semibold">Danh sách chương trong description</div>
+            {choices.map((choice) => (
+              <label key={choice.value} className="flex cursor-pointer items-start gap-2 text-xs">
+                <input
+                  type="radio"
+                  name="description-chapters"
+                  className="mt-0.5"
+                  checked={chapters === choice.value}
+                  onChange={() => setChapters(choice.value)}
+                  disabled={Boolean(busy)}
+                />
+                <span>
+                  <span className="font-medium">{choice.label}</span>
+                  <span className="block text-[11px] text-muted-foreground">{choice.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {preview && (
+            <div className="space-y-2">
+              <div className="text-[11px] text-muted-foreground">
+                {preview.preview} video sẽ được cập nhật
+                {preview.skipped ? ` · ${preview.skipped} bỏ qua (chưa đăng)` : ""}
+                {preview.failed ? ` · ${preview.failed} lỗi` : ""}
+              </div>
+              {sample ? (
+                <div>
+                  <div className="mb-1 text-[11px] font-medium">
+                    Xem trước{sample.patch_index !== undefined ? ` — tập ${sample.patch_index + 1}` : ""}
+                  </div>
+                  <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-3 font-sans text-xs">
+                    {sample.description}
+                  </pre>
+                </div>
+              ) : (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  Không có video nào đã đăng trong các patch được chọn.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" disabled={Boolean(busy)} onClick={runPreview}>
+            {busy === "preview" ? "Đang dựng..." : "Xem trước"}
+          </Button>
+          <Button disabled={Boolean(busy) || !patchIds.length || (preview !== undefined && !preview.preview)} onClick={apply}>
+            {busy === "apply" ? "Đang cập nhật..." : `Cập nhật ${patchIds.length} video`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function BookDetail() {
   const { id } = useParams();
   const bookId = id || "";
@@ -245,6 +407,7 @@ export function BookDetail() {
   const [reimportOpen, setReimportOpen] = useState(false);
   const [reimporting, setReimporting] = useState(false);
   const [chunkUploadOpen, setChunkUploadOpen] = useState(false);
+  const [descriptionTargets, setDescriptionTargets] = useState<number[]>([]);
   const [automation, setAutomation] = useState<BatchAutomation>(DEFAULT_AUTOMATION);
   const [settings, setSettings] = useState<AudioSettings>({
     modelId: "edge-tts",
@@ -281,7 +444,8 @@ export function BookDetail() {
   // Dừng polling khi đang mở dialog hoặc đang chạy thao tác: tránh ghi đè state giữa chừng.
   const paused =
     previewOpen || configOpen || chapterOpen || normalizeOpen || renameOpen || batchOpen || sourceOpen ||
-    reimportOpen || chunkUploadOpen || resetVoiceTargets.length > 0 || busyCount > 0;
+    reimportOpen || chunkUploadOpen || resetVoiceTargets.length > 0 || descriptionTargets.length > 0 ||
+    busyCount > 0;
   const { data, exports, pipeline, loading, error, live, setLive, updatedAt, refreshing, refresh } = useBookDetail(
     bookId,
     paused
@@ -557,6 +721,22 @@ export function BookDetail() {
     },
     [bookId, patches, pipeline, selectedIds, refresh, setBusy]
   );
+
+  /** Patch đã đăng trong lựa chọn hiện tại (hoặc cả sách khi chưa chọn gì). */
+  const openDescriptionUpdate = useCallback(() => {
+    const scope = selectedIds.length ? patches.filter((patch) => selectedIds.includes(patch.id)) : patches;
+    const published = scope
+      .filter((patch) => {
+        const item = pipeline?.pipelines[String(patch.id)];
+        return item?.upload_state === "published" || item?.stage === "published";
+      })
+      .map((patch) => patch.id);
+    if (!published.length) {
+      showToast("Không có patch nào đã đăng YouTube để cập nhật description.");
+      return;
+    }
+    setDescriptionTargets(published);
+  }, [patches, pipeline, selectedIds]);
 
   const openPatch = useCallback((patch: Patch) => {
     setPreviewPatch(patch);
@@ -1003,7 +1183,17 @@ export function BookDetail() {
               </div>
             </React.Fragment>
           ))}
-          <div className="flex items-center lg:pl-1">
+          <div className="flex flex-col items-stretch gap-1 lg:pl-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full lg:w-auto"
+              disabled={!stats.hasYoutube || Boolean(running)}
+              title="Dựng lại description từ cấu hình và cập nhật lên các video đã đăng"
+              onClick={openDescriptionUpdate}
+            >
+              <FileText className="h-3.5 w-3.5" /> Description
+            </Button>
             <Button variant="ghost" size="sm" className="w-full lg:w-auto" onClick={() => openConfig("audio")}>
               <Settings className="h-3.5 w-3.5" /> Cấu hình
             </Button>
@@ -1121,6 +1311,15 @@ export function BookDetail() {
               <Button
                 size="sm"
                 variant="outline"
+                disabled={Boolean(running)}
+                title="Cập nhật description của các video đã đăng trong lựa chọn"
+                onClick={openDescriptionUpdate}
+              >
+                <FileText className="h-3.5 w-3.5" /> Description
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
                 disabled={Boolean(running) || resettingVoices || !selectedVoiceOverrides.length}
                 title="Xóa giọng riêng của các patch đã chọn để kế thừa cấu hình sách"
                 onClick={() => setResetVoiceTargets(selectedVoiceOverrides.map((patch) => patch.id))}
@@ -1178,6 +1377,14 @@ export function BookDetail() {
         data={data}
         defaultModelId={settings.modelId}
         defaultVoiceId={settings.voiceId}
+      />
+
+      <DescriptionUpdateDialog
+        bookId={bookId}
+        patchIds={descriptionTargets}
+        open={descriptionTargets.length > 0}
+        onOpenChange={(open) => !open && setDescriptionTargets([])}
+        onDone={refresh}
       />
 
       <BatchRunDialog

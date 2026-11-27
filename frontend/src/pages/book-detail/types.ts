@@ -220,7 +220,8 @@ export type YouTubeConfig = {
   description: string;
   genre_tags: string;
   privacy_status: string;
-  timeline_enabled: boolean;
+  /** Bật: description kèm danh sách tên chương; tắt: ẩn hẳn khối chương. */
+  chapters_enabled: boolean;
   description_extra: DescriptionExtra;
   playlist: { mode: string; playlist_id: string; title_template: string; description_template: string };
   podcast: PodcastConfig;

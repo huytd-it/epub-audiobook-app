@@ -242,3 +242,50 @@ def test_patch_upload_rejects_bad_privacy_status(client):
 def test_patch_upload_404_for_unknown_id(client):
     res = client.client.patch("/youtube/uploads/9999", json={"title": "x"})
     assert res.status_code == 404
+
+
+def test_bulk_update_description_replaces_a_legacy_timeline_block_with_chapter_names(client):
+    upload_id = _seed(client.conn, description="Mở đầu\n\n00:00 Mưa\n00:10 Nắng")
+
+    res = client.client.post("/youtube/uploads/bulk-update",
+                             json={"ids": [upload_id], "chapters_enabled": True})
+
+    assert res.status_code == 200
+    description = client.conn.execute(
+        "SELECT description FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()[0]
+    assert description == "Mở đầu\n\n📖 Nội dung:\nMưa\nNắng"
+
+
+def test_bulk_update_description_removes_the_chapter_block_when_disabled(client):
+    upload_id = _seed(client.conn, description="Mở đầu\n\n📖 Nội dung:\nMưa\nNắng")
+
+    client.client.post("/youtube/uploads/bulk-update",
+                       json={"ids": [upload_id], "chapters_enabled": False})
+
+    description = client.conn.execute(
+        "SELECT description FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()[0]
+    assert description == "Mở đầu"
+
+
+def test_bulk_update_description_template_reuses_the_existing_chapter_list(client):
+    upload_id = _seed(client.conn, description="Tập 3 cũ\n\n📖 Nội dung:\nMưa\nNắng")
+
+    client.client.post("/youtube/uploads/bulk-update", json={
+        "ids": [upload_id], "description_template": "Tập {episode} mới", "chapters_enabled": True,
+    })
+
+    description = client.conn.execute(
+        "SELECT description FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()[0]
+    assert description == "Tập 3 mới\n\n📖 Nội dung:\nMưa\nNắng"
+
+
+def test_bulk_update_without_the_chapters_flag_leaves_descriptions_alone(client):
+    upload_id = _seed(client.conn, description="Mở đầu\n\n00:00 Mưa\n00:10 Nắng")
+
+    res = client.client.post("/youtube/uploads/bulk-update",
+                             json={"ids": [upload_id], "title_template": "Tập {episode}"})
+
+    assert res.status_code == 200
+    description = client.conn.execute(
+        "SELECT description FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()[0]
+    assert description == "Mở đầu\n\n00:00 Mưa\n00:10 Nắng"

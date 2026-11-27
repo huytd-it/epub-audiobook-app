@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 import { TabBar, checkboxClass } from "@/pages/book-detail/parts";
 import { showToast } from "@/components/ui/toast";
 import { timeAgo } from "@/lib/recentBooks";
@@ -23,12 +22,12 @@ const GROUP_LABELS: Array<[PatchGroup, string]> = [
 
 const PHASE_META: Record<PatchPhase, { label: string; variant: "default" | "secondary" | "destructive" | "outline" | "success" | "warning" | "lime" }> = {
   queued: { label: "Trong queue", variant: "lime" },
-  tts_partial: { label: "TTS dở chunk", variant: "warning" },
+  tts_partial: { label: "TTS dở", variant: "warning" },
   tts_failed: { label: "TTS lỗi", variant: "destructive" },
   not_started: { label: "Chưa TTS", variant: "outline" },
-  publish_failed: { label: "Video/upload lỗi", variant: "destructive" },
-  publish_pending: { label: "Chờ video/upload", variant: "warning" },
-  complete: { label: "Hoàn tất", variant: "success" },
+  publish_failed: { label: "Publish lỗi", variant: "destructive" },
+  publish_pending: { label: "Chờ publish", variant: "warning" },
+  complete: { label: "Xong", variant: "success" },
 };
 
 const SKIP_LABELS: Record<string, string> = {
@@ -53,7 +52,7 @@ function chapterLabel(item: PatchOverviewItem) {
 }
 
 function continueLabel(item: PatchOverviewItem) {
-  return item.status === "done" ? "Tiếp tục video/upload" : item.next_chunk_index > 0 ? "Tiếp tục TTS" : "Chạy TTS";
+  return item.status === "done" ? "Publish" : item.next_chunk_index > 0 ? "Tiếp TTS" : "Chạy TTS";
 }
 
 function summarize(result: ContinuePatchesResult) {
@@ -72,6 +71,109 @@ function summarize(result: ContinuePatchesResult) {
   return `${head} Bỏ qua: ${[...reasons].map(([label, n]) => `${n} ${label}`).join(", ")}.`;
 }
 
+/* ── Memoized row to avoid re-renders when only selection changes ── */
+
+const PatchRow = React.memo(function PatchRow({
+  item,
+  checked,
+  busy,
+  onToggle,
+  onContinue,
+}: {
+  item: PatchOverviewItem;
+  checked: boolean;
+  busy: boolean;
+  onToggle: (patchId: number, on: boolean) => void;
+  onContinue: (patchIds: number[]) => void;
+}) {
+  const meta = PHASE_META[item.phase];
+  const canContinue = CONTINUABLE.has(item.phase);
+  const ttsDone = item.status === "done";
+  const percent = ttsDone ? 100 : item.chunk_count ? (item.next_chunk_index * 100) / item.chunk_count : 0;
+  const job = item.live_job;
+
+  const pipelineText = item.pipeline
+    ? `v: ${item.pipeline.video_status} · u: ${item.youtube_video_id ? "done" : item.pipeline.upload_status}`
+    : ttsDone ? "chưa tạo" : null;
+
+  return (
+    <div className="group flex items-center gap-2 border-b border-border px-3 py-2 text-sm last:border-b-0 hover:bg-muted/40">
+      {/* Checkbox */}
+      <input
+        type="checkbox"
+        className={checkboxClass}
+        checked={checked}
+        disabled={!canContinue}
+        onChange={(e) => onToggle(item.patch_id, e.target.checked)}
+        aria-label={`Chọn patch #${item.patch_index + 1}`}
+      />
+
+      {/* Main info: book + patch name */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <Link
+            to={`/books/${item.book_id}`}
+            className="truncate font-medium hover:underline"
+            title={item.book_title}
+          >
+            {item.book_title}
+          </Link>
+          <span className="shrink-0 font-mono text-[11px] text-muted-foreground">#{item.patch_index + 1}</span>
+        </div>
+        <div className="truncate text-xs text-muted-foreground" title={item.name}>
+          {item.name || chapterLabel(item)}
+        </div>
+      </div>
+
+      {/* Progress bar + chunk info — compact inline */}
+      <div className="hidden w-28 shrink-0 sm:block">
+        <Progress value={percent} className="h-1" />
+        <div className="mt-0.5 text-center font-mono text-[10px] text-muted-foreground">
+          {ttsDone ? "audio ✓" : `${item.next_chunk_index}/${item.chunk_count}`}
+        </div>
+      </div>
+
+      {/* Status badge + optional error / job info */}
+      <div className="w-24 shrink-0 text-center">
+        <Badge variant={meta.variant} className="text-[10px]">{meta.label}</Badge>
+        {job && (
+          <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+            {job.status}{job.progress_total ? ` ${job.progress_current}/${job.progress_total}` : ""}
+          </div>
+        )}
+        {item.error_message && item.phase !== "complete" && (
+          <div className="mt-0.5 truncate text-[10px] text-red-600" title={item.error_message}>
+            {item.error_message}
+          </div>
+        )}
+      </div>
+
+      {/* Pipeline + updated_at — merged into one slim column */}
+      <div className="hidden w-20 shrink-0 text-right text-[11px] text-muted-foreground lg:block">
+        {pipelineText && <div className="truncate" title={pipelineText}>{pipelineText}</div>}
+        <div title={item.updated_at}>{timeAgo(item.updated_at)}</div>
+      </div>
+
+      {/* Action */}
+      <div className="w-20 shrink-0 text-right">
+        {canContinue && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            className="h-7 px-2 text-xs"
+            onClick={() => onContinue([item.patch_id])}
+          >
+            <Play className="mr-1 h-3 w-3" /> {continueLabel(item)}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+});
+
+/* ── Page ── */
+
 export function PatchesPage() {
   const [group, setGroup] = useState<PatchGroup>("unfinished");
   const [bookId, setBookId] = useState<string>("");
@@ -83,7 +185,6 @@ export function PatchesPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
 
-  // Debounce ô tìm kiếm để không gọi API mỗi phím gõ.
   useEffect(() => {
     const timer = window.setTimeout(() => { setQuery(search.trim()); setPage(1); }, 300);
     return () => window.clearTimeout(timer);
@@ -104,7 +205,6 @@ export function PatchesPage() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { setSelected(new Set()); }, [group, bookId, query]);
 
-  // Tự làm mới khi đang xem/có patch chạy trong queue.
   const hasLive = useMemo(() => !!data?.items.some((item) => item.phase === "queued"), [data]);
   useEffect(() => {
     if (group !== "queued" && !hasLive) return;
@@ -115,15 +215,15 @@ export function PatchesPage() {
   const continuable = useMemo(() => (data?.items ?? []).filter((item) => CONTINUABLE.has(item.phase)), [data]);
   const allSelected = continuable.length > 0 && continuable.every((item) => selected.has(item.patch_id));
 
-  const toggle = (patchId: number, on: boolean) => {
+  const toggle = useCallback((patchId: number, on: boolean) => {
     setSelected((prev) => {
       const next = new Set(prev);
       if (on) next.add(patchId); else next.delete(patchId);
       return next;
     });
-  };
+  }, []);
 
-  const continuePatches = async (patchIds: number[]) => {
+  const continuePatches = useCallback(async (patchIds: number[]) => {
     if (!patchIds.length || busy) return;
     setBusy(true);
     try {
@@ -137,15 +237,22 @@ export function PatchesPage() {
     } finally {
       setBusy(false);
     }
-  };
+  }, [busy, load]);
+
+  const selectAll = useCallback(() => {
+    setSelected((prev) => {
+      const allChecked = continuable.length > 0 && continuable.every((item) => prev.has(item.patch_id));
+      return allChecked ? new Set() : new Set(continuable.map((item) => item.patch_id));
+    });
+  }, [continuable]);
 
   const tabs = GROUP_LABELS.map(([value, label]) => ({ value, label, badge: data?.counts[value] }));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <Header
         title={<span className="flex items-center gap-2"><Layers className="h-5 w-5" /> Quản lý Patch</span>}
-        subtitle="Patch của mọi sách: tiếp tục phần dang dở hoặc thêm nhanh vào hàng đợi. TTS dùng cấu hình của từng sách và dùng lại chunk đã tạo."
+        subtitle="Tiếp tục phần dang dở hoặc thêm nhanh vào hàng đợi."
         action={
           <Button variant="outline" size="sm" onClick={load}>
             <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Làm mới
@@ -155,27 +262,28 @@ export function PatchesPage() {
 
       <TabBar tabs={tabs} value={group} onChange={(next) => { setGroup(next); setPage(1); }} />
 
+      {/* Toolbar: search + filter + batch action */}
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          className="h-8 w-64"
-          placeholder="Tìm theo tên sách hoặc patch..."
+          className="h-8 w-56"
+          placeholder="Tìm sách hoặc patch..."
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={(e) => setSearch(e.target.value)}
         />
         <select
           className="h-8 rounded-md border border-input bg-background px-2 text-sm"
           value={bookId}
-          onChange={(event) => { setBookId(event.target.value); setPage(1); }}
+          onChange={(e) => { setBookId(e.target.value); setPage(1); }}
           aria-label="Lọc theo sách"
         >
           <option value="">Tất cả sách</option>
           {data?.books.map((book) => <option key={book.id} value={book.id}>{book.title}</option>)}
         </select>
         <div className="ml-auto flex items-center gap-2">
-          {selected.size > 0 && <span className="text-xs text-muted-foreground">Đã chọn {selected.size}</span>}
+          {selected.size > 0 && <span className="text-xs text-muted-foreground">{selected.size} đã chọn</span>}
           <Button size="sm" disabled={!selected.size || busy} onClick={() => continuePatches([...selected])}>
-            <ListPlus className="mr-1.5 h-3.5 w-3.5" />
-            {busy ? "Đang gửi..." : `Thêm ${selected.size || ""} patch vào queue`}
+            <ListPlus className="mr-1 h-3.5 w-3.5" />
+            {busy ? "Đang gửi..." : `Thêm ${selected.size || ""} vào queue`}
           </Button>
         </div>
       </div>
@@ -189,102 +297,33 @@ export function PatchesPage() {
       ) : data ? (
         <Card>
           <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-8">
-                    <input
-                      type="checkbox"
-                      className={checkboxClass}
-                      checked={allSelected}
-                      disabled={!continuable.length}
-                      onChange={(event) =>
-                        setSelected(event.target.checked ? new Set(continuable.map((item) => item.patch_id)) : new Set())}
-                      aria-label="Chọn tất cả patch có thể tiếp tục"
-                    />
-                  </TableHead>
-                  <TableHead>Sách</TableHead>
-                  <TableHead>Patch</TableHead>
-                  <TableHead>Tiến độ TTS</TableHead>
-                  <TableHead>Trạng thái</TableHead>
-                  <TableHead>Video / Upload</TableHead>
-                  <TableHead>Cập nhật</TableHead>
-                  <TableHead className="text-right">Thao tác</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.items.map((item) => {
-                  const meta = PHASE_META[item.phase];
-                  const canContinue = CONTINUABLE.has(item.phase);
-                  const ttsDone = item.status === "done";
-                  const percent = ttsDone ? 100 : item.chunk_count ? (item.next_chunk_index * 100) / item.chunk_count : 0;
-                  const job = item.live_job;
-                  return (
-                    <TableRow key={item.patch_id}>
-                      <TableCell>
-                        <input
-                          type="checkbox"
-                          className={checkboxClass}
-                          checked={selected.has(item.patch_id)}
-                          disabled={!canContinue}
-                          onChange={(event) => toggle(item.patch_id, event.target.checked)}
-                          aria-label={`Chọn patch #${item.patch_index + 1} của ${item.book_title}`}
-                        />
-                      </TableCell>
-                      <TableCell className="max-w-[14rem]">
-                        <Link to={`/books/${item.book_id}`} className="block truncate font-medium hover:underline" title={item.book_title}>
-                          {item.book_title}
-                        </Link>
-                      </TableCell>
-                      <TableCell>
-                        <div className="font-mono text-xs">#{item.patch_index + 1}</div>
-                        <div className="max-w-[14rem] truncate text-xs text-muted-foreground" title={item.name}>
-                          {item.name || chapterLabel(item)}
-                        </div>
-                      </TableCell>
-                      <TableCell className="w-40">
-                        <Progress value={percent} className="h-1.5" />
-                        <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                          {ttsDone ? "audio xong" : `${item.next_chunk_index}/${item.chunk_count} chunk`}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={meta.variant}>{meta.label}</Badge>
-                        {job && (
-                          <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                            job #{job.id} · {job.job_type} · {job.status}
-                            {job.progress_total ? ` ${job.progress_current}/${job.progress_total}` : ""}
-                          </div>
-                        )}
-                        {item.error_message && item.phase !== "complete" && (
-                          <div className="mt-1 max-w-[16rem] truncate text-[11px] text-red-600" title={item.error_message}>
-                            {item.error_message}
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {item.pipeline ? (
-                          <>
-                            <div>video: {item.pipeline.video_status}</div>
-                            <div>upload: {item.youtube_video_id ? "done" : item.pipeline.upload_status}</div>
-                          </>
-                        ) : ttsDone ? "chưa tạo" : "—"}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground" title={item.updated_at}>
-                        {timeAgo(item.updated_at)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {canContinue && (
-                          <Button size="sm" variant="outline" disabled={busy} onClick={() => continuePatches([item.patch_id])}>
-                            <Play className="mr-1 h-3 w-3" /> {continueLabel(item)}
-                          </Button>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+            {/* List header */}
+            <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5 text-[11px] font-medium text-muted-foreground">
+              <input
+                type="checkbox"
+                className={checkboxClass}
+                checked={allSelected}
+                disabled={!continuable.length}
+                onChange={selectAll}
+                aria-label="Chọn tất cả"
+              />
+              <div className="min-w-0 flex-1">Sách / Patch</div>
+              <div className="hidden w-28 shrink-0 text-center sm:block">TTS</div>
+              <div className="w-24 shrink-0 text-center">Trạng thái</div>
+              <div className="hidden w-20 shrink-0 text-right lg:block">Info</div>
+              <div className="w-20 shrink-0" />
+            </div>
+            {/* Rows */}
+            {data.items.map((item) => (
+              <PatchRow
+                key={item.patch_id}
+                item={item}
+                checked={selected.has(item.patch_id)}
+                busy={busy}
+                onToggle={toggle}
+                onContinue={continuePatches}
+              />
+            ))}
           </CardContent>
         </Card>
       ) : null}

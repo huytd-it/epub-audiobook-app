@@ -99,7 +99,11 @@ def description_extra_is_default(extra) -> bool:
 # từ chính thumbnail (app.image_overlay.render_podcast_cover).
 DEFAULT_PODCAST_CONFIG = {"enabled": False, "upload_cover": True}
 
-DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "timeline_enabled": True, "description_extra": DEFAULT_DESCRIPTION_EXTRA, "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}, "podcast": dict(DEFAULT_PODCAST_CONFIG), "auto_ai_labels": False, "playlist_sort_mode": "manual", "auto_sort_episode": False}
+DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "chapters_enabled": True, "description_extra": DEFAULT_DESCRIPTION_EXTRA, "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}, "podcast": dict(DEFAULT_PODCAST_CONFIG), "auto_ai_labels": False, "playlist_sort_mode": "manual", "auto_sort_episode": False}
+
+# Cấu hình cũ lưu cờ timeline_enabled (description kèm mốc thời gian). Khối chương
+# giờ là danh sách tên chương, nên chapters_enabled kế thừa giá trị cờ cũ.
+_LEGACY_CHAPTERS_FLAG = "timeline_enabled"
 
 
 def load_timeline(audio_path) -> dict | None:
@@ -158,7 +162,9 @@ def validate_timeline(timeline, samplerate: int, frames: int) -> dict | None:
                     not isinstance(title, str) or not title.strip()):
                 return None
             starts.append(start)
-        if starts[0] != 0 or any(b <= a for a, b in zip(starts, starts[1:])):
+        # Chương đầu được phép bắt đầu sau frame 0: intro động TTS chèn vào đầu WAV
+        # không có mục riêng trong timeline. Chỉ thứ tự tăng dần là bắt buộc.
+        if any(b <= a for a, b in zip(starts, starts[1:])):
             return None
         return timeline
     except (TypeError, ValueError, KeyError):
@@ -312,6 +318,12 @@ def render_description_extra(extra) -> str:
 def validate_book_youtube_config(config: dict) -> dict:
     if not isinstance(config, dict):
         raise ValueError("config must be an object")
+    config = dict(config)
+    # Sách lưu trước khi khối chương đổi tên: cờ timeline_enabled cũ quyết định
+    # việc hiện danh sách chương, nên chuyển nó sang chapters_enabled.
+    if "chapters_enabled" not in config and _LEGACY_CHAPTERS_FLAG in config:
+        config["chapters_enabled"] = config.pop(_LEGACY_CHAPTERS_FLAG)
+    config.pop(_LEGACY_CHAPTERS_FLAG, None)
     result = {**DEFAULT_BOOK_YOUTUBE_CONFIG, **config}
     if result.get("title_template") in _LEGACY_TITLE_TEMPLATES:
         result["title_template"] = DEFAULT_TITLE_TEMPLATE
@@ -327,8 +339,8 @@ def validate_book_youtube_config(config: dict) -> dict:
         raise ValueError("description and genre_tags must be strings")
     if result["privacy_status"] not in {"private", "unlisted", "public"}:
         raise ValueError("invalid privacy status")
-    if not isinstance(result["timeline_enabled"], bool):
-        raise ValueError("timeline_enabled must be a boolean")
+    if not isinstance(result["chapters_enabled"], bool):
+        raise ValueError("chapters_enabled must be a boolean")
     result["description_extra"] = validate_description_extra(result["description_extra"])
     if not isinstance(result["playlist"], dict):
         raise ValueError("playlist must be an object")
@@ -440,13 +452,96 @@ def _hashtags(book_title: str, genre_text: str) -> str:
     return " ".join(tags[:8])
 
 
-def _chapter_lines(chapter_titles, timeline: str) -> list[str]:
-    """Chapter list for the description: timestamped when the audio has a timeline."""
-    if timeline:
-        return timeline.split("\n")
+def _chapter_lines(chapter_titles) -> list[str]:
+    """Tên chương cho khối "Nội dung" của description, khử trùng lặp."""
     if not isinstance(chapter_titles, (list, tuple)):
         return []
-    return [title.strip() for title in chapter_titles if isinstance(title, str) and title.strip()]
+    titles = [title.strip() for title in chapter_titles if isinstance(title, str) and title.strip()]
+    return list(dict.fromkeys(titles))
+
+
+# Dòng "mm:ss Tên chương" của khối timeline cũ (YouTube chapter marker).
+_TIMESTAMP_LINE_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?\s+\S")
+_TIMESTAMP_PREFIX_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?\s+")
+
+
+def _description_blocks(text: str) -> list[list[str]]:
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in (text or "").splitlines():
+        if line.strip():
+            current.append(line)
+        elif current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def _chapter_block_lines(description: str) -> list[str] | None:
+    """Các dòng thân của khối chương đang có trong description, None nếu không có.
+
+    Nhận cả khối hiện tại ("📖 Nội dung:") lẫn khối timeline cũ ("mm:ss Tên
+    chương") để video đã đăng trước đây vẫn chuyển được sang danh sách tên chương.
+    """
+    blocks = _description_blocks(description)
+    for block in blocks:
+        if block[0].strip() == CHAPTER_SECTION_HEADING:
+            return block[1:]
+    return next((block for block in blocks if _is_timestamp_block(block)), None)
+
+
+def _is_timestamp_block(block: list[str]) -> bool:
+    """Khối toàn dòng "mm:ss Tên chương" — dấu vết timeline của bản cũ."""
+    return len(block) >= 2 and all(_TIMESTAMP_LINE_RE.match(line.strip()) for line in block)
+
+
+def chapter_titles_from_description(description: str) -> list[str]:
+    """Tên chương đang hiển thị trong description (bỏ tiền tố mốc thời gian cũ)."""
+    body = _chapter_block_lines(description)
+    if body is None:
+        return []
+    return _chapter_lines([_TIMESTAMP_PREFIX_RE.sub("", line.strip()) for line in body if line.strip() != "…"])
+
+
+def _without_chapter_block(description: str) -> str:
+    """Bỏ khối chương cũ khỏi description do tác giả viết.
+
+    Khối do bản cũ sinh ra có tiêu đề "📖 Nội dung:"; bản cũ hơn nữa nối thẳng
+    danh sách mốc thời gian "mm:ss Tên chương" vào cuối. Cả hai đều bị gỡ để khối
+    chương mới (tên chương, hoặc không có gì khi tắt cờ) thay chỗ. Danh sách mốc
+    thời gian do tác giả tự đặt giữa bài thì để nguyên.
+    """
+    blocks = _description_blocks(description)
+    kept = [
+        block for index, block in enumerate(blocks)
+        if block[0].strip() != CHAPTER_SECTION_HEADING
+        and not (index == len(blocks) - 1 and _is_timestamp_block(block))
+    ]
+    return "\n\n".join("\n".join(block) for block in kept).strip()
+
+
+def apply_chapter_block(description: str, chapter_titles, show: bool) -> str:
+    """Đặt lại khối danh sách chương của một description đã có.
+
+    ``show`` True: khối cũ (timeline hoặc danh sách) được thay bằng danh sách tên
+    chương — dùng ``chapter_titles`` khi có, không thì tái dùng tên đang hiển thị.
+    ``show`` False: gỡ hẳn khối chương. Phần mô tả còn lại giữ nguyên.
+    """
+    text = _without_chapter_block(description or "")
+    if not show:
+        return text
+    titles = _chapter_lines(chapter_titles) if chapter_titles else []
+    if not titles:
+        # Tái dùng nguyên dòng đang hiển thị, kể cả mốc thời gian, để không mất
+        # chapter marker của video đã đăng.
+        body = _chapter_block_lines(description or "") or []
+        titles = _chapter_lines([line for line in body if line.strip() != "…"])
+    if not titles:
+        return text
+    block = "\n".join([CHAPTER_SECTION_HEADING, *titles])
+    return f"{text}\n\n{block}" if text else block
 
 
 def playlist_url(playlist_id) -> str:
@@ -541,7 +636,7 @@ def render_playlist_description(book_title: str, config: dict) -> str:
         return ""
 
 
-def _default_description(values: dict, chapter_titles, music, timeline: str, extra: str = "", playlist_lines=(), excerpt: str = "") -> str:
+def _default_description(values: dict, chapter_titles, music, extra: str = "", playlist_lines=(), excerpt: str = "", chapters_shown: bool = True) -> str:
     """Fallback description so videos never upload with an empty one."""
     line = f"Tập {values['episode_number']} - {format_chapter_range(values['chapter_start'], values['chapter_end'])}"
     if values["patch_name"]:
@@ -549,7 +644,7 @@ def _default_description(values: dict, chapter_titles, music, timeline: str, ext
     header = [values["book_title"], line]
     if values["genre_tags"]:
         header.append(f"Thể loại: {values['genre_tags']}")
-    chapters = _chapter_lines(chapter_titles, timeline)
+    chapters = _chapter_lines(chapter_titles) if chapters_shown else []
     return _fit_description([
         [excerpt] if excerpt else [],
         header,
@@ -570,39 +665,72 @@ def audio_duration_seconds(path) -> float:
         return 0.0
 
 
-def _timeline_description(patch, intro_seconds: float = 0.0) -> str:
-    """Các dòng "mm:ss Tên chương" cho description, tính theo timeline của *WAV*."""
+def _timeline_chapter_titles(patch) -> list[str]:
+    """Tên các chương trong timeline của *WAV*, dùng khi context không có chapter_titles."""
     audio_path = getattr(patch, "audio_path", None)
     if not audio_path:
-        return ""
+        return []
     try:
         timeline = load_timeline(audio_path)
-        if timeline is None:
-            return ""
-        sample_rate = timeline["sample_rate"]
-        total_frames = timeline["total_frames"]
-        chapters = timeline["chapters"]
-        starts = []
-        titles = []
-        for chapter in chapters:
-            start = chapter["start_frame"]
-            start_seconds = chapter["start_seconds"]
-            title = chapter["title"]
-            starts.append(start)
-            titles.append(title.strip())
-        if len(starts) < 3 or any(b - a < sample_rate * 10 for a, b in zip(starts, starts[1:])) or total_frames - starts[-1] < sample_rate * 10:
-            return ""
-        # Intro động TTS đã nằm trong WAV/timeline, không cần offset riêng.
-
-        def format_time(frame):
-            seconds = frame // sample_rate
-            minutes, seconds = divmod(seconds, 60)
-            hours, minutes = divmod(minutes, 60)
-            return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
-
-        return "\n".join(f"{format_time(start)} {title}" for start, title in zip(starts, titles))
     except (OSError, TypeError, ValueError, UnicodeDecodeError, KeyError, json.JSONDecodeError, sf.SoundFileError):
-        return ""
+        return []
+    if not timeline:
+        return []
+    return [chapter["title"] for chapter in timeline["chapters"]]
+
+
+INTRO_CHAPTER_TITLE = "Giới thiệu"
+# YouTube chỉ tạo chapter khi mốc đầu là 00:00, có ít nhất 3 mốc và mỗi đoạn dài ≥ 10 giây.
+_MIN_CHAPTER_SECONDS = 10
+_MIN_CHAPTER_MARKERS = 3
+
+
+def _format_timestamp(seconds: int) -> str:
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+
+
+def timeline_chapter_lines(patch) -> list[str]:
+    """Các dòng "mm:ss Tên chương" từ timeline của WAV, [] khi không dựng được.
+
+    Đoạn trước chương đầu (intro TTS) thành mốc "00:00 Giới thiệu" nếu đủ dài để
+    YouTube nhận làm chapter; ngắn hơn thì chương đầu được kéo về 00:00. Timeline
+    không đạt điều kiện chapter của YouTube thì trả [] để nơi gọi dùng tên chương.
+    """
+    audio_path = getattr(patch, "audio_path", None)
+    if not audio_path:
+        return []
+    try:
+        timeline = load_timeline(audio_path)
+    except (OSError, TypeError, ValueError, UnicodeDecodeError, KeyError, json.JSONDecodeError, sf.SoundFileError):
+        return []
+    if not timeline:
+        return []
+    rate = timeline["sample_rate"]
+    marks = [(chapter["start_frame"] // rate, chapter["title"].strip()) for chapter in timeline["chapters"]]
+    if marks[0][0] >= _MIN_CHAPTER_SECONDS:
+        marks.insert(0, (0, INTRO_CHAPTER_TITLE))
+    else:
+        marks[0] = (0, marks[0][1])
+    total = timeline["total_frames"] // rate
+    starts = [start for start, _ in marks]
+    if (len(marks) < _MIN_CHAPTER_MARKERS
+            or any(b - a < _MIN_CHAPTER_SECONDS for a, b in zip(starts, starts[1:]))
+            or total - starts[-1] < _MIN_CHAPTER_SECONDS):
+        return []
+    return [f"{_format_timestamp(start)} {title}" for start, title in marks]
+
+
+def patch_chapter_lines(patch, chapter_titles) -> list[str]:
+    """Dòng cho khối chương: có mốc thời gian khi timeline hợp lệ, không thì tên chương."""
+    return timeline_chapter_lines(patch) or _chapter_lines(list(chapter_titles or []))
+
+
+def _chapters_block(chapter_titles) -> str:
+    """Khối "📖 Nội dung:" liệt kê tên chương, hoặc "" khi không có tên nào."""
+    chapters = _chapter_lines(chapter_titles)
+    return "\n".join([CHAPTER_SECTION_HEADING, *chapters]) if chapters else ""
 
 
 def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: dict | None = None, config: dict | None = None) -> dict:
@@ -639,7 +767,15 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
     except (KeyError, ValueError, IndexError) as exc:
         raise ValueError("invalid description template") from exc
     context = context if isinstance(context, dict) else {}
-    timeline = _timeline_description(patch, context.get("intro_seconds") or 0) if config["timeline_enabled"] else ""
+    chapter_titles = list(context.get("chapter_titles") or []) or _timeline_chapter_titles(patch)
+    if config["chapters_enabled"]:
+        # Có timeline hợp lệ thì mỗi dòng mang mốc thời gian (YouTube chapter marker).
+        chapter_titles = patch_chapter_lines(patch, chapter_titles)
+    if not chapter_titles and config["chapters_enabled"]:
+        # Video không còn patch/timeline nhưng description đang có danh sách chương:
+        # giữ nguyên tên chương đó thay vì xoá khối khi dựng lại mô tả.
+        chapter_titles = chapter_titles_from_description(description)
+    chapters_block = _chapters_block(chapter_titles) if config["chapters_enabled"] else ""
     extra = render_description_extra(config["description_extra"])
     playlist = {**config["playlist"], **(override.get("playlist") or {})}
     playlist = validate_book_youtube_config({**config, "playlist": playlist})["playlist"]
@@ -650,23 +786,25 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: 
     excerpt = _chapter_excerpt(context.get("first_chapter"))
     if excerpt and not override.get("description"):
         description = ""
+    if description.strip():
+        # An author-written description keeps its own opening. A chapter block left by
+        # an older build (timeline markers or an old name list) is dropped and rebuilt
+        # below from the current setting, so the block always comes at the same place.
+        description = _without_chapter_block(description)
     if not description.strip():
-        # The generated description already places the timeline inside its chapter
-        # list, so only an author-written description gets the block appended.
+        # The generated description already places the chapter list inside itself,
+        # so only an author-written description gets the block appended.
         description = _default_description(
-            values, context.get("chapter_titles"), context.get("music"), timeline, extra, playlist_block, excerpt)
+            values, chapter_titles, context.get("music"), extra, playlist_block, excerpt,
+            chapters_shown=config["chapters_enabled"])
     else:
-        # An author-written description keeps its own opening; the playlist link is
-        # appended right below it, ahead of the timeline, unless it is already there.
+        # The playlist link sits above the chapter list, and the extended block last.
         if playlist_block and playlist_url(playlist["playlist_id"]) not in description:
-            candidate = f"{description.rstrip()}\n\n" + "\n".join(playlist_block)
+            candidate = f"{description.rstrip()}\n\n" + "\n".join(playlist_block) if description else "\n".join(playlist_block)
             if len(candidate) <= YOUTUBE_DESCRIPTION_LIMIT:
                 description = candidate
-        if timeline:
-            if description.rstrip() == timeline or description.endswith(f"\n\n{timeline}"):
-                candidate = description
-            else:
-                candidate = f"{description}\n\n{timeline}" if description else timeline
+        if chapters_block:
+            candidate = f"{description}\n\n{chapters_block}" if description else chapters_block
             if len(candidate) <= YOUTUBE_DESCRIPTION_LIMIT:
                 description = candidate
         if extra and not description.rstrip().endswith(extra):

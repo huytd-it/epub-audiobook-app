@@ -112,6 +112,45 @@ const IMPORT_STATUS_CLASSES: Record<string, string> = {
   error: "text-destructive",
 };
 
+/** Lựa chọn khối danh sách chương khi cập nhật description hàng loạt.
+ *  "keep" để nguyên mô tả đang có; "show" chèn danh sách tên chương (khối
+ *  timeline/mốc thời gian cũ được thay thế); "hide" gỡ hẳn khối chương. */
+function ChapterListChoice({
+  value,
+  onChange,
+}: {
+  value: "keep" | "show" | "hide";
+  onChange: (value: "keep" | "show" | "hide") => void;
+}) {
+  return (
+    <div>
+      <label className="text-xs font-semibold text-foreground mb-1 block">Danh sách chương trong description</label>
+      <div className="flex flex-wrap gap-3">
+        {([
+          ["keep", "Giữ nguyên"],
+          ["show", "Hiển thị tên chương"],
+          ["hide", "Ẩn khối chương"],
+        ] as const).map(([option, label]) => (
+          <label key={option} className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+            <input
+              type="radio"
+              name="bulk-chapters"
+              checked={value === option}
+              onChange={() => onChange(option)}
+              className="border-input"
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+      <p className="text-[10px] text-muted-foreground mt-1">
+        Chọn "Hiển thị tên chương" thay khối mốc thời gian cũ bằng danh sách tên chương — đúng như checkbox trong
+        Cấu hình mặc định / cấu hình sách.
+      </p>
+    </div>
+  );
+}
+
 /**
  * Không gian làm việc YouTube của một tài khoản trong Socials hub. SocialsPage mount
  * lại component này (key = accountId) mỗi khi đổi tài khoản, nên toàn bộ state bên
@@ -248,6 +287,8 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
   const [channelBulkDescriptionTemplate, setChannelBulkDescriptionTemplate] = useState("");
   const [channelBulkPrivacy, setChannelBulkPrivacy] = useState("");
   const [channelBulkAddTags, setChannelBulkAddTags] = useState("");
+  /** "keep" giữ nguyên khối chương hiện tại, "show" chèn danh sách tên chương, "hide" gỡ. */
+  const [channelBulkChapters, setChannelBulkChapters] = useState<"keep" | "show" | "hide">("keep");
   const [channelBulkBusy, setChannelBulkBusy] = useState(false);
   // Removing from a playlist is handled on the playlist-items panel (its own bulk
   // toolbar); this one only ever adds, since the cache view spans the whole channel.
@@ -275,6 +316,8 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
   const [bulkDescriptionTemplate, setBulkDescriptionTemplate] = useState("");
   const [bulkScheduledAt, setBulkScheduledAt] = useState("");
   const [bulkGenerateLabels, setBulkGenerateLabels] = useState(false);
+  /** "keep" giữ nguyên khối chương hiện tại, "show" chèn danh sách tên chương, "hide" gỡ. */
+  const [bulkChapters, setBulkChapters] = useState<"keep" | "show" | "hide">("keep");
   const [bulkUpdateBusy, setBulkUpdateBusy] = useState(false);
 
   /** `silent` bỏ qua spinner: dùng cho vòng poll khi đang có upload chạy, nếu
@@ -420,6 +463,7 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
         description_template: channelBulkDescriptionTemplate,
         privacy_status: channelBulkPrivacy || null,
         add_tags: channelBulkAddTags.split(",").map((t) => t.trim()).filter(Boolean),
+        chapters_enabled: channelBulkChapters === "keep" ? null : channelBulkChapters === "show",
       });
       setShowChannelBulkUpdateModal(false);
       setChannelSelectedIds([]);
@@ -427,6 +471,7 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
       setChannelBulkDescriptionTemplate("");
       setChannelBulkPrivacy("");
       setChannelBulkAddTags("");
+      setChannelBulkChapters("keep");
       loadChannelVideos();
       alert(`Đã cập nhật ${result.succeeded}/${result.requested} video` + (result.failed ? `, ${result.failed} lỗi` : "") + ".");
     } catch (err: any) {
@@ -776,9 +821,11 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
         description_template: bulkDescriptionTemplate,
         scheduled_publish_at: bulkScheduledAt || null,
         generate_ai_labels: bulkGenerateLabels,
+        chapters_enabled: bulkChapters === "keep" ? null : bulkChapters === "show",
       });
       setShowBulkUpdateModal(false);
       setSelectedIds([]);
+      setBulkChapters("keep");
       loadUploads();
       alert(`Đã cập nhật ${result.updated}/${result.total} mục.`);
     } catch (err: any) {
@@ -3086,6 +3133,7 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
                   Dùng <code className="bg-muted px-0.5 rounded">{"{episode}"}</code> để chèn số tập tự động.
                 </p>
               </div>
+              <ChapterListChoice value={bulkChapters} onChange={setBulkChapters} />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-semibold text-foreground mb-1 block">
@@ -3342,6 +3390,7 @@ export function YouTubeWorkspace({ accountId }: { accountId: number }) {
                 <label className="text-xs font-semibold text-foreground mb-1 block">Template mô tả (để trống = giữ nguyên)</label>
                 <Textarea rows={3} value={channelBulkDescriptionTemplate} onChange={(e) => setChannelBulkDescriptionTemplate(e.target.value)} placeholder="VD: Tập {episode} - Truyện kể đêm khuya hay nhất..." />
               </div>
+              <ChapterListChoice value={channelBulkChapters} onChange={setChannelBulkChapters} />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-semibold text-foreground mb-1 block">Quyền riêng tư (để trống = giữ nguyên)</label>

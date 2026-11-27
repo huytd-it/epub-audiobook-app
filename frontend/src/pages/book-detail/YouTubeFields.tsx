@@ -97,12 +97,13 @@ export function YouTubeConfigFields({
 
       <div className="rounded-md border border-border p-3 space-y-3">
         <CheckField
-          checked={config.timeline_enabled}
-          onChange={(value) => onChange({ timeline_enabled: value })}
-          label="Hiển thị timeline chương trong description"
+          checked={config.chapters_enabled}
+          onChange={(value) => onChange({ chapters_enabled: value })}
+          label="Hiển thị danh sách tên chương trong description"
         />
         <p className="pl-6 text-[11px] leading-4 text-muted-foreground">
-          Timeline chỉ xuất hiện khi audio có đủ mốc chương. Tắt để description không kèm danh sách mốc thời gian.
+          Bật: description có khối "📖 Nội dung:" liệt kê các chương của patch, kèm mốc thời gian (YouTube chapter)
+          khi audio có timeline hợp lệ; không có timeline thì chỉ hiện tên chương. Tắt: ẩn hẳn khối này.
         </p>
         <CheckField
           checked={Boolean((config as any).auto_ai_labels)}

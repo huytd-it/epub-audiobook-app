@@ -1377,6 +1377,23 @@ def update_video_metadata(conn: sqlite3.Connection, video_id: str, title: str,
     return _execute(service.videos().update(part="snippet", body=body))
 
 
+def update_video_description(conn: sqlite3.Connection, video_id: str, description: str) -> dict:
+    """Thay description của một video đã lên kênh, giữ nguyên tiêu đề/tags/danh mục.
+
+    videos.update thay cả khối snippet nên phải đọc snippet hiện tại trước.
+    """
+    _require_google_imports()
+    service = get_youtube_service(conn)
+    resp = _execute(service.videos().list(part="snippet", id=video_id, maxResults=1))
+    items = resp.get("items") or []
+    if not items:
+        raise ValueError(f"video {video_id} not found")
+    snippet = items[0]["snippet"]
+    snippet["description"] = description[:5000]
+    body = {"id": video_id, "snippet": snippet}
+    return _execute(service.videos().update(part="snippet", body=body))
+
+
 def get_playlist_cover(conn: sqlite3.Connection, playlist_id: str) -> dict | None:
     """The playlist's current hero image resource, or None."""
     _require_google_imports()

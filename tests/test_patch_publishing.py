@@ -58,7 +58,7 @@ def test_enqueue_freezes_complete_patch_render_configuration(tmp_path, monkeypat
     assert config["music_fade_enabled"] is True
 
 
-def test_enqueue_snapshot_contains_timeline_once(tmp_path, monkeypatch):
+def test_enqueue_snapshot_contains_the_chapter_list_once(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "test.db")); db.init_schema(conn)
     audio = tmp_path / "audio.wav"
     sf.write(audio, [0.0] * 300, 10)
@@ -75,9 +75,9 @@ def test_enqueue_snapshot_contains_timeline_once(tmp_path, monkeypatch):
     monkeypatch.setattr("app.patch_publishing.ensure_patch_overlay", lambda *args, **kwargs: "/tmp/thumb.png")
     row = enqueue_patch_publish(conn, patch_id)
     description = json.loads(row["config_snapshot"])["description"]
-    assert description.count("00:00 Intro") == 1
-    assert "00:00 Intro\n00:10 One\n00:20 Two" in description
-    assert json.loads(enqueue_patch_publish(conn, patch_id)["config_snapshot"])["description"].count("00:00 Intro") == 1
+    assert description.count("📖 Nội dung:") == 1
+    assert "📖 Nội dung:\n00:00 Intro\n00:10 One\n00:20 Two" in description
+    assert json.loads(enqueue_patch_publish(conn, patch_id)["config_snapshot"])["description"].count("One") == 1
 
 
 def test_enqueue_snapshot_lists_chapter_names_and_music_credit(tmp_path, monkeypatch):

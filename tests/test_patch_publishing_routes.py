@@ -193,3 +193,77 @@ def test_seed_video_retry_creates_one_upload_and_force_new_preserves_video(tmp_p
     assert tuple(row)[:3] == (video_id, str(video_path), "upload")
     assert row["youtube_upload_id"] not in (None, upload_id)
     assert conn.execute("SELECT COUNT(*) FROM youtube_uploads").fetchone()[0] == 2
+
+
+# --- Bulk YouTube description push (BookDetail) --------------------------------
+
+
+def _publish(conn, patch_id, video_id="yt1"):
+    now = "2026-01-01T00:00:00"
+    cur = conn.execute(
+        "INSERT INTO youtube_uploads (video_path, youtube_video_id, title, description, status, created_at) "
+        "VALUES ('/tmp/v.mp4', ?, 'T', '00:00 Cu', 'done', ?)", (video_id, now))
+    conn.execute(
+        "INSERT INTO patch_pipeline (patch_id, stage, config_snapshot, media_snapshot, youtube_upload_id, created_at, updated_at) "
+        "VALUES (?, 'published', '{}', '{}', ?, ?, ?)", (patch_id, cur.lastrowid, now, now))
+    conn.commit()
+    return cur.lastrowid
+
+
+def _with_chapters(conn, book_id):
+    for index, title in ((1, "Chương 1: Mưa"), (2, "Chương 2: Nắng")):
+        conn.execute("INSERT INTO chapter (book_id, chapter_index, title, text, char_count) VALUES (?, ?, ?, '', 0)",
+                     (book_id, index, title))
+    conn.execute("UPDATE patch SET chapter_start=1, chapter_end=2 WHERE book_id=?", (book_id,))
+    conn.execute("UPDATE book SET automation_config=? WHERE id=?", (json.dumps({"youtube": {
+        "description": "Mo ta sach",
+        "description_extra": {"enabled": False, "contact_email": "fixture@example.com"},
+    }, "production_modes": {"youtube": "custom"}}), book_id))
+    conn.commit()
+
+
+def test_push_description_updates_published_videos_with_chapter_names(tmp_path, monkeypatch):
+    conn, client = _client(tmp_path)
+    book_id, patch_id = _seed(conn)
+    _with_chapters(conn, book_id)
+    upload_id = _publish(conn, patch_id)
+    calls = []
+    monkeypatch.setattr(youtube, "is_configured", lambda: True)
+    monkeypatch.setattr(youtube, "update_video_description",
+                        lambda conn, video_id, description: calls.append((video_id, description)) or {})
+
+    response = client.post(f"/books/{book_id}/patches/youtube-description",
+                           json={"patch_ids": [patch_id], "chapters_enabled": True})
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == 1
+    assert len(calls) == 1 and calls[0][0] == "yt1"
+    assert "📖 Nội dung:\nChương 1: Mưa\nChương 2: Nắng" in calls[0][1]
+    stored = conn.execute("SELECT description FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()[0]
+    assert stored == calls[0][1]
+
+
+def test_push_description_can_hide_chapters_and_dry_run_skips_youtube(tmp_path, monkeypatch):
+    conn, client = _client(tmp_path)
+    book_id, patch_id = _seed(conn)
+    _with_chapters(conn, book_id)
+    _publish(conn, patch_id)
+    monkeypatch.setattr(youtube, "update_video_description",
+                        lambda *a: pytest.fail("dry_run must not call YouTube"))
+
+    body = client.post(f"/books/{book_id}/patches/youtube-description",
+                       json={"patch_ids": [patch_id], "chapters_enabled": False, "dry_run": True}).json()
+
+    assert body["preview"] == 1
+    assert "Nội dung" not in body["items"][0]["description"]
+    assert "Chương 1: Mưa" not in body["items"][0]["description"]
+
+
+def test_push_description_skips_unpublished_patches(tmp_path, monkeypatch):
+    conn, client = _client(tmp_path)
+    book_id, patch_id = _seed(conn)
+    monkeypatch.setattr(youtube, "update_video_description", lambda *a: pytest.fail("nothing to push"))
+
+    body = client.post(f"/books/{book_id}/patches/youtube-description", json={"patch_ids": [patch_id]}).json()
+
+    assert body["skipped"] == 1 and body["updated"] == 0

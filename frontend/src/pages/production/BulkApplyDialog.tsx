@@ -75,7 +75,7 @@ const KEY_LABELS: Record<string, string> = {
   description: "Description",
   genre_tags: "Thể loại / tags",
   privacy_status: "Chế độ hiển thị",
-  timeline_enabled: "Timeline chương",
+  chapters_enabled: "Danh sách chương trong description",
   description_extra: "Nội dung mở rộng (bản quyền…)",
   podcast: "Podcast",
   auto_ai_labels: "Nhãn AI tự động",
