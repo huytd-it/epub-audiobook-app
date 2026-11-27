@@ -767,6 +767,16 @@ def process_upload(
             "elapsed": time.monotonic() - started_at,
         })
         logger.exception("YouTube upload %s failed", upload_id)
+        # Server egress (proxy của scope youtube) chết — trước khi bắt đầu hay rớt
+        # giữa chừng: raise để runner hoãn job (không tính lượt) thay vì trả
+        # "failed". Lần chạy sau upload làm lại từ đầu (chưa resume qua job).
+        try:
+            account_id = (get_creds_from_db(conn) or {}).get("id")
+        except Exception:
+            account_id = None
+        egress_exc = egress.proxy_down_error(conn, "youtube", exc, account_id)
+        if egress_exc is not None:
+            raise egress_exc from exc
         return {"youtube_video_id": None, "status": "failed", "error": described}
 
 

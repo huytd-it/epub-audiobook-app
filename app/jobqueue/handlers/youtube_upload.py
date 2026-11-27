@@ -14,7 +14,7 @@ import logging
 import re
 from pathlib import Path
 
-from app import youtube
+from app import egress, youtube
 from app.jobqueue.models import JobFatalError
 from app.patch_publishing import sync_pipeline_from_upload
 from app.video_repository import update_video
@@ -287,6 +287,12 @@ def handle(ctx) -> dict:
         youtube.mark_upload_failed(ctx.conn, upload_id, error)
         if video_id:
             update_video(ctx.conn, video_id, upload_status="failed", error_message=error)
+        if egress.unavailable_in(exc) is not None:
+            # Server egress chết: runner hoãn job (không tính lượt), không bao giờ
+            # tự đi thẳng.
+            ctx.log("server egress không vào được — job sẽ được hoãn và tự thử lại",
+                    level=logging.WARNING)
+            raise
         if _is_fatal(error):
             ctx.log("lỗi chí tử — không thử lại job này", level=logging.ERROR)
             raise JobFatalError(error) from exc

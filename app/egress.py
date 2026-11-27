@@ -469,6 +469,59 @@ def _is_proxy_connection_error(exc: BaseException) -> bool:
     return isinstance(exc, _proxy_connection_errors())
 
 
+def _network_errors() -> tuple[type[BaseException], ...]:
+    """Lỗi tầng mạng có thể do proxy chết giữa chừng (không gồm lỗi file như
+    FileNotFoundError/PermissionError dù cùng là OSError)."""
+    errors: list[type[BaseException]] = [requests.ConnectionError, requests.Timeout,
+                                         ConnectionError, TimeoutError, socket.timeout]
+    try:
+        import socks as _socks
+        errors.extend([_socks.ProxyError, _socks.GeneralProxyError])
+    except ImportError:
+        pass
+    try:
+        import httplib2 as _httplib2
+        errors.append(_httplib2.HttpLib2Error)
+    except ImportError:
+        pass
+    return tuple(errors)
+
+
+def proxy_down_error(conn: sqlite3.Connection | None, scope: str, exc: BaseException,
+                     account_id: int | None = None) -> EgressUnavailable | None:
+    """Phân loại một lỗi giữa chừng (vd. upload resumable rớt): nếu đó là lỗi mạng
+    trong khi scope đang đi proxy và proxy của scope không mở được TCP nữa thì trả
+    EgressUnavailable (``__cause__`` = exc) để runner hoãn job thay vì tính lượt.
+    None nếu không phải (lỗi thật của provider, hoặc scope đi thẳng)."""
+    found = unavailable_in(exc)
+    if found is not None:
+        return found
+    if not isinstance(exc, _network_errors()):
+        return None
+    try:
+        with _conn(conn) as active:
+            if active is None or get_policy(active)[scope]["mode"] != "proxy":
+                return None
+            pinned_id = _pinned_endpoint_id(active, account_id)
+            rule = get_policy(active)[scope]
+            pool = [e for e in list_endpoints(active, "proxy") if e.enabled and (
+                e.id == pinned_id if pinned_id is not None
+                else (not rule["endpoint_ids"] or e.id in rule["endpoint_ids"]))]
+            dead = [e for e in pool if not _reachable(e)]
+            for endpoint in dead:
+                mark_failed(active, endpoint, f"Rớt giữa chừng: {type(exc).__name__}: {exc}")
+    except Exception:  # phân loại chỉ là best-effort, không che lỗi gốc
+        logger.warning("event=egress.classify_failed scope=%s", scope, exc_info=True)
+        return None
+    if not dead:
+        return None
+    error = EgressUnavailable(
+        f"Scope {scope}: proxy rớt giữa chừng ({', '.join(e.label or str(e.id) for e in dead)} "
+        f"không mở được TCP): {type(exc).__name__}: {exc}")
+    error.__cause__ = exc
+    return error
+
+
 def _reachable(endpoint: Endpoint, timeout: float = 2.0) -> bool:
     """Kiểm tra TCP (~2s) tới host:port của proxy trước khi chọn.
 

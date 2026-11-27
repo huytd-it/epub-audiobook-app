@@ -373,3 +373,32 @@ def test_update_keeps_stored_url_and_secret_when_blank(conn):
     endpoint = egress.get_endpoint(conn, relay_id)
     assert (endpoint.label, endpoint.url, endpoint.secret) == (
         "renamed", "https://relay1.example.app", "key1")
+
+
+# ------------------------------------------------- lỗi giữa chừng (upload resumable)
+
+def test_proxy_down_error_only_when_the_scope_proxy_is_really_dead(conn, monkeypatch):
+    exc = ConnectionResetError("reset by peer")
+    assert egress.proxy_down_error(conn, "youtube", exc) is None          # đang direct
+    _proxy(conn, 1)
+    egress.set_policy(conn, {"youtube": {"mode": "proxy"}})
+    monkeypatch.setattr(egress, "_reachable", lambda endpoint, timeout=2.0: True)
+    assert egress.proxy_down_error(conn, "youtube", exc) is None          # proxy còn sống
+    monkeypatch.setattr(egress, "_reachable", lambda endpoint, timeout=2.0: False)
+    assert egress.proxy_down_error(conn, "youtube", FileNotFoundError("x")) is None
+    wrapped = egress.proxy_down_error(conn, "youtube", exc)
+    assert isinstance(wrapped, egress.EgressUnavailable)
+    assert wrapped.__cause__ is exc
+    assert egress.list_endpoints(conn)[0].fail_count == 1
+
+
+def test_unavailable_in_walks_the_cause_chain():
+    inner = egress.EgressUnavailable("down")
+    try:
+        try:
+            raise inner
+        except egress.EgressUnavailable as e:
+            raise RuntimeError("wrapped") from e
+    except RuntimeError as outer:
+        assert egress.unavailable_in(outer) is inner
+    assert egress.unavailable_in(ValueError("x")) is None
