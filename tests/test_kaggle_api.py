@@ -463,7 +463,8 @@ def test_real_transport_goes_through_the_kaggle_egress_scope(monkeypatch):
     scope, method, url, kwargs = calls[0]
     assert (scope, method, url) == ("kaggle", "POST", "https://api.kaggle.com/v1/x")
     assert kwargs["data"] == b'{"a":1}'
-    assert kwargs["headers"] == {"Authorization": "Basic a", "Content-Type": "application/json"}
+    assert kwargs["headers"] == {"Authorization": "Basic a", "Content-Type": "application/json",
+                                 "User-Agent": kaggle_api._USER_AGENT}
     assert kwargs["timeout"] == kaggle_api._TIMEOUT_SECONDS
 
 
@@ -473,7 +474,8 @@ def test_real_transport_keeps_urllib_headers_for_raw_blob_put(monkeypatch):
     monkeypatch.setattr(egress, "request", lambda scope, method, url, **kw: seen.update(kw) or _FakeResponse(200, b""))
     kaggle_api._request("https://storage.example/put", method="PUT", headers={}, body=b"\x00zip")
     assert seen["data"] == b"\x00zip"
-    assert seen["headers"] == {"Content-Type": "application/x-www-form-urlencoded"}
+    assert seen["headers"] == {"Content-Type": "application/x-www-form-urlencoded",
+                               "User-Agent": kaggle_api._USER_AGENT}
 
 
 def test_real_transport_lets_egress_unavailable_propagate(monkeypatch):
