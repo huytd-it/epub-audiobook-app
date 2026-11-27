@@ -820,11 +820,16 @@ def export_batch_to_kaggle(
     auto_create_video: int | None = Form(None),
     auto_upload_youtube: int | None = Form(None),
     automation_mode: str = Form("per_patch"),
+    kaggle_account_id: str = Form(""),
 ):
     """Enqueue a kaggle_tts job: the Kaggle kernel reads and writes the batch through
     Google Drive API, and the worker imports only the Drive ``result`` folder. One
     live job per book at a time (dedupe_key), same reasoning as the other export
     routes' dedupe keys.
+
+    ``kaggle_account_id`` (tuỳ chọn): chạy đúng tài khoản Kaggle này thay vì tự chọn
+    tài khoản rảnh. Bận/hết quota thì job chờ chính tài khoản đó, không đổi sang cái
+    khác. Batch đã có notebook trên một tài khoản thì vẫn tiếp tục trên tài khoản đó.
 
     Automation mirrors the "Tạo âm thanh" dialog (/tts/generate): auto_create_video /
     auto_upload_youtube (absent = legacy behavior, only the old publish hook runs)
@@ -835,7 +840,20 @@ def export_batch_to_kaggle(
         raise HTTPException(400, f"automation_mode phải là per_patch hoặc after_all, got {automation_mode!r}")
     # Chuẩn hoá: UI mới luôn per_patch; after_all chỉ để tương thích payload cũ.
     automation_mode = "per_patch"
+    chosen_account: int | None = None
+    if kaggle_account_id.strip():
+        try:
+            chosen_account = int(kaggle_account_id)
+        except ValueError:
+            raise HTTPException(400, "kaggle_account_id không hợp lệ")
     with locked_conn(request) as conn:
+        if chosen_account is not None:
+            from app import kaggle_accounts
+            account = kaggle_accounts.get_account(conn, chosen_account)
+            if account is None:
+                raise HTTPException(400, "Không tìm thấy tài khoản Kaggle đã chọn")
+            if account["status"] == "disabled":
+                raise HTTPException(400, f"Tài khoản Kaggle {account['username']} đang tắt")
         book, patches = _load_batch_patches(conn, book_id, patch_ids)
         dedupe_key = f"kaggle_tts:book={book_id}"
         existing = store.find_live_by_dedupe(conn, dedupe_key)
@@ -858,6 +876,8 @@ def export_batch_to_kaggle(
                 payload["auto_create_video"] = True
         if "auto_create_video" in payload or "auto_upload_youtube" in payload:
             payload["automation_mode"] = automation_mode
+        if chosen_account is not None:
+            payload["kaggle_account_id"] = chosen_account
         from types import SimpleNamespace
         from app import kaggle_packages
         package = kaggle_packages.register(

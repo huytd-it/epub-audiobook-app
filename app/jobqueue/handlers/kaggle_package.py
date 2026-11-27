@@ -90,13 +90,43 @@ def reconcile(ctx, package, service, staging, imported, policy, mode, active):
 def _claim_account(conn, job_id, pinned_id):
     if pinned_id is None:
         return kaggle_accounts.claim_idle_account(conn, job_id)
-    row = conn.execute(
-        """UPDATE kaggle_account SET status='busy', in_use_by_job_id=?, updated_at=?
-           WHERE id=? AND (status='idle' OR (status='cooldown' AND cooldown_until<=?))
-           RETURNING *""", (job_id, packages.now(), pinned_id, packages.now()),
-    ).fetchone()
-    conn.commit()
-    return dict(row) if row else None
+    return kaggle_accounts.claim_account(conn, job_id, pinned_id)
+
+
+def _pinned_unavailable(conn, account_id: int, *, chosen_by_user: bool):
+    """Exception cho trường hợp tài khoản ghim (người dùng chọn / sở hữu notebook cũ)
+    không claim được. Không bao giờ âm thầm đổi sang tài khoản khác."""
+    reason, until = kaggle_accounts.unavailable_reason(conn, account_id)
+    who = "Tài khoản Kaggle đã chọn" if chosen_by_user else "Tài khoản Kaggle gốc của notebook"
+    if reason == "deleted":
+        return JobFatalError(f"{who} (id={account_id}) đã bị xóa.")
+    if reason == "disabled":
+        return JobFatalError(f"{who} đang bị tắt ở /drive → Kaggle. Bật lại hoặc chạy lại với tài khoản khác.")
+    if reason == "cooldown":
+        return JobRescheduled(until, f"{who} hết quota GPU; chờ tới {until}")
+    return JobRescheduled((datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                          f"{who} đang bận với job khác")
+
+
+def resolve_pinned_account(ctx, package_account_id: int | None) -> tuple[int | None, bool]:
+    """(account_id cần claim hoặc None = tự chọn, có phải người dùng chọn không).
+
+    Notebook đã tồn tại trên một tài khoản thì bắt buộc dùng tài khoản đó (kernel thuộc
+    về user Kaggle đó); lựa chọn khác của người dùng chỉ được ghi log."""
+    requested = ctx.job.payload.get("kaggle_account_id")
+    requested = int(requested) if requested not in (None, "") else None
+    if package_account_id is not None:
+        if requested is not None and requested != package_account_id:
+            ctx.log(
+                f"Batch này đã có notebook trên tài khoản Kaggle id={package_account_id}; "
+                f"tiếp tục trên tài khoản đó thay vì id={requested} đã chọn.",
+                level=logging.WARNING,
+            )
+        return package_account_id, False
+    if requested is not None:
+        account = kaggle_accounts.get_account(ctx.conn, requested)
+        ctx.log(f"Dùng tài khoản Kaggle người dùng chọn: {account['username'] if account else requested}")
+    return requested, requested is not None
 
 
 def handle(ctx):
@@ -198,11 +228,15 @@ def handle(ctx):
                 )
 
             kaggle_accounts.recover_unavailable_accounts(conn)
-            pinned_id = package["kaggle_account_id"]
+            pinned_id, chosen_by_user = resolve_pinned_account(ctx, package["kaggle_account_id"])
             if pinned_id is not None and kaggle_accounts.get_account(conn, pinned_id) is None:
+                if chosen_by_user:
+                    raise JobFatalError(f"Tài khoản Kaggle đã chọn (id={pinned_id}) đã bị xóa.")
                 raise JobFatalError("Tài khoản Kaggle gốc đã bị xóa; không thể tạo version cho notebook cũ.")
             account = _claim_account(conn, ctx.job.id, pinned_id)
             if account is None:
+                if pinned_id is not None:
+                    raise _pinned_unavailable(conn, pinned_id, chosen_by_user=chosen_by_user)
                 raise JobRescheduled((datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
                                      "Tài khoản Kaggle đang bận hoặc chưa khả dụng")
             account_ref = kaggle_api.KaggleAccount(username=account["username"], api_key=account["api_key"])

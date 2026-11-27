@@ -116,6 +116,32 @@ def claim_idle_account(conn: sqlite3.Connection, job_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def claim_account(conn: sqlite3.Connection, job_id: int, account_id: int) -> dict | None:
+    """Claim đúng một tài khoản (người dùng chọn, hoặc tài khoản sở hữu notebook cũ):
+    chỉ khi nó 'idle' hoặc 'cooldown' đã hết hạn. None = đang bận/tắt/còn cooldown."""
+    now = _now_iso()
+    row = conn.execute(
+        """UPDATE kaggle_account SET status='busy', in_use_by_job_id=?, updated_at=?
+           WHERE id=? AND (status='idle' OR (status='cooldown' AND cooldown_until<=?))
+           RETURNING *""",
+        (job_id, now, account_id, now),
+    ).fetchone()
+    conn.commit()
+    return dict(row) if row else None
+
+
+def unavailable_reason(conn: sqlite3.Connection, account_id: int) -> tuple[str, str | None]:
+    """Vì sao claim_account trả None: ('deleted'|'disabled'|'cooldown'|'busy', cooldown_until)."""
+    row = get_account(conn, account_id)
+    if row is None:
+        return "deleted", None
+    if row["status"] == "disabled":
+        return "disabled", None
+    if row["status"] == "cooldown" and row["cooldown_until"] and row["cooldown_until"] > _now_iso():
+        return "cooldown", row["cooldown_until"]
+    return "busy", None
+
+
 def release_account(
     conn: sqlite3.Connection, account_id: int, *, cooldown_until: str | None = None,
 ) -> None:

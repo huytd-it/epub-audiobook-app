@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Cloud, Download, FolderSync, Gauge, HardDrive, Save, Layers } from "lucide-react";
 import { DriveAccount, DriveTarget, KaggleAccount, Patch, post, postJson } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -48,6 +48,17 @@ export function ExportPanel({
   const [saving, setSaving] = useState(false);
   const [kaggleAutoVideo, setKaggleAutoVideo] = useState(true);
   const [kaggleAutoUpload, setKaggleAutoUpload] = useState(false);
+  /** "" = tự chọn tài khoản Kaggle đang rảnh; id = chạy đúng tài khoản này. */
+  const [kaggleAccountId, setKaggleAccountId] = useState("");
+  const kaggleStatusLabel: Record<KaggleAccount["status"], string> = {
+    idle: "sẵn sàng", busy: "đang chạy", cooldown: "hết quota", disabled: "đã tắt",
+  };
+  // Tài khoản đã chọn bị xoá/tắt ở trang Drive thì quay về tự chọn.
+  useEffect(() => {
+    if (!kaggleAccountId) return;
+    const chosen = kaggleAccounts.find((account) => String(account.id) === kaggleAccountId);
+    if (!chosen || chosen.status === "disabled") setKaggleAccountId("");
+  }, [kaggleAccounts, kaggleAccountId]);
 
   const { targetIds, skipped, usingSelection } = useMemo(() => {
     const exportable = patches.filter((patch) => patch.status !== "processing");
@@ -139,6 +150,7 @@ export function ExportPanel({
     }, `Đã export ${targetIds.length} patch qua Google Drive API.`);
   };
 
+  const chosenKaggle = kaggleAccounts.find((account) => String(account.id) === kaggleAccountId);
   const exportToKaggle = () => {
     const video = kaggleAutoUpload || kaggleAutoVideo;
     const chain = kaggleAutoUpload
@@ -152,9 +164,12 @@ export function ExportPanel({
         form.set("auto_create_video", video ? "1" : "0");
         form.set("auto_upload_youtube", kaggleAutoUpload ? "1" : "0");
         form.set("automation_mode", "per_patch");
+        if (kaggleAccountId) form.set("kaggle_account_id", kaggleAccountId);
         return post(`/books/${bookId}/patches/export-batch-kaggle`, form);
       },
-      `Đã đưa ${targetIds.length} patch vào hàng đợi Kaggle${chain} (chuỗi từng patch). Theo dõi tiến độ ở trang Queue.`
+      `Đã đưa ${targetIds.length} patch vào hàng đợi Kaggle${
+        chosenKaggle ? ` (tài khoản ${chosenKaggle.label || chosenKaggle.username})` : ""
+      }${chain} (chuỗi từng patch). Theo dõi tiến độ ở trang Queue.`
     );
   };
 
@@ -417,6 +432,23 @@ export function ExportPanel({
 
           {/* Middle: automation controls — luôn per_patch, bỏ select after_all */}
           <div className="flex w-full items-center gap-2 sm:w-auto sm:flex-1 sm:justify-center">
+            {kaggleAccounts.length > 0 && (
+              <select
+                className={cn(selectClass, "h-7 max-w-[14rem] bg-background py-0 text-xs")}
+                value={kaggleAccountId}
+                onChange={(event) => setKaggleAccountId(event.target.value)}
+                aria-label="Tài khoản Kaggle"
+                title="Chọn tài khoản Kaggle chạy batch này. Tự chọn = tài khoản đang rảnh. Batch đã có notebook trên một tài khoản thì luôn chạy tiếp trên tài khoản đó."
+              >
+                <option value="">Tài khoản: tự chọn</option>
+                {kaggleAccounts.map((account) => (
+                  <option key={account.id} value={account.id} disabled={account.status === "disabled"}>
+                    {account.label || account.username} · {account.username} — {kaggleStatusLabel[account.status] ?? account.status}
+                    {account.status !== "disabled" ? ` · ~${account.remaining_quota_hours}h` : ""}
+                  </option>
+                ))}
+              </select>
+            )}
             <div className="flex flex-wrap items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-1 sm:flex-nowrap sm:gap-2 sm:px-3">
               <CheckField
                 checked={kaggleAutoVideo}

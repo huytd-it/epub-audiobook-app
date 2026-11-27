@@ -995,3 +995,91 @@ def test_egress_down_while_polling_keeps_polling_and_never_pushes_again(tmp_path
     with pytest.raises(JobFatalError, match="không tự chạy lại"):
         kaggle_tts.handle(ctx)
     assert pushes == ["user1"]
+
+
+# ------------------------------------------------- chọn tài khoản Kaggle khi chạy
+
+def test_handle_uses_the_account_the_user_chose(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")          # rảnh và được tự chọn trước
+    chosen = ka.create_account(conn, "acc2", "user2", "key2")
+    book_id, patch_id = _seed_book_and_patch(conn)
+    _drive_stubs(monkeypatch, conn, lambda dest: None)
+
+    class Pushed(Exception):
+        pass
+
+    pushes = []
+
+    def push(account, *a, **k):
+        pushes.append(account.username)
+        raise Pushed()
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", push)
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts",
+                      "kaggle_account_id": chosen})
+    with pytest.raises(Pushed):
+        kaggle_tts.handle(ctx)
+    assert pushes == ["user2"]
+    assert ka.get_account(conn, chosen)["status"] == "idle"   # trả lại sau khi thoát
+
+
+def test_chosen_account_busy_defers_instead_of_switching(tmp_path):
+    conn = _conn(tmp_path)
+    _seed_drive_account(conn)
+    book_id, patch_id = _seed_book_and_patch(conn)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    chosen = ka.create_account(conn, "acc2", "user2", "key2")
+    owner_id = store.enqueue(conn, "kaggle_tts", payload={"book_id": book_id, "patch_ids": [patch_id]})
+    store.claim(conn, "kaggle_tts", "other-worker")                # job khác đang chạy thật
+    assert ka.claim_account(conn, owner_id, chosen) is not None
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts",
+                      "kaggle_account_id": chosen})
+    with pytest.raises(JobRescheduled, match="đang bận"):
+        kaggle_tts.handle(ctx)
+    assert ka.list_accounts(conn)[0]["status"] == "idle"         # acc1 không bị lấy thay
+
+
+def test_chosen_account_out_of_quota_waits_for_its_refresh(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    _seed_drive_account(conn)
+    book_id, patch_id = _seed_book_and_patch(conn)
+    ka.create_account(conn, "acc1", "user1", "key1")              # còn quota nhưng không được dùng thay
+    chosen = ka.create_account(conn, "acc2", "user2", "key2")
+    until = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "gpu_quota",
+        lambda account, *a, **k: kaggle_tts.kaggle_api.GpuQuota(
+            0 if account.username == "user2" else 3600, until),
+    )
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel",
+                        lambda *a, **k: pytest.fail("không được push bằng tài khoản khác"))
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts",
+                      "kaggle_account_id": chosen})
+    with pytest.raises(JobRescheduled) as excinfo:
+        kaggle_tts.handle(ctx)
+    assert excinfo.value.next_retry_at == until
+
+
+def test_chosen_account_disabled_is_a_clear_error(tmp_path):
+    conn = _conn(tmp_path)
+    _seed_drive_account(conn)
+    book_id, patch_id = _seed_book_and_patch(conn)
+    chosen = ka.create_account(conn, "acc2", "user2", "key2")
+    ka.set_disabled(conn, chosen, True)
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts",
+                      "kaggle_account_id": chosen})
+    with pytest.raises(JobFatalError, match="đang bị tắt"):
+        kaggle_tts.handle(ctx)
+
+
+def test_package_with_an_existing_notebook_keeps_its_account(tmp_path):
+    from app.jobqueue.handlers import kaggle_package
+    conn = _conn(tmp_path)
+    original = ka.create_account(conn, "acc1", "user1", "key1")
+    other = ka.create_account(conn, "acc2", "user2", "key2")
+    ctx = _ctx(conn, {"book_id": 1, "patch_ids": [1], "kaggle_account_id": other})
+    assert kaggle_package.resolve_pinned_account(ctx, original) == (original, False)
+    assert kaggle_package.resolve_pinned_account(ctx, None) == (other, True)

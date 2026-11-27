@@ -202,3 +202,36 @@ def test_book_exports_endpoint_includes_kaggle_accounts(client, tmp_path):
     assert len(data["kaggle_accounts"]) == 1
     assert data["kaggle_accounts"][0]["username"] == "u1"
     assert "remaining_quota_hours" in data["kaggle_accounts"][0]
+
+
+def test_export_batch_kaggle_records_the_chosen_account(client, tmp_path):
+    book_id, patch_id = _seed_book_and_patch(tmp_path)
+    with db.connect(str(tmp_path / "app.db")) as conn:
+        ka.create_account(conn, "a", "u1", "k1")
+        second = ka.create_account(conn, "b", "u2", "k2")
+    resp = client.post(f"/books/{book_id}/patches/export-batch-kaggle",
+                       data={"patch_ids": [patch_id], "model_id": "zerotts", "kaggle_account_id": str(second)})
+    assert resp.status_code == 200
+    from app.jobqueue import store
+    with db.connect(str(tmp_path / "app.db")) as conn:
+        assert store.get(conn, resp.json()["job_id"]).payload["kaggle_account_id"] == second
+
+
+def test_export_batch_kaggle_without_choice_keeps_auto_selection(client, tmp_path):
+    book_id, patch_id = _seed_book_and_patch(tmp_path)
+    resp = client.post(f"/books/{book_id}/patches/export-batch-kaggle",
+                       data={"patch_ids": [patch_id], "model_id": "zerotts", "kaggle_account_id": ""})
+    from app.jobqueue import store
+    with db.connect(str(tmp_path / "app.db")) as conn:
+        assert "kaggle_account_id" not in store.get(conn, resp.json()["job_id"]).payload
+
+
+def test_export_batch_kaggle_rejects_unknown_or_disabled_account(client, tmp_path):
+    book_id, patch_id = _seed_book_and_patch(tmp_path)
+    with db.connect(str(tmp_path / "app.db")) as conn:
+        off = ka.create_account(conn, "off", "u3", "k3")
+        ka.set_disabled(conn, off, True)
+    for value in ("999", str(off)):
+        resp = client.post(f"/books/{book_id}/patches/export-batch-kaggle",
+                           data={"patch_ids": [patch_id], "model_id": "zerotts", "kaggle_account_id": value})
+        assert resp.status_code == 400

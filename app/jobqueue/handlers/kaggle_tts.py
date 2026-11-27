@@ -674,6 +674,9 @@ def handle(ctx: JobContext) -> dict | None:
     max_chars = int(payload.get("max_chars") or 0)
     with_effects = bool(payload.get("with_effects"))
     request_policy, automation_mode, automation_active = _automation_policy(payload)
+    requested_account_id = (
+        int(payload["kaggle_account_id"]) if payload.get("kaggle_account_id") not in (None, "") else None
+    )
 
     conn = ctx.conn
     account: dict | None = None
@@ -740,7 +743,14 @@ def handle(ctx: JobContext) -> dict | None:
                 raise JobFatalError("none of the pending patch_ids exist anymore")
 
             if account is None:
-                account = kaggle_accounts.claim_idle_account(conn, ctx.job.id)
+                if requested_account_id is not None:
+                    # Người dùng chọn đích danh: chỉ đúng tài khoản này, không xoay vòng.
+                    account = kaggle_accounts.claim_account(conn, ctx.job.id, requested_account_id)
+                    if account is None:
+                        from app.jobqueue.handlers.kaggle_package import _pinned_unavailable
+                        raise _pinned_unavailable(conn, requested_account_id, chosen_by_user=True)
+                else:
+                    account = kaggle_accounts.claim_idle_account(conn, ctx.job.id)
                 if account is None:
                     reset = kaggle_accounts.earliest_quota_reset(conn)
                     if reset:
