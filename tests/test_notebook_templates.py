@@ -740,3 +740,88 @@ def test_cell8_clean_generated_audio_trims_and_compresses():
     cleaned = clean(audio, sr)
     assert cleaned.shape == (4800 + 14400 + 4800,)
     assert clean(np.zeros(100, dtype=np.float32), sr).shape == (0,)
+
+
+# ------------------------------------------------ Drive rate limit: backoff (bước 12)
+
+class _FakeHttpError(Exception):
+    def __init__(self, status, content=b""):
+        super().__init__(f"HTTP {status}")
+        self.resp = type("Resp", (), {"status": status})()
+        self.content = content
+
+
+def _drive_helpers(prefix: str, persist, list_children=lambda parent: []):
+    """Lấy các hàm Drive-retry của một nhánh trong Cell 4 ra namespace riêng để chạy."""
+    import os
+    import threading
+    src = "".join(json.loads(TEMPLATES[0].read_text(encoding="utf-8"))["cells"][4]["source"])
+    clean = re.sub(r"(?m)^(\s*)!.*$", r"\1pass", src)
+    tree = ast.parse(clean)
+    wanted = {f"{prefix}drive_is_rate_limit", f"{prefix}drive_adopt", f"{prefix}drive_try"}
+    ns = {
+        "os": os, "_drive_folder_ids": {"": "root"}, "_drive_file_ids": {},
+        f"{prefix}drive_lock": threading.RLock(), f"{prefix}drive_rate_limited": [False],
+        f"{prefix}DRIVE_BURST_DELAYS": (1, 2, 4, 8),
+        ("_kn_persist_once" if prefix == "_kn_" else "_drive_persist_once"): persist,
+        ("_kn_list_children" if prefix == "_kn_" else "_list_children"): list_children,
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in wanted:
+            exec(compile(ast.Module([node], []), "<cell4>", "exec"), ns)
+    assert wanted <= set(ns)
+    return ns
+
+
+@pytest.mark.parametrize("prefix", ["_kn_", "_"])
+def test_drive_upload_backs_off_on_rate_limit_then_succeeds(prefix, monkeypatch):
+    import time
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    errors = [_FakeHttpError(403, b'{"reason": "userRateLimitExceeded"}'), _FakeHttpError(429)]
+
+    def persist(local_path, rel_dir):
+        if errors:
+            raise errors.pop(0)
+
+    ns = _drive_helpers(prefix, persist)
+    assert ns[f"{prefix}drive_try"]("/tmp/a.wav", "result") is True
+    assert len(sleeps) == 2 and 1 <= sleeps[0] <= 2 and 2 <= sleeps[1] <= 4   # 1s, 2s + jitter
+    assert ns[f"{prefix}drive_rate_limited"][0] is False
+
+
+@pytest.mark.parametrize("prefix", ["_kn_", "_"])
+def test_drive_upload_gives_up_after_the_burst_and_flags_rate_limit(prefix, monkeypatch):
+    import time
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    def persist(local_path, rel_dir):
+        raise _FakeHttpError(503)
+
+    ns = _drive_helpers(prefix, persist)
+    assert ns[f"{prefix}drive_try"]("/tmp/a.wav", "result") is False   # vào hàng chờ như cũ
+    assert len(sleeps) == 4                                            # ~5 lần thử
+    assert ns[f"{prefix}drive_rate_limited"][0] is True
+
+
+@pytest.mark.parametrize("prefix", ["_kn_", "_"])
+def test_drive_upload_does_not_retry_ordinary_errors(prefix, monkeypatch):
+    import time
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    def persist(local_path, rel_dir):
+        raise _FakeHttpError(403, b'{"reason": "insufficientPermissions"}')
+
+    ns = _drive_helpers(prefix, persist)
+    assert ns[f"{prefix}drive_try"]("/tmp/a.wav", "result") is False
+    assert sleeps == [] and ns[f"{prefix}drive_rate_limited"][0] is False
+
+
+def test_drive_retry_loops_back_off_instead_of_a_fixed_interval():
+    src = _code_cells(TEMPLATES[0])
+    cell = next(s for s in src if "_kn_drive_retry_loop" in s)
+    for prefix in ("_kn_", "_"):
+        assert f"delay = min(delay * 2, {prefix}DRIVE_RETRY_MAX_SECONDS)" in cell
+        assert f"time.sleep({prefix}DRIVE_RETRY_SECONDS)" not in cell
