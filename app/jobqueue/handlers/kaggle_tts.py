@@ -17,7 +17,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import chunk_import, drive_export, kaggle_accounts, kaggle_api, patch_import, repository
+from app import chunk_import, drive_export, egress, kaggle_accounts, kaggle_api, patch_import, repository
 from app.config import settings
 from app.jobqueue.context import JobContext
 from app.jobqueue.models import JobFatalError, JobRescheduled
@@ -54,6 +54,9 @@ def _authoritative_quota(ctx: JobContext, account: dict) -> kaggle_api.GpuQuota 
     try:
         return kaggle_api.gpu_quota(account_ref)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        if egress.unavailable_in(exc) is not None:
+            raise  # server egress chết: để runner hoãn job, đừng chạy tiếp mù
+
         # Quota lookup is a guard, not a reason to block valid work when this
         # auxiliary endpoint is temporarily unavailable.
         ctx.log(
@@ -148,6 +151,8 @@ def _fetch_kernel_log_text(
     try:
         return kaggle_api.kernel_log(account_ref, kernel_ref)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        if egress.unavailable_in(exc) is not None:
+            raise  # caller (_after_push) đợi proxy rồi đọc lại
         ctx.log(f"Không đọc được kernel log của {kernel_ref}: {exc}", level=logging.WARNING)
         return ""
 
@@ -164,6 +169,42 @@ def _sleep_with_heartbeat(ctx: JobContext, seconds: float) -> None:
             raise asyncio.CancelledError()
         time.sleep(min(max(settings.kaggle_poll_interval_seconds, 1.0), remaining))
         ctx.heartbeat()
+
+
+_EGRESS_POLL_MAX_BACKOFF_SECONDS = 600.0
+
+
+def _after_push(ctx: JobContext, label: str, fn):
+    """Gọi Kaggle/Drive SAU khi kernel đã push. Server egress rớt ở đây thì KHÔNG
+    thoát handler (runner sẽ hoãn job và lần chạy sau push thêm một kernel trong
+    khi kernel cũ vẫn chạy): log, đợi theo nhịp poll có backoff rồi thử lại. Vẫn
+    tôn trọng Cancel (_sleep_with_heartbeat raise CancelledError). Mất kết nối liên
+    tục quá trần KAGGLE_MAX_SESSION_HOURS thì kernel cũ chắc chắn đã dừng, nên trả
+    lỗi cho runner hoãn job như thường."""
+    failures = 0
+    outage_started: float | None = None
+    limit = settings.kaggle_max_session_hours * 3600
+    while True:
+        try:
+            return fn()
+        except Exception as exc:
+            if egress.unavailable_in(exc) is None:
+                raise
+            now = time.monotonic()
+            outage_started = outage_started if outage_started is not None else now
+            if now - outage_started > limit:
+                raise
+            failures += 1
+            delay = min(
+                max(float(settings.kaggle_poll_interval_seconds), 1.0) * 2 ** (failures - 1),
+                _EGRESS_POLL_MAX_BACKOFF_SECONDS,
+            )
+            ctx.log(
+                f"Server egress không vào được khi {label} (lần {failures}); kernel vẫn "
+                f"chạy trên Kaggle — đợi {delay:g}s rồi thử lại, không push lại: {exc}",
+                level=logging.WARNING,
+            )
+            _sleep_with_heartbeat(ctx, delay)
 
 
 def _wait_dataset_ready(
@@ -806,7 +847,12 @@ def handle(ctx: JobContext) -> dict | None:
                 usage_id = kaggle_accounts.record_usage_start(conn, account["id"], kernel_ref)
                 started_at = time.monotonic()
 
-                status = kaggle_api.kernel_status(account_ref, kernel_ref)
+                # Từ đây kernel đã tồn tại trên Kaggle: lỗi egress không được làm
+                # handler thoát (xem _after_push).
+                status = _after_push(
+                    ctx, "đọc trạng thái kernel",
+                    lambda: kaggle_api.kernel_status(account_ref, kernel_ref),
+                )
                 ctx.progress(done, total, phase="running")
                 ctx.log(f"Kernel {kernel_ref} status={status.value}")
                 polls = 0
@@ -826,16 +872,29 @@ def handle(ctx: JobContext) -> dict | None:
                     time.sleep(settings.kaggle_poll_interval_seconds)
                     ctx.heartbeat()
                     if drive_account_id is not None and drive_batch_folder_id is not None:
-                        _poll_drive_results(
-                            ctx, conn, book_id, patch_ids, patches, package_dir,
-                            drive_account_id, drive_batch_folder_id,
-                            request_policy, automation_mode, automation_active,
-                            imported_this_job, kernel_ref,
-                        )
+                        try:
+                            _poll_drive_results(
+                                ctx, conn, book_id, patch_ids, patches, package_dir,
+                                drive_account_id, drive_batch_folder_id,
+                                request_policy, automation_mode, automation_active,
+                                imported_this_job, kernel_ref,
+                            )
+                        except Exception as exc:
+                            if egress.unavailable_in(exc) is None:
+                                raise
+                            # Drive qua server egress tạm rớt: bỏ lượt này, lượt
+                            # poll sau thử lại; kernel vẫn chạy bình thường.
+                            ctx.log(
+                                f"Drive/result: server egress không vào được, thử lại ở lượt sau: {exc}",
+                                level=logging.WARNING,
+                            )
                     # Đẩy tiến độ xuống DB mỗi vòng poll để bảng Queue thấy phase/heartbeat
                     # thay đổi thay vì đứng yên suốt hàng giờ.
                     ctx.progress(done_holder[0], total, phase="running")
-                    status = kaggle_api.kernel_status(account_ref, kernel_ref)
+                    status = _after_push(
+                        ctx, "đọc trạng thái kernel",
+                        lambda: kaggle_api.kernel_status(account_ref, kernel_ref),
+                    )
                     polls += 1
                     if status is not last_status:
                         ctx.log(f"Kernel {kernel_ref} status={status.value} (sau {polls} lượt kiểm tra)")
@@ -877,7 +936,10 @@ def handle(ctx: JobContext) -> dict | None:
                     raise JobFatalError(f"Kernel {kernel_ref} đã bị hủy trên Kaggle.")
                 if status != KernelStatus.ERROR:
                     break
-                log_text = _fetch_kernel_log_text(ctx, account_ref, kernel_ref)
+                log_text = _after_push(
+                    ctx, "đọc kernel log",
+                    lambda: _fetch_kernel_log_text(ctx, account_ref, kernel_ref),
+                )
                 if _MISSING_INPUT_SIGNATURE in log_text and attach_attempt < _ATTACH_RETRY_ATTEMPTS:
                     # Keep the retry for transient Drive/API startup failures. The
                     # notebook will locate the same Drive folder on the next version.
@@ -931,7 +993,10 @@ def handle(ctx: JobContext) -> dict | None:
                     )
                     done = done_holder[0]
                 if _missing_patch_ids(conn, book_id, patch_ids):
-                    downloaded = kaggle_api.kernel_output(account_ref, kernel_ref, package_dir)
+                    downloaded = _after_push(
+                        ctx, "tải output kernel",
+                        lambda: kaggle_api.kernel_output(account_ref, kernel_ref, package_dir),
+                    )
                     ctx.log(
                         f"Downloaded {len(downloaded)} output file(s): "
                         f"{[path.relative_to(package_dir).as_posix() for path in downloaded]}"

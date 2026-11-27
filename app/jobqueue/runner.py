@@ -25,17 +25,8 @@ def egress_defer_seconds(count: int) -> int:
 
 def _egress_unavailable(exc: BaseException | None):
     """EgressUnavailable nằm ở exc hoặc trong chuỗi __cause__/__context__ (None nếu không)."""
-    try:
-        from app.egress import EgressUnavailable
-    except Exception:  # pragma: no cover - egress luôn import được trong app
-        return None
-    seen: set[int] = set()
-    while exc is not None and id(exc) not in seen:
-        if isinstance(exc, EgressUnavailable):
-            return exc
-        seen.add(id(exc))
-        exc = exc.__cause__ or exc.__context__
-    return None
+    from app.egress import unavailable_in
+    return unavailable_in(exc)
 
 
 def parse_concurrency(spec: str, *, default: int) -> dict[str, int]:

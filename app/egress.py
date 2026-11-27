@@ -75,6 +75,17 @@ class EgressUnavailable(EgressError):
     nối tới chính proxy. Nơi gọi nên hoãn job và thử lại sau, không tính lượt."""
 
 
+def unavailable_in(exc: BaseException | None) -> EgressUnavailable | None:
+    """EgressUnavailable ở chính exc hoặc trong chuỗi __cause__/__context__."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, EgressUnavailable):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 @dataclass(frozen=True)
 class Endpoint:
     id: int

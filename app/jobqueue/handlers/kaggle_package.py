@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import tempfile
 import time
@@ -10,7 +11,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import chunk_import, drive_export, google_drive, kaggle_accounts, kaggle_api, kaggle_packages as packages
+from app import chunk_import, drive_export, egress, google_drive, kaggle_accounts, kaggle_api, kaggle_packages as packages
 from app import patch_import, repository
 from app.config import settings
 from app.jobqueue.models import JobFatalError, JobRescheduled
@@ -100,7 +101,7 @@ def _claim_account(conn, job_id, pinned_id):
 
 def handle(ctx):
     from app.jobqueue.handlers.kaggle_tts import (
-        _automation_policy, _automate_after_all, _authoritative_quota, _push_kernel,
+        _after_push, _automation_policy, _automate_after_all, _authoritative_quota, _push_kernel,
     )
     conn = ctx.conn
     package = packages.get(conn, int(ctx.job.payload["package_id"]))
@@ -214,7 +215,8 @@ def handle(ctx):
                 kernel_ref = _push_kernel(account_ref, staging, account["username"], package["slug"])
                 packages.update(conn, package["id"], kaggle_account_id=account["id"], kernel_ref=kernel_ref)
                 ctx.log(f"Đã push version: https://www.kaggle.com/code/{kernel_ref}")
-                status = kaggle_api.kernel_status(account_ref, kernel_ref)
+                status = _after_push(ctx, "đọc trạng thái kernel",
+                                     lambda: kaggle_api.kernel_status(account_ref, kernel_ref))
             else:
                 ctx.log(f"Notebook {kernel_ref} vẫn đang chạy; tiếp tục theo dõi version hiện tại.")
             usage_id = kaggle_accounts.record_usage_start(conn, account["id"], kernel_ref)
@@ -222,8 +224,17 @@ def handle(ctx):
             while True:
                 if ctx.should_cancel():
                     raise asyncio.CancelledError()
-                with ctx.keep_alive():
-                    complete = reconcile(ctx, package, service, staging, imported, policy, mode, active)
+                try:
+                    with ctx.keep_alive():
+                        complete = reconcile(ctx, package, service, staging, imported, policy, mode, active)
+                except Exception as exc:
+                    if egress.unavailable_in(exc) is None:
+                        raise
+                    # Kernel đã chạy trên Kaggle: Drive qua server egress tạm rớt thì
+                    # đợi lượt sau, không thoát handler.
+                    ctx.log(f"Drive: server egress không vào được, thử lại ở lượt sau: {exc}",
+                            level=logging.WARNING)
+                    complete = False
                 if complete:
                     if active and mode == "after_all":
                         _automate_after_all(ctx, conn, package["book_id"], payload["patch_ids"], imported, policy)
@@ -241,7 +252,8 @@ def handle(ctx):
                         raise asyncio.CancelledError()
                     time.sleep(min(1, max(0, deadline - time.monotonic())))
                     ctx.heartbeat()
-                status = kaggle_api.kernel_status(account_ref, kernel_ref)
+                status = _after_push(ctx, "đọc trạng thái kernel",
+                                     lambda: kaggle_api.kernel_status(account_ref, kernel_ref))
     except asyncio.CancelledError:
         if account is not None and kernel_ref:
             kaggle_api.cancel_kernel(account_ref, kernel_ref)

@@ -880,3 +880,66 @@ def test_after_all_imports_from_both_duplicate_drive_result_folders(tmp_path, mo
     assert [e[1] for e in events if e[0] == "mark"] == [a, b]
     assert [e[1] for e in events if e[0] == "video"] == [a, b]
     assert events.index(("mark", b)) < next(i for i, e in enumerate(events) if e[0] == "video")
+
+
+# ------------------------------------------------------ server egress rớt (bước 4)
+
+def test_egress_down_before_push_bubbles_up_for_the_runner_to_defer(tmp_path, monkeypatch):
+    from app import egress
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+    _drive_stubs(monkeypatch, conn, lambda dest: None)
+    monkeypatch.setattr(kaggle_tts, "_authoritative_quota", lambda ctx, account: None)
+
+    def down(*a, **k):
+        raise egress.EgressUnavailable("server 2 chết")
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "push_kernel", down)
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    with pytest.raises(egress.EgressUnavailable):
+        kaggle_tts.handle(ctx)
+    # Account được trả lại để lần hoãn sau claim được.
+    assert ka.list_accounts(conn)[0]["status"] == "idle"
+
+
+def test_egress_down_while_polling_keeps_polling_and_never_pushes_again(tmp_path, monkeypatch):
+    from app import egress
+    monkeypatch.setattr(settings, "kaggle_poll_interval_seconds", 0)
+    monkeypatch.setattr(kaggle_tts.drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    monkeypatch.setattr(kaggle_tts, "_sleep_with_heartbeat", lambda ctx, seconds: None)
+    conn = _conn(tmp_path)
+    ka.create_account(conn, "acc1", "user1", "key1")
+    book_id, patch_id = _seed_book_and_patch(conn)
+    _drive_stubs(monkeypatch, conn, lambda dest: None)
+    pushes = []
+    monkeypatch.setattr(
+        kaggle_tts.kaggle_api, "push_kernel",
+        lambda account, *a, **k: pushes.append(account.username) or f"{account.username}/slug",
+    )
+    statuses = iter([KernelStatus.RUNNING, "down", "down", KernelStatus.COMPLETE])
+
+    def status(*a, **k):
+        value = next(statuses)
+        if value == "down":
+            raise egress.EgressUnavailable("server 2 chết")
+        return value
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_status", status)
+    outputs = iter(["down", []])
+
+    def output(*a, **k):
+        value = next(outputs)
+        if value == "down":
+            raise egress.EgressUnavailable("server 2 chết")
+        return value
+
+    monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output", output)
+    ctx = _ctx(conn, {"book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts"})
+    # Kernel COMPLETE nhưng không có WAV -> fatal như cũ; điều cần chứng minh là
+    # handler đã ở lại qua 2 lần rớt status + 1 lần rớt output mà chỉ push 1 lần.
+    with pytest.raises(JobFatalError, match="không tự chạy lại"):
+        kaggle_tts.handle(ctx)
+    assert pushes == ["user1"]

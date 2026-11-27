@@ -54,15 +54,14 @@ Known gaps (still need a real account to close):
 
 Every public function takes an injectable `request` callable
 (``request(url, *, method, headers, body=None) -> {"status": int, "body": bytes|str}``)
-defaulting to `_request` (real `urllib` calls); tests pass a fake instead so nothing
+defaulting to `_request` (real `requests` calls through the ``kaggle`` egress
+scope); tests pass a fake instead so nothing
 here touches the network."""
 from __future__ import annotations
 
 import base64
 import io
 import json
-import urllib.error
-import urllib.request
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -134,20 +133,34 @@ def _auth_header(account: KaggleAccount) -> dict[str, str]:
 
 
 def _request(url: str, *, method: str, headers: dict[str, str], body=None) -> dict:
-    """Real network call. `body`, when given, is already the final wire payload (a str
-    or bytes) -- callers serialize their own payload so the injected fake in tests sees
-    exactly what would be sent, not a pre-serialization form."""
+    """Real network call, routed through the ``kaggle`` egress scope (direct unless the
+    user pointed that scope at an outbound proxy -- e.g. server 2). `body`, when given,
+    is already the final wire payload (a str or bytes) -- callers serialize their own
+    payload so the injected fake in tests sees exactly what would be sent, not a
+    pre-serialization form.
+
+    Contract kept identical to the old urllib transport: every HTTP status (4xx/5xx
+    included) comes back as ``{"status", "body": bytes}`` instead of raising, so
+    `_call` still owns the error message. Network/proxy failures still raise --
+    ``egress.EgressUnavailable`` when the proxy itself cannot be reached, which the
+    job runner turns into a deferral."""
+    from app import egress
+
+    headers = dict(headers)
     data = None
     if body is not None:
         data = body.encode("utf-8") if isinstance(body, str) else body
         if isinstance(body, str):
-            headers = {**headers, "Content-Type": "application/json"}
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-            return {"status": response.status, "body": response.read()}
-    except urllib.error.HTTPError as exc:
-        return {"status": exc.code, "body": exc.read()}
+            headers["Content-Type"] = "application/json"
+        elif not any(k.lower() == "content-type" for k in headers):
+            # urllib silently added this header to every request with a body,
+            # including the raw-bytes PUT to the presigned blob URL that has
+            # already been verified live; keep the exact same wire headers.
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+    response = egress.request(
+        "kaggle", method, url, headers=headers, data=data, timeout=_TIMEOUT_SECONDS,
+    )
+    return {"status": response.status_code, "body": response.content}
 
 
 def _call(request: RequestFn, url: str, *, method: str, headers: dict[str, str], body=None):

@@ -437,3 +437,51 @@ def test_kernel_log_returns_empty_string_when_the_session_logged_nothing():
 def test_kernel_log_passes_through_a_non_json_log():
     fake = FakeRequest([{"status": 200, "body": json.dumps({"log": "plain traceback"})}])
     assert kernel_log(ACCOUNT, "user1/x", request=fake) == "plain traceback"
+
+
+# ------------------------------------------------- transport qua egress scope "kaggle"
+
+class _FakeResponse:
+    def __init__(self, status_code, content):
+        self.status_code = status_code
+        self.content = content
+
+
+def test_real_transport_goes_through_the_kaggle_egress_scope(monkeypatch):
+    from app import egress, kaggle_api
+    calls = []
+
+    def fake_request(scope, method, url, **kwargs):
+        calls.append((scope, method, url, kwargs))
+        return _FakeResponse(404, b'{"error":"nope"}')
+
+    monkeypatch.setattr(egress, "request", fake_request)
+    out = kaggle_api._request("https://api.kaggle.com/v1/x", method="POST",
+                              headers={"Authorization": "Basic a"}, body='{"a":1}')
+    # HTTP lỗi vẫn trả về {status, body} như urllib cũ (không raise).
+    assert out == {"status": 404, "body": b'{"error":"nope"}'}
+    scope, method, url, kwargs = calls[0]
+    assert (scope, method, url) == ("kaggle", "POST", "https://api.kaggle.com/v1/x")
+    assert kwargs["data"] == b'{"a":1}'
+    assert kwargs["headers"] == {"Authorization": "Basic a", "Content-Type": "application/json"}
+    assert kwargs["timeout"] == kaggle_api._TIMEOUT_SECONDS
+
+
+def test_real_transport_keeps_urllib_headers_for_raw_blob_put(monkeypatch):
+    from app import egress, kaggle_api
+    seen = {}
+    monkeypatch.setattr(egress, "request", lambda scope, method, url, **kw: seen.update(kw) or _FakeResponse(200, b""))
+    kaggle_api._request("https://storage.example/put", method="PUT", headers={}, body=b"\x00zip")
+    assert seen["data"] == b"\x00zip"
+    assert seen["headers"] == {"Content-Type": "application/x-www-form-urlencoded"}
+
+
+def test_real_transport_lets_egress_unavailable_propagate(monkeypatch):
+    from app import egress, kaggle_api
+
+    def down(*a, **k):
+        raise egress.EgressUnavailable("server 2 chết")
+
+    monkeypatch.setattr(egress, "request", down)
+    with pytest.raises(egress.EgressUnavailable):
+        kernel_status(KaggleAccount("u", "k"), "u/slug")
