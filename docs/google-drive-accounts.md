@@ -110,6 +110,24 @@ trừ khi bạn chắc chắn 100% folder đích không chứa gì cần giữ.
    ```
 4. Thêm remote đó vào `scripts/rclone_push_drives.ps1` (mảng `$targets`).
 
+## Đi qua server 2
+
+Đặt luồng `drive` = *Qua proxy* ở trang **Mạng & Server** (`/network`) thì Google Drive API của
+app (đổi code OAuth, refresh token, upload batch, tải kết quả, dọn thư mục sync) ra Internet qua IP
+của server 2 — xem [socials-egress.md](socials-egress.md) và
+[`deploy/egress-server/`](../deploy/egress-server/README.md). Upload/download dùng chung http của
+service nên cũng đi qua proxy.
+
+Không đi qua server 2:
+
+- Bước đăng nhập Google trong trình duyệt (diễn ra trên máy này).
+- Nhóm 1 (Google Drive for Desktop, thư mục local): hệ điều hành tự đồng bộ.
+- Nhóm 2 (rclone): rclone là tiến trình riêng, không dùng lớp egress của app.
+- Kernel trên Kaggle dùng GDRIVE_CREDS từ IP của Kaggle. Refresh token dùng đồng thời từ nhiều kernel
+  và từ server 2 là bình thường. Nếu Google thu hồi token (`invalid_grant`), log ghi rõ
+  `event=drive.refresh_token_revoked`, và mọi kernel dùng Drive đó cùng mất sync cho tới khi kết nối
+  lại đúng email.
+
 ## Lưu ý khác
 
 - rclone hiện dùng client_id dùng chung mặc định của chính rclone (thấy warning "This remote uses rclone's

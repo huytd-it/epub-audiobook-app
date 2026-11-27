@@ -93,6 +93,41 @@ Không giới hạn số tài khoản Kaggle có thể thêm. Mỗi tài khoản
 tắt). Thêm càng nhiều tài khoản, càng nhiều batch có thể chạy song song và càng nhiều
 giờ GPU/tuần khả dụng tổng cộng.
 
+### Drive dùng chung cho kernel
+
+Mọi kernel (của mọi tài khoản Kaggle) đồng bộ chunk/kết quả vào **một** Google Drive, chọn ở
+`/drive` → tab Kaggle → *Drive dùng chung cho kernel Kaggle*. Chưa chọn thì app dùng tài khoản
+Drive đầu tiên có refresh token, như bản cũ. Mỗi job **khoá** Drive đó ngay lần chạy đầu (ghi
+`drive_account_id` vào payload job). Các lần retry/hoãn sau dùng lại đúng Drive này, nên thêm/xoá
+tài khoản Drive hay đổi setting giữa chừng không làm mất resume. Đổi setting chỉ ảnh hưởng batch mới.
+Drive đã chọn bị ngắt kết nối hoặc mất refresh token thì job **báo lỗi rõ ràng**, không tự đổi sang
+Drive khác. Kết nối lại đúng email đó ở `/drive` là chạy tiếp được.
+
+Nhiều kernel ghi song song vào cùng một Drive có thể chạm giới hạn tốc độ của Google. Notebook thử
+lại upload ngay trong lượt (403 `userRateLimitExceeded`/`rateLimitExceeded`, 429, 5xx) với backoff
+1 → 2 → 4 → 8s cộng jitter. Hết lượt thì file vào hàng chờ, và vòng thử lại nền giãn dần nhịp chờ
+(5 phút, nhân đôi, tối đa 30 phút) khi vẫn bị giới hạn. TTS không bao giờ bị chặn hay hỏng vì Drive.
+
+Thư mục sync của các batch **đã import xong** được dọn thủ công ở `/drive` → tab Kaggle → *Thư mục
+sync Kaggle*. Khối này hiện dung lượng từng batch và quota Drive. Dọn = chuyển vào thùng rác Drive
+(khôi phục được trong 30 ngày; dung lượng chỉ được trả lại khi thùng rác được dọn). Batch có job
+`kaggle_tts` đang chạy hoặc đang hoãn thì không dọn được.
+
+### Đi qua server 2
+
+Đặt luồng `kaggle` = *Qua proxy* ở trang **Mạng & Server** (`/network`) thì mọi lời gọi Kaggle API
+(push, trạng thái, output, log, quota, upload blob) ra Internet qua IP của server 2 — xem
+[socials-egress.md](socials-egress.md) và [`deploy/egress-server/`](../deploy/egress-server/README.md).
+
+- Server 2 không vào được **trước khi push** kernel: job được hoãn (2 → 10 phút, không tính lượt,
+  chờ vô hạn) rồi tự chạy lại.
+- Rớt **sau khi đã push**: handler không thoát. Nó log cảnh báo, đợi theo nhịp poll (có backoff)
+  rồi đọc trạng thái/tải output lại, để không push kernel thứ hai khi kernel cũ còn chạy. Cancel vẫn
+  dùng được. Mất kết nối liên tục quá `KAGGLE_MAX_SESSION_HOURS` thì job mới được hoãn.
+- Kernel chạy trên Kaggle vẫn đồng bộ Drive từ **IP của Kaggle**, việc này không đi qua server 2.
+- Transport của Kaggle API đã đổi từ urllib sang requests (qua lớp egress). Hợp đồng `{status, body}`
+  được giữ nguyên, nhưng phần này **chưa được chạy thử với tài khoản Kaggle thật**.
+
 ## Trước khi dùng thật — nên biết
 
 ### Đã sửa sau lần chạy thật đầu tiên (06/09/2026)
