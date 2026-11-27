@@ -116,6 +116,15 @@ def claim_idle_account(conn: sqlite3.Connection, job_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def api_ref(conn: sqlite3.Connection, account: dict):
+    """KaggleAccount (username + API key) để gọi Kaggle API. Tài khoản nguồn server 2
+    thì key được đọc từ server 2 ngay lúc này và không ghi vào DB; server 2 không vào
+    được thì raise egress.EgressUnavailable (job được hoãn)."""
+    from app import account_source, kaggle_api
+    return kaggle_api.KaggleAccount(username=account["username"],
+                                    api_key=account_source.kaggle_key(conn, account))
+
+
 def claim_account(conn: sqlite3.Connection, job_id: int, account_id: int) -> dict | None:
     """Claim đúng một tài khoản (người dùng chọn, hoặc tài khoản sở hữu notebook cũ):
     chỉ khi nó 'idle' hoặc 'cooldown' đã hết hạn. None = đang bận/tắt/còn cooldown."""

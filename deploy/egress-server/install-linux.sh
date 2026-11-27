@@ -3,8 +3,10 @@
 # Chỉ cho dải LAN (tham số) + Tailscale 100.64.0.0/10 vào cổng proxy; chặn phần còn lại.
 #
 #   sudo ./install-linux.sh --lan 192.168.1.0/24 [--user egress] [--pass <mật khẩu>] [--port 1080]
+#                           [--accounts [--accounts-dir /var/lib/gost-egress/accounts] [--accounts-port 1081]]
 #
 # Bỏ --pass thì script tự sinh mật khẩu ngẫu nhiên và in ra cuối cùng.
+# --accounts: bật thêm kho tài khoản Kaggle/YouTube (gost file server, cùng user/pass).
 set -euo pipefail
 
 GOST_VERSION="3.3.3"
@@ -21,6 +23,9 @@ LAN=""
 USER_NAME="egress"
 PASS=""
 PORT="1080"
+ACCOUNTS=""
+ACCOUNTS_DIR="/var/lib/gost-egress/accounts"
+ACCOUNTS_PORT="1081"
 
 usage() { sed -n '2,8p' "$0"; exit 1; }
 while [[ $# -gt 0 ]]; do
@@ -29,6 +34,9 @@ while [[ $# -gt 0 ]]; do
     --user) USER_NAME="${2:-}"; shift 2 ;;
     --pass) PASS="${2:-}"; shift 2 ;;
     --port) PORT="${2:-}"; shift 2 ;;
+    --accounts) ACCOUNTS=1; shift ;;
+    --accounts-dir) ACCOUNTS_DIR="${2:-}"; shift 2 ;;
+    --accounts-port) ACCOUNTS_PORT="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Tham số lạ: $1" >&2; usage ;;
   esac
@@ -74,6 +82,16 @@ GOST_PORT=${PORT}
 EOF
 chmod 600 /etc/gost/egress.env
 
+PORTS="$PORT"
+if [[ -n "$ACCOUNTS" ]]; then
+  [[ "$ACCOUNTS_PORT" =~ ^[0-9]+$ ]] && (( ACCOUNTS_PORT > 0 && ACCOUNTS_PORT < 65536 )) || { echo "--accounts-port không hợp lệ" >&2; exit 1; }
+  [[ "$ACCOUNTS_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "--accounts-dir phải là đường dẫn tuyệt đối, không khoảng trắng" >&2; exit 1; }
+  install -d -m 0700 "$ACCOUNTS_DIR" "$ACCOUNTS_DIR/kaggle" "$ACCOUNTS_DIR/youtube"
+  echo "GOST_ACCOUNTS_DIR=${ACCOUNTS_DIR}" >> /etc/gost/egress.env
+  echo "GOST_ACCOUNTS_PORT=${ACCOUNTS_PORT}" >> /etc/gost/egress.env
+  PORTS="$PORT, $ACCOUNTS_PORT"
+fi
+
 # ------------------------------------------------------------------ firewall
 FIREWALL=""
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -81,7 +99,12 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: a
   ufw allow from "$LAN" to any port "$PORT" proto tcp comment "gost-egress LAN" >/dev/null
   ufw allow from "$TAILSCALE_V4" to any port "$PORT" proto tcp comment "gost-egress Tailscale" >/dev/null
   ufw deny "$PORT"/tcp comment "gost-egress chặn phần còn lại" >/dev/null
-  echo "==> ufw: chỉ $LAN + $TAILSCALE_V4 vào được cổng $PORT"
+  if [[ -n "$ACCOUNTS" ]]; then
+    ufw allow from "$LAN" to any port "$ACCOUNTS_PORT" proto tcp comment "gost-egress accounts LAN" >/dev/null
+    ufw allow from "$TAILSCALE_V4" to any port "$ACCOUNTS_PORT" proto tcp comment "gost-egress accounts Tailscale" >/dev/null
+    ufw deny "$ACCOUNTS_PORT"/tcp comment "gost-egress accounts chặn phần còn lại" >/dev/null
+  fi
+  echo "==> ufw: chỉ $LAN + $TAILSCALE_V4 vào được cổng $PORTS"
 elif command -v nft >/dev/null 2>&1; then
   FIREWALL=nft
   # Bảng riêng, nạp lại mỗi lần service khởi động (ExecStartPre) nên không phụ thuộc
@@ -92,20 +115,22 @@ delete table inet gost_egress
 table inet gost_egress {
   chain input {
     type filter hook input priority 0; policy accept;
-    tcp dport ${PORT} ip saddr { ${LAN}, ${TAILSCALE_V4}, 127.0.0.0/8 } accept
-    tcp dport ${PORT} ip6 saddr { ${TAILSCALE_V6}, ::1 } accept
-    tcp dport ${PORT} drop
+    tcp dport { ${PORTS} } ip saddr { ${LAN}, ${TAILSCALE_V4}, 127.0.0.0/8 } accept
+    tcp dport { ${PORTS} } ip6 saddr { ${TAILSCALE_V6}, ::1 } accept
+    tcp dport { ${PORTS} } drop
   }
 }
 EOF
   nft -f /etc/gost/egress.nft
-  echo "==> nftables: chỉ $LAN + $TAILSCALE_V4 vào được cổng $PORT"
+  echo "==> nftables: chỉ $LAN + $TAILSCALE_V4 vào được cổng $PORTS"
 else
   echo "!! Không thấy ufw (đang bật) hay nft. Tự chặn cổng $PORT, chỉ cho $LAN và $TAILSCALE_V4." >&2
 fi
 
 # ------------------------------------------------------------------ systemd
 NFT_PRE=""
+FILE_ARG=""
+[[ -n "$ACCOUNTS" ]] && FILE_ARG=' -L "file://${GOST_USER}:${GOST_PASS}@:${GOST_ACCOUNTS_PORT}?dir=${GOST_ACCOUNTS_DIR}"'
 [[ "$FIREWALL" == nft ]] && NFT_PRE="ExecStartPre=$(command -v nft) -f /etc/gost/egress.nft"
 cat > /etc/systemd/system/gost-egress.service <<EOF
 [Unit]
@@ -116,7 +141,7 @@ Wants=network-online.target
 [Service]
 EnvironmentFile=/etc/gost/egress.env
 ${NFT_PRE}
-ExecStart=/usr/local/bin/gost -L "socks5://\${GOST_USER}:\${GOST_PASS}@:\${GOST_PORT}"
+ExecStart=/usr/local/bin/gost -L "socks5://\${GOST_USER}:\${GOST_PASS}@:\${GOST_PORT}"${FILE_ARG}
 Restart=always
 RestartSec=3
 NoNewPrivileges=yes
@@ -140,3 +165,10 @@ echo "==> gost-egress đang chạy trên cổng $PORT."
 echo "    Thêm 2 endpoint trong app (Mạng & Server → Thêm endpoint):"
 echo "      socks5h://${USER_NAME}:<mật khẩu>@${LAN_IP:-<IP-LAN>}:${PORT}"
 echo "      socks5h://${USER_NAME}:<mật khẩu>@${TS_IP:-<IP-Tailscale-100.x>}:${PORT}"
+if [[ -n "$ACCOUNTS" ]]; then
+  echo
+  echo "==> Kho tài khoản: $ACCOUNTS_DIR (cổng $ACCOUNTS_PORT, cùng user/pass)."
+  echo "    $ACCOUNTS_DIR/kaggle/<tên>.json   {\"username\": \"...\", \"key\": \"...\"}"
+  echo "    $ACCOUNTS_DIR/youtube/<tên>.json  {\"refresh_token\": \"...\", \"channel_id\": \"UC...\"}"
+  echo "    URL trong app: http://${TS_IP:-<IP-Tailscale-100.x>}:${ACCOUNTS_PORT}  và  http://${LAN_IP:-<IP-LAN>}:${ACCOUNTS_PORT}"
+fi

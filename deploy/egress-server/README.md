@@ -78,13 +78,48 @@ server 2).
 Sau đó ở phần **Định tuyến theo luồng**, với `youtube`, `kaggle`, `drive`: chọn *Qua proxy*,
 tick cả 2 endpoint, *Xoay vòng*, rồi **Lưu**. Luồng nào để *Đi thẳng* thì chạy như cũ.
 
-## 4. Khi server 2 không vào được
+## 4. Kho tài khoản Kaggle / YouTube trên server 2 (tuỳ chọn)
+
+Chạy lại script cài với cờ bật kho tài khoản. gost sẽ mở thêm một **HTTP file server** ở cổng
+1081, dùng cùng user/pass, firewall cũng chỉ cho LAN và Tailscale:
+
+```powershell
+.\install-windows.ps1 -LanCidr 172.16.0.0/16 -User egress -Pass "lsts-123-egress" -EnableAccounts
+```
+```bash
+sudo ./install-linux.sh --lan 172.16.0.0/16 --user egress --pass 'lsts-123-egress' --accounts
+```
+
+Đặt mỗi tài khoản một file JSON. Windows: `C:\ProgramData\gost-egress\accounts\...`; Linux:
+`/var/lib/gost-egress/accounts/...`.
+
+| File | Nội dung |
+|---|---|
+| `kaggle\<tên>.json` | đúng file `kaggle.json` tải từ Kaggle: `{"username": "...", "key": "..."}`. Thêm `"label"` nếu muốn đặt tên hiển thị; không có thì dùng tên file. |
+| `youtube\<tên>.json` | `{"refresh_token": "...", "channel_id": "UC...", "channel_title": "..."}`. Có thể thêm `client_id`/`client_secret` nếu token được cấp từ OAuth client khác của app. Thiếu `channel_id` thì app tự hỏi YouTube API lúc nạp. |
+
+Trong app: **Mạng & Server** → **Kho tài khoản trên server 2**. Điền URL, nên để URL Tailscale
+lên đầu, ví dụ `http://100.102.234.19:1081` rồi `http://172.16.107.160:1081`. Điền user/pass,
+bấm **Lưu**, rồi **Nạp từ server 2**. Các tài khoản sẽ hiện, có nhãn `server 2`, ở:
+
+- ô chọn **tài khoản Kaggle** trên thanh Kaggle của trang sách, và danh sách ở `/drive` → tab Kaggle;
+- thanh tài khoản YouTube ở **Socials** và mọi chỗ chọn kênh YouTube.
+
+App **chỉ lưu metadata** (username, nhãn, kênh). API key và refresh token **không** lưu trên
+máy 1: mỗi lần job cần thì app đọc từ server 2 và chỉ giữ trong RAM (cache 5 phút). Server 2
+tắt thì job đang cần key được hoãn rồi tự chạy lại. Sửa hoặc xoá file trên server 2 xong, bấm
+**Nạp** lại để cập nhật danh sách. Tài khoản Kaggle/kênh YouTube đã kết nối local trên máy 1
+với cùng username/kênh được giữ nguyên, không bị ghi đè.
+
+> Qua Tailscale, kết nối được mã hoá. Qua LAN, key đi dạng HTTP thường trong mạng nội bộ.
+
+## 5. Khi server 2 không vào được
 
 App **không bao giờ tự đi thẳng**. Job cần luồng đó được hoãn với backoff 2 → 10 phút,
 không tính vào số lần thử, và chờ vô hạn. Muốn dừng thì bấm **Huỷ** job. Kernel Kaggle đã
 push thì handler ở lại, đợi rồi poll tiếp, không push kernel thứ hai.
 
-## 5. Gỡ cài
+## 6. Gỡ cài
 
 ```bash
 sudo ./uninstall-linux.sh

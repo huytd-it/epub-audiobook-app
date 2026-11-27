@@ -251,7 +251,9 @@ def public(account: dict) -> dict:
         "is_default": bool(account["is_default"]),
         "status": account["status"],
         "last_error": account["last_error"],
-        "has_refresh_token": bool(account["refresh_token"]),
+        # Kênh nạp từ server 2: token nằm trên server 2, không trong DB.
+        "has_refresh_token": bool(account["refresh_token"]) or account.get("source") == "server2",
+        "source": account.get("source") or "local",
         "token_expiry": account["token_expiry"],
         "created_at": account["created_at"],
         "updated_at": account["updated_at"],

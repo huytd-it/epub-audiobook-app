@@ -359,10 +359,24 @@ def get_creds_from_db(conn: sqlite3.Connection, account_id: int | None = None) -
     account = social_accounts.resolve(conn, "youtube", account_id)
     if account is None:
         return None
+    access_token, refresh_token = account["access_token"], account["refresh_token"]
+    client_id = client_secret = None
+    remote = account.get("source") == "server2"
+    if remote:
+        # Kênh nạp từ kho server 2: token không nằm trong DB — đọc lúc chạy. Access token
+        # đã refresh chỉ giữ trong bộ nhớ của tiến trình này.
+        from app import account_source
+        tokens = account_source.youtube_tokens(conn, account)
+        refresh_token = tokens["refresh_token"]
+        client_id, client_secret = tokens["client_id"], tokens["client_secret"]
+        access_token = _REMOTE_ACCESS_TOKENS.get(account["id"], "")
     return {
         "id": account["id"],
-        "access_token": account["access_token"],
-        "refresh_token": account["refresh_token"],
+        "remote": remote,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
         "token_expiry": account["token_expiry"],
         "channel_id": account["external_id"] or None,
         "channel_name": account["display_name"],
@@ -403,16 +417,37 @@ def delete_credentials(conn: sqlite3.Connection, account_id: int | None = None) 
         social_accounts.delete(conn, creds["id"])
 
 
+# Access token của kênh nguồn server 2 (account_id -> token): chỉ trong RAM, không ghi DB.
+_REMOTE_ACCESS_TOKENS: dict[int, str] = {}
+
+
 def _build_credentials(row: dict) -> Credentials:
     _require_google_imports()
     return Credentials(
-        token=row["access_token"],
+        # Kênh server 2 chưa có access token trong RAM thì None để refresh ngay; kênh
+        # local giữ nguyên hành vi cũ.
+        token=(row["access_token"] or None) if row.get("remote") else row["access_token"],
         refresh_token=row["refresh_token"],
         token_uri="https://oauth2.googleapis.com/token",
-        client_id=settings.youtube_client_id,
-        client_secret=settings.youtube_client_secret,
+        client_id=row.get("client_id") or settings.youtube_client_id,
+        client_secret=row.get("client_secret") or settings.youtube_client_secret,
         scopes=_SCOPES,
     )
+
+
+def channel_for_refresh_token(refresh_token: str, client_id: str | None = None,
+                              client_secret: str | None = None) -> tuple[str, str | None]:
+    """(channel_id, tên kênh) của một refresh token — dùng khi nạp kênh từ server 2 mà
+    file không ghi sẵn channel_id. Đi qua egress scope youtube như mọi lời gọi khác."""
+    creds = _build_credentials({"access_token": "", "remote": True, "refresh_token": refresh_token,
+                                "client_id": client_id, "client_secret": client_secret})
+    creds.refresh(_auth_request(None, None))
+    service = _build_service(creds, None, None)
+    resp = _execute(service.channels().list(part="snippet", mine=True))
+    items = resp.get("items") or []
+    if not items:
+        raise ValueError("token không gắn với kênh YouTube nào")
+    return items[0]["id"], items[0]["snippet"].get("title")
 
 
 def _auth_request(conn: sqlite3.Connection | None, account_id: int | None):
@@ -432,7 +467,9 @@ def _refresh_if_needed(conn: sqlite3.Connection, creds_row: dict) -> Credentials
             logger.exception("YouTube token refresh failed")
             raise
         expiry_str = creds.expiry.isoformat() if creds.expiry else creds_row["token_expiry"]
-        if creds_row.get("id") is not None:
+        if creds_row.get("remote"):
+            _REMOTE_ACCESS_TOKENS[creds_row["id"]] = creds.token or ""
+        elif creds_row.get("id") is not None:
             social_accounts.update_tokens(
                 conn, creds_row["id"],
                 access_token=creds.token or "",

@@ -1234,6 +1234,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _migrate_strip_intro_voice(conn)
     _migrate_ensure_intro_defaults(conn)
     _migrate_social_accounts(conn)
+    _migrate_account_source(conn)
+
+
+def _migrate_account_source(conn: sqlite3.Connection) -> None:
+    """Tài khoản nạp từ kho trên server 2 (app/account_source.py): source='server2'
+    và remote_ref = đường dẫn file trên server 2. Key/token của chúng KHÔNG lưu ở đây."""
+    for table in ("kaggle_account", "social_account"):
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "source" not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN source TEXT NOT NULL DEFAULT 'local'")
+        if "remote_ref" not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN remote_ref TEXT")
 
 
 def _migrate_strip_intro_voice(conn: sqlite3.Connection) -> None:

@@ -113,6 +113,12 @@ sync Kaggle*. Khối này hiện dung lượng từng batch và quota Drive. D�
 (khôi phục được trong 30 ngày; dung lượng chỉ được trả lại khi thùng rác được dọn). Batch có job
 `kaggle_tts` đang chạy hoặc đang hoãn thì không dọn được.
 
+### Tài khoản Kaggle lưu trên server 2
+
+Có thể để `kaggle.json` của từng tài khoản trên server 2 thay vì nhập key vào app. Bấm **Nạp từ
+server 2** ở trang Mạng & Server; app chỉ lưu username/nhãn, còn key được đọc lúc chạy. Xem
+[`deploy/egress-server/README.md`](../deploy/egress-server/README.md) mục 4.
+
 ### Đi qua server 2
 
 Đặt luồng `kaggle` = *Qua proxy* ở trang **Mạng & Server** (`/network`) thì mọi lời gọi Kaggle API

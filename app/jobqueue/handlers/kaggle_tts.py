@@ -48,9 +48,8 @@ _DATASET_READY_TIMEOUT_SECONDS = 600
 
 
 def _authoritative_quota(ctx: JobContext, account: dict) -> kaggle_api.GpuQuota | None:
-    account_ref = kaggle_api.KaggleAccount(
-        username=account["username"], api_key=account["api_key"],
-    )
+    # Ngoài try: thiếu key (kho server 2 hỏng) là lỗi thật, không phải "quota không rõ".
+    account_ref = kaggle_accounts.api_ref(ctx.conn, account)
     try:
         return kaggle_api.gpu_quota(account_ref)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -792,7 +791,7 @@ def handle(ctx: JobContext) -> dict | None:
             except ValueError as exc:
                 raise JobFatalError(str(exc)) from exc
 
-            account_ref = kaggle_api.KaggleAccount(username=account["username"], api_key=account["api_key"])
+            account_ref = kaggle_accounts.api_ref(conn, account)
 
             # The notebook reads its input and persists outputs through Drive API when
             # connected. The package is uploaded once for this job; retries reuse the

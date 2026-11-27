@@ -172,7 +172,9 @@ export function DrivePage() {
             const statusLabel: Record<string, string> = { idle: "Sẵn sàng", busy: "Đang chạy job", cooldown: "Hết quota tuần này", disabled: "Đã tắt" };
             return <div key={account.id} className="p-4 flex items-center justify-between gap-3">
               <div>
-                <div className="font-semibold text-sm">{account.label} <span className="text-muted-foreground font-normal">· {account.username}</span></div>
+                <div className="font-semibold text-sm">{account.label} <span className="text-muted-foreground font-normal">· {account.username}</span>
+                  {account.source === "server2" && <span className="ml-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800" title="API key nằm trên server 2, đọc lúc chạy. Sửa/xoá file trên server 2 rồi bấm Nạp ở trang Mạng & Server.">server 2</span>}
+                </div>
                 <div className="text-[11px] font-mono text-muted-foreground">
                   {statusLabel[account.status] || account.status}
                   {account.status === "cooldown" && account.cooldown_until && ` đến ${new Date(account.cooldown_until).toLocaleString("vi-VN")}`}
@@ -180,7 +182,7 @@ export function DrivePage() {
                 </div>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => openKaggleForm(account)}><Settings2 className="h-3.5 w-3.5" /> Sửa</Button>
+                {account.source !== "server2" && <Button variant="outline" size="sm" onClick={() => openKaggleForm(account)}><Settings2 className="h-3.5 w-3.5" /> Sửa</Button>}
                 <Button variant="outline" size="sm" onClick={() => handleToggleKaggleAccount(account.id)}><Power className="h-3.5 w-3.5" /> {account.status === "disabled" ? "Bật" : "Tắt"}</Button>
                 <Button variant="ghost" size="icon" className="text-destructive" onClick={() => handleDeleteKaggleAccount(account.id)}><Trash2 className="h-4 w-4" /></Button>
               </div>

@@ -11,13 +11,18 @@
   # PowerShell "Run as Administrator":
   .\install-windows.ps1 -LanCidr 192.168.1.0/24
   .\install-windows.ps1 -LanCidr 192.168.1.0/24 -User egress -Pass "mat-khau-dai-12-ky-tu" -Port 1080
+  # Bật thêm kho tài khoản Kaggle/YouTube (gost file server, cùng user/pass) ở cổng 1081:
+  .\install-windows.ps1 -LanCidr 172.16.0.0/16 -User egress -Pass "mat-khau-dai-12-ky-tu" -EnableAccounts
 #>
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$LanCidr,
   [string]$User = "egress",
   [string]$Pass = "",
-  [ValidateRange(1, 65535)][int]$Port = 1080
+  [ValidateRange(1, 65535)][int]$Port = 1080,
+  [switch]$EnableAccounts,
+  [string]$AccountsDir = "",
+  [ValidateRange(1, 65535)][int]$AccountsPort = 1081
 )
 $ErrorActionPreference = "Stop"
 
@@ -89,6 +94,22 @@ $gostExe = Join-Path $InstallDir "gost.exe"
 # Chỉ SYSTEM và Administrators đọc được thư mục (mật khẩu nằm trong định nghĩa task).
 icacls $InstallDir /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" | Out-Null
 
+# ------------------------------------------------------------------ kho tài khoản (tuỳ chọn)
+$ports = @($Port)
+$gostArgs = "-L `"socks5://${User}:${Pass}@:${Port}`""
+if ($EnableAccounts) {
+  if (-not $AccountsDir) { $AccountsDir = Join-Path $InstallDir "accounts" }
+  if ($AccountsDir -match '[\s?&#"]') { throw "-AccountsDir không được chứa khoảng trắng hoặc ? & # `"" }
+  foreach ($sub in "kaggle", "youtube") { New-Item -ItemType Directory -Force -Path (Join-Path $AccountsDir $sub) | Out-Null }
+  if ($AccountsDir -notlike "$InstallDir*") {
+    # Thư mục ngoài InstallDir: tự khoá quyền, vì trong đó là API key / refresh token.
+    icacls $AccountsDir /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" | Out-Null
+  }
+  $dir = $AccountsDir -replace '\\', '/'
+  $gostArgs += " -L `"file://${User}:${Pass}@:${AccountsPort}?dir=$dir`""
+  $ports += $AccountsPort
+}
+
 # ------------------------------------------------------------------ firewall
 # Gỡ mọi luật cũ trỏ tới gost.exe (kể cả luật "Allow" Windows tự tạo khi hỏi lần đầu):
 # một luật allow-any khác sẽ mở cổng cho cả Internet.
@@ -96,11 +117,11 @@ Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue | Remov
 Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue |
   Where-Object { $_.Program -eq $gostExe } | Get-NetFirewallRule | Remove-NetFirewallRule
 New-NetFirewallRule -DisplayName $RuleName -Direction Inbound -Action Allow -Protocol TCP `
-  -LocalPort $Port -RemoteAddress @($LanCidr, $Tailscale) -Program $gostExe -Profile Any | Out-Null
-Write-Host "==> Windows Firewall: chỉ $LanCidr + $Tailscale vào được cổng $Port"
+  -LocalPort $ports -RemoteAddress @($LanCidr, $Tailscale) -Program $gostExe -Profile Any | Out-Null
+Write-Host "==> Windows Firewall: chỉ $LanCidr + $Tailscale vào được cổng $($ports -join ', ')"
 
 # ------------------------------------------------------------------ chạy lúc khởi động
-$action = New-ScheduledTaskAction -Execute $gostExe -Argument "-L `"socks5://${User}:${Pass}@:${Port}`"" -WorkingDirectory $InstallDir
+$action = New-ScheduledTaskAction -Execute $gostExe -Argument $gostArgs -WorkingDirectory $InstallDir
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
   -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable
@@ -124,3 +145,12 @@ if ($generated) { Write-Host "    Mật khẩu sinh ngẫu nhiên (lưu lại): 
 Write-Host "    Thêm 2 endpoint trong app (Mạng & Server → Thêm endpoint):"
 Write-Host ("      socks5h://{0}:<mật khẩu>@{1}:{2}" -f $User, ($(if ($lanIp) { $lanIp } else { "<IP-LAN>" })), $Port)
 Write-Host ("      socks5h://{0}:<mật khẩu>@{1}:{2}" -f $User, ($(if ($tsIp) { $tsIp } else { "<IP-Tailscale-100.x>" })), $Port)
+if ($EnableAccounts) {
+  Write-Host ""
+  Write-Host "==> Kho tài khoản: $AccountsDir (cổng $AccountsPort, cùng user/pass)."
+  Write-Host "    Đặt file vào:  $AccountsDir\kaggle\<tên>.json   {""username"": ""..."", ""key"": ""...""}"
+  Write-Host "                   $AccountsDir\youtube\<tên>.json  {""refresh_token"": ""..."", ""channel_id"": ""UC...""}"
+  Write-Host "    Trong app (Mạng & Server → Kho tài khoản trên server 2), URL:"
+  Write-Host ("      http://{0}:{1}" -f ($(if ($tsIp) { $tsIp } else { "<IP-Tailscale-100.x>" })), $AccountsPort)
+  Write-Host ("      http://{0}:{1}" -f ($(if ($lanIp) { $lanIp } else { "<IP-LAN>" })), $AccountsPort)
+}

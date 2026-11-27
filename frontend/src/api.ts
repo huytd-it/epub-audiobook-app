@@ -353,6 +353,8 @@ export type KaggleAccount = {
   remaining_quota_hours: number;
   created_at: string;
   updated_at: string;
+  /** "server2" = API key nằm trên server 2, đọc lúc chạy. */
+  source?: AccountSourceKind;
 };
 
 /** Kết quả xử lý từng patch từ inbox / upload kết quả hàng loạt. */
@@ -479,7 +481,15 @@ export type SocialAccount = {
   token_expiry: string;
   created_at: string;
   updated_at: string;
+  /** "server2" = nạp từ kho tài khoản trên server 2 (token đọc lúc chạy, không lưu ở máy này). */
+  source?: AccountSourceKind;
 };
+export type AccountSourceKind = "local" | "server2";
+export type AccountSourceConfig = { urls: string[]; username: string; has_password: boolean; configured: boolean };
+export type AccountSourceSyncSummary = Record<
+  "kaggle" | "youtube",
+  { added: number; updated: number; removed: number; skipped: { file: string; reason: string }[] }
+>;
 export type SocialsOverview = Record<SocialPlatform, { configured: boolean; accounts: SocialAccount[] }>;
 
 /** Điểm thoát mạng: outbound proxy hoặc Vercel relay. URL đã che mật khẩu, secret không trả về. */

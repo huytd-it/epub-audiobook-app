@@ -82,6 +82,11 @@ export function AccountsPanel({
             >
               {account.is_default && <Star className="h-3.5 w-3.5 fill-current" />}
               {account.label || account.external_id || `#${account.id}`}
+              {account.source === "server2" && (
+                <span className="rounded bg-sky-100 px-1 text-[10px] font-semibold text-sky-800" title="Token nằm trên server 2, đọc lúc chạy">
+                  server 2
+                </span>
+              )}
               {account.status === "error" && <span className="h-1.5 w-1.5 rounded-full bg-red-500" />}
             </Button>
           ))}

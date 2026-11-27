@@ -21,6 +21,8 @@ def test_kaggle_account_table_has_expected_columns():
     assert names == {
         "id", "label", "username", "api_key", "status", "cooldown_until",
         "in_use_by_job_id", "created_at", "updated_at",
+        # Kho tài khoản server 2 (app/account_source.py).
+        "source", "remote_ref",
     }
 
 

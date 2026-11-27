@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { showToast } from "@/components/ui/toast";
 import { confirmDialog } from "@/components/ui/confirm";
 import { selectClass } from "@/pages/socials/platforms";
+import { AccountSourceCard } from "@/pages/network/AccountSourceCard";
 
 type TestResult = { ok: boolean; ip?: string; elapsed_ms?: number; error?: string };
 
@@ -296,6 +297,8 @@ export function NetworkPage() {
           })}
         </CardContent>
       </Card>
+
+      <AccountSourceCard />
 
       <Dialog open={form !== null} onOpenChange={(open) => !open && setForm(null)}>
         <DialogContent>

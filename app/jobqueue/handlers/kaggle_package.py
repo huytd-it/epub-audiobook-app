@@ -239,7 +239,7 @@ def handle(ctx):
                     raise _pinned_unavailable(conn, pinned_id, chosen_by_user=chosen_by_user)
                 raise JobRescheduled((datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
                                      "Tài khoản Kaggle đang bận hoặc chưa khả dụng")
-            account_ref = kaggle_api.KaggleAccount(username=account["username"], api_key=account["api_key"])
+            account_ref = kaggle_accounts.api_ref(conn, account)
             kernel_ref = package["kernel_ref"]
             status = kaggle_api.kernel_status(account_ref, kernel_ref) if kernel_ref else None
             if status not in (KernelStatus.QUEUED, KernelStatus.RUNNING):

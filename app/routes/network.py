@@ -142,5 +142,46 @@ def update_policy(request: Request, body: dict[str, dict]):
             raise HTTPException(400, str(exc)) from exc
 
 
+# ------------------------------------------------------------------ kho tài khoản server 2
+
+class AccountSourceBody(BaseModel):
+    urls: list[str] = []
+    username: str = ""
+    # Rỗng/None = giữ mật khẩu đang lưu.
+    password: str | None = None
+
+
+@router.get("/account-source")
+def account_source_state(request: Request):
+    from app import account_source
+    with locked_conn(request) as conn:
+        return account_source.public_config(conn)
+
+
+@router.put("/account-source")
+def update_account_source(request: Request, body: AccountSourceBody):
+    from app import account_source
+    with locked_conn(request) as conn:
+        try:
+            return account_source.set_config(conn, urls=body.urls, username=body.username,
+                                              password=body.password)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/account-source/sync")
+def sync_account_source(request: Request):
+    """Nạp danh sách tài khoản Kaggle/YouTube từ server 2. Chỉ ghi metadata; key/token
+    vẫn nằm trên server 2 và được đọc lúc chạy."""
+    from app import account_source, youtube
+    with locked_conn(request) as conn:
+        try:
+            return account_source.sync(conn, discover_channel=youtube.channel_for_refresh_token)
+        except egress.EgressUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except account_source.AccountSourceError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
 # pytest gom mọi hàm test_* ở cấp module; đây là route, không phải test.
 test_endpoint.__test__ = False  # type: ignore[attr-defined]

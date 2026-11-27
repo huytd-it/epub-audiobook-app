@@ -443,7 +443,8 @@ export function ExportPanel({
                 <option value="">Tài khoản: tự chọn</option>
                 {kaggleAccounts.map((account) => (
                   <option key={account.id} value={account.id} disabled={account.status === "disabled"}>
-                    {account.label || account.username} · {account.username} — {kaggleStatusLabel[account.status] ?? account.status}
+                    {account.label || account.username} · {account.username}
+                    {account.source === "server2" ? " [server 2]" : ""} — {kaggleStatusLabel[account.status] ?? account.status}
                     {account.status !== "disabled" ? ` · ~${account.remaining_quota_hours}h` : ""}
                   </option>
                 ))}
