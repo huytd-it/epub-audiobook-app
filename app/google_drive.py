@@ -30,6 +30,7 @@ try:
 except ModuleNotFoundError:
     _GOOGLE_IMPORTS_OK = False
 
+from app import egress
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -235,15 +236,33 @@ def _build_credentials(row: dict, client_id: str | None = None, client_secret: s
     )
 
 
+def _auth_request(conn: sqlite3.Connection | None):
+    """google-auth transport for token calls, through the ``drive`` egress scope
+    (server 2) when that scope is set to a proxy; direct otherwise."""
+    http = egress.session(conn, "drive")
+    return Request(session=http) if http.proxies else Request()
+
+
 def _refresh_if_needed(conn: sqlite3.Connection, creds_row: dict) -> Credentials:
     _require_google_imports()
     client_id, client_secret = _resolve_client_creds(conn, creds_row)
     creds = _build_credentials(creds_row, client_id, client_secret)
     if creds.expired or not creds.valid:
         try:
-            creds.refresh(Request())
-        except Exception:
-            logger.exception("Google Drive token refresh failed")
+            creds.refresh(_auth_request(conn))
+        except Exception as exc:
+            if "invalid_grant" in str(exc):
+                # Token bị Google thu hồi/hết hạn: mọi kernel Kaggle dùng chung
+                # refresh token này (GDRIVE_CREDS) cũng mất sync cùng lúc.
+                logger.error(
+                    "event=drive.refresh_token_revoked account_id=%s email=%s: Google trả "
+                    "invalid_grant — refresh token đã bị thu hồi. Kết nối lại đúng email "
+                    "này ở /drive; mọi kernel Kaggle đang dùng Drive này cũng mất sync "
+                    "cho tới khi kết nối lại.",
+                    creds_row.get("id"), creds_row.get("account_email"),
+                )
+            else:
+                logger.exception("Google Drive token refresh failed")
             raise
         expiry_str = creds.expiry.isoformat() if creds.expiry else creds_row["token_expiry"]
         _update_account_tokens(
@@ -265,7 +284,18 @@ def get_drive_service(conn: sqlite3.Connection, account_id: int):
             f"Google Drive account not found (id={account_id}). It may have been disconnected."
         )
     creds = _refresh_if_needed(conn, creds_row)
-    return build(_API_SERVICE_NAME, _API_VERSION, credentials=creds)
+    return _build_service(_API_SERVICE_NAME, _API_VERSION, creds, conn)
+
+
+def _build_service(name: str, version: str, creds, conn: sqlite3.Connection | None):
+    """googleapiclient service routed through the ``drive`` egress scope when it is
+    set to a proxy. Uploads/downloads (MediaFileUpload, MediaIoBaseDownload) reuse
+    the service's http, so they follow the same route."""
+    http = egress.httplib2_http(conn, "drive")
+    if http is None:
+        return build(name, version, credentials=creds)
+    import google_auth_httplib2
+    return build(name, version, http=google_auth_httplib2.AuthorizedHttp(creds, http=http))
 
 
 _RR_STATE_KEY = "drive.rr_last_account_id"
@@ -368,15 +398,25 @@ def exchange_code(code: str, redirect_uri: str, client_id: str | None = None, cl
         autogenerate_code_verifier=False,
     )
     flow.redirect_uri = redirect_uri
+    # Bước đăng nhập trong trình duyệt diễn ra trên máy này; chỉ bước đổi code lấy
+    # token (và các lời gọi API sau đó) mới đi qua scope ``drive``.
+    proxies = egress.session(None, "drive").proxies
+    if proxies:
+        flow.oauth2session.proxies.update(proxies)
+        flow.oauth2session.trust_env = False
     flow.fetch_token(code=code)
     creds = flow.credentials
 
     account_email = ""
     try:
-        oauth2 = build("oauth2", "v2", credentials=creds)
+        oauth2 = _build_service("oauth2", "v2", creds, None)
         userinfo = oauth2.userinfo().get().execute()
         account_email = userinfo.get("email", "")
-    except Exception:
+    except Exception as exc:
+        if egress.unavailable_in(exc) is not None:
+            # Không có email thì save_credentials tạo dòng trùng thay vì cập nhật
+            # tài khoản cũ: báo lỗi để người dùng kết nối lại khi server egress sống.
+            raise
         logger.warning("could not fetch Google account email (non-fatal)", exc_info=True)
 
     expiry_str = creds.expiry.isoformat() if creds.expiry else ""
