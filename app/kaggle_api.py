@@ -70,6 +70,7 @@ from pathlib import Path
 
 BASE_URL = "https://api.kaggle.com/v1"
 _TIMEOUT_SECONDS = 60.0
+_USER_AGENT = "epub-audiobook-app (kaggle-api client)"
 
 RequestFn = Callable[..., dict]
 
@@ -153,6 +154,12 @@ def _request(url: str, *, method: str, headers: dict[str, str], body=None) -> di
     from app import egress
 
     headers = dict(headers)
+    # Kaggle's edge answers HTTP 404 with an EMPTY body to requests' default
+    # "python-requests/x.y.z" User-Agent (verified live 2026-11-27: same call with any
+    # other UA gets a normal 401/200) -- every RPC then looks like a missing endpoint.
+    # The old urllib transport sent "Python-urllib/3.x" and was unaffected.
+    if not any(k.lower() == "user-agent" for k in headers):
+        headers["User-Agent"] = _USER_AGENT
     data = None
     if body is not None:
         data = body.encode("utf-8") if isinstance(body, str) else body

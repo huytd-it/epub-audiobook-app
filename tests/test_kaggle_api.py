@@ -492,3 +492,13 @@ def test_new_kgat_api_token_uses_bearer_and_legacy_key_uses_basic():
     assert _auth_header(KaggleAccount("u1", "KGAT_abc123")) == {"Authorization": "Bearer KGAT_abc123"}
     legacy = _auth_header(KaggleAccount("u1", "0123456789abcdef0123456789abcdef"))
     assert legacy["Authorization"] == "Basic " + base64.b64encode(b"u1:0123456789abcdef0123456789abcdef").decode()
+
+
+def test_real_transport_never_sends_the_default_python_requests_user_agent(monkeypatch):
+    """Kaggle trả 404 rỗng cho UA mặc định python-requests/x.y.z (thấy thật 2026-11-27)."""
+    from app import egress, kaggle_api
+    seen = {}
+    monkeypatch.setattr(egress, "request", lambda scope, method, url, **kw: seen.update(kw) or _FakeResponse(200, b"{}"))
+    kaggle_api._request("https://api.kaggle.com/v1/x", method="POST", headers={}, body="{}")
+    assert seen["headers"]["User-Agent"] == kaggle_api._USER_AGENT
+    assert not seen["headers"]["User-Agent"].startswith("python-requests")
