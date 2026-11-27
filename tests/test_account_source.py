@@ -122,3 +122,19 @@ def test_duplicate_username_on_server_2_is_skipped_not_fatal(conn, store_dir):
     summary = account_source.sync(conn)
     assert summary["kaggle"]["added"] == 2
     assert any("trùng username" in s["reason"] for s in summary["kaggle"]["skipped"])
+
+
+def test_plain_kaggle_json_at_the_root_is_picked_up(conn, store_dir):
+    (store_dir / "kaggle.json").write_text(json.dumps({"username": "user_root", "key": "KGAT_root"}))
+    summary = account_source.sync(conn)
+    assert summary["kaggle"]["files"] == 3
+    root = next(r for r in kaggle_accounts.list_accounts(conn) if r["username"] == "user_root")
+    assert root["label"] == "user_root" and root["remote_ref"] == "kaggle.json"
+    assert kaggle_accounts.api_ref(conn, root).api_key == "KGAT_root"
+
+
+def test_empty_store_reports_zero_files(conn, store_dir):
+    for path in list(store_dir.rglob("*.json")):
+        path.unlink()
+    summary = account_source.sync(conn)
+    assert summary["kaggle"]["files"] == 0 and summary["youtube"]["files"] == 0

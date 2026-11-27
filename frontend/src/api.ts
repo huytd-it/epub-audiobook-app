@@ -488,7 +488,7 @@ export type AccountSourceKind = "local" | "server2";
 export type AccountSourceConfig = { urls: string[]; username: string; has_password: boolean; configured: boolean };
 export type AccountSourceSyncSummary = Record<
   "kaggle" | "youtube",
-  { added: number; updated: number; removed: number; skipped: { file: string; reason: string }[] }
+  { added: number; updated: number; removed: number; files: number; skipped: { file: string; reason: string }[] }
 >;
 export type SocialsOverview = Record<SocialPlatform, { configured: boolean; accounts: SocialAccount[] }>;
 

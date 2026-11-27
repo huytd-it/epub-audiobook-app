@@ -48,6 +48,14 @@ export function AccountSourceCard() {
     try {
       const result = await postJson<AccountSourceSyncSummary>("/network/api/account-source/sync", {});
       setSummary(result);
+      if (!result.kaggle.files && !result.youtube.files) {
+        showToast(
+          "Kết nối được kho server 2 nhưng không thấy file tài khoản nào. Đặt kaggle.json vào thư mục kho " +
+            "(mặc định C:\\ProgramData\\gost-egress\\accounts\\kaggle\\) hoặc cài lại kho trỏ tới thư mục .kaggle.",
+          "error",
+        );
+        return;
+      }
       showToast(
         `Đã nạp từ server 2 — Kaggle: +${result.kaggle.added} / cập nhật ${result.kaggle.updated} / gỡ ${result.kaggle.removed}; ` +
           `YouTube: +${result.youtube.added} / cập nhật ${result.youtube.updated} / gỡ ${result.youtube.removed}`,

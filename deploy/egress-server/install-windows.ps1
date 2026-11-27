@@ -98,10 +98,16 @@ icacls $InstallDir /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(O
 $ports = @($Port)
 $gostArgs = "-L `"socks5://${User}:${Pass}@:${Port}`""
 if ($EnableAccounts) {
-  if (-not $AccountsDir) { $AccountsDir = Join-Path $InstallDir "accounts" }
+  # -AccountsDir "$env:USERPROFILE\.kaggle" = dùng thẳng kaggle.json cài "như bình thường".
+  $defaultDir = -not $AccountsDir
+  if ($defaultDir) { $AccountsDir = Join-Path $InstallDir "accounts" }
   if ($AccountsDir -match '[\s?&#"]') { throw "-AccountsDir không được chứa khoảng trắng hoặc ? & # `"" }
-  foreach ($sub in "kaggle", "youtube") { New-Item -ItemType Directory -Force -Path (Join-Path $AccountsDir $sub) | Out-Null }
-  if ($AccountsDir -notlike "$InstallDir*") {
+  New-Item -ItemType Directory -Force -Path $AccountsDir | Out-Null
+  if ($defaultDir) {
+    foreach ($sub in "kaggle", "youtube") { New-Item -ItemType Directory -Force -Path (Join-Path $AccountsDir $sub) | Out-Null }
+  }
+  $inProfile = $AccountsDir -like "$env:USERPROFILE*"
+  if ($AccountsDir -notlike "$InstallDir*" -and -not $inProfile) {
     # Thư mục ngoài InstallDir: tự khoá quyền, vì trong đó là API key / refresh token.
     icacls $AccountsDir /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" | Out-Null
   }

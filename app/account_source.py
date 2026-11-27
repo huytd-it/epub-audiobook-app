@@ -221,14 +221,22 @@ def sync(conn: sqlite3.Connection, *, discover_channel=None) -> dict:
     summary = {"kaggle": {"added": 0, "updated": 0, "removed": 0, "skipped": []},
                "youtube": {"added": 0, "updated": 0, "removed": 0, "skipped": []}}
 
-    # --- Kaggle
-    try:
-        kaggle_files, kaggle_listed = list_files(cfg, "kaggle"), True
-    except AccountSourceError:
-        kaggle_files, kaggle_listed = [], False   # chưa có thư mục kaggle/
+    # --- Kaggle: file ở GỐC thư mục được phục vụ (cài "như bình thường": kaggle.json, vd.
+    # khi gost phục vụ thẳng ~/.kaggle) và/hoặc trong thư mục con kaggle/.
+    refs: list[str] = []
+    kaggle_listed = False
+    for folder in ("", "kaggle"):
+        try:
+            names = list_files(cfg, folder)
+        except AccountSourceError:
+            continue  # thư mục con kaggle/ không có là bình thường
+        kaggle_listed = True
+        refs += [f"{folder}/{n}" if folder else n for n in names]
+    summary["kaggle"]["files"] = len(refs)
     seen = set()
-    for name in kaggle_files:
-        ref = f"kaggle/{name}"
+    for ref in refs:
+        name = ref.rsplit("/", 1)[-1]
+        at_root = "/" not in ref
         try:
             data = read_json(cfg, ref, use_cache=False)
         except AccountSourceError as exc:
@@ -236,9 +244,12 @@ def sync(conn: sqlite3.Connection, *, discover_channel=None) -> dict:
             continue
         username = str(data.get("username") or "").strip()
         if not username or not str(data.get("key") or "").strip():
-            summary["kaggle"]["skipped"].append({"file": ref, "reason": "thiếu username hoặc key"})
+            if not at_root:  # ở gốc có thể là file khác: bỏ qua im lặng
+                summary["kaggle"]["skipped"].append({"file": ref, "reason": "thiếu username hoặc key"})
             continue
-        label = str(data.get("label") or "").strip() or _label_from(name)
+        # kaggle.json mặc định thì tên file không nói gì: lấy username làm nhãn.
+        default_name = name.lower() == "kaggle.json"
+        label = str(data.get("label") or "").strip() or (username if default_name else _label_from(name))
         seen.add(ref)
         row = conn.execute("SELECT id, source FROM kaggle_account WHERE remote_ref=? AND source=?",
                            (ref, SOURCE)).fetchone()
@@ -283,6 +294,7 @@ def sync(conn: sqlite3.Connection, *, discover_channel=None) -> dict:
         youtube_files, youtube_listed = list_files(cfg, "youtube"), True
     except AccountSourceError:
         youtube_files, youtube_listed = [], False  # chưa có thư mục youtube/ là bình thường
+    summary["youtube"]["files"] = len(youtube_files)
     seen = set()
     for name in youtube_files:
         ref = f"youtube/{name}"
