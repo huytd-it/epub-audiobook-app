@@ -62,8 +62,20 @@ def update(conn, package_id: int, **fields) -> None:
     conn.commit()
 
 
-def register(conn, job) -> dict | None:
+def batch_id_for_payload(payload: dict) -> str | None:
+    """batch_id ổn định (cũng là tên Drive sync) của một payload kaggle_tts trực tiếp."""
     from app.jobqueue.handlers.kaggle_tts import _kernel_slug, _stable_batch_id
+
+    if not payload.get("book_id") or not payload.get("patch_ids"):
+        return None
+    slug = _kernel_slug(int(payload["book_id"]), payload["patch_ids"])
+    return _stable_batch_id(slug, payload.get("model_id") or "voxcpm2",
+                            payload.get("voice_id"), int(payload.get("max_chars") or 0),
+                            bool(payload.get("with_effects")))
+
+
+def register(conn, job) -> dict | None:
+    from app.jobqueue.handlers.kaggle_tts import _kernel_slug
 
     payload = job.payload
     if payload.get("package_id"):
@@ -73,9 +85,7 @@ def register(conn, job) -> dict | None:
     if book is None or not payload.get("patch_ids"):
         return None
     slug = _kernel_slug(book.id, payload["patch_ids"])
-    batch_id = _stable_batch_id(slug, payload.get("model_id") or "voxcpm2",
-                                payload.get("voice_id"), int(payload.get("max_chars") or 0),
-                                bool(payload.get("with_effects")))
+    batch_id = batch_id_for_payload({**payload, "book_id": book.id})
     entries = []
     for pid in dict.fromkeys(payload["patch_ids"]):
         patch = repository.get_patch(conn, int(pid))

@@ -6,7 +6,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { KaggleDriveAccountCard } from "@/pages/drive/KaggleDriveSection";
+import { KaggleDriveAccountCard, KaggleSyncFoldersCard } from "@/pages/drive/KaggleDriveSection";
 
 export function DrivePage() {
   const [targets, setTargets] = useState<DriveTarget[]>([]);
@@ -165,6 +165,7 @@ export function DrivePage() {
 
       {activeSection === "kaggle" && <div className="space-y-4">
         <KaggleDriveAccountCard accounts={accounts} />
+        <KaggleSyncFoldersCard />
         <div className="flex justify-end"><Button size="sm" onClick={() => openKaggleForm()}><Plus className="h-4 w-4" /> Thêm tài khoản Kaggle</Button></div>
         <Card><CardHeader><CardTitle className="text-sm">Tài khoản Kaggle (tự động hoá qua Kaggle Kernels API)</CardTitle></CardHeader><CardContent className="p-0 divide-y divide-border">
           {kaggleAccounts.length === 0 ? <EmptyState text="Chưa có tài khoản Kaggle nào. Thêm ít nhất một tài khoản để dùng export 'Kaggle (tự động)'." /> : kaggleAccounts.map((account) => {

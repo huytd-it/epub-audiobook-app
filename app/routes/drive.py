@@ -340,6 +340,87 @@ def put_kaggle_drive_account(request: Request, body: dict):
         return _kaggle_drive_state(conn)
 
 
+def _kaggle_sync_service(request: Request):
+    """(account, service) của Drive dùng chung cho kernel Kaggle — lỗi thành HTTP rõ ràng."""
+    from app import egress
+    with locked_conn(request) as conn:
+        try:
+            chosen = google_drive.kaggle_drive_account(conn)
+        except google_drive.KaggleDriveError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if chosen is None:
+            raise HTTPException(status_code=400, detail="Chưa kết nối Google Drive nào cho kernel Kaggle.")
+        account = chosen[0]
+        try:
+            service = google_drive.get_drive_service(conn, account["id"])
+        except egress.EgressUnavailable as exc:
+            raise HTTPException(status_code=503, detail=f"Server egress (luồng drive) không vào được: {exc}")
+    return account, service
+
+
+def _drive_call(fn, *args):
+    from app import egress
+    try:
+        return fn(*args)
+    except Exception as exc:
+        if egress.unavailable_in(exc) is not None:
+            raise HTTPException(status_code=503, detail=f"Server egress (luồng drive) không vào được: {exc}")
+        raise
+
+
+@router.get("/drive/kaggle-sync-folders")
+def list_kaggle_sync_folders(request: Request):
+    """Thư mục sync Kaggle trên Drive dùng chung: dung lượng, trạng thái import, quota.
+    Gọi Drive ngoài db_lock (có thể nhiều request khi đi đệ quy tính dung lượng)."""
+    from app import kaggle_sync_folders as sync
+    account, service = _kaggle_sync_service(request)
+    with locked_conn(request) as conn:
+        rows = sync.candidates(conn, account["id"])
+    folders = _drive_call(sync.resolve_folders, service, rows)
+    for folder in folders:
+        folder["size_bytes"], folder["modified_time"] = _drive_call(sync.folder_usage, service, folder["folder_id"])
+        folder["can_clean"] = folder["imported"] and not folder["busy"]
+    return {
+        "account": {"id": account["id"], "email": account.get("account_email")},
+        "quota": _drive_call(sync.storage_quota, service),
+        "folders": folders,
+    }
+
+
+@router.post("/drive/kaggle-sync-folders/cleanup")
+def cleanup_kaggle_sync_folders(request: Request, body: dict):
+    """Chuyển vào thùng rác thư mục sync của các batch ĐÃ import xong và không có job
+    kaggle_tts đang chạy/hoãn. Không xoá vĩnh viễn."""
+    from app import kaggle_packages, kaggle_sync_folders as sync
+    wanted = {str(b) for b in ((body or {}).get("batch_ids") or [])}
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Chưa chọn batch nào")
+    account, service = _kaggle_sync_service(request)
+    with locked_conn(request) as conn:
+        rows = [r for r in sync.candidates(conn, account["id"]) if r["batch_id"] in wanted]
+    folders = {f["batch_id"]: f for f in _drive_call(sync.resolve_folders, service, rows)}
+    trashed, skipped = [], []
+    for batch_id in sorted(wanted):
+        folder = folders.get(batch_id)
+        if folder is None:
+            skipped.append({"batch_id": batch_id, "reason": "Không thấy thư mục sync trên Drive này"})
+        elif not folder["imported"]:
+            skipped.append({"batch_id": batch_id, "reason": "Batch chưa import xong"})
+        elif folder["busy"]:
+            skipped.append({"batch_id": batch_id, "reason": "Có job kaggle_tts đang chạy hoặc hoãn với batch này"})
+        else:
+            # Kiểm tra lại ngay trước khi dọn: job có thể vừa được xếp lại.
+            with locked_conn(request) as conn:
+                if batch_id in sync.live_batch_ids(conn):
+                    skipped.append({"batch_id": batch_id, "reason": "Có job kaggle_tts vừa được xếp với batch này"})
+                    continue
+            _drive_call(sync.trash_folder, service, folder["folder_id"])
+            with locked_conn(request) as conn:
+                kaggle_packages.update(conn, folder["package_id"], drive_folder_id=None)
+            trashed.append(batch_id)
+    return {"trashed": trashed, "skipped": skipped}
+
+
 @router.post("/drive/disconnect")
 def drive_disconnect(request: Request, account_id: int = Form(...)):
     with locked_conn(request) as conn:
