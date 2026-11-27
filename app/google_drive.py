@@ -224,6 +224,87 @@ def kaggle_credentials(conn: sqlite3.Connection, account_id: int) -> dict | None
     }
 
 
+# Drive dùng chung cho MỌI kernel Kaggle (mọi tài khoản Kaggle đồng bộ vào đây).
+# Chưa đặt thì rơi về account đầu tiên có refresh token như bản cũ.
+KAGGLE_DRIVE_STATE_KEY = "kaggle.drive_account_id"
+# Email của account đã chọn: ngắt rồi kết nối lại cùng email tạo id mới, nhờ email
+# mà vẫn nhận ra đúng Drive đó.
+_KAGGLE_DRIVE_EMAIL_KEY = "kaggle.drive_account_email"
+
+
+class KaggleDriveError(ValueError):
+    """Drive đã chọn cho kernel Kaggle không dùng được (bị ngắt / mất refresh token).
+    Cố ý không âm thầm đổi sang account khác: đổi Drive giữa chừng làm mất resume."""
+
+
+def get_kaggle_drive_account_id(conn: sqlite3.Connection) -> int | None:
+    row = conn.execute("SELECT value FROM app_state WHERE key=?", (KAGGLE_DRIVE_STATE_KEY,)).fetchone()
+    value = str(row["value"]).strip() if row and row["value"] is not None else ""
+    return int(value) if value.isdigit() else None
+
+
+def set_kaggle_drive_account_id(conn: sqlite3.Connection, account_id: int | None) -> None:
+    """Chọn (hoặc bỏ chọn với None) Drive dùng chung cho kernel Kaggle. Chỉ ảnh
+    hưởng batch mới: job đã chạy giữ account đã khoá trong payload."""
+    if account_id is not None:
+        if get_account(conn, account_id) is None:
+            raise KaggleDriveError(f"Không có tài khoản Google Drive id={account_id}")
+        if kaggle_credentials(conn, account_id) is None:
+            raise KaggleDriveError("Tài khoản Drive này chưa có refresh token; kết nối lại trước khi chọn.")
+    email = (get_account(conn, account_id) or {}).get("account_email") if account_id is not None else ""
+    for key, value in ((KAGGLE_DRIVE_STATE_KEY, "" if account_id is None else str(int(account_id))),
+                       (_KAGGLE_DRIVE_EMAIL_KEY, email or "")):
+        conn.execute(
+            """INSERT INTO app_state (key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (key, value),
+        )
+    conn.commit()
+
+
+def find_account_by_email(conn: sqlite3.Connection, email: str | None) -> dict | None:
+    if not email:
+        return None
+    row = conn.execute("SELECT * FROM google_drive_credentials WHERE account_email=? ORDER BY id LIMIT 1",
+                       (email,)).fetchone()
+    return dict(row) if row else None
+
+
+def kaggle_drive_account(conn: sqlite3.Connection) -> tuple[dict, dict] | None:
+    """(account, GDRIVE_CREDS) mà kernel Kaggle sẽ đồng bộ vào.
+
+    Đã chọn bằng setting thì dùng đúng account đó; nó bị ngắt kết nối hoặc mất
+    refresh token thì raise KaggleDriveError (không đổi sang account khác). Chưa
+    chọn thì giữ hành vi cũ: account đầu tiên (ORDER BY id) có refresh token.
+    None khi chưa kết nối Drive nào (kernel chạy offline)."""
+    chosen = get_kaggle_drive_account_id(conn)
+    if chosen is not None:
+        row = get_account(conn, chosen)
+        if row is None:
+            state = conn.execute("SELECT value FROM app_state WHERE key=?",
+                                 (_KAGGLE_DRIVE_EMAIL_KEY,)).fetchone()
+            row = find_account_by_email(conn, state["value"] if state else None)
+            if row is not None:
+                chosen = row["id"]
+                if kaggle_credentials(conn, chosen):
+                    set_kaggle_drive_account_id(conn, chosen)
+        if row is None:
+            raise KaggleDriveError(
+                f"Drive dùng chung cho kernel Kaggle (id={chosen}) đã bị ngắt kết nối. "
+                "Kết nối lại đúng email đó ở /drive, hoặc chọn Drive khác ở tab Kaggle.")
+        creds = kaggle_credentials(conn, chosen)
+        if not creds:
+            raise KaggleDriveError(
+                f"Drive dùng chung cho kernel Kaggle ({row.get('account_email') or chosen}) "
+                "mất refresh token. Kết nối lại đúng email đó ở /drive.")
+        return row, creds
+    for account in list_accounts(conn):
+        creds = kaggle_credentials(conn, account["id"])
+        if creds:
+            return account, creds
+    return None
+
+
 def _build_credentials(row: dict, client_id: str | None = None, client_secret: str | None = None) -> Credentials:
     _require_google_imports()
     return Credentials(

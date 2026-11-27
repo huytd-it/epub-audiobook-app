@@ -287,37 +287,6 @@ def _verify_dataset_not_empty(
         )
 
 
-def _drive_sync_account_for_kernel(conn) -> tuple[dict | None, dict | None]:
-    """(account, creds) for the kernel's Drive sync + progressive per_patch import.
-
-    Same selection as _drive_creds_for_kernel (first connected account that can
-    mint a GDRIVE_CREDS payload), but also returns the account row so the handler
-    can open a Drive API service (get_drive_service needs the account id).
-    Best-effort: returns (None, None) when Drive is not connected. Never raises.
-    """
-    try:
-        from app import google_drive
-    except ImportError:
-        return None, None
-    try:
-        accounts = google_drive.list_accounts(conn)
-    except Exception as exc:
-        logger.warning("Drive account lookup for Kaggle sync failed: %s", exc)
-        return None, None
-    for account in accounts:
-        try:
-            creds = google_drive.kaggle_credentials(conn, account["id"])
-        except Exception as exc:
-            logger.warning(
-                "Drive creds lookup for Kaggle sync failed (account %s): %s",
-                account.get("id"), exc,
-            )
-            continue
-        if creds:
-            return account, creds
-    return None, None
-
-
 def _find_drive_sync_folder_id(service, batch_id: str) -> str | None:
     """Locate the kernel's Drive sync folder by batch_id (same scan the notebook
     does in Cell 4's kaggle_native branch): the folder under
@@ -499,45 +468,48 @@ def _poll_drive_for_completed_patches(
         return 0
 
 
-def _drive_creds_for_kernel(conn) -> dict | None:
-    """Best-effort Drive credentials for the kernel's optional output sync (see
-    Cell 4's Drive API branch): the first connected account that can mint a
-    GDRIVE_CREDS payload. Returns None when Drive is not connected. Never raises;
-    the active Kaggle handler uses the stricter account-aware helper below."""
-    try:
-        from app import google_drive
-    except ImportError:
-        return None
-    try:
-        accounts = google_drive.list_accounts(conn)
-    except Exception as exc:
-        logger.warning("Drive account lookup for Kaggle sync failed: %s", exc)
-        return None
-    for account in accounts:
-        try:
-            creds = google_drive.kaggle_credentials(conn, account["id"])
-        except Exception as exc:
-            logger.warning(
-                "Drive creds lookup for Kaggle sync failed (account %s): %s",
-                account.get("id"), exc,
-            )
-            continue
-        if creds:
-            return creds
-    return None
+def _kernel_drive(ctx: JobContext) -> tuple[int, dict] | None:
+    """(drive_account_id, GDRIVE_CREDS) mà kernel của job này đồng bộ vào.
 
+    Lần chạy đầu chọn theo setting "Drive cho Kaggle" (google_drive.
+    kaggle_drive_account) rồi KHOÁ account đó vào payload job; mọi lần retry/hoãn
+    sau đọc lại đúng account này, không chọn lại — thêm/xoá account Drive giữa
+    chừng không làm đổi Drive (mất resume). None = chưa kết nối Drive (offline).
+    Account đã khoá không còn dùng được thì JobFatalError kèm hướng dẫn."""
+    from app import google_drive
+    from app.jobqueue import store
 
-def _drive_account_for_kernel(conn) -> tuple[dict, dict] | None:
-    """Return the first Drive account and credentials usable by the Kaggle notebook."""
+    conn = ctx.conn
+    current = store.get(conn, ctx.job.id)
+    payload = dict(current.payload if current is not None else ctx.job.payload)
+    locked = payload.get("drive_account_id")
+    if locked is not None:
+        email = payload.get("drive_account_email") or ""
+        account = google_drive.get_account(conn, int(locked))
+        if account is None and email:
+            # Ngắt rồi kết nối lại cùng email tạo dòng mới: vẫn là Drive đó.
+            account = google_drive.find_account_by_email(conn, email)
+        creds = google_drive.kaggle_credentials(conn, account["id"]) if account else None
+        if not account or not creds:
+            raise JobFatalError(
+                f"Job này đã khoá Google Drive {email or f'id={locked}'} cho kernel Kaggle "
+                "(để retry resume đúng thư mục sync) nhưng tài khoản đó đã bị ngắt kết nối "
+                "hoặc mất refresh token. Kết nối lại đúng email đó ở /drive rồi chạy lại.")
+        if account["id"] != int(locked):
+            payload["drive_account_id"] = account["id"]
+            store.update_payload(conn, ctx.job.id, payload, worker_id=ctx.job.worker_id)
+        return account["id"], creds
     try:
-        from app import google_drive
-        for account in google_drive.list_accounts(conn):
-            creds = google_drive.kaggle_credentials(conn, account["id"])
-            if creds:
-                return account, creds
-    except Exception as exc:
-        logger.warning("Drive account lookup for Kaggle input failed: %s", exc)
-    return None
+        chosen = google_drive.kaggle_drive_account(conn)
+    except google_drive.KaggleDriveError as exc:
+        raise JobFatalError(str(exc)) from exc
+    if chosen is None:
+        return None
+    account, creds = chosen
+    payload["drive_account_id"] = account["id"]
+    payload["drive_account_email"] = account.get("account_email") or ""
+    store.update_payload(conn, ctx.job.id, payload, worker_id=ctx.job.worker_id)
+    return account["id"], creds
 
 
 def _stable_batch_id(slug: str, model_id: str, voice_id: str | None,
@@ -715,18 +687,14 @@ def handle(ctx: JobContext) -> dict | None:
     # of re-synthesizing from scratch (like the manual Drive notebook).
     slug = _kernel_slug(book_id, patch_ids)
     stable_batch_id = _stable_batch_id(slug, model_id, voice_id, max_chars, with_effects)
-    drive_creds = _drive_creds_for_kernel(conn)
+    kernel_drive = _kernel_drive(ctx)
     # Drive imports need the account id (get_drive_service), not just the
-    # GDRIVE_CREDS payload baked into the notebook. Use the same account.
-    drive_account_id: int | None = None
+    # GDRIVE_CREDS payload baked into the notebook: both come from the same
+    # account, locked to this job.
+    drive_account_id: int | None = kernel_drive[0] if kernel_drive else None
+    drive_creds = kernel_drive[1] if kernel_drive else None
     progressive_enabled = automation_active and automation_mode == AUTOMATION_PER_PATCH
     if drive_creds:
-        try:
-            _acct, _creds = _drive_sync_account_for_kernel(conn)
-            if _acct and _creds == drive_creds:
-                drive_account_id = _acct["id"]
-        except Exception:
-            drive_account_id = None
         if progressive_enabled:
             if drive_account_id is not None:
                 ctx.log(

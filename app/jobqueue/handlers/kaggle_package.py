@@ -127,11 +127,16 @@ def handle(ctx):
                         raise JobFatalError(
                             "Không tìm thấy thư mục Drive cũ của gói. Kết nối đúng tài khoản Drive rồi kiểm tra lại."
                         )
-                    accounts = google_drive.list_accounts(conn)
-                    if not accounts:
+                    # Gói mới: Drive dùng chung cho kernel Kaggle (setting); từ đây
+                    # drive_account_id được lưu trên gói và không bao giờ tự đổi.
+                    try:
+                        chosen = google_drive.kaggle_drive_account(conn)
+                    except google_drive.KaggleDriveError as exc:
+                        raise JobFatalError(str(exc)) from exc
+                    if chosen is None:
                         raise JobFatalError("Cần kết nối Google Drive trước khi chạy Kaggle CLI.")
-                    drive_account_id = accounts[0]["id"]
-                    credentials = google_drive.kaggle_credentials(conn, drive_account_id)
+                    drive_account_id = chosen[0]["id"]
+                    credentials = chosen[1]
                     service = google_drive.get_drive_service(conn, drive_account_id)
                     patches = [repository.get_patch(conn, e["patch_id"]) for e in json.loads(package["patches_json"])]
                     if any(p is None for p in patches):

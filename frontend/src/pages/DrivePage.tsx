@@ -6,6 +6,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { KaggleDriveAccountCard } from "@/pages/drive/KaggleDriveSection";
 
 export function DrivePage() {
   const [targets, setTargets] = useState<DriveTarget[]>([]);
@@ -163,6 +164,7 @@ export function DrivePage() {
       {activeSection === "clients" && <div className="space-y-4"><div className="flex justify-end"><Button size="sm" onClick={() => setShowClientForm(true)}><Plus className="h-4 w-4" /> Thêm OAuth client</Button></div><Card><CardContent className="p-0 divide-y divide-border">{clients.length === 0 ? <EmptyState text="Chưa có OAuth client tùy chỉnh." /> : clients.map((client) => <div key={client.id} className="p-4 flex justify-between"><div><div className="font-semibold text-sm">{client.name}</div><div className="text-xs font-mono text-muted-foreground">{client.client_id}</div></div><Button variant="ghost" size="icon" className="text-destructive" onClick={async () => { if (confirm("Xóa OAuth client này?")) { try { await postForm(`/drive/clients/${client.id}/delete`, new FormData()); loadData(); } catch (e: any) { alert(e.message); } } }}><Trash2 className="h-4 w-4" /></Button></div>)}</CardContent></Card><Card><CardHeader><CardTitle className="text-sm">Rclone OAuth client</CardTitle></CardHeader><CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3"><Input placeholder="Google client ID" value={rcloneClientId} onChange={(e) => setRcloneClientId(e.target.value)} /><Input type="password" placeholder="Google client secret" value={rcloneClientSecret} onChange={(e) => setRcloneClientSecret(e.target.value)} /><Button className="md:col-span-2" onClick={saveRcloneConfig}>Lưu cấu hình rclone</Button></CardContent></Card></div>}
 
       {activeSection === "kaggle" && <div className="space-y-4">
+        <KaggleDriveAccountCard accounts={accounts} />
         <div className="flex justify-end"><Button size="sm" onClick={() => openKaggleForm()}><Plus className="h-4 w-4" /> Thêm tài khoản Kaggle</Button></div>
         <Card><CardHeader><CardTitle className="text-sm">Tài khoản Kaggle (tự động hoá qua Kaggle Kernels API)</CardTitle></CardHeader><CardContent className="p-0 divide-y divide-border">
           {kaggleAccounts.length === 0 ? <EmptyState text="Chưa có tài khoản Kaggle nào. Thêm ít nhất một tài khoản để dùng export 'Kaggle (tự động)'." /> : kaggleAccounts.map((account) => {

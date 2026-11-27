@@ -507,3 +507,20 @@ def test_export_batch_api_unknown_account_returns_400(client):
     )
     assert resp.status_code == 400
 
+
+
+def test_kaggle_drive_account_route_get_and_put(client, tmp_path):
+    conn = app_db.connect(str(tmp_path / "test.db"))
+    try:
+        from app import google_drive
+        first = google_drive.save_credentials(conn, "a", "rt-a", "", "a@x.com")
+        second = google_drive.save_credentials(conn, "b", "rt-b", "", "b@x.com")
+    finally:
+        conn.close()
+    state = client.get("/drive/kaggle-drive-account").json()
+    assert state["account_id"] is None and state["effective_account_id"] == first
+    state = client.put("/drive/kaggle-drive-account", json={"account_id": second}).json()
+    assert state["account_id"] == second and state["effective_account_email"] == "b@x.com"
+    assert client.put("/drive/kaggle-drive-account", json={"account_id": 999}).status_code == 400
+    state = client.put("/drive/kaggle-drive-account", json={"account_id": None}).json()
+    assert state["account_id"] is None and state["effective_account_id"] == first

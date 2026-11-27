@@ -302,6 +302,44 @@ def drive_kaggle_credentials(request: Request, account_id: int | None = None):
         return JSONResponse(payload)
 
 
+def _kaggle_drive_state(conn) -> dict:
+    selected = google_drive.get_kaggle_drive_account_id(conn)
+    try:
+        effective = google_drive.kaggle_drive_account(conn)
+        error = None
+    except google_drive.KaggleDriveError as exc:
+        effective, error = None, str(exc)
+    return {
+        "account_id": selected,
+        "effective_account_id": effective[0]["id"] if effective else None,
+        "effective_account_email": (effective[0].get("account_email") if effective else None),
+        "error": error,
+    }
+
+
+@router.get("/drive/kaggle-drive-account")
+def get_kaggle_drive_account(request: Request):
+    """Drive dùng chung cho mọi kernel Kaggle. account_id=None nghĩa là chưa chọn
+    (rơi về account đầu tiên có refresh token — effective_account_*)."""
+    with locked_conn(request) as conn:
+        return _kaggle_drive_state(conn)
+
+
+@router.put("/drive/kaggle-drive-account")
+def put_kaggle_drive_account(request: Request, body: dict):
+    raw = (body or {}).get("account_id")
+    try:
+        account_id = None if raw in (None, "") else int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="account_id không hợp lệ")
+    with locked_conn(request) as conn:
+        try:
+            google_drive.set_kaggle_drive_account_id(conn, account_id)
+        except google_drive.KaggleDriveError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return _kaggle_drive_state(conn)
+
+
 @router.post("/drive/disconnect")
 def drive_disconnect(request: Request, account_id: int = Form(...)):
     with locked_conn(request) as conn:

@@ -682,31 +682,85 @@ def test_stable_batch_id_survives_retries_but_isolates_voices():
     assert kaggle_tts._stable_batch_id(slug, "zerotts", None, 0, False).startswith(slug)
 
 
-def test_drive_creds_for_kernel_is_none_without_drive(tmp_path):
-    """Chưa kết nối Drive -> None (kernel offline), không raise."""
+def test_kernel_drive_is_none_without_drive(tmp_path):
+    """Chưa kết nối Drive -> None (kernel offline), không raise, không khoá gì."""
     conn = _conn(tmp_path)
-    assert kaggle_tts._drive_creds_for_kernel(conn) is None
+    ctx = _ctx(conn, {"book_id": 1, "patch_ids": [1]})
+    assert kaggle_tts._kernel_drive(ctx) is None
+    assert "drive_account_id" not in store.get(conn, ctx.job.id).payload
 
 
-def test_drive_creds_for_kernel_returns_first_usable_account(tmp_path, monkeypatch):
-    """Có Drive account với refresh token -> trả payload kaggle_credentials."""
-    from app import google_drive
-
-    conn = _conn(tmp_path)
-    conn.execute(
-        "INSERT INTO drive_oauth_client (name, client_id, client_secret, created_at, updated_at) "
-        "VALUES ('c', 'cid', 'cs', '2026-01-01', '2026-01-01')"
-    )
-    conn.execute(
+def _add_drive_account(conn, email, refresh="rt"):
+    cur = conn.execute(
         "INSERT INTO google_drive_credentials (account_email, access_token, refresh_token, "
         "token_expiry, oauth_client_id, created_at, updated_at) "
-        "VALUES ('a@x.com', 'at', 'rt', '2026-01-01', 1, '2026-01-01', '2026-01-01')"
-    )
+        "VALUES (?, 'at', ?, '2026-01-01', 1, '2026-01-01', '2026-01-01')", (email, refresh))
     conn.commit()
-    creds = kaggle_tts._drive_creds_for_kernel(conn)
-    assert creds is not None
-    assert creds["refresh_token"] == "rt"
-    assert google_drive.list_accounts(conn)
+    return cur.lastrowid
+
+
+def test_kernel_drive_without_setting_uses_first_account_and_locks_it(tmp_path):
+    conn = _conn(tmp_path)
+    first = _seed_drive_account(conn)
+    ctx = _ctx(conn, {"book_id": 1, "patch_ids": [1]})
+    account_id, creds = kaggle_tts._kernel_drive(ctx)
+    assert account_id == first and creds["refresh_token"] == "rt"
+    payload = store.get(conn, ctx.job.id).payload
+    assert payload["drive_account_id"] == first
+    assert payload["drive_account_email"] == "a@x.com"
+
+
+def test_kernel_drive_uses_the_chosen_setting(tmp_path):
+    from app import google_drive
+    conn = _conn(tmp_path)
+    _seed_drive_account(conn)
+    second = _add_drive_account(conn, "b@x.com", "rt-b")
+    google_drive.set_kaggle_drive_account_id(conn, second)
+    ctx = _ctx(conn, {"book_id": 1, "patch_ids": [1]})
+    account_id, creds = kaggle_tts._kernel_drive(ctx)
+    assert (account_id, creds["refresh_token"]) == (second, "rt-b")
+
+
+def test_kernel_drive_keeps_the_locked_account_across_retries(tmp_path):
+    """Thêm account / đổi setting giữa hai lần retry: job vẫn dùng account đã khoá."""
+    from app import google_drive
+    conn = _conn(tmp_path)
+    first = _seed_drive_account(conn)
+    ctx = _ctx(conn, {"book_id": 1, "patch_ids": [1]})
+    assert kaggle_tts._kernel_drive(ctx)[0] == first
+    newer = _add_drive_account(conn, "z@x.com", "rt-z")
+    google_drive.set_kaggle_drive_account_id(conn, newer)
+    retry = JobContext(store.get(conn, ctx.job.id), conn, JobLogger(ctx.job.id, "kaggle_tts"), lambda: False)
+    assert kaggle_tts._kernel_drive(retry)[0] == first
+
+
+def test_kernel_drive_fails_clearly_when_the_locked_account_is_gone(tmp_path):
+    from app import google_drive
+    conn = _conn(tmp_path)
+    first = _seed_drive_account(conn)
+    ctx = _ctx(conn, {"book_id": 1, "patch_ids": [1]})
+    kaggle_tts._kernel_drive(ctx)
+    _add_drive_account(conn, "other@x.com")
+    google_drive.delete_credentials(conn, first)
+    with pytest.raises(JobFatalError, match="a@x.com"):
+        kaggle_tts._kernel_drive(ctx)
+    # Kết nối lại đúng email (id mới) thì job nhận lại được Drive đó.
+    again = _add_drive_account(conn, "a@x.com")
+    assert kaggle_tts._kernel_drive(ctx)[0] == again
+
+
+def test_chosen_setting_never_silently_falls_back(tmp_path):
+    from app import google_drive
+    conn = _conn(tmp_path)
+    _seed_drive_account(conn)
+    second = _add_drive_account(conn, "b@x.com")
+    google_drive.set_kaggle_drive_account_id(conn, second)
+    google_drive.delete_credentials(conn, second)
+    with pytest.raises(google_drive.KaggleDriveError):
+        google_drive.kaggle_drive_account(conn)
+    ctx = _ctx(conn, {"book_id": 1, "patch_ids": [1]})
+    with pytest.raises(JobFatalError, match="ngắt kết nối"):
+        kaggle_tts._kernel_drive(ctx)
 
 
 def test_handle_passes_stable_batch_id_and_drive_creds_to_package(tmp_path, monkeypatch):
@@ -766,8 +820,7 @@ def test_per_patch_downloads_finished_patches_from_drive_while_kernel_runs(tmp_p
     monkeypatch.setattr(kaggle_tts.kaggle_api, "kernel_output", fake_output)
 
     creds = {"client_id": "cid", "client_secret": "cs", "refresh_token": "rt"}
-    monkeypatch.setattr(kaggle_tts, "_drive_creds_for_kernel", lambda c: creds)
-    monkeypatch.setattr(kaggle_tts, "_drive_sync_account_for_kernel", lambda c: ({"id": 7}, creds))
+    monkeypatch.setattr(kaggle_tts, "_kernel_drive", lambda ctx: (7, creds))
     monkeypatch.setattr(kaggle_tts, "_find_drive_sync_folder_id", lambda service, batch_id: "folder123")
     # Upload is gated on drive_account_id: fake it to the same folder the Drive
     # poll below looks up, so no real Drive service is touched.
@@ -828,7 +881,7 @@ def test_per_patch_without_drive_still_imports_from_kernel_output(tmp_path, monk
             _write_result_for(dest_dir, patch_id), [dest_dir / "result"])[1],
     )
     events = _automation_spies(monkeypatch)
-    monkeypatch.setattr(kaggle_tts, "_drive_creds_for_kernel", lambda c: None)
+    monkeypatch.setattr(kaggle_tts, "_kernel_drive", lambda ctx: None)
 
     ctx = _ctx(conn, {
         "book_id": book_id, "patch_ids": [patch_id], "model_id": "zerotts",
@@ -852,8 +905,7 @@ def test_after_all_imports_from_both_duplicate_drive_result_folders(tmp_path, mo
     b = _add_patch(conn, book_id, 1)
     _success_stubs(monkeypatch, tmp_path, lambda dest: None)
     creds = {"client_id": "cid", "client_secret": "cs", "refresh_token": "rt"}
-    monkeypatch.setattr(kaggle_tts, "_drive_creds_for_kernel", lambda c: creds)
-    monkeypatch.setattr(kaggle_tts, "_drive_sync_account_for_kernel", lambda c: ({"id": 7}, creds))
+    monkeypatch.setattr(kaggle_tts, "_kernel_drive", lambda ctx: (7, creds))
     monkeypatch.setattr(kaggle_tts, "_find_drive_sync_folder_id", lambda svc, batch: "batch")
     monkeypatch.setattr(google_drive, "get_drive_service", lambda conn, aid: object())
     names = {"old": kaggle_tts.drive_export.result_wav_name(repository.get_patch(conn, a)),
