@@ -258,3 +258,62 @@ async def test_error_after_cancel_marks_job_cancelled_instead_of_retrying(factor
     job = store.get(c, jid)
     assert job.status == "cancelled"
     assert job.attempt_count == 1
+
+
+# ------------------------------------------------------------ egress không vào được
+
+def _raise_egress(wrapped=False):
+    from app.egress import EgressUnavailable
+    def fn(ctx):
+        if not wrapped:
+            raise EgressUnavailable("server 2 chết")
+        try:
+            raise EgressUnavailable("server 2 chết")
+        except EgressUnavailable as inner:
+            raise RuntimeError("kaggle api lỗi") from inner
+    return fn
+
+
+async def _wait_deferred(c, jid):
+    for _ in range(200):
+        job = store.get(c, jid)
+        if job.status == "pending" and job.error_message:
+            return job
+        await asyncio.sleep(.02)
+    raise AssertionError("job không được hoãn")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_egress_unavailable_defers_without_spending_attempts(factory, wrapped):
+    from datetime import datetime, timedelta, timezone
+    c = factory(); jid = store.enqueue(c, "demo", max_attempts=1)
+    q = queue(factory); q.register("demo", _raise_egress(wrapped))
+    await q.start(); job = await _wait_deferred(c, jid); await q.stop(5)
+    assert job.status == "pending"          # max_attempts=1 mà không sang failed
+    assert job.attempt_count == 0           # hoàn lượt
+    assert "Server egress không vào được" in job.error_message
+    retry_at = datetime.fromisoformat(job.next_retry_at)
+    now = datetime.now(timezone.utc)
+    assert now + timedelta(seconds=100) < retry_at < now + timedelta(seconds=140)
+    assert job.payload["_egress_defer_count"] == 1
+
+
+def test_egress_defer_backoff_doubles_and_caps_at_ten_minutes():
+    from app.jobqueue.runner import egress_defer_seconds
+    assert [egress_defer_seconds(n) for n in (1, 2, 3, 4, 9)] == [120, 240, 480, 600, 600]
+
+
+@pytest.mark.asyncio
+async def test_egress_unavailable_after_cancel_is_cancelled(factory):
+    c = factory(); jid = store.enqueue(c, "demo")
+    started = threading.Event()
+    from app.egress import EgressUnavailable
+    def fn(ctx):
+        started.set(); time.sleep(.2)
+        raise EgressUnavailable("down")
+    q = queue(factory); q.register("demo", fn); await q.start()
+    await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+    store.request_cancel(c, jid); q.request_cancel(jid)
+    await drain(c, 10); await q.stop(5)
+    assert store.get(c, jid).status == "cancelled"

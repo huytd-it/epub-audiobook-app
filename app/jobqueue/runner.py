@@ -5,12 +5,37 @@ import concurrent.futures
 import logging
 import threading
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import store
 from .context import JobContext
 from .joblog import JobLogger
 from .models import CANCELLING, HandlerSpec, JobFatalError, JobRescheduled
+
+# Số lần liên tiếp job bị hoãn vì server egress, lưu trong payload để tính backoff.
+EGRESS_DEFER_KEY = "_egress_defer_count"
+_EGRESS_BASE_DEFER_SECONDS = 120
+_EGRESS_MAX_DEFER_SECONDS = 600
+
+
+def egress_defer_seconds(count: int) -> int:
+    """Backoff hoãn job khi server egress chết: 2, 4, 8, 10, 10... phút."""
+    return min(_EGRESS_BASE_DEFER_SECONDS * 2 ** max(count - 1, 0), _EGRESS_MAX_DEFER_SECONDS)
+
+
+def _egress_unavailable(exc: BaseException | None):
+    """EgressUnavailable nằm ở exc hoặc trong chuỗi __cause__/__context__ (None nếu không)."""
+    try:
+        from app.egress import EgressUnavailable
+    except Exception:  # pragma: no cover - egress luôn import được trong app
+        return None
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, EgressUnavailable):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
 
 
 def parse_concurrency(spec: str, *, default: int) -> dict[str, int]:
@@ -245,8 +270,14 @@ class JobQueue:
             # Job đã bị bấm hủy mà còn lỗi: tôn trọng yêu cầu hủy thay vì đưa về
             # pending retry (người dùng hủy xong job vẫn sống lại là bug).
             ctx.flush()
+            egress_exc = _egress_unavailable(exc)
             if self._cancelled(conn, job.id):
                 store.mark_cancelled(conn, job.id, worker_id=job.worker_id)
+            elif egress_exc is not None:
+                # Server egress không vào được: không phải lỗi của job. Hoãn (không
+                # tính lượt, chờ vô hạn) với backoff 2 → 10 phút; không bao giờ tự
+                # đi thẳng (fail-closed).
+                self._defer_for_egress(conn, job, ctx, egress_exc)
             else:
                 # The enqueue request may set a per-job retry policy. HandlerSpec is
                 # only the default; do not overwrite the persisted max_attempts.
@@ -256,6 +287,19 @@ class JobQueue:
                 )
         finally:
             ctx.close(); conn.close()
+
+    def _defer_for_egress(self, conn, job, ctx, exc):
+        current = store.get(conn, job.id)
+        payload = dict(current.payload if current is not None else job.payload)
+        count = int(payload.get(EGRESS_DEFER_KEY) or 0) + 1
+        payload[EGRESS_DEFER_KEY] = count
+        delay = egress_defer_seconds(count)
+        retry_at = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+        store.update_payload(conn, job.id, payload, worker_id=job.worker_id)
+        message = f"Server egress không vào được – hoãn tới {retry_at}: {exc}"
+        ctx.log(message, level=logging.WARNING)
+        ctx.flush()
+        store.reschedule(conn, job.id, retry_at, message[:4000], worker_id=job.worker_id)
 
     def _cancelled(self, conn, job_id):
         with self._lock:
