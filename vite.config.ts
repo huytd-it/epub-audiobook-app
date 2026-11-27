@@ -22,6 +22,7 @@ const API_PREFIXES = [
   "/drive",
   "/youtube",
   "/socials",
+  "/network",
   "/logs",
   "/effects",
   "/database-io",
@@ -49,6 +50,8 @@ const SPA_ROUTES = [
   /^\/(upload|queue|video|music|photos|voices|media|media-browser|gameplay|tools|youtube|drive|database-io|logs|effects|production-defaults|tts-models)$/,
   // Socials hub: /socials và /socials/<mạng>; API của nó nằm dưới /socials/api/.
   /^\/socials(\/(youtube|facebook|tiktok))?$/,
+  // Trang "Mạng & Server": /network; API của nó nằm dưới /network/api/.
+  /^\/network$/,
 ];
 
 const isSpaNavigation = (req: { url?: string; method?: string; headers: Record<string, any> }) => {
@@ -120,7 +123,12 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern:
-              /^https?:.*\/(api|books|text-bundles|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|local-bridge|tts-models|socials\/api)\//,
+              /^https?:.*\/(api|books|text-bundles|queue|video|music|photos|voices|media|gameplay|text-studio|drive|youtube|logs|effects|database-io|local-bridge|tts-models|socials\/api|network\/api)\//,
+            handler: "NetworkOnly",
+          },
+          {
+            // GET /network/api (trạng thái trang Mạng & Server) không có dấu / cuối.
+            urlPattern: /^https?:.*\/network\/api([?#]|$)/,
             handler: "NetworkOnly",
           },
         ],

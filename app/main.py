@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from app import db, egress, repository
 from app.config import settings
 from app.routes import (ai, background_videos, book_text, books, chapter_audio, database_io, downloads, drive, effects, gameplay, intro, kaggle, local_bridge, logs, media_browser, music,
-    patches, photos, production_settings, queue, socials, text_studio, tts_models, ui_api, validation, video, video_api, voices, youtube)
+    network, patches, photos, production_settings, queue, socials, text_studio, tts_models, ui_api, validation, video, video_api, voices, youtube)
 import asyncio
 
 from app.jobqueue import joblog, store
@@ -180,6 +180,7 @@ app.include_router(tts_models.router)
 app.include_router(gameplay.router)
 app.include_router(media_browser.router)
 app.include_router(socials.router)
+app.include_router(network.router)
 app.include_router(background_videos.router)
 
 
@@ -204,7 +205,7 @@ def _spa_index():
 
 _SPA_PATHS = (
     re.compile(r"^/books(?:/upload|/\d+|/\d+/chapters/preview-ui|/\d+/patches/build|/\d+/patches/\d+/chunks|/\d+/text-studio)?$"),
-    re.compile(r"^/(?:queue|media|music|photos|voices|effects|youtube|drive|database-io|logs|production-defaults|gameplay|media-browser)$"),
+    re.compile(r"^/(?:queue|media|music|photos|voices|effects|youtube|drive|database-io|logs|production-defaults|gameplay|media-browser|network)$"),
     re.compile(r"^/socials(?:/(?:youtube|facebook|tiktok))?$"),
 )
 

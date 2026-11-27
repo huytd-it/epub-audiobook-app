@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from app import egress, facebook, social_accounts, tiktok, youtube
 from app.deps import locked_conn
+from app.routes import network
 
 logger = logging.getLogger(__name__)
 
@@ -173,90 +174,16 @@ def add_tiktok_account(request: Request, body: TikTokAccountBody):
 
 
 # ------------------------------------------------------------------ mạng: relay / proxy
+# Đã chuyển sang trang "Mạng & Server" (app/routes/network.py, /network/api). Giữ các
+# đường dẫn cũ dưới /socials/api/network làm alias cho client cũ (kể cả bản desktop
+# chưa cập nhật): cùng một hàm xử lý, không lặp logic.
 
-class EndpointCreate(BaseModel):
-    kind: str
-    url: str
-    label: str = ""
-    secret: str = ""
-    region: str = ""
-    enabled: bool = True
-
-
-class EndpointUpdate(BaseModel):
-    label: str | None = None
-    # Rỗng/None = giữ giá trị đang lưu (UI chỉ thấy bản đã che).
-    url: str | None = None
-    secret: str | None = None
-    region: str | None = None
-    enabled: bool | None = None
-
-
-@router.get("/network")
-def network_state(request: Request):
-    with locked_conn(request) as conn:
-        return {
-            "endpoints": [egress.public(endpoint) for endpoint in egress.list_endpoints(conn)],
-            "policy": egress.get_policy(conn),
-            "scopes": list(egress.SCOPES),
-            "relay_scopes": sorted(egress.RELAY_SCOPES),
-        }
-
-
-@router.post("/network/endpoints")
-def create_endpoint(request: Request, body: EndpointCreate):
-    with locked_conn(request) as conn:
-        try:
-            endpoint_id = egress.create_endpoint(
-                conn, kind=body.kind, url=body.url, label=body.label, secret=body.secret,
-                region=body.region, enabled=body.enabled)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        return egress.public(egress.get_endpoint(conn, endpoint_id))
-
-
-@router.patch("/network/endpoints/{endpoint_id}")
-def update_endpoint(request: Request, endpoint_id: int, body: EndpointUpdate):
-    with locked_conn(request) as conn:
-        try:
-            endpoint = egress.update_endpoint(
-                conn, endpoint_id, label=body.label, url=body.url, secret=body.secret,
-                region=body.region, enabled=body.enabled)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        if endpoint is None:
-            raise HTTPException(404, "Không tìm thấy endpoint")
-        return egress.public(endpoint)
-
-
-@router.delete("/network/endpoints/{endpoint_id}")
-def delete_endpoint(request: Request, endpoint_id: int):
-    with locked_conn(request) as conn:
-        if not egress.delete_endpoint(conn, endpoint_id):
-            raise HTTPException(404, "Không tìm thấy endpoint")
-    return {"deleted": endpoint_id}
-
-
-@router.post("/network/endpoints/{endpoint_id}/test")
-def test_endpoint(request: Request, endpoint_id: int):
-    """Gọi thử qua endpoint và trả IP thoát. Chạy ngoài db_lock vì là request mạng."""
-    with locked_conn(request) as conn:
-        endpoint = egress.get_endpoint(conn, endpoint_id)
-    if endpoint is None:
-        raise HTTPException(404, "Không tìm thấy endpoint")
-    result = egress.test_endpoint(endpoint)
-    with locked_conn(request) as conn:
-        if result["ok"]:
-            egress.mark_ok(conn, endpoint)
-        else:
-            egress.mark_failed(conn, endpoint, result["error"])
-    return result
-
-
-@router.put("/network/policy")
-def update_policy(request: Request, body: dict[str, dict]):
-    with locked_conn(request) as conn:
-        try:
-            return {"policy": egress.set_policy(conn, body)}
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(400, str(exc)) from exc
+for _path, _endpoint, _methods in (
+    ("/network", network.network_state, ["GET"]),
+    ("/network/endpoints", network.create_endpoint, ["POST"]),
+    ("/network/endpoints/{endpoint_id}", network.update_endpoint, ["PATCH"]),
+    ("/network/endpoints/{endpoint_id}", network.delete_endpoint, ["DELETE"]),
+    ("/network/endpoints/{endpoint_id}/test", network.test_endpoint, ["POST"]),
+    ("/network/policy", network.update_policy, ["PUT"]),
+):
+    router.add_api_route(_path, _endpoint, methods=_methods, include_in_schema=False)
