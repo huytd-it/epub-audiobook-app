@@ -198,6 +198,7 @@ def test_request_without_conn_or_configured_db_goes_direct(monkeypatch):
 def test_proxy_request_passes_proxies(conn, monkeypatch):
     endpoint_id = _proxy(conn, 1)
     egress.set_policy(conn, {"ai": {"mode": "proxy"}})
+    monkeypatch.setattr(egress, "_reachable", lambda endpoint, timeout=2.0: True)
     seen = {}
 
     def fake_request(method, url, **kwargs):
@@ -235,6 +236,7 @@ def test_relay_request_is_rewritten_with_target_and_key(conn, monkeypatch):
 def test_connection_error_rotates_to_the_next_endpoint(conn, monkeypatch):
     first, second = _proxy(conn, 1), _proxy(conn, 2)
     egress.set_policy(conn, {"ai": {"mode": "proxy"}})
+    monkeypatch.setattr(egress, "_reachable", lambda endpoint, timeout=2.0: True)
     used = []
 
     def fake_request(method, url, **kwargs):
@@ -253,6 +255,7 @@ def test_connection_error_rotates_to_the_next_endpoint(conn, monkeypatch):
 def test_geo_block_rotates_but_ordinary_4xx_is_returned_as_is(conn, monkeypatch):
     first, _second = _proxy(conn, 1), _proxy(conn, 2)
     egress.set_policy(conn, {"ai": {"mode": "proxy"}})
+    monkeypatch.setattr(egress, "_reachable", lambda endpoint, timeout=2.0: True)
     responses = [
         FakeResponse(400, '{"error": "User location is not supported for the API use."}'),
         FakeResponse(401, '{"error": "invalid api key"}'),
@@ -265,7 +268,7 @@ def test_geo_block_rotates_but_ordinary_4xx_is_returned_as_is(conn, monkeypatch)
     assert egress.get_endpoint(conn, first).fail_count == 1
 
 
-def test_all_endpoints_down_raises_the_last_connection_error(conn, monkeypatch):
+def test_all_endpoints_down_raises_egress_unavailable(conn, monkeypatch):
     for n in (1, 2):
         _proxy(conn, n)
     egress.set_policy(conn, {"ai": {"mode": "proxy"}})
@@ -274,14 +277,78 @@ def test_all_endpoints_down_raises_the_last_connection_error(conn, monkeypatch):
         raise requests.ConnectionError("down")
 
     monkeypatch.setattr(requests, "request", fake_request)
-    with pytest.raises(requests.ConnectionError):
+    with pytest.raises(egress.EgressUnavailable):
         egress.request("ai", "GET", "https://api.example/", conn=conn)
 
 
-def test_session_carries_proxy_and_ignores_environment(conn):
+def test_new_scopes_default_to_direct(conn):
+    policy = egress.get_policy(conn)
+    assert set(policy) == set(egress.SCOPES) == {"ai", "youtube", "facebook", "tiktok", "kaggle", "drive"}
+    assert all(rule["mode"] == "direct" for rule in policy.values())
+    assert egress.pick(conn, "kaggle") is None
+    assert egress.pick(conn, "drive") is None
+
+
+def test_kaggle_and_drive_scopes_reject_relay(conn):
+    relay_id = _relay(conn, 1)
+    with pytest.raises(ValueError, match="relay"):
+        egress.set_policy(conn, {"kaggle": {"mode": "relay", "endpoint_ids": [relay_id]}})
+    with pytest.raises(ValueError, match="relay"):
+        egress.set_policy(conn, {"drive": {"mode": "relay", "endpoint_ids": [relay_id]}})
+
+
+def test_old_policy_without_new_scopes_still_loads(conn):
+    conn.execute(
+        "INSERT INTO app_state (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (egress.POLICY_KEY, '{"ai": {"mode": "proxy", "strategy": "round_robin", "endpoint_ids": []}}'),
+    )
+    conn.commit()
+    policy = egress.get_policy(conn)
+    assert policy["ai"]["mode"] == "proxy"
+    assert policy["kaggle"]["mode"] == "direct"
+    assert policy["drive"]["mode"] == "direct"
+
+
+def test_tcp_check_skips_dead_proxy_before_request(conn, monkeypatch):
+    first, second = _proxy(conn, 1), _proxy(conn, 2)
+    egress.set_policy(conn, {"kaggle": {"mode": "proxy"}})
+    monkeypatch.setattr(egress, "_reachable", lambda endpoint, timeout=2.0: endpoint.id != first)
+    monkeypatch.setattr(requests, "request", lambda method, url, **kw: FakeResponse(text="ok"))
+    seen = {}
+
+    def fake_request(method, url, **kwargs):
+        seen.update(kwargs)
+        return FakeResponse(text="ok")
+
+    monkeypatch.setattr(requests, "request", fake_request)
+    assert egress.request("kaggle", "GET", "https://api.example/", conn=conn).text == "ok"
+    # Endpoint chết bị bỏ qua ngay từ vòng chọn, request chỉ đi qua endpoint sống.
+    assert seen["proxies"]["https"] == egress.get_endpoint(conn, second).url
+    assert egress.get_endpoint(conn, first).fail_count == 1
+    assert egress.get_endpoint(conn, second).fail_count == 0
+
+
+def test_tcp_check_all_dead_raises_unavailable_without_request(conn, monkeypatch):
+    _proxy(conn, 1)
+    egress.set_policy(conn, {"drive": {"mode": "proxy"}})
+    monkeypatch.setattr(egress, "_reachable", lambda endpoint, timeout=2.0: False)
+
+    def explode(method, url, **kwargs):
+        raise AssertionError("không được gửi request khi TCP đã rớt hết")
+
+    monkeypatch.setattr(requests, "request", explode)
+    with pytest.raises(egress.EgressUnavailable):
+        egress.session(conn, "drive")
+    with pytest.raises(egress.EgressUnavailable):
+        egress.httplib2_http(conn, "drive")
+
+
+def test_session_carries_proxy_and_ignores_environment(conn, monkeypatch):
     endpoint_id = _proxy(conn, 1)
     assert egress.session(conn, "facebook").proxies == {}
     egress.set_policy(conn, {"facebook": {"mode": "proxy"}})
+    monkeypatch.setattr(egress, "_reachable", lambda endpoint, timeout=2.0: True)
     http = egress.session(conn, "facebook")
     proxy_url = egress.get_endpoint(conn, endpoint_id).url
     assert http.proxies == {"http": proxy_url, "https": proxy_url}

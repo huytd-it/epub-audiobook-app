@@ -295,14 +295,17 @@ def reschedule(
     conn: sqlite3.Connection, job_id: int, next_retry_at: str,
     message: str | None = None, *, worker_id: str | None = None,
 ) -> bool:
-    """Đưa job về 'pending' tại đúng next_retry_at do caller chỉ định, không đụng
-    attempt_count/max_attempts — job này không lỗi, nó đang chờ một tài nguyên bên
-    ngoài (quota GPU Kaggle) hồi phục. Rào theo worker_id giống finish/fail: một
-    worker đã bị reap ghi vào là no-op."""
+    """Đưa job về 'pending' tại đúng next_retry_at do caller chỉ định và hoàn lại
+    lượt attempt của lần claim vừa rồi (claim đã +1): job này không lỗi, nó đang
+    chờ một tài nguyên bên ngoài (quota GPU Kaggle, server egress) hồi phục.
+    Hoàn lượt cho mọi reschedule nên job hoãn liên tục không bao giờ chuyển sang
+    failed — đây là chủ đích. Rào theo worker_id giống finish/fail: một worker đã
+    bị reap ghi vào là no-op."""
     now = _now()
     guard, extra = _fence(worker_id)
     cur = conn.execute(
         f"""UPDATE job SET status='pending', next_retry_at=?, error_message=?,
+                           attempt_count=MAX(attempt_count - 1, 0),
                            worker_id=NULL, updated_at=? WHERE id=?{guard}""",
         [next_retry_at, message, now, job_id] + extra,
     )

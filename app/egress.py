@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -33,8 +34,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ("ai", "youtube", "facebook", "tiktok")
-# Scope được phép dùng relay. Mạng xã hội thì không: upload vượt giới hạn body của Vercel.
+SCOPES = ("ai", "youtube", "facebook", "tiktok", "kaggle", "drive")
+# Scope được phép dùng relay. Kaggle/Drive và mạng xã hội thì không: upload vượt
+# giới hạn body của Vercel, còn Kaggle/Drive cần IP ổn định của outbound proxy.
 RELAY_SCOPES = frozenset({"ai"})
 MODES = ("direct", "proxy", "relay")
 STRATEGIES = ("round_robin", "sticky")
@@ -66,6 +68,11 @@ _db_path: str | None = None
 
 class EgressError(RuntimeError):
     """Scope cần đi qua proxy/relay nhưng không có điểm thoát nào dùng được."""
+
+
+class EgressUnavailable(EgressError):
+    """Server egress (outbound proxy) không vào được: hết endpoint, hoặc lỗi kết
+    nối tới chính proxy. Nơi gọi nên hoãn job và thử lại sau, không tính lượt."""
 
 
 @dataclass(frozen=True)
@@ -326,7 +333,9 @@ def pick(conn: sqlite3.Connection | None, scope: str, account_id: int | None = N
          exclude: tuple[int, ...] = ()) -> Endpoint | None:
     """Chọn điểm thoát cho một request. None nghĩa là đi thẳng.
 
-    Raise EgressError khi scope cần proxy/relay mà không còn điểm thoát nào.
+    Raise EgressUnavailable khi scope cần proxy/relay mà không còn điểm thoát
+    nào (hết endpoint, endpoint ghim đang lỗi). Raise EgressError khi cấu hình
+    sai (endpoint ghim bị tắt/xoá/sai loại).
     """
     if scope not in SCOPES:
         raise ValueError(f"scope không hợp lệ: {scope}")
@@ -347,14 +356,14 @@ def pick(conn: sqlite3.Connection | None, scope: str, account_id: int | None = N
                 f"Proxy ghim cho tài khoản {account_id} không dùng được "
                 "(đã tắt, đã xoá hoặc sai loại). Kiểm tra cấu hình egress.")
         if pinned.id in exclude:
-            raise EgressError(f"Proxy ghim cho tài khoản {account_id} đang lỗi: {pinned.last_error}")
+            raise EgressUnavailable(f"Proxy ghim cho tài khoản {account_id} đang lỗi: {pinned.last_error}")
         return pinned
 
     candidates = [endpoint for endpoint in list_endpoints(conn, mode)
                   if endpoint.enabled and endpoint.id not in exclude
                   and (not rule["endpoint_ids"] or endpoint.id in rule["endpoint_ids"])]
     if not candidates:
-        raise EgressError(
+        raise EgressUnavailable(
             f"Scope {scope} đang đặt {mode} nhưng không có điểm thoát nào dùng được. "
             "Thêm/bật endpoint egress hoặc chuyển scope về direct.")
 
@@ -423,6 +432,75 @@ def mark_failed(conn: sqlite3.Connection | None, endpoint: Endpoint | None, erro
 
 # ------------------------------------------------------------------ gửi request
 
+def _proxy_connection_errors() -> tuple[type[BaseException], ...]:
+    """Lỗi "không vào được chính proxy" — phân biệt với lỗi thật của provider.
+
+    requests bọc lỗi SOCKS trong ProxyError; googleapiclient/httplib2 dùng
+    socks.GeneralProxyError. Chỉ EgressError ở đây là EgressUnavailable: nó là
+    lỗi do pick() raise khi hết endpoint, không phải lỗi request thật.
+    """
+    errors: list[type[BaseException]] = [requests.ConnectionError, requests.Timeout,
+                                         ConnectionError, socket.timeout, OSError]
+    try:
+        import socks as _socks
+        errors.extend([_socks.ProxyError, _socks.GeneralProxyError])
+    except ImportError:
+        pass
+    try:
+        import urllib3.exceptions as _u3
+        errors.append(_u3.ProxyError)
+    except ImportError:
+        pass
+    return tuple(dict.fromkeys(errors))
+
+
+def _is_proxy_connection_error(exc: BaseException) -> bool:
+    return isinstance(exc, _proxy_connection_errors())
+
+
+def _reachable(endpoint: Endpoint, timeout: float = 2.0) -> bool:
+    """Kiểm tra TCP (~2s) tới host:port của proxy trước khi chọn.
+
+    Chỉ chứng minh cổng mở — xác thực (407) và IP thoát vẫn do tầng request
+    xử lý như cũ.
+    """
+    try:
+        parts = urlsplit(endpoint.url)
+        host = parts.hostname
+        port = parts.port
+        if not host or not port:
+            return False
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _pick_reachable(active: sqlite3.Connection | None, scope: str,
+                    account_id: int | None) -> Endpoint | None:
+    """pick() kèm kiểm tra TCP tới proxy: hỏng thì mark_failed rồi thử cái kế.
+
+    Endpoint ghim giữ nguyên ngữ nghĩa cũ (không đổi endpoint): TCP hỏng thì
+    raise EgressUnavailable thay vì lặng lẽ đổi IP.
+    """
+    tried: list[int] = []
+    for _ in range(MAX_ATTEMPTS):
+        endpoint = pick(active, scope, account_id, exclude=tuple(tried))
+        if endpoint is None or endpoint.kind != "proxy":
+            return endpoint
+        if active is not None and _pinned_endpoint_id(active, account_id) == endpoint.id:
+            if _reachable(endpoint):
+                return endpoint
+            mark_failed(active, endpoint, "Không mở được TCP tới proxy ghim (kiểm tra trước khi chọn)")
+            raise EgressUnavailable(
+                f"Scope {scope}: không mở được TCP tới proxy ghim của tài khoản {account_id}.")
+        if _reachable(endpoint):
+            return endpoint
+        mark_failed(active, endpoint, "Không mở được TCP tới proxy (kiểm tra trước khi chọn)")
+        tried.append(endpoint.id)
+    raise EgressUnavailable(
+        f"Scope {scope}: không mở được TCP tới proxy nào (đã thử {len(tried)} endpoint).")
+
 def proxies_for(endpoint: Endpoint | None) -> dict | None:
     if endpoint is None or endpoint.kind != "proxy":
         return None
@@ -434,7 +512,7 @@ def session(conn: sqlite3.Connection | None, scope: str,
     """Session cho cả một phiên làm việc (vd. một lần upload): chọn điểm thoát một lần
     rồi giữ nguyên, để mọi request của phiên ra cùng một IP."""
     with _conn(conn) as active:
-        endpoint = pick(active, scope, account_id)
+        endpoint = _pick_reachable(active, scope, account_id)
     if endpoint is not None and endpoint.kind != "proxy":
         raise EgressError(f"Scope {scope} chỉ hỗ trợ đi thẳng hoặc outbound proxy.")
     http = requests.Session()
@@ -489,6 +567,13 @@ def request(scope: str, method: str, url: str, *, conn: sqlite3.Connection | Non
         for _attempt in range(MAX_ATTEMPTS):
             try:
                 endpoint = pick(active, scope, account_id, exclude=tuple(tried))
+            except EgressUnavailable:
+                if last_response is not None:
+                    return last_response
+                if last_error is not None:
+                    raise EgressUnavailable(
+                        f"Scope {scope}: không còn điểm thoát nào dùng được.") from last_error
+                raise
             except EgressError:
                 if last_response is not None:
                     return last_response
@@ -498,6 +583,16 @@ def request(scope: str, method: str, url: str, *, conn: sqlite3.Connection | Non
             if endpoint is None:
                 return getattr(requests, method.lower())(url, **kwargs)
             tried.append(endpoint.id)
+            if endpoint.kind == "proxy" and not _reachable(endpoint):
+                # Failover LAN ↔ Tailscale: cổng chết thì bỏ qua ngay, khỏi chờ
+                # timeout của request. Endpoint ghim giữ nguyên ngữ nghĩa cũ:
+                # không đổi IP, raise để runner hoãn job.
+                mark_failed(active, endpoint, "Không mở được TCP tới proxy (kiểm tra trước khi chọn)")
+                if active is not None and _pinned_endpoint_id(active, account_id) == endpoint.id:
+                    raise EgressUnavailable(
+                        f"Scope {scope}: không mở được TCP tới proxy ghim "
+                        f"của tài khoản {account_id}.")
+                continue
             try:
                 if endpoint.kind == "relay":
                     response = _relay_call(endpoint, method, url, kwargs)
@@ -516,13 +611,16 @@ def request(scope: str, method: str, url: str, *, conn: sqlite3.Connection | Non
         if last_response is not None:
             return last_response
         assert last_error is not None
+        if _is_proxy_connection_error(last_error):
+            raise EgressUnavailable(
+                f"Scope {scope}: không vào được điểm thoát nào.") from last_error
         raise last_error
 
 
 def httplib2_http(conn: sqlite3.Connection | None, scope: str, account_id: int | None = None):
     """``httplib2.Http`` đi qua proxy của scope cho googleapiclient; None = đi thẳng."""
     with _conn(conn) as active:
-        endpoint = pick(active, scope, account_id)
+        endpoint = _pick_reachable(active, scope, account_id)
     if endpoint is None:
         return None
     if endpoint.kind != "proxy":

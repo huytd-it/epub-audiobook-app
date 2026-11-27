@@ -1,5 +1,6 @@
-"""store.reschedule: đưa job về pending tại thời điểm chỉ định, không đụng attempt_count;
-runner bắt JobRescheduled thay vì coi là lỗi."""
+"""store.reschedule: đưa job về pending tại thời điểm chỉ định và hoàn lại lượt
+attempt của lần claim vừa rồi (claim đã +1); runner bắt JobRescheduled thay vì
+coi là lỗi."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,7 @@ def _future(seconds=3600):
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
 
-def test_reschedule_returns_job_to_pending_without_touching_attempt_count():
+def test_reschedule_returns_job_to_pending_and_refunds_the_claimed_attempt():
     conn = _conn()
     job_id = store.enqueue(conn, "kaggle_tts")
     store.claim(conn, "kaggle_tts", "w")
@@ -27,10 +28,18 @@ def test_reschedule_returns_job_to_pending_without_touching_attempt_count():
     assert store.reschedule(conn, job_id, target, "no quota") is True
     job = store.get(conn, job_id)
     assert job.status == PENDING
-    assert job.attempt_count == 1          # không reset, không tăng thêm
+    assert job.attempt_count == 0          # claim +1, reschedule hoàn lại
     assert job.next_retry_at == target
     assert job.error_message == "no quota"
     assert job.worker_id is None
+
+
+def test_reschedule_refund_never_goes_below_zero():
+    conn = _conn()
+    job_id = store.enqueue(conn, "kaggle_tts")
+    target = _future()
+    assert store.reschedule(conn, job_id, target, "no quota") is True
+    assert store.get(conn, job_id).attempt_count == 0
 
 
 def test_reschedule_is_fenced_like_finish_and_fail():
