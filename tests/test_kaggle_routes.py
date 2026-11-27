@@ -235,3 +235,12 @@ def test_export_batch_kaggle_rejects_unknown_or_disabled_account(client, tmp_pat
         resp = client.post(f"/books/{book_id}/patches/export-batch-kaggle",
                            data={"patch_ids": [patch_id], "model_id": "zerotts", "kaggle_account_id": value})
         assert resp.status_code == 400
+
+
+def test_create_account_needs_only_username_and_token(client, tmp_path):
+    resp = client.post("/kaggle/accounts", data={"username": "u9", "api_key": "KGAT_x"}, follow_redirects=False)
+    assert resp.status_code == 303
+    account = client.get("/api/ui/kaggle").json()["accounts"][0]
+    assert (account["label"], account["username"]) == ("u9", "u9")
+    again = client.post("/kaggle/accounts", data={"username": "u9", "api_key": "KGAT_y"}, follow_redirects=False)
+    assert again.status_code == 400

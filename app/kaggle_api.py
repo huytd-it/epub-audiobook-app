@@ -128,7 +128,13 @@ DATASET_FAILED_STATUSES = frozenset({"failed", "deleted"})
 
 
 def _auth_header(account: KaggleAccount) -> dict[str, str]:
-    token = base64.b64encode(f"{account.username}:{account.api_key}".encode()).decode("ascii")
+    """API token kiểu mới (KGAT_..., tạo ở kaggle.com → Settings → API Tokens) đi bằng
+    ``Bearer`` — đúng như kagglesdk's KaggleHttpClient (BearerAuth). Key cũ trong
+    kaggle.json (32 ký tự hex) vẫn đi Basic(username, key) như trước."""
+    key = (account.api_key or "").strip()
+    if key.startswith("KGAT_"):
+        return {"Authorization": f"Bearer {key}"}
+    token = base64.b64encode(f"{account.username}:{key}".encode()).decode("ascii")
     return {"Authorization": f"Basic {token}"}
 
 

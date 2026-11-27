@@ -485,3 +485,10 @@ def test_real_transport_lets_egress_unavailable_propagate(monkeypatch):
     monkeypatch.setattr(egress, "request", down)
     with pytest.raises(egress.EgressUnavailable):
         kernel_status(KaggleAccount("u", "k"), "u/slug")
+
+
+def test_new_kgat_api_token_uses_bearer_and_legacy_key_uses_basic():
+    from app.kaggle_api import _auth_header
+    assert _auth_header(KaggleAccount("u1", "KGAT_abc123")) == {"Authorization": "Bearer KGAT_abc123"}
+    legacy = _auth_header(KaggleAccount("u1", "0123456789abcdef0123456789abcdef"))
+    assert legacy["Authorization"] == "Basic " + base64.b64encode(b"u1:0123456789abcdef0123456789abcdef").decode()

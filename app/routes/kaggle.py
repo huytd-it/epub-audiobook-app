@@ -36,22 +36,29 @@ def package_action(request: Request, package_id: int, action: str):
 
 
 @router.post("/kaggle/accounts")
-def create_account(request: Request, label: str = Form(...), username: str = Form(...), api_key: str = Form(...)):
+def create_account(request: Request, username: str = Form(...), api_key: str = Form(...), label: str = Form("")):
+    """Chỉ cần username + API token (hoặc key cũ trong kaggle.json); nhãn tuỳ chọn."""
+    username, api_key = username.strip(), api_key.strip()
+    if not username or not api_key:
+        raise HTTPException(status_code=400, detail="Cần username và API token")
     with locked_conn(request) as conn:
-        kaggle_accounts.create_account(conn, label.strip(), username.strip(), api_key.strip())
+        if conn.execute("SELECT 1 FROM kaggle_account WHERE username=?", (username,)).fetchone():
+            raise HTTPException(status_code=400, detail=f"Đã có tài khoản Kaggle {username}")
+        kaggle_accounts.create_account(conn, label.strip() or username, username, api_key)
     return RedirectResponse(url="/drive#kaggle", status_code=303)
 
 
 @router.post("/kaggle/accounts/{account_id}/edit")
 def update_account(
-    request: Request, account_id: int, label: str = Form(...), username: str = Form(...),
+    request: Request, account_id: int, username: str = Form(...), label: str = Form(""),
     api_key: str = Form(""),
 ):
     with locked_conn(request) as conn:
         if kaggle_accounts.get_account(conn, account_id) is None:
             raise HTTPException(status_code=404, detail="Kaggle account not found")
         kaggle_accounts.update_account(
-            conn, account_id, label=label.strip(), username=username.strip(), api_key=api_key.strip(),
+            conn, account_id, label=label.strip() or username.strip(), username=username.strip(),
+            api_key=api_key.strip(),
         )
     return RedirectResponse(url="/drive#kaggle", status_code=303)
 
