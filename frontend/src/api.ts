@@ -503,6 +503,17 @@ export type EgressState = {
   scopes: string[];
   /** Scope được phép dùng relay (mạng xã hội thì không: upload vượt giới hạn body). */
   relay_scopes: string[];
+  /** Tài khoản đang ghim proxy lệch với định tuyến của luồng (chỉ cảnh báo). */
+  pinned_conflicts: EgressPinnedConflict[];
+};
+export type EgressPinnedConflict = {
+  account_id: number;
+  platform: SocialPlatform;
+  label: string;
+  endpoint_id: number;
+  endpoint_label: string;
+  scope: string;
+  reason: string;
 };
 
 /**

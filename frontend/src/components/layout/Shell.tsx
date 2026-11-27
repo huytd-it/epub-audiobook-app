@@ -27,6 +27,7 @@ import {
   BookMarked,
   ArrowRight,
   Clock3,
+  Network,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -72,6 +73,7 @@ const navSections: NavSection[] = [
     items: [
       { to: "/socials", label: "Socials", icon: Share2 },
       { to: "/drive", label: "Google Drive", icon: HardDrive },
+      { to: "/network", label: "Mạng & Server", icon: Network },
       { to: "/database-io", label: "Dữ liệu", icon: Database },
       { to: "/logs", label: "Nhật ký", icon: FileText },
       { to: "/production-defaults", label: "Cấu hình mặc định", icon: Settings2 },

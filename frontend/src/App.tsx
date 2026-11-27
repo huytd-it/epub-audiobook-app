@@ -16,6 +16,7 @@ import { PhotosPage } from "@/pages/PhotosPage";
 import { VoicesPage } from "@/pages/VoicesPage";
 import { SocialsPage } from "@/pages/socials/SocialsPage";
 import { DrivePage } from "@/pages/DrivePage";
+import { NetworkPage } from "@/pages/NetworkPage";
 import { DatabaseIoPage } from "@/pages/DatabaseIoPage";
 import { LogsPage } from "@/pages/LogsPage";
 import { EffectsPage } from "@/pages/EffectsPage";
@@ -50,6 +51,7 @@ function App() {
         {/* Đường dẫn cũ của trang YouTube (bookmark, link trong tài liệu). */}
         <Route path="/youtube" element={<Navigate to="/socials/youtube" replace />} />
         <Route path="/drive" element={<DrivePage />} />
+        <Route path="/network" element={<NetworkPage />} />
         <Route path="/database-io" element={<DatabaseIoPage />} />
         <Route path="/logs" element={<LogsPage />} />
         <Route path="/effects" element={<EffectsPage />} />

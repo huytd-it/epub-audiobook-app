@@ -176,6 +176,6 @@ export function AccountsPanel({
 
 /** Tải lại danh sách proxy cho ô "Outbound proxy" — dùng chung giữa các tab mạng. */
 export const loadProxies = () =>
-  api<{ endpoints: EgressEndpoint[] }>("/socials/api/network").then((state) =>
+  api<{ endpoints: EgressEndpoint[] }>("/network/api").then((state) =>
     state.endpoints.filter((endpoint) => endpoint.kind === "proxy")
   );
